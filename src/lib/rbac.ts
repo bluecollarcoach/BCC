@@ -1,4 +1,4 @@
-import type { Role } from "@prisma/client";
+import type { Role } from "@/types/enums";
 
 /**
  * Centralised role-based access checks. Add capabilities (not role checks)

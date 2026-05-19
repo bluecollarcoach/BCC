@@ -4,7 +4,9 @@
 //   chat (channels/messages), calendar events, documents, training, events,
 //   bookkeeping/financial KPIs (cached from QBO), audit log, integration tokens.
 //
-// DEV: SQLite. PROD: swap provider to "sqlserver" for Azure SQL.
+// DEV: SQLite (no native enum support — we use String columns + TS unions in
+//   src/types/enums.ts). PROD: swap provider to "sqlserver" for Azure SQL and
+//   optionally promote the unions back to Prisma enums.
 // =============================================================================
 
 generator client {
@@ -19,14 +21,7 @@ datasource db {
 // -----------------------------------------------------------------------------
 // AUTH / USERS / RBAC
 // -----------------------------------------------------------------------------
-
-enum Role {
-  OWNER     // founder / super admin
-  ADMIN     // org admin
-  COACH     // BCC coach (internal staff)
-  STAFF     // client crew member
-  CUSTOMER  // external customer using the portal
-}
+// Role: "OWNER" | "ADMIN" | "COACH" | "STAFF" | "CUSTOMER" (see src/types/enums.ts)
 
 model User {
   id            String    @id @default(cuid())
@@ -34,7 +29,7 @@ model User {
   name          String?
   image         String?
   emailVerified DateTime?
-  role          Role      @default(STAFF)
+  role          String    @default("STAFF")
   phone         String?
   title         String?
   hourlyRate    Int?      // cents
@@ -147,13 +142,7 @@ model Company {
   @@index([orgId])
 }
 
-enum ContactStage {
-  LEAD
-  QUALIFIED
-  CUSTOMER
-  CHURNED
-}
-
+// ContactStage: "LEAD" | "QUALIFIED" | "CUSTOMER" | "CHURNED"
 model Contact {
   id         String       @id @default(cuid())
   orgId      String
@@ -163,7 +152,7 @@ model Contact {
   email      String?
   phone      String?
   title      String?
-  stage      ContactStage @default(LEAD)
+  stage      String       @default("LEAD")
   source     String?       // referral, web, event, ...
   tags       String?       // comma-separated, simple v1
   notes      String?
@@ -204,19 +193,14 @@ model PipelineStage {
   @@index([pipelineId, order])
 }
 
-enum DealStatus {
-  OPEN
-  WON
-  LOST
-}
-
+// DealStatus: "OPEN" | "WON" | "LOST"
 model Deal {
   id           String   @id @default(cuid())
   orgId        String
   org          Org      @relation(fields: [orgId], references: [id])
   name         String
   amountCents  Int      @default(0)
-  status       DealStatus @default(OPEN)
+  status       String   @default("OPEN")
   expectedClose DateTime?
   closedAt     DateTime?
   pipelineId   String
@@ -239,17 +223,10 @@ model Deal {
   @@index([stageId])
 }
 
-enum ActivityType {
-  CALL
-  EMAIL
-  MEETING
-  NOTE
-  TASK
-}
-
+// ActivityType: "CALL" | "EMAIL" | "MEETING" | "NOTE" | "TASK"
 model Activity {
   id         String       @id @default(cuid())
-  type       ActivityType
+  type       String
   subject    String
   body       String?
   dueAt      DateTime?
@@ -268,14 +245,7 @@ model Activity {
 // -----------------------------------------------------------------------------
 // TIME TRACKING (Falcon-style: timer + crew + job costing)
 // -----------------------------------------------------------------------------
-
-enum TimeEntryStatus {
-  RUNNING
-  STOPPED
-  SUBMITTED
-  APPROVED
-  REJECTED
-}
+// TimeEntryStatus: "RUNNING" | "STOPPED" | "SUBMITTED" | "APPROVED" | "REJECTED"
 
 model TimeEntry {
   id          String          @id @default(cuid())
@@ -289,7 +259,7 @@ model TimeEntry {
   startedAt   DateTime
   endedAt     DateTime?
   durationSec Int?            // populated when stopped
-  status      TimeEntryStatus @default(RUNNING)
+  status      String          @default("RUNNING")
   billable    Boolean         @default(true)
   rateCents   Int?            // snapshotted from user.hourlyRate at create
 
@@ -303,13 +273,7 @@ model TimeEntry {
 // -----------------------------------------------------------------------------
 // CHAT (Precision-style: channels, DMs, threads, mentions)
 // -----------------------------------------------------------------------------
-
-enum ChannelKind {
-  PUBLIC
-  PRIVATE
-  DM
-  CUSTOMER  // mixed internal+customer
-}
+// ChannelKind: "PUBLIC" | "PRIVATE" | "DM" | "CUSTOMER"
 
 model ChatChannel {
   id        String      @id @default(cuid())
@@ -317,7 +281,7 @@ model ChatChannel {
   org       Org         @relation(fields: [orgId], references: [id])
   name      String
   topic     String?
-  kind      ChannelKind @default(PUBLIC)
+  kind      String      @default("PUBLIC")
   createdAt DateTime    @default(now())
 
   members   ChannelMember[]
@@ -405,30 +369,16 @@ model Document {
 // -----------------------------------------------------------------------------
 // MARKETING
 // -----------------------------------------------------------------------------
-
-enum CampaignChannel {
-  EMAIL
-  SMS
-  SOCIAL
-  PRINT
-  REVIEW_REQUEST
-}
-
-enum CampaignStatus {
-  DRAFT
-  SCHEDULED
-  RUNNING
-  COMPLETED
-  PAUSED
-}
+// CampaignChannel: "EMAIL" | "SMS" | "SOCIAL" | "PRINT" | "REVIEW_REQUEST"
+// CampaignStatus:  "DRAFT" | "SCHEDULED" | "RUNNING" | "COMPLETED" | "PAUSED"
 
 model Campaign {
   id          String          @id @default(cuid())
   orgId       String
   org         Org             @relation(fields: [orgId], references: [id])
   name        String
-  channel     CampaignChannel
-  status      CampaignStatus  @default(DRAFT)
+  channel     String
+  status      String          @default("DRAFT")
   audience    String?         // segment name / sql / saved filter
   scheduledAt DateTime?
   subject     String?
@@ -538,19 +488,13 @@ model FinancialPeriod {
 // -----------------------------------------------------------------------------
 // INTEGRATIONS (OAuth tokens for QBO, MS Graph, etc — encrypted at rest in prod)
 // -----------------------------------------------------------------------------
-
-enum IntegrationProvider {
-  MICROSOFT_GRAPH
-  QBO
-  SIGNALR
-  STRIPE
-}
+// IntegrationProvider: "MICROSOFT_GRAPH" | "QBO" | "SIGNALR" | "STRIPE"
 
 model Integration {
   id           String              @id @default(cuid())
   orgId        String
   org          Org                 @relation(fields: [orgId], references: [id])
-  provider     IntegrationProvider
+  provider     String
   status       String              @default("DISCONNECTED")
   accessToken  String?
   refreshToken String?

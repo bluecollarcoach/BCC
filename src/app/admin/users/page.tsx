@@ -9,11 +9,9 @@ import { Button } from "@/components/ui/button";
 import { audit } from "@/lib/audit";
 import { revalidatePath } from "next/cache";
 import { formatDate } from "@/lib/utils";
-import type { Role } from "@prisma/client";
+import { ROLES, type Role } from "@/types/enums";
 
 export const metadata = { title: "Admin · Users" };
-
-const ROLES: Role[] = ["OWNER", "ADMIN", "COACH", "STAFF", "CUSTOMER"];
 
 export default async function AdminUsersPage() {
   const session = await auth();

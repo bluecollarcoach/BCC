@@ -3,6 +3,17 @@ import type { NextConfig } from "next";
 const config: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // Keep Node-only packages out of the webpack bundle (they fail to compile
+  // for the Edge runtime and bloat the server bundle).
+  serverExternalPackages: [
+    "applicationinsights",
+    "@azure/monitor-opentelemetry",
+    "@azure/monitor-opentelemetry-exporter",
+    "@azure/functions-core",
+    "@prisma/client",
+    "prisma",
+    "@microsoft/microsoft-graph-client",
+  ],
   experimental: {
     serverActions: { bodySizeLimit: "10mb" },
   },

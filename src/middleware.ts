@@ -1,27 +1,21 @@
+import NextAuth from "next-auth";
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { authConfig } from "@/lib/auth.config";
 
-// Protect /dashboard, /crm, /time, /chat, /calendar, /marketing,
-// /bookkeeping, /documents, /training, /events, /settings, /admin.
-const PROTECTED_PREFIXES = [
-  "/dashboard",
-  "/crm",
-  "/time",
-  "/chat",
-  "/calendar",
-  "/marketing",
-  "/bookkeeping",
-  "/documents",
-  "/training",
-  "/events",
-  "/settings",
-  "/admin",
-];
+// Use ONLY the edge-safe config in middleware. Importing @/lib/auth here
+// would pull Prisma + Application Insights into the Edge bundle and fail.
+const { auth } = NextAuth(authConfig);
 
 export default auth((req) => {
   const { pathname } = req.nextUrl;
-  const protectedRoute = PROTECTED_PREFIXES.some((p) => pathname.startsWith(p));
-  if (protectedRoute && !req.auth) {
+  const PROTECTED = [
+    "/dashboard", "/crm", "/time", "/chat", "/calendar",
+    "/marketing", "/bookkeeping", "/documents", "/training",
+    "/events", "/settings", "/admin",
+  ];
+  const isProtected = PROTECTED.some((p) => pathname.startsWith(p));
+
+  if (isProtected && !req.auth) {
     const url = new URL("/sign-in", req.url);
     url.searchParams.set("callbackUrl", pathname);
     return NextResponse.redirect(url);
@@ -37,9 +31,6 @@ export default auth((req) => {
 
 export const config = {
   matcher: [
-    /*
-     * Match all paths except static files, _next, and api routes that handle their own auth.
-     */
     "/((?!_next/static|_next/image|favicon.ico|api/auth|api/health|.*\\..*).*)",
   ],
 };

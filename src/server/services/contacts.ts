@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { z } from "zod";
-import type { ContactStage } from "@prisma/client";
+import type { ContactStage } from "@/types/enums";
 
 export const contactSchema = z.object({
   firstName: z.string().min(1).max(80),
