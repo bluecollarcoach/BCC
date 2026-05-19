@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:bluecollarcoach.us)",
+      "Bash(curl -s -L https://bluecollarcoach.us/ -o /tmp/bcc.html -w \"HTTP %{http_code}\\\\n\")",
+      "Read(//tmp/**)",
+      "Bash(curl -s -L https://bluecollarcoach.us/ -o C:/Users/Apric/Downloads/BCC/.bcc-source.html -w \"HTTP %{http_code}\\\\n\")",
+      "Bash(git init *)",
+      "Bash(git add *)",
+      "Bash(git -c 'user.name=BCC Connect' -c user.email=dev@bluecollarcoach.us commit -q -m ' *)"
+    ]
+  }
+}

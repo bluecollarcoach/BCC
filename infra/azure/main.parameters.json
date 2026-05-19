@@ -1,0 +1,15 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "name":            { "value": "bccconnect" },
+    "appServiceSku":   { "value": "B2" },
+    "sqlAdminLogin":   { "value": "bccadmin" },
+    "sqlAdminPassword": { "value": "REPLACE_ME_USE_KEYVAULT" },
+    "authSecret":      { "value": "REPLACE_ME_RUN: openssl rand -base64 32" },
+    "entraClientId":     { "value": "" },
+    "entraClientSecret": { "value": "" },
+    "qboClientId":     { "value": "" },
+    "qboClientSecret": { "value": "" }
+  }
+}

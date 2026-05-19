@@ -1,0 +1,588 @@
+// =============================================================================
+// Blue Collar Coach Connect — Prisma schema
+// Covers: users/roles, CRM (contacts/companies/deals/activities), time tracking,
+//   chat (channels/messages), calendar events, documents, training, events,
+//   bookkeeping/financial KPIs (cached from QBO), audit log, integration tokens.
+//
+// DEV: SQLite. PROD: swap provider to "sqlserver" for Azure SQL.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// AUTH / USERS / RBAC
+// -----------------------------------------------------------------------------
+
+enum Role {
+  OWNER     // founder / super admin
+  ADMIN     // org admin
+  COACH     // BCC coach (internal staff)
+  STAFF     // client crew member
+  CUSTOMER  // external customer using the portal
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  image         String?
+  emailVerified DateTime?
+  role          Role      @default(STAFF)
+  phone         String?
+  title         String?
+  hourlyRate    Int?      // cents
+  active        Boolean   @default(true)
+  orgId         String?
+  org           Org?      @relation(fields: [orgId], references: [id])
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts      Account[]
+  sessions      Session[]
+  ownedContacts Contact[]      @relation("ContactOwner")
+  ownedDeals    Deal[]         @relation("DealOwner")
+  activities    Activity[]
+  timeEntries   TimeEntry[]
+  chatMembers   ChannelMember[]
+  messages      ChatMessage[]
+  events        CalendarEvent[] @relation("EventOwner")
+  uploads       Document[]      @relation("DocumentUploader")
+  enrollments   Enrollment[]
+  auditLogs     AuditLog[]
+
+  @@index([orgId])
+  @@index([role])
+}
+
+model Org {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  industry    String?
+  size        String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users       User[]
+  contacts    Contact[]
+  companies   Company[]
+  deals       Deal[]
+  pipelines   Pipeline[]
+  timeEntries TimeEntry[]
+  channels    ChatChannel[]
+  events      CalendarEvent[]
+  documents   Document[]
+  campaigns   Campaign[]
+  bookings    EventBooking[]
+  courses     Course[]
+  financialPeriods FinancialPeriod[]
+  integrations Integration[]
+  auditLogs   AuditLog[]
+}
+
+// Auth.js / NextAuth tables
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// -----------------------------------------------------------------------------
+// CRM
+// -----------------------------------------------------------------------------
+
+model Company {
+  id        String   @id @default(cuid())
+  orgId     String
+  org       Org      @relation(fields: [orgId], references: [id])
+  name      String
+  domain    String?
+  industry  String?
+  size      String?
+  phone     String?
+  website   String?
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  contacts  Contact[]
+  deals     Deal[]
+
+  @@index([orgId])
+}
+
+enum ContactStage {
+  LEAD
+  QUALIFIED
+  CUSTOMER
+  CHURNED
+}
+
+model Contact {
+  id         String       @id @default(cuid())
+  orgId      String
+  org        Org          @relation(fields: [orgId], references: [id])
+  firstName  String
+  lastName   String
+  email      String?
+  phone      String?
+  title      String?
+  stage      ContactStage @default(LEAD)
+  source     String?       // referral, web, event, ...
+  tags       String?       // comma-separated, simple v1
+  notes      String?
+  companyId  String?
+  company    Company?      @relation(fields: [companyId], references: [id])
+  ownerId    String?
+  owner      User?         @relation("ContactOwner", fields: [ownerId], references: [id])
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  deals      Deal[]
+  activities Activity[]
+
+  @@index([orgId, stage])
+  @@index([ownerId])
+}
+
+model Pipeline {
+  id        String   @id @default(cuid())
+  orgId     String
+  org       Org      @relation(fields: [orgId], references: [id])
+  name      String
+  stages    PipelineStage[]
+  deals     Deal[]
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model PipelineStage {
+  id         String   @id @default(cuid())
+  pipelineId String
+  pipeline   Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  name       String
+  order      Int
+  probability Int     @default(0)  // 0-100
+  deals      Deal[]
+
+  @@index([pipelineId, order])
+}
+
+enum DealStatus {
+  OPEN
+  WON
+  LOST
+}
+
+model Deal {
+  id           String   @id @default(cuid())
+  orgId        String
+  org          Org      @relation(fields: [orgId], references: [id])
+  name         String
+  amountCents  Int      @default(0)
+  status       DealStatus @default(OPEN)
+  expectedClose DateTime?
+  closedAt     DateTime?
+  pipelineId   String
+  pipeline     Pipeline @relation(fields: [pipelineId], references: [id])
+  stageId      String
+  stage        PipelineStage @relation(fields: [stageId], references: [id])
+  contactId    String?
+  contact      Contact? @relation(fields: [contactId], references: [id])
+  companyId    String?
+  company      Company? @relation(fields: [companyId], references: [id])
+  ownerId      String?
+  owner        User?    @relation("DealOwner", fields: [ownerId], references: [id])
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  activities   Activity[]
+
+  @@index([orgId, status])
+  @@index([stageId])
+}
+
+enum ActivityType {
+  CALL
+  EMAIL
+  MEETING
+  NOTE
+  TASK
+}
+
+model Activity {
+  id         String       @id @default(cuid())
+  type       ActivityType
+  subject    String
+  body       String?
+  dueAt      DateTime?
+  completed  Boolean      @default(false)
+  userId     String?
+  user       User?        @relation(fields: [userId], references: [id])
+  contactId  String?
+  contact    Contact?     @relation(fields: [contactId], references: [id])
+  dealId     String?
+  deal       Deal?        @relation(fields: [dealId], references: [id])
+  createdAt  DateTime     @default(now())
+
+  @@index([dueAt])
+}
+
+// -----------------------------------------------------------------------------
+// TIME TRACKING (Falcon-style: timer + crew + job costing)
+// -----------------------------------------------------------------------------
+
+enum TimeEntryStatus {
+  RUNNING
+  STOPPED
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+model TimeEntry {
+  id          String          @id @default(cuid())
+  orgId       String
+  org         Org             @relation(fields: [orgId], references: [id])
+  userId      String
+  user        User            @relation(fields: [userId], references: [id])
+  jobName     String?         // free text for v1; link to Deal/Project later
+  dealId      String?
+  notes       String?
+  startedAt   DateTime
+  endedAt     DateTime?
+  durationSec Int?            // populated when stopped
+  status      TimeEntryStatus @default(RUNNING)
+  billable    Boolean         @default(true)
+  rateCents   Int?            // snapshotted from user.hourlyRate at create
+
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([orgId, userId, startedAt])
+  @@index([status])
+}
+
+// -----------------------------------------------------------------------------
+// CHAT (Precision-style: channels, DMs, threads, mentions)
+// -----------------------------------------------------------------------------
+
+enum ChannelKind {
+  PUBLIC
+  PRIVATE
+  DM
+  CUSTOMER  // mixed internal+customer
+}
+
+model ChatChannel {
+  id        String      @id @default(cuid())
+  orgId     String
+  org       Org         @relation(fields: [orgId], references: [id])
+  name      String
+  topic     String?
+  kind      ChannelKind @default(PUBLIC)
+  createdAt DateTime    @default(now())
+
+  members   ChannelMember[]
+  messages  ChatMessage[]
+
+  @@index([orgId])
+}
+
+model ChannelMember {
+  channelId String
+  channel   ChatChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  joinedAt  DateTime    @default(now())
+  lastReadAt DateTime?
+  notify    Boolean     @default(true)
+
+  @@id([channelId, userId])
+}
+
+model ChatMessage {
+  id        String      @id @default(cuid())
+  channelId String
+  channel   ChatChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User        @relation(fields: [authorId], references: [id])
+  body      String
+  parentId  String?     // thread parent
+  attachments String?   // JSON blob
+  createdAt DateTime    @default(now())
+  editedAt  DateTime?
+
+  @@index([channelId, createdAt])
+}
+
+// -----------------------------------------------------------------------------
+// CALENDAR (Microsoft Graph synced)
+// -----------------------------------------------------------------------------
+
+model CalendarEvent {
+  id          String   @id @default(cuid())
+  orgId       String
+  org         Org      @relation(fields: [orgId], references: [id])
+  ownerId     String
+  owner       User     @relation("EventOwner", fields: [ownerId], references: [id])
+  title       String
+  description String?
+  location    String?
+  startAt     DateTime
+  endAt       DateTime
+  allDay      Boolean  @default(false)
+  source      String   @default("LOCAL")   // LOCAL | MSGRAPH | GCAL
+  externalId  String?  @unique             // event id in source system
+  etag        String?
+  attendees   String?  // JSON array
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([orgId, startAt])
+}
+
+// -----------------------------------------------------------------------------
+// DOCUMENTS (Azure Blob backed)
+// -----------------------------------------------------------------------------
+
+model Document {
+  id          String   @id @default(cuid())
+  orgId       String
+  org         Org      @relation(fields: [orgId], references: [id])
+  uploaderId  String
+  uploader    User     @relation("DocumentUploader", fields: [uploaderId], references: [id])
+  name        String
+  folder      String   @default("/")
+  mimeType    String
+  sizeBytes   Int
+  storageKey  String   // blob path
+  tags        String?  // comma-separated
+  contactId   String?  // optional link to a CRM contact
+  dealId      String?
+  createdAt   DateTime @default(now())
+
+  @@index([orgId, folder])
+}
+
+// -----------------------------------------------------------------------------
+// MARKETING
+// -----------------------------------------------------------------------------
+
+enum CampaignChannel {
+  EMAIL
+  SMS
+  SOCIAL
+  PRINT
+  REVIEW_REQUEST
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  RUNNING
+  COMPLETED
+  PAUSED
+}
+
+model Campaign {
+  id          String          @id @default(cuid())
+  orgId       String
+  org         Org             @relation(fields: [orgId], references: [id])
+  name        String
+  channel     CampaignChannel
+  status      CampaignStatus  @default(DRAFT)
+  audience    String?         // segment name / sql / saved filter
+  scheduledAt DateTime?
+  subject     String?
+  body        String?
+  sentCount   Int             @default(0)
+  openCount   Int             @default(0)
+  clickCount  Int             @default(0)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([orgId, status])
+}
+
+// -----------------------------------------------------------------------------
+// EVENTS (workshops, meetups)
+// -----------------------------------------------------------------------------
+
+model EventBooking {
+  id          String   @id @default(cuid())
+  orgId       String
+  org         Org      @relation(fields: [orgId], references: [id])
+  title       String
+  description String?
+  startAt     DateTime
+  endAt       DateTime
+  location    String?
+  capacity    Int?
+  rsvpCount   Int      @default(0)
+  isPublic    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+}
+
+// -----------------------------------------------------------------------------
+// TRAINING (customer-facing courses)
+// -----------------------------------------------------------------------------
+
+model Course {
+  id          String   @id @default(cuid())
+  orgId       String
+  org         Org      @relation(fields: [orgId], references: [id])
+  title       String
+  slug        String
+  summary     String?
+  thumbnail   String?
+  published   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  lessons     Lesson[]
+  enrollments Enrollment[]
+
+  @@unique([orgId, slug])
+}
+
+model Lesson {
+  id        String  @id @default(cuid())
+  courseId  String
+  course    Course  @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  title     String
+  body      String?
+  videoUrl  String?
+  order     Int
+  durationMin Int?
+
+  @@index([courseId, order])
+}
+
+model Enrollment {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  courseId  String
+  course    Course   @relation(fields: [courseId], references: [id])
+  progress  Int      @default(0) // 0..100
+  completed Boolean  @default(false)
+  enrolledAt DateTime @default(now())
+  completedAt DateTime?
+
+  @@unique([userId, courseId])
+}
+
+// -----------------------------------------------------------------------------
+// BOOKKEEPING / FINANCIAL KPIs (cached from QBO)
+// -----------------------------------------------------------------------------
+
+model FinancialPeriod {
+  id           String   @id @default(cuid())
+  orgId        String
+  org          Org      @relation(fields: [orgId], references: [id])
+  periodStart  DateTime
+  periodEnd    DateTime
+  revenueCents       Int @default(0)
+  cogsCents          Int @default(0)
+  grossMarginCents   Int @default(0)
+  expensesCents      Int @default(0)
+  netIncomeCents     Int @default(0)
+  cashCents          Int @default(0)
+  arCents            Int @default(0)
+  apCents            Int @default(0)
+  syncedAt     DateTime @default(now())
+  source       String   @default("QBO")
+
+  @@unique([orgId, periodStart, periodEnd])
+  @@index([orgId, periodEnd])
+}
+
+// -----------------------------------------------------------------------------
+// INTEGRATIONS (OAuth tokens for QBO, MS Graph, etc — encrypted at rest in prod)
+// -----------------------------------------------------------------------------
+
+enum IntegrationProvider {
+  MICROSOFT_GRAPH
+  QBO
+  SIGNALR
+  STRIPE
+}
+
+model Integration {
+  id           String              @id @default(cuid())
+  orgId        String
+  org          Org                 @relation(fields: [orgId], references: [id])
+  provider     IntegrationProvider
+  status       String              @default("DISCONNECTED")
+  accessToken  String?
+  refreshToken String?
+  expiresAt    DateTime?
+  realmId      String?             // QBO companyId
+  scope        String?
+  meta         String?             // JSON
+  connectedAt  DateTime?
+  updatedAt    DateTime            @updatedAt
+
+  @@unique([orgId, provider])
+}
+
+// -----------------------------------------------------------------------------
+// AUDIT LOG (all writes, all admin actions)
+// -----------------------------------------------------------------------------
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  orgId       String?
+  org         Org?     @relation(fields: [orgId], references: [id])
+  actorId     String?
+  actor       User?    @relation(fields: [actorId], references: [id])
+  action      String   // "contact.create", "deal.update", "auth.signin", ...
+  targetType  String?  // "Contact", "Deal", ...
+  targetId    String?
+  diff        String?  // JSON snapshot
+  ip          String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  @@index([orgId, createdAt])
+  @@index([actorId, createdAt])
+  @@index([targetType, targetId])
+}
