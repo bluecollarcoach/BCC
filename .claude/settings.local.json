@@ -9,7 +9,8 @@
       "Bash(git add *)",
       "Bash(git -c 'user.name=BCC Connect' -c user.email=dev@bluecollarcoach.us commit -q -m ' *)",
       "Bash(npx prisma *)",
-      "Bash(npx tsx *)"
+      "Bash(npx tsx *)",
+      "Bash(git -c 'user.name=BCC Connect' -c user.email=dev@bluecollarcoach.us commit -q -m 'Add tier picker \\(free/dev/prod\\) to Bicep + SQL free-offer support *)"
     ]
   }
 }
