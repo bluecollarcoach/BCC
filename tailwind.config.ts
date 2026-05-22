@@ -11,7 +11,7 @@ const config: Config = {
     },
     extend: {
       colors: {
-        // Blue Collar Coach brand palette (lifted from bluecollarcoach.us)
+        // Internal-app palette: dark chrome + warm amber accent + light content
         ink: {
           DEFAULT: "#1a1a1a",
           50: "#f5f5f5",
@@ -19,27 +19,34 @@ const config: Config = {
           200: "#c7c7c7",
           300: "#9e9e9e",
           400: "#6e6e6e",
-          500: "#4a4a4a",
-          600: "#2e2e2e",
+          500: "#3d3d3d",
+          600: "#2b2b2b",
           700: "#222222",
           800: "#1a1a1a",
           900: "#0f0f0f",
-          950: "#080808",
         },
-        gold: {
-          DEFAULT: "#c5a55a",
-          50: "#fbf6e9",
-          100: "#f5ebca",
-          200: "#ead693",
-          300: "#dec25c",
-          400: "#d2b045",
-          500: "#c5a55a",
-          600: "#b8944f",
-          700: "#8e7138",
-          800: "#665224",
-          900: "#3d3115",
+        steel: {
+          DEFAULT: "#475569",
+          400: "#64748b",
+          500: "#475569",
+          600: "#374151",
+          700: "#1e293b",
         },
-        // Semantic tokens (referenced via CSS vars in globals.css)
+        amber: {
+          DEFAULT: "#c8901c",
+          50: "#fdf6e3",
+          100: "#faecc5",
+          200: "#f4d57a",
+          300: "#e8b94a",
+          400: "#d6a02e",
+          500: "#c8901c",
+          600: "#a87614",
+          700: "#7d5810",
+          800: "#523a0a",
+          900: "#291d05",
+        },
+        cream: "#faf6ed",
+        // Semantic tokens (CSS vars in globals.css)
         background: "hsl(var(--background) / <alpha-value>)",
         foreground: "hsl(var(--foreground) / <alpha-value>)",
         muted: {
@@ -54,6 +61,12 @@ const config: Config = {
           DEFAULT: "hsl(var(--accent) / <alpha-value>)",
           foreground: "hsl(var(--accent-foreground) / <alpha-value>)",
         },
+        chrome: {
+          DEFAULT: "hsl(var(--chrome) / <alpha-value>)",
+          foreground: "hsl(var(--chrome-foreground) / <alpha-value>)",
+          muted: "hsl(var(--chrome-muted) / <alpha-value>)",
+          border: "hsl(var(--chrome-border) / <alpha-value>)",
+        },
         border: "hsl(var(--border) / <alpha-value>)",
         ring: "hsl(var(--ring) / <alpha-value>)",
         destructive: {
@@ -62,19 +75,31 @@ const config: Config = {
         },
         success: "hsl(var(--success) / <alpha-value>)",
         warning: "hsl(var(--warning) / <alpha-value>)",
+        // Compat alias for any leftover `gold` references in components
+        gold: {
+          DEFAULT: "#c8901c",
+          500: "#c8901c",
+          600: "#a87614",
+        },
       },
       fontFamily: {
-        serif: ["Georgia", "Times New Roman", "serif"],
-        sans: ["Inter", "DM Sans", "system-ui", "sans-serif"],
-        display: ["Libre Baskerville", "Georgia", "serif"],
+        sans: ["var(--font-inter)", "Inter", "system-ui", "sans-serif"],
+        display: ["var(--font-inter)", "Inter", "system-ui", "sans-serif"],
       },
       borderRadius: {
-        lg: "10px",
-        md: "6px",
-        sm: "3px",
+        lg: "14px",
+        md: "10px",
+        sm: "6px",
       },
       boxShadow: {
-        glow: "0 0 0 1px rgba(197,165,90,0.35), 0 8px 30px -10px rgba(197,165,90,0.25)",
+        card: "0 1px 2px rgba(15, 23, 42, 0.06), 0 4px 12px rgba(15, 23, 42, 0.04)",
+        "card-lifted":
+          "0 12px 40px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.04)",
+        amber:
+          "0 0 0 1px rgba(200, 144, 28, 0.35), 0 8px 30px -10px rgba(200, 144, 28, 0.25)",
+        // Compat alias used by some pages copied from the BCC project
+        glow:
+          "0 0 0 1px rgba(200, 144, 28, 0.35), 0 8px 30px -10px rgba(200, 144, 28, 0.25)",
       },
       keyframes: {
         "fade-in": {
@@ -89,6 +114,9 @@ const config: Config = {
       animation: {
         "fade-in": "fade-in 200ms ease-out",
         "pulse-dot": "pulse_dot 1.4s ease-in-out infinite",
+      },
+      letterSpacing: {
+        tightest: "-0.04em",
       },
     },
   },

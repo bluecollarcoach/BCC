@@ -4,39 +4,38 @@
 
 @layer base {
   :root {
-    /* Light mode (rare in this app — admin print views, customer portal) */
-    --background: 0 0% 100%;
-    --foreground: 0 0% 10%;
-    --card: 0 0% 100%;
-    --card-foreground: 0 0% 10%;
+    /* Content surfaces (cards, forms, main area) = LIGHT */
+    --background: 0 0% 96%;            /* page background */
+    --foreground: 220 17% 17%;         /* slate-800-ish */
+    --card: 0 0% 100%;                 /* white card */
+    --card-foreground: 220 17% 17%;
     --muted: 0 0% 96%;
-    --muted-foreground: 0 0% 40%;
-    --accent: 41 47% 56%;          /* gold #c5a55a */
-    --accent-foreground: 0 0% 10%;
-    --border: 0 0% 90%;
-    --ring: 41 47% 56%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 36 75% 45%;              /* warm amber */
+    --accent-foreground: 0 0% 100%;
+    --border: 220 13% 91%;
+    --ring: 36 75% 45%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    --success: 142 71% 45%;
+    --success: 142 71% 41%;
     --warning: 38 92% 50%;
+
+    /* Dark chrome (sidebar, topbar, sign-in backdrop) */
+    --chrome: 0 0% 10%;                /* charcoal */
+    --chrome-foreground: 0 0% 96%;
+    --chrome-muted: 0 0% 60%;
+    --chrome-border: 0 0% 18%;
   }
 
-  .dark, :root {
-    /* Default = dark mode, matches bluecollarcoach.us */
-    --background: 0 0% 10%;        /* #1a1a1a */
-    --foreground: 0 0% 100%;
-    --card: 0 0% 13%;              /* slightly lighter than bg */
-    --card-foreground: 0 0% 100%;
+  .dark {
+    /* Optional: invert content surfaces if a user toggles dark mode */
+    --background: 0 0% 10%;
+    --foreground: 0 0% 96%;
+    --card: 0 0% 13%;
+    --card-foreground: 0 0% 96%;
     --muted: 0 0% 18%;
-    --muted-foreground: 0 0% 65%;
-    --accent: 41 47% 56%;          /* #c5a55a gold */
-    --accent-foreground: 0 0% 10%;
+    --muted-foreground: 0 0% 60%;
     --border: 0 0% 22%;
-    --ring: 41 47% 56%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 100%;
-    --success: 142 71% 45%;
-    --warning: 38 92% 50%;
   }
 
   * {
@@ -44,23 +43,25 @@
   }
 
   html {
-    color-scheme: dark;
+    color-scheme: light;
   }
 
   body {
     @apply bg-background text-foreground antialiased;
-    font-family: Inter, "DM Sans", system-ui, sans-serif;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
   }
 
-  h1, h2, h3, h4, h5, h6, .font-display {
-    font-family: Georgia, "Times New Roman", serif;
-  }
-
   /* Focus styling — keyboard accessible, brand-aware */
   *:focus-visible {
-    @apply outline-none ring-2 ring-gold ring-offset-2 ring-offset-background;
+    @apply outline-none ring-2 ring-amber ring-offset-2 ring-offset-background;
+  }
+
+  /* Headings: tighter tracking, heavier weights */
+  h1, h2, h3, h4, h5, h6 {
+    letter-spacing: -0.02em;
+    font-weight: 700;
   }
 
   /* Custom scrollbar (webkit) */
@@ -69,29 +70,48 @@
     height: 10px;
   }
   ::-webkit-scrollbar-track {
-    background: hsl(var(--background));
+    background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: hsl(var(--border));
+    background: rgba(0, 0, 0, 0.12);
     border-radius: 5px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: hsl(var(--muted-foreground) / 0.4);
+    background: rgba(0, 0, 0, 0.25);
+  }
+
+  /* Scrollbars inside dark chrome surfaces */
+  .chrome-scroll::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.12);
+  }
+  .chrome-scroll::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.25);
   }
 }
 
 @layer components {
-  .brand-gradient {
-    background: radial-gradient(circle at 30% 20%, rgba(197,165,90,0.15), transparent 50%),
-                radial-gradient(circle at 80% 80%, rgba(197,165,90,0.08), transparent 50%),
-                #1a1a1a;
+  /* Dark gradient backdrop used by sign-in / standalone screens */
+  .chrome-backdrop {
+    background:
+      radial-gradient(circle at 18% 22%, rgba(200, 144, 28, 0.08), transparent 45%),
+      radial-gradient(circle at 82% 72%, rgba(71, 85, 105, 0.10), transparent 45%),
+      linear-gradient(135deg, #1a1a1a 0%, #2b2b2b 50%, #3d3d3d 100%);
   }
 
-  .gold-text {
-    color: #c5a55a;
+  /* Card with the amber top stripe */
+  .card-accent {
+    @apply relative overflow-hidden;
+  }
+  .card-accent::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 3px;
+    background: hsl(var(--accent));
   }
 
-  .hairline {
-    border-bottom: 1px solid rgba(197, 165, 90, 0.2);
+  /* Subtle gold text — used for category labels, kbds, etc. */
+  .amber-text {
+    color: #c8901c;
   }
 }

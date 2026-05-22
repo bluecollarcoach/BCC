@@ -29,7 +29,7 @@ export function BottomNav() {
                 href={tab.href}
                 className={cn(
                   "flex flex-col items-center justify-center gap-1 py-2 text-[10px] font-medium uppercase tracking-wider",
-                  active ? "text-gold" : "text-muted-foreground",
+                  active ? "text-amber" : "text-muted-foreground",
                 )}
               >
                 <Icon className="h-5 w-5" />

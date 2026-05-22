@@ -1,8 +1,8 @@
 {
-  "name": "bcc-connect",
+  "name": "bcc-internal",
   "version": "0.1.0",
   "private": true,
-  "description": "Blue Collar Coach Connect — comprehensive operations platform for trade businesses",
+  "description": "BCC Internal — operations workspace for the Blue Collar Coach team",
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",

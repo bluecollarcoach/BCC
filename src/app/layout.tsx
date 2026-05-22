@@ -1,16 +1,25 @@
 import type { Metadata } from "next";
+import { Inter } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
 
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+  weight: ["400", "500", "600", "700", "800"],
+  display: "swap",
+});
+
 export const metadata: Metadata = {
   title: {
-    default: "Blue Collar Coach Connect",
-    template: "%s · BCC Connect",
+    default: "BCC Internal",
+    template: "%s · BCC Internal",
   },
   description:
-    "The operations platform for blue-collar businesses. CRM, calendars, time tracking, financial KPIs, and coaching — built for the trades.",
-  applicationName: "Blue Collar Coach Connect",
+    "Internal operations platform for the Blue Collar Coach team — CRM, calendars, chat, time tracking, books, and training in one place.",
+  applicationName: "BCC Internal",
   authors: [{ name: "Blue Collar Coach" }],
+  robots: { index: false, follow: false },
   metadataBase: new URL(
     process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
   ),
@@ -30,8 +39,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className="dark">
-      <body className="min-h-screen bg-background text-foreground">
+    <html lang="en" className={inter.variable}>
+      <body className="min-h-screen bg-background text-foreground font-sans">
         <Providers>{children}</Providers>
       </body>
     </html>

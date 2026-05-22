@@ -2,42 +2,64 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 
 /**
- * BCC logo lockup. Matches the bluecollarcoach.us brand:
- *   - gold circular emblem with monogram
- *   - Georgia serif wordmark in gold
- *   - works on dark backgrounds by default
+ * BCC Internal logo lockup.
+ *   - Bold sans-serif monogram tile (white-on-charcoal or charcoal-on-white)
+ *   - Wordmark: "BCC" in heavy sans + "INTERNAL" small caps
+ *   - `onDark` flips the tile colors for use on the dark chrome backdrop
  */
 export function Logo({
   className,
   showWordmark = true,
   size = 40,
+  onDark = false,
 }: {
   className?: string;
   showWordmark?: boolean;
   size?: number;
+  onDark?: boolean;
 }) {
   return (
     <div className={cn("flex items-center gap-3", className)}>
       <div
-        className="relative grid shrink-0 place-items-center rounded-full border-2 border-gold bg-ink-900 text-gold font-display"
-        style={{ width: size, height: size, fontSize: size * 0.42 }}
+        className={cn(
+          "relative grid shrink-0 place-items-center rounded-md font-extrabold tracking-tightest",
+          onDark
+            ? "bg-white text-ink-900"
+            : "bg-ink-900 text-white",
+        )}
+        style={{
+          width: size,
+          height: size,
+          fontSize: size * 0.42,
+        }}
         aria-hidden
       >
-        <span className="tracking-tight">BCC</span>
+        BCC
+        <span
+          aria-hidden
+          className="absolute bottom-0 left-0 right-0 bg-amber"
+          style={{ height: Math.max(2, size * 0.06) }}
+        />
       </div>
       {showWordmark && (
         <div className="flex flex-col leading-tight">
           <span
-            className="font-display text-gold tracking-[0.18em]"
-            style={{ fontSize: size * 0.55 }}
+            className={cn(
+              "font-extrabold tracking-tightest",
+              onDark ? "text-white" : "text-foreground",
+            )}
+            style={{ fontSize: size * 0.5 }}
           >
-            BLUE COLLAR
+            Blue Collar Coach
           </span>
           <span
-            className="font-display text-foreground/80 tracking-[0.22em]"
-            style={{ fontSize: size * 0.34 }}
+            className={cn(
+              "font-semibold uppercase tracking-[0.22em]",
+              onDark ? "text-amber-200" : "text-amber-600",
+            )}
+            style={{ fontSize: size * 0.28 }}
           >
-            COACH · CONNECT
+            Internal
           </span>
         </div>
       )}

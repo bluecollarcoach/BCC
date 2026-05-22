@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { Logo } from "@/components/brand/logo";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
@@ -13,28 +12,29 @@ export default function SignInPage({
   searchParams: Promise<{ callbackUrl?: string; error?: string }>;
 }) {
   return (
-    <div className="min-h-screen brand-gradient flex flex-col">
-      <header className="container pt-8">
-        <Link href="/">
-          <Logo size={36} />
-        </Link>
+    <div className="min-h-screen chrome-backdrop flex flex-col">
+      <header className="container pt-8 flex items-center justify-between">
+        <Logo onDark size={36} />
+        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/50">
+          Internal · v0.1
+        </span>
       </header>
 
       <main className="flex-1 grid place-items-center px-4">
-        <div className="w-full max-w-md rounded-lg border border-gold/30 bg-card/80 backdrop-blur-md p-8 shadow-glow">
-          <h1 className="font-display text-3xl">
-            Welcome <span className="text-gold italic">back</span>
+        <div className="w-full max-w-md card-accent rounded-lg bg-card text-card-foreground p-8 shadow-card-lifted">
+          <h1 className="text-3xl font-extrabold tracking-tightest">
+            Sign in to BCC Internal.
           </h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            Sign in to your Blue Collar Coach Connect workspace.
+            Team workspace for coaches, staff, and customer-facing operations.
           </p>
 
           <SignInBody searchParamsPromise={searchParams} />
         </div>
       </main>
 
-      <footer className="container py-6 text-center text-xs text-muted-foreground">
-        © {new Date().getFullYear()} Blue Collar Coach · bluecollarcoach.us
+      <footer className="container py-6 text-center text-[11px] text-white/40">
+        © {new Date().getFullYear()} Blue Collar Coach · Internal use only
       </footer>
     </div>
   );
@@ -64,7 +64,7 @@ async function SignInBody({
           }}
         >
           <Button type="submit" className="w-full" size="lg">
-            Continue with Microsoft
+            Continue with Microsoft 365
           </Button>
         </form>
       )}
@@ -72,10 +72,10 @@ async function SignInBody({
       {isDevAuthBypass && (
         <>
           {hasEntraConfigured && (
-            <div className="relative my-2 text-center">
-              <span className="bg-card px-2 text-xs uppercase tracking-wider text-muted-foreground">
-                or for development
-              </span>
+            <div className="flex items-center gap-3 my-3 text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+              <span className="h-px flex-1 bg-border" />
+              or for development
+              <span className="h-px flex-1 bg-border" />
             </div>
           )}
           <form
@@ -95,7 +95,7 @@ async function SignInBody({
                 name="email"
                 type="email"
                 required
-                placeholder="owner@bluecollarcoach.us"
+                placeholder="you@bluecollarcoach.us"
                 className="mt-1.5"
               />
             </div>
@@ -103,7 +103,9 @@ async function SignInBody({
               Sign in (dev)
             </Button>
             <p className="text-[11px] text-muted-foreground">
-              Dev bypass is enabled. Disable by setting <code>DEV_AUTH_BYPASS=false</code> in production.
+              Dev bypass is enabled. Disable by setting{" "}
+              <code className="font-mono text-foreground">DEV_AUTH_BYPASS=false</code>{" "}
+              before deploying to production.
             </p>
           </form>
         </>
@@ -111,8 +113,9 @@ async function SignInBody({
 
       {!hasEntraConfigured && !isDevAuthBypass && (
         <div className="rounded-md border border-warning/40 bg-warning/10 px-3 py-3 text-sm">
-          <strong>No auth providers configured.</strong> Set Microsoft Entra credentials
-          in <code>.env</code> or enable <code>DEV_AUTH_BYPASS=true</code> for local development.
+          <strong>No auth providers configured.</strong> Set Microsoft Entra
+          credentials in <code>.env</code> or enable{" "}
+          <code>DEV_AUTH_BYPASS=true</code> for local development.
         </div>
       )}
     </div>

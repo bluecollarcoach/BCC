@@ -40,16 +40,16 @@ export function MobileNav() {
       {open && (
         <div className="lg:hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm" onClick={() => setOpen(false)}>
           <div
-            className="absolute inset-y-0 left-0 w-72 max-w-[85%] bg-ink-900 border-r border-border flex flex-col animate-fade-in"
+            className="absolute inset-y-0 left-0 w-72 max-w-[85%] bg-chrome text-chrome-foreground border-r border-chrome-border flex flex-col animate-fade-in chrome-scroll"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex h-16 items-center justify-between border-b border-border px-5">
-              <Logo size={32} showWordmark={false} />
+            <div className="flex h-16 items-center justify-between border-b border-chrome-border px-5">
+              <Logo size={32} showWordmark={false} onDark />
               <button
                 type="button"
                 onClick={() => setOpen(false)}
                 aria-label="Close menu"
-                className="grid h-8 w-8 place-items-center rounded-md hover:bg-muted"
+                className="grid h-8 w-8 place-items-center rounded-md text-white/70 hover:bg-white/5 hover:text-white"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -57,7 +57,7 @@ export function MobileNav() {
             <nav className="flex-1 overflow-y-auto p-3">
               {[...APP_NAV, ...ADMIN_NAV].map((section) => (
                 <div key={section.label} className="mb-5">
-                  <h4 className="px-3 pb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                  <h4 className="px-3 pb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-chrome-muted">
                     {section.label}
                   </h4>
                   <ul className="space-y-0.5">
@@ -73,11 +73,16 @@ export function MobileNav() {
                             className={cn(
                               "flex items-center gap-3 rounded-md px-3 py-2.5 text-sm",
                               active
-                                ? "bg-gold/10 text-gold"
-                                : "text-foreground/80 hover:bg-muted",
+                                ? "bg-white/5 text-white"
+                                : "text-chrome-foreground/70 hover:bg-white/5 hover:text-white",
                             )}
                           >
-                            <Icon className="h-4 w-4" />
+                            <Icon
+                              className={cn(
+                                "h-4 w-4",
+                                active ? "text-amber" : "text-chrome-muted",
+                              )}
+                            />
                             {item.label}
                           </Link>
                         </li>

@@ -15,15 +15,21 @@ export function RevenueChart({ data }: { data: { label: string; revenue: number 
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={data} margin={{ top: 12, right: 12, left: 0, bottom: 0 }}>
           <defs>
-            <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#c5a55a" stopOpacity={0.5} />
-              <stop offset="100%" stopColor="#c5a55a" stopOpacity={0} />
+            <linearGradient id="amber-fill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#c8901c" stopOpacity={0.35} />
+              <stop offset="100%" stopColor="#c8901c" stopOpacity={0} />
             </linearGradient>
           </defs>
-          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
-          <XAxis dataKey="label" stroke="#9e9e9e" fontSize={11} tickLine={false} axisLine={false} />
+          <CartesianGrid strokeDasharray="3 3" stroke="rgba(15,23,42,0.06)" />
+          <XAxis
+            dataKey="label"
+            stroke="#6b7280"
+            fontSize={11}
+            tickLine={false}
+            axisLine={false}
+          />
           <YAxis
-            stroke="#9e9e9e"
+            stroke="#6b7280"
             fontSize={11}
             tickLine={false}
             axisLine={false}
@@ -31,10 +37,11 @@ export function RevenueChart({ data }: { data: { label: string; revenue: number 
           />
           <Tooltip
             contentStyle={{
-              background: "#1a1a1a",
-              border: "1px solid #2e2e2e",
-              borderRadius: 6,
+              background: "#ffffff",
+              border: "1px solid #e5e7eb",
+              borderRadius: 8,
               fontSize: 12,
+              boxShadow: "0 4px 12px rgba(15,23,42,0.08)",
             }}
             formatter={(v: number) =>
               new Intl.NumberFormat("en-US", {
@@ -47,9 +54,9 @@ export function RevenueChart({ data }: { data: { label: string; revenue: number 
           <Area
             type="monotone"
             dataKey="revenue"
-            stroke="#c5a55a"
+            stroke="#c8901c"
             strokeWidth={2}
-            fill="url(#gold)"
+            fill="url(#amber-fill)"
           />
         </AreaChart>
       </ResponsiveContainer>

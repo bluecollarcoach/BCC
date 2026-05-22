@@ -9,6 +9,7 @@ export function KpiCard({
   helper,
   icon: Icon,
   trend = "neutral",
+  accent = false,
 }: {
   label: string;
   value: string;
@@ -16,6 +17,7 @@ export function KpiCard({
   helper?: string;
   icon?: LucideIcon;
   trend?: "up" | "down" | "neutral";
+  accent?: boolean;
 }) {
   const trendColor =
     trend === "up"
@@ -26,16 +28,23 @@ export function KpiCard({
   const TrendIcon = trend === "up" ? ArrowUp : trend === "down" ? ArrowDown : null;
 
   return (
-    <div className="group rounded-lg border border-border bg-card p-5 transition hover:border-gold/40">
+    <div
+      className={cn(
+        "group relative rounded-lg border border-border bg-card p-5 shadow-card transition hover:border-amber/40 hover:shadow-md",
+        accent && "card-accent",
+      )}
+    >
       <div className="flex items-start justify-between">
         <div>
           <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
             {label}
           </p>
-          <p className="mt-2 font-display text-3xl font-bold tracking-tight">{value}</p>
+          <p className="mt-2 text-3xl font-extrabold tracking-tightest text-foreground">
+            {value}
+          </p>
         </div>
         {Icon && (
-          <div className="rounded-md bg-gold/10 p-2 text-gold ring-1 ring-gold/30">
+          <div className="rounded-md bg-amber-50 p-2 text-amber-700 ring-1 ring-amber-200">
             <Icon className="h-4 w-4" />
           </div>
         )}
