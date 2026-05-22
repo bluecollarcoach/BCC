@@ -1,0 +1,348 @@
+/* ==========================================================================
+   BCC Internal — portable design system
+   --------------------------------------------------------------------------
+   Drop this single file into any site (incl. WordPress) and you get the
+   same colors, typography, and component styles as the BCC Internal app.
+   No build step, no JS, no Tailwind required.
+
+   Usage:
+     <link rel="preconnect" href="https://fonts.googleapis.com">
+     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+     <link rel="stylesheet" href="/wp-content/themes/your-theme/bcc-theme.css">
+
+   Then use classes like:
+     <a class="bcc-btn">Sign up</a>
+     <div class="bcc-card bcc-card-accent">…</div>
+
+   Override any token by redefining the CSS variable on :root or a
+   container, e.g. `--bcc-accent: #b8944f` to use BCC Connect's gold.
+   ========================================================================== */
+
+:root {
+  /* Brand palette */
+  --bcc-ink-900:        #0f0f0f;
+  --bcc-ink-800:        #1a1a1a;
+  --bcc-ink-700:        #222222;
+  --bcc-ink-600:        #2b2b2b;
+  --bcc-ink-500:        #3d3d3d;
+  --bcc-ink-400:        #6e6e6e;
+  --bcc-ink-300:        #9e9e9e;
+  --bcc-ink-200:        #c7c7c7;
+  --bcc-ink-100:        #e5e5e5;
+  --bcc-ink-50:         #f5f5f5;
+
+  --bcc-accent:         #c8901c;   /* warm amber, primary accent */
+  --bcc-accent-hover:   #a87614;
+  --bcc-accent-soft:    #f4d57a;
+  --bcc-accent-tint:    #fdf6e3;
+  --bcc-cream:          #faf6ed;
+  --bcc-steel:          #475569;
+
+  --bcc-success:        #16a34a;
+  --bcc-warning:        #d97706;
+  --bcc-danger:         #dc2626;
+
+  /* Semantic tokens */
+  --bcc-bg:             var(--bcc-ink-50);    /* page background (light) */
+  --bcc-surface:        #ffffff;              /* card background */
+  --bcc-surface-muted:  var(--bcc-ink-50);
+  --bcc-text:           #1f2937;              /* slate-800 */
+  --bcc-text-muted:     #6b7280;              /* slate-500 */
+  --bcc-border:         #e5e7eb;
+
+  /* Dark "chrome" surfaces (sidebar, hero strips, sign-in backdrop) */
+  --bcc-chrome-bg:      var(--bcc-ink-800);
+  --bcc-chrome-fg:      #f5f5f5;
+  --bcc-chrome-muted:   #9aa0a6;
+  --bcc-chrome-border:  rgba(255, 255, 255, 0.08);
+
+  /* Typography */
+  --bcc-font-sans:      "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+                        Roboto, "Helvetica Neue", Arial, sans-serif;
+
+  /* Radii & shadows */
+  --bcc-radius-sm:      6px;
+  --bcc-radius:         10px;
+  --bcc-radius-lg:      14px;
+  --bcc-shadow-sm:      0 1px 2px rgba(15, 23, 42, 0.06);
+  --bcc-shadow:         0 1px 2px rgba(15, 23, 42, 0.06),
+                        0 4px 12px rgba(15, 23, 42, 0.04);
+  --bcc-shadow-lifted:  0 12px 40px rgba(0, 0, 0, 0.25),
+                        0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+/* ---------- Base resets (scoped — won't fight existing theme styles
+   unless you opt in by wrapping content in `.bcc-scope`). ---------- */
+
+.bcc-scope,
+.bcc-scope * {
+  box-sizing: border-box;
+}
+
+.bcc-scope {
+  font-family: var(--bcc-font-sans);
+  color: var(--bcc-text);
+  background: var(--bcc-bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  line-height: 1.55;
+}
+
+.bcc-scope h1,
+.bcc-scope h2,
+.bcc-scope h3,
+.bcc-scope h4,
+.bcc-scope h5 {
+  font-family: var(--bcc-font-sans);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--bcc-text);
+  margin: 0 0 0.5em;
+}
+.bcc-scope h1 { font-size: 2.25rem; font-weight: 800; letter-spacing: -0.03em; }
+.bcc-scope h2 { font-size: 1.5rem; }
+.bcc-scope h3 { font-size: 1.125rem; }
+
+.bcc-scope p { margin: 0 0 1em; }
+
+.bcc-scope a {
+  color: var(--bcc-accent);
+  text-decoration: none;
+}
+.bcc-scope a:hover { color: var(--bcc-accent-hover); }
+
+/* ---------- Backdrop utility ---------- */
+
+.bcc-chrome-backdrop {
+  background:
+    radial-gradient(circle at 18% 22%, rgba(200, 144, 28, 0.08), transparent 45%),
+    radial-gradient(circle at 82% 72%, rgba(71, 85, 105, 0.10), transparent 45%),
+    linear-gradient(135deg, #1a1a1a 0%, #2b2b2b 50%, #3d3d3d 100%);
+  color: var(--bcc-chrome-fg);
+  min-height: 100vh;
+}
+
+/* ---------- Buttons ---------- */
+
+.bcc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border: 0;
+  border-radius: var(--bcc-radius);
+  font-family: var(--bcc-font-sans);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 150ms ease, transform 80ms ease, box-shadow 150ms ease;
+  background: var(--bcc-accent);
+  color: #fff;
+}
+.bcc-btn:hover    { background: var(--bcc-accent-hover); }
+.bcc-btn:active   { transform: translateY(1px); }
+.bcc-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.bcc-btn-lg { padding: 14px 28px; font-size: 15px; }
+.bcc-btn-sm { padding: 6px 12px; font-size: 12px; }
+
+.bcc-btn-outline {
+  background: transparent;
+  border: 1px solid var(--bcc-border);
+  color: var(--bcc-text);
+}
+.bcc-btn-outline:hover { background: var(--bcc-surface-muted); }
+
+.bcc-btn-ghost {
+  background: transparent;
+  color: var(--bcc-text);
+}
+.bcc-btn-ghost:hover { background: var(--bcc-surface-muted); }
+
+.bcc-btn-danger {
+  background: var(--bcc-danger);
+}
+.bcc-btn-danger:hover { background: #b91c1c; }
+
+/* ---------- Cards ---------- */
+
+.bcc-card {
+  position: relative;
+  background: var(--bcc-surface);
+  border: 1px solid var(--bcc-border);
+  border-radius: var(--bcc-radius-lg);
+  box-shadow: var(--bcc-shadow);
+  padding: 24px;
+  overflow: hidden;
+}
+
+.bcc-card-accent::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: var(--bcc-accent);
+}
+
+.bcc-card h3 {
+  margin: 0 0 6px;
+  font-size: 1.0625rem;
+}
+
+.bcc-card .bcc-eyebrow {
+  color: var(--bcc-accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  margin: 0 0 8px;
+}
+
+/* ---------- Badges / tags ---------- */
+
+.bcc-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--bcc-accent-tint);
+  color: var(--bcc-accent-hover);
+  border: 1px solid rgba(200, 144, 28, 0.25);
+}
+.bcc-badge-muted   { background: var(--bcc-ink-50); color: var(--bcc-text-muted); border-color: var(--bcc-border); }
+.bcc-badge-success { background: #dcfce7; color: #166534; border-color: #bbf7d0; }
+.bcc-badge-warning { background: #fef3c7; color: #92400e; border-color: #fde68a; }
+.bcc-badge-danger  { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
+
+/* ---------- Form controls ---------- */
+
+.bcc-input,
+.bcc-textarea,
+.bcc-select {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--bcc-border);
+  border-radius: var(--bcc-radius);
+  background: var(--bcc-surface);
+  color: var(--bcc-text);
+  font-family: var(--bcc-font-sans);
+  font-size: 14px;
+  line-height: 1.4;
+  outline: none;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.bcc-input:focus,
+.bcc-textarea:focus,
+.bcc-select:focus {
+  border-color: var(--bcc-accent);
+  box-shadow: 0 0 0 3px rgba(200, 144, 28, 0.18);
+}
+.bcc-textarea { min-height: 96px; resize: vertical; }
+
+.bcc-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--bcc-text-muted);
+  margin-bottom: 6px;
+}
+
+/* ---------- Layout helpers ---------- */
+
+.bcc-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.bcc-grid {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+/* ---------- Hero block (good for landing/section headers) ---------- */
+
+.bcc-hero {
+  padding: 64px 0;
+  text-align: left;
+}
+.bcc-hero h1 {
+  font-size: clamp(2rem, 4vw, 3.5rem);
+  line-height: 1.05;
+}
+.bcc-hero .bcc-hero-eyebrow {
+  color: var(--bcc-accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.4em;
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+.bcc-hero .bcc-hero-sub {
+  color: var(--bcc-text-muted);
+  font-size: 1.0625rem;
+  max-width: 38em;
+  line-height: 1.6;
+}
+
+/* ---------- Sidebar dark "chrome" pattern (optional) ---------- */
+
+.bcc-sidebar {
+  background: var(--bcc-chrome-bg);
+  color: var(--bcc-chrome-fg);
+  border-right: 1px solid var(--bcc-chrome-border);
+}
+
+.bcc-sidebar .bcc-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--bcc-chrome-muted);
+  padding: 12px 16px 8px;
+}
+
+.bcc-sidebar a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 14px;
+  text-decoration: none;
+  border-left: 2px solid transparent;
+}
+.bcc-sidebar a:hover { background: rgba(255, 255, 255, 0.04); color: #fff; }
+.bcc-sidebar a.bcc-active {
+  background: rgba(255, 255, 255, 0.05);
+  color: #fff;
+  border-left-color: var(--bcc-accent);
+}
+
+/* ---------- Misc utilities ---------- */
+
+.bcc-text-muted   { color: var(--bcc-text-muted); }
+.bcc-text-accent  { color: var(--bcc-accent); }
+.bcc-mono         { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+.bcc-hr {
+  border: 0;
+  border-top: 1px solid var(--bcc-border);
+  margin: 24px 0;
+}
+
+/* ---------- Responsive ---------- */
+
+@media (max-width: 640px) {
+  .bcc-container { padding: 0 16px; }
+  .bcc-hero { padding: 40px 0; }
+  .bcc-card { padding: 18px; }
+}

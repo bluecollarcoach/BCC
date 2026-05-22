@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BCC Design System · Preview</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./bcc-theme.css" />
+  <style>
+    body { margin: 0; }
+    .swatch {
+      border-radius: 10px;
+      padding: 16px;
+      color: #fff;
+      font-size: 12px;
+      font-family: ui-monospace, monospace;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+    }
+    .swatch.light { color: #1f2937; border: 1px solid #e5e7eb; }
+    .demo-section { padding: 48px 0; border-bottom: 1px solid #e5e7eb; }
+    .demo-section:last-child { border-bottom: 0; }
+  </style>
+</head>
+<body>
+
+<!-- ============== DARK CHROME HERO ============== -->
+<div class="bcc-chrome-backdrop" style="padding: 64px 0;">
+  <div class="bcc-container bcc-scope" style="background: transparent;">
+    <div style="color: rgba(255,255,255,0.85);">
+      <div class="bcc-hero-eyebrow" style="color: var(--bcc-accent-soft);">BCC Design System · v1</div>
+      <h1 style="color: #fff; max-width: 22ch;">
+        Clarity, in <span style="color: var(--bcc-accent-soft); font-style: italic;">amber</span>.
+      </h1>
+      <p style="color: rgba(255,255,255,0.7); max-width: 38em;">
+        Drop this stylesheet into any site and you get the same look as the
+        BCC Internal app. Dark chrome surfaces for navigation and hero strips,
+        white content cards everywhere else, warm amber accent throughout.
+      </p>
+      <div style="margin-top: 24px; display: flex; gap: 12px; flex-wrap: wrap;">
+        <a class="bcc-btn bcc-btn-lg" href="#components">See components</a>
+        <a class="bcc-btn bcc-btn-outline bcc-btn-lg" href="#tokens" style="border-color: rgba(255,255,255,0.25); color: #fff;">
+          Browse tokens
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="bcc-scope">
+
+  <!-- ============== TOKENS ============== -->
+  <div id="tokens" class="demo-section">
+    <div class="bcc-container">
+      <div class="bcc-hero-eyebrow">Tokens</div>
+      <h2>Color palette</h2>
+      <p class="bcc-text-muted">Every color in the system is a CSS variable on <code>:root</code>. Override one to retheme the whole site.</p>
+
+      <div class="bcc-grid" style="grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));">
+        <div class="swatch" style="background: var(--bcc-ink-900);">--bcc-ink-900<br>#0f0f0f</div>
+        <div class="swatch" style="background: var(--bcc-ink-800);">--bcc-ink-800<br>#1a1a1a</div>
+        <div class="swatch" style="background: var(--bcc-ink-600);">--bcc-ink-600<br>#2b2b2b</div>
+        <div class="swatch" style="background: var(--bcc-ink-500);">--bcc-ink-500<br>#3d3d3d</div>
+        <div class="swatch" style="background: var(--bcc-steel);">--bcc-steel<br>#475569</div>
+        <div class="swatch" style="background: var(--bcc-accent);">--bcc-accent<br>#c8901c</div>
+        <div class="swatch" style="background: var(--bcc-accent-hover);">--bcc-accent-hover<br>#a87614</div>
+        <div class="swatch" style="background: var(--bcc-accent-soft); color: #1f2937;">--bcc-accent-soft<br>#f4d57a</div>
+        <div class="swatch light" style="background: var(--bcc-cream);">--bcc-cream<br>#faf6ed</div>
+        <div class="swatch light" style="background: var(--bcc-ink-50);">--bcc-ink-50<br>#f5f5f5</div>
+        <div class="swatch light" style="background: #ffffff;">--bcc-surface<br>#ffffff</div>
+      </div>
+
+      <h2 style="margin-top: 48px;">Typography</h2>
+      <p class="bcc-text-muted">Inter for everything. Heavier weights and tighter tracking on headings.</p>
+      <div class="bcc-card">
+        <div style="font-size: 12px; font-weight: 700; letter-spacing: 0.4em; text-transform: uppercase; color: var(--bcc-accent);">Eyebrow · 12px</div>
+        <h1 style="margin: 8px 0 4px;">Heading 1 · 36px · 800</h1>
+        <h2 style="margin: 16px 0 4px;">Heading 2 · 24px · 700</h2>
+        <h3 style="margin: 16px 0 4px;">Heading 3 · 18px · 700</h3>
+        <p style="margin: 8px 0;">Body · 16px · 400. The quick brown fox jumps over the lazy dog.</p>
+        <p class="bcc-text-muted" style="font-size: 14px;">Muted small · 14px · slate-500.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============== BUTTONS ============== -->
+  <div id="components" class="demo-section">
+    <div class="bcc-container">
+      <div class="bcc-hero-eyebrow">Components</div>
+      <h2>Buttons</h2>
+      <div class="bcc-card">
+        <div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center;">
+          <button class="bcc-btn">Primary</button>
+          <button class="bcc-btn bcc-btn-outline">Outline</button>
+          <button class="bcc-btn bcc-btn-ghost">Ghost</button>
+          <button class="bcc-btn bcc-btn-danger">Destructive</button>
+        </div>
+        <hr class="bcc-hr">
+        <div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center;">
+          <button class="bcc-btn bcc-btn-lg">Large</button>
+          <button class="bcc-btn">Default</button>
+          <button class="bcc-btn bcc-btn-sm">Small</button>
+          <button class="bcc-btn" disabled>Disabled</button>
+        </div>
+      </div>
+
+      <h2 style="margin-top: 40px;">Cards</h2>
+      <div class="bcc-grid">
+        <div class="bcc-card">
+          <h3>Plain card</h3>
+          <p class="bcc-text-muted">Quiet surface for general content. Soft shadow, light border.</p>
+          <button class="bcc-btn bcc-btn-sm bcc-btn-outline">Action</button>
+        </div>
+        <div class="bcc-card bcc-card-accent">
+          <div class="bcc-eyebrow">Featured</div>
+          <h3>Accent card</h3>
+          <p class="bcc-text-muted">Amber stripe along the top — use sparingly for emphasis.</p>
+          <button class="bcc-btn bcc-btn-sm">Open</button>
+        </div>
+        <div class="bcc-card">
+          <h3>With badges</h3>
+          <div style="display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px;">
+            <span class="bcc-badge">Accent</span>
+            <span class="bcc-badge bcc-badge-muted">Muted</span>
+            <span class="bcc-badge bcc-badge-success">Success</span>
+            <span class="bcc-badge bcc-badge-warning">Warning</span>
+            <span class="bcc-badge bcc-badge-danger">Danger</span>
+          </div>
+          <p class="bcc-text-muted">Pill-shaped status badges in five tones.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top: 40px;">Form controls</h2>
+      <div class="bcc-card" style="max-width: 520px;">
+        <label class="bcc-label" for="demo-name">Full name</label>
+        <input id="demo-name" class="bcc-input" placeholder="Mike Castro" />
+
+        <label class="bcc-label" for="demo-stage" style="margin-top: 16px;">Stage</label>
+        <select id="demo-stage" class="bcc-select">
+          <option>Lead</option>
+          <option>Qualified</option>
+          <option>Customer</option>
+        </select>
+
+        <label class="bcc-label" for="demo-notes" style="margin-top: 16px;">Notes</label>
+        <textarea id="demo-notes" class="bcc-textarea" placeholder="What's on your mind?"></textarea>
+
+        <div style="margin-top: 16px; display: flex; gap: 8px; justify-content: flex-end;">
+          <button class="bcc-btn bcc-btn-ghost">Cancel</button>
+          <button class="bcc-btn">Save changes</button>
+        </div>
+      </div>
+
+      <h2 style="margin-top: 40px;">Sidebar pattern (optional)</h2>
+      <p class="bcc-text-muted">For dashboards or admin areas where you want the dark-chrome navigation look.</p>
+      <div style="display: flex; border: 1px solid var(--bcc-border); border-radius: var(--bcc-radius-lg); overflow: hidden; min-height: 280px;">
+        <nav class="bcc-sidebar" style="width: 220px; padding: 12px 0;">
+          <div class="bcc-section-label">Workspace</div>
+          <a href="#" class="bcc-active">Dashboard</a>
+          <a href="#">Calendar</a>
+          <a href="#">Chat</a>
+          <a href="#">Time Tracking</a>
+          <div class="bcc-section-label">Revenue</div>
+          <a href="#">CRM</a>
+          <a href="#">Marketing</a>
+          <a href="#">Events</a>
+        </nav>
+        <div style="flex: 1; padding: 24px;">
+          <div class="bcc-hero-eyebrow">Today</div>
+          <h2 style="margin: 4px 0 16px;">Good morning, Mike.</h2>
+          <div class="bcc-grid">
+            <div class="bcc-card bcc-card-accent">
+              <div class="bcc-eyebrow">MTD Revenue</div>
+              <div style="font-size: 28px; font-weight: 800; letter-spacing: -0.03em;">$128,400</div>
+              <div style="font-size: 12px; color: var(--bcc-success); font-weight: 600;">▲ 12.4% vs last month</div>
+            </div>
+            <div class="bcc-card">
+              <div class="bcc-eyebrow">Open Deals</div>
+              <div style="font-size: 28px; font-weight: 800; letter-spacing: -0.03em;">14</div>
+              <div style="font-size: 12px; color: var(--bcc-text-muted);">In pipeline</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============== FOOTER ============== -->
+  <div style="padding: 32px 0; text-align: center; color: var(--bcc-text-muted); font-size: 12px;">
+    BCC Design System · drop <code>bcc-theme.css</code> into any site to use it.
+  </div>
+
+</div>
+
+</body>
+</html>
