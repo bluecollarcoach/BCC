@@ -4,9 +4,9 @@
 //   chat (channels/messages), calendar events, documents, training, events,
 //   bookkeeping/financial KPIs (cached from QBO), audit log, integration tokens.
 //
-// DEV: SQLite (no native enum support — we use String columns + TS unions in
-//   src/types/enums.ts). PROD: swap provider to "sqlserver" for Azure SQL and
-//   optionally promote the unions back to Prisma enums.
+// Database: Postgres (Neon in prod, Neon dev-branch locally).
+// Enums are stored as String + TS unions in src/types/enums.ts so changes don't
+// require migrations. (Promote to native pg enums later if useful.)
 // =============================================================================
 
 generator client {
@@ -14,7 +14,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -96,6 +96,9 @@ model Account {
   scope             String?
   id_token          String?
   session_state     String?
+  // NOTE: On Azure SQL these four token columns are widened to NVARCHAR(MAX)
+  // by docs/sql-prod-fixes.sql (Entra id_tokens are ~2500+ chars; Prisma's
+  // default NVARCHAR(1000) truncates them and breaks the OAuth callback).
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -156,10 +159,17 @@ model Contact {
   source     String?       // referral, web, event, ...
   tags       String?       // comma-separated, simple v1
   notes      String?
+  // Address book fields
+  street     String?
+  city       String?
+  state      String?       // 2-letter US state or full name (free-form)
+  postalCode String?
+  country    String?       // ISO-2 (US, CA, MX) or free-form
+  region     String?       // higher-level grouping ("Northeast", "South", etc.)
   companyId  String?
-  company    Company?      @relation(fields: [companyId], references: [id])
+  company    Company?      @relation(fields: [companyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   ownerId    String?
-  owner      User?         @relation("ContactOwner", fields: [ownerId], references: [id])
+  owner      User?         @relation("ContactOwner", fields: [ownerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   createdAt  DateTime      @default(now())
   updatedAt  DateTime      @updatedAt
 
@@ -204,15 +214,15 @@ model Deal {
   expectedClose DateTime?
   closedAt     DateTime?
   pipelineId   String
-  pipeline     Pipeline @relation(fields: [pipelineId], references: [id])
+  pipeline     Pipeline @relation(fields: [pipelineId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   stageId      String
-  stage        PipelineStage @relation(fields: [stageId], references: [id])
+  stage        PipelineStage @relation(fields: [stageId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   contactId    String?
-  contact      Contact? @relation(fields: [contactId], references: [id])
+  contact      Contact? @relation(fields: [contactId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   companyId    String?
-  company      Company? @relation(fields: [companyId], references: [id])
+  company      Company? @relation(fields: [companyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   ownerId      String?
-  owner        User?    @relation("DealOwner", fields: [ownerId], references: [id])
+  owner        User?    @relation("DealOwner", fields: [ownerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   notes        String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -232,11 +242,11 @@ model Activity {
   dueAt      DateTime?
   completed  Boolean      @default(false)
   userId     String?
-  user       User?        @relation(fields: [userId], references: [id])
+  user       User?        @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   contactId  String?
-  contact    Contact?     @relation(fields: [contactId], references: [id])
+  contact    Contact?     @relation(fields: [contactId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   dealId     String?
-  deal       Deal?        @relation(fields: [dealId], references: [id])
+  deal       Deal?        @relation(fields: [dealId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   createdAt  DateTime     @default(now())
 
   @@index([dueAt])
@@ -252,7 +262,7 @@ model TimeEntry {
   orgId       String
   org         Org             @relation(fields: [orgId], references: [id])
   userId      String
-  user        User            @relation(fields: [userId], references: [id])
+  user        User            @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   jobName     String?         // free text for v1; link to Deal/Project later
   dealId      String?
   notes       String?
@@ -294,7 +304,7 @@ model ChannelMember {
   channelId String
   channel   ChatChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
   userId    String
-  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User        @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   joinedAt  DateTime    @default(now())
   lastReadAt DateTime?
   notify    Boolean     @default(true)
@@ -307,7 +317,7 @@ model ChatMessage {
   channelId String
   channel   ChatChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
   authorId  String
-  author    User        @relation(fields: [authorId], references: [id])
+  author    User        @relation(fields: [authorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   body      String
   parentId  String?     // thread parent
   attachments String?   // JSON blob
@@ -326,7 +336,7 @@ model CalendarEvent {
   orgId       String
   org         Org      @relation(fields: [orgId], references: [id])
   ownerId     String
-  owner       User     @relation("EventOwner", fields: [ownerId], references: [id])
+  owner       User     @relation("EventOwner", fields: [ownerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   title       String
   description String?
   location    String?
@@ -352,7 +362,7 @@ model Document {
   orgId       String
   org         Org      @relation(fields: [orgId], references: [id])
   uploaderId  String
-  uploader    User     @relation("DocumentUploader", fields: [uploaderId], references: [id])
+  uploader    User     @relation("DocumentUploader", fields: [uploaderId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   name        String
   folder      String   @default("/")
   mimeType    String
@@ -449,9 +459,10 @@ model Lesson {
 model Enrollment {
   id        String   @id @default(cuid())
   userId    String
-  user      User     @relation(fields: [userId], references: [id])
+  // NoAction breaks cycle: Org → User → Enrollment AND Org → Course → Enrollment
+  user      User     @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   courseId  String
-  course    Course   @relation(fields: [courseId], references: [id])
+  course    Course   @relation(fields: [courseId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   progress  Int      @default(0) // 0..100
   completed Boolean  @default(false)
   enrolledAt DateTime @default(now())
@@ -515,9 +526,10 @@ model Integration {
 model AuditLog {
   id          String   @id @default(cuid())
   orgId       String?
-  org         Org?     @relation(fields: [orgId], references: [id])
+  // NoAction breaks cycle: Org → User → AuditLog AND Org → AuditLog
+  org         Org?     @relation(fields: [orgId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   actorId     String?
-  actor       User?    @relation(fields: [actorId], references: [id])
+  actor       User?    @relation(fields: [actorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   action      String   // "contact.create", "deal.update", "auth.signin", ...
   targetType  String?  // "Contact", "Deal", ...
   targetId    String?

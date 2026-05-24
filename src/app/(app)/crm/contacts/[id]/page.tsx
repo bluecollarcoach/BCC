@@ -37,6 +37,12 @@ export default async function ContactPage({
       title: String(fd.get("title") ?? "") || undefined,
       stage: String(fd.get("stage") ?? "LEAD") as "LEAD" | "QUALIFIED" | "CUSTOMER" | "CHURNED",
       notes: String(fd.get("notes") ?? "") || undefined,
+      street: String(fd.get("street") ?? "") || undefined,
+      city: String(fd.get("city") ?? "") || undefined,
+      state: String(fd.get("state") ?? "") || undefined,
+      postalCode: String(fd.get("postalCode") ?? "") || undefined,
+      country: String(fd.get("country") ?? "") || undefined,
+      region: String(fd.get("region") ?? "") || undefined,
     });
   }
 
@@ -136,6 +142,37 @@ export default async function ContactPage({
                   </select>
                 </div>
               </div>
+              <div className="pt-2 border-t border-border">
+                <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground mb-3">
+                  Address
+                </div>
+                <div className="grid gap-3 sm:grid-cols-6">
+                  <div className="sm:col-span-6">
+                    <Label htmlFor="street">Street</Label>
+                    <Input id="street" name="street" defaultValue={contact.street ?? ""} className="mt-1.5" />
+                  </div>
+                  <div className="sm:col-span-3">
+                    <Label htmlFor="city">City</Label>
+                    <Input id="city" name="city" defaultValue={contact.city ?? ""} className="mt-1.5" />
+                  </div>
+                  <div className="sm:col-span-1">
+                    <Label htmlFor="state">State</Label>
+                    <Input id="state" name="state" defaultValue={contact.state ?? ""} placeholder="AZ" className="mt-1.5" />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <Label htmlFor="postalCode">Postal</Label>
+                    <Input id="postalCode" name="postalCode" defaultValue={contact.postalCode ?? ""} className="mt-1.5" />
+                  </div>
+                  <div className="sm:col-span-3">
+                    <Label htmlFor="country">Country</Label>
+                    <Input id="country" name="country" defaultValue={contact.country ?? ""} className="mt-1.5" />
+                  </div>
+                  <div className="sm:col-span-3">
+                    <Label htmlFor="region">Region</Label>
+                    <Input id="region" name="region" defaultValue={contact.region ?? ""} placeholder="Southwest" className="mt-1.5" />
+                  </div>
+                </div>
+              </div>
               <div>
                 <Label htmlFor="notes">Notes</Label>
                 <Textarea id="notes" name="notes" rows={5} defaultValue={contact.notes ?? ""} className="mt-1.5" />
@@ -159,7 +196,7 @@ export default async function ContactPage({
               {contact.deals.map((d) => (
                 <Link
                   key={d.id}
-                  href={`/crm/deals/${d.id}`}
+                  href="/crm/deals"
                   className="flex items-center justify-between rounded-md border border-border p-3 hover:border-gold/40"
                 >
                   <div>

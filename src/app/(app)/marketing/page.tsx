@@ -137,21 +137,20 @@ export default async function MarketingPage() {
           <CardDescription>Broadcasts to your crew — separate from customer marketing.</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3 sm:grid-cols-3">
-          <Link href="/marketing/internal/announcements" className="rounded-lg border border-border p-4 hover:border-gold/40">
-            <Megaphone className="h-5 w-5 text-gold mb-2" />
-            <div className="font-medium">Announcements</div>
-            <div className="text-xs text-muted-foreground">Pin to all crew dashboards.</div>
-          </Link>
-          <Link href="/marketing/internal/sops" className="rounded-lg border border-border p-4 hover:border-gold/40">
-            <Mail className="h-5 w-5 text-gold mb-2" />
-            <div className="font-medium">SOPs & memos</div>
-            <div className="text-xs text-muted-foreground">Field guides, safety memos, pricing updates.</div>
-          </Link>
-          <Link href="/marketing/internal/recognition" className="rounded-lg border border-border p-4 hover:border-gold/40">
-            <Star className="h-5 w-5 text-gold mb-2" />
-            <div className="font-medium">Recognition</div>
-            <div className="text-xs text-muted-foreground">Shout-outs, top crew, milestones.</div>
-          </Link>
+          {[
+            { icon: Megaphone, title: "Announcements", desc: "Pin to all crew dashboards." },
+            { icon: Mail, title: "SOPs & memos", desc: "Field guides, safety memos, pricing updates." },
+            { icon: Star, title: "Recognition", desc: "Shout-outs, top crew, milestones." },
+          ].map(({ icon: I, title, desc }) => (
+            <div key={title} className="relative rounded-lg border border-border p-4 opacity-70">
+              <I className="h-5 w-5 text-amber-700 mb-2" />
+              <div className="font-medium">{title}</div>
+              <div className="text-xs text-muted-foreground">{desc}</div>
+              <span className="absolute top-2 right-2 rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+                Soon
+              </span>
+            </div>
+          ))}
         </CardContent>
       </Card>
     </div>

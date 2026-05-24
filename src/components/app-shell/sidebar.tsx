@@ -4,17 +4,25 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { Logo } from "@/components/brand/logo";
-import { APP_NAV, type NavSection } from "@/config/nav";
+import { APP_NAV, ADMIN_NAV, type NavSection } from "@/config/nav";
 import { ShieldCheck } from "lucide-react";
 
+// IMPORTANT: do not accept Lucide icon refs as a prop from a Server Component —
+// React Flight cannot serialize function references across the RSC boundary
+// (see digest 600471577). Instead we accept a `variant` string and pick the
+// right nav config inside this Client Component.
 export function Sidebar({
-  sections = APP_NAV,
+  variant = "app",
   isAdmin = false,
+  sections,
 }: {
-  sections?: NavSection[];
+  variant?: "app" | "admin";
   isAdmin?: boolean;
+  /** @deprecated kept for backwards compat in a few callers; ignored if `variant` is set. */
+  sections?: NavSection[];
 }) {
   const pathname = usePathname();
+  const resolved: NavSection[] = sections ?? (variant === "admin" ? ADMIN_NAV : APP_NAV);
 
   return (
     <aside className="hidden lg:flex lg:w-64 xl:w-72 flex-col bg-chrome text-chrome-foreground border-r border-chrome-border chrome-scroll">
@@ -33,7 +41,7 @@ export function Sidebar({
       </div>
 
       <nav className="flex-1 overflow-y-auto p-3">
-        {sections.map((section) => (
+        {resolved.map((section) => (
           <div key={section.label} className="mb-6">
             <h4 className="px-3 pb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-chrome-muted">
               {section.label}
@@ -56,12 +64,12 @@ export function Sidebar({
                       )}
                     >
                       {active && (
-                        <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r bg-amber" />
+                        <span className="absolute left-0 top-2 bottom-2 w-[2px] rounded-r bg-amber" />
                       )}
                       <Icon
                         className={cn(
                           "h-4 w-4 shrink-0",
-                          active ? "text-amber" : "text-chrome-muted group-hover:text-white",
+                          active ? "text-white" : "text-chrome-muted group-hover:text-white",
                         )}
                       />
                       <span className="flex-1">{item.label}</span>

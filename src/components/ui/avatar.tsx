@@ -15,7 +15,7 @@ export function Avatar({
   return (
     <div
       className={cn(
-        "inline-flex shrink-0 items-center justify-center rounded-full bg-gold/20 text-gold font-semibold ring-1 ring-gold/40 overflow-hidden",
+        "inline-flex shrink-0 items-center justify-center rounded-full bg-muted text-foreground/70 font-semibold ring-1 ring-border overflow-hidden",
         className,
       )}
       style={{ width: size, height: size, fontSize: size * 0.38 }}

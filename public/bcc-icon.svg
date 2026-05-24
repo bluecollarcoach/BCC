@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="Blue Collar Coach">
+  <title>Blue Collar Coach</title>
+  <defs>
+    <linearGradient id="bcc-ring" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#f1d385"/>
+      <stop offset="35%"  stop-color="#d6a23a"/>
+      <stop offset="65%"  stop-color="#a87614"/>
+      <stop offset="100%" stop-color="#5d3f0b"/>
+    </linearGradient>
+    <linearGradient id="bcc-fig" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#f4d57a"/>
+      <stop offset="55%"  stop-color="#c8901c"/>
+      <stop offset="100%" stop-color="#8b6315"/>
+    </linearGradient>
+  </defs>
+  <circle cx="100" cy="100" r="93" fill="#0a0a0a"/>
+  <circle cx="100" cy="100" r="93" fill="none" stroke="url(#bcc-ring)" stroke-width="9"/>
+  <circle cx="100" cy="100" r="81" fill="none" stroke="url(#bcc-ring)" stroke-width="1" opacity="0.5"/>
+  <rect x="40"  y="79" width="32" height="9" rx="2" fill="url(#bcc-fig)"/>
+  <rect x="128" y="79" width="32" height="9" rx="2" fill="url(#bcc-fig)"/>
+  <path d="M 100 58 L 120 83 L 100 108 L 80 83 Z" fill="url(#bcc-fig)"/>
+  <path d="M 100 70 L 112 83 L 100 96 L 88 83 Z" fill="#0a0a0a"/>
+  <path d="M 92 108 L 108 108 L 116 162 L 84 162 Z" fill="url(#bcc-fig)"/>
+</svg>

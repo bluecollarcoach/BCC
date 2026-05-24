@@ -44,7 +44,7 @@ export function KpiCard({
           </p>
         </div>
         {Icon && (
-          <div className="rounded-md bg-amber-50 p-2 text-amber-700 ring-1 ring-amber-200">
+          <div className="rounded-md bg-muted p-2 text-foreground/70 ring-1 ring-border">
             <Icon className="h-4 w-4" />
           </div>
         )}

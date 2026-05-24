@@ -14,7 +14,7 @@ export default function SignInPage({
   return (
     <div className="min-h-screen chrome-backdrop flex flex-col">
       <header className="container pt-8 flex items-center justify-between">
-        <Logo onDark size={36} />
+        <Logo lockup size={48} />
         <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/50">
           Internal · v0.1
         </span>

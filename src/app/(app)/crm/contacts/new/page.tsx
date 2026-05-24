@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { createContact } from "@/server/services/contacts";
 import { PageHeader } from "@/components/ui/page-header";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Label, Textarea } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
@@ -22,10 +22,16 @@ export default async function NewContactPage() {
       email: String(fd.get("email") ?? "") || undefined,
       phone: String(fd.get("phone") ?? "") || undefined,
       title: String(fd.get("title") ?? "") || undefined,
-      stage: (String(fd.get("stage") ?? "LEAD") as "LEAD" | "QUALIFIED" | "CUSTOMER" | "CHURNED"),
+      stage: String(fd.get("stage") ?? "LEAD") as "LEAD" | "QUALIFIED" | "CUSTOMER" | "CHURNED",
       source: String(fd.get("source") ?? "") || undefined,
       tags: String(fd.get("tags") ?? "") || undefined,
       notes: String(fd.get("notes") ?? "") || undefined,
+      street: String(fd.get("street") ?? "") || undefined,
+      city: String(fd.get("city") ?? "") || undefined,
+      state: String(fd.get("state") ?? "") || undefined,
+      postalCode: String(fd.get("postalCode") ?? "") || undefined,
+      country: String(fd.get("country") ?? "") || undefined,
+      region: String(fd.get("region") ?? "") || undefined,
     });
     redirect(`/crm/contacts/${contact.id}`);
   }
@@ -33,9 +39,13 @@ export default async function NewContactPage() {
   return (
     <div className="space-y-6 max-w-3xl">
       <PageHeader title="New contact" description="Add a lead, prospect, or customer." />
-      <Card>
-        <CardContent className="pt-6">
-          <form action={create} className="space-y-5">
+
+      <form action={create} className="space-y-6">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Identity</CardTitle>
+          </CardHeader>
+          <CardContent>
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <Label htmlFor="firstName">First name *</Label>
@@ -80,17 +90,57 @@ export default async function NewContactPage() {
                 <Input id="tags" name="tags" placeholder="hvac, residential" className="mt-1.5" />
               </div>
             </div>
-            <div>
-              <Label htmlFor="notes">Notes</Label>
-              <Textarea id="notes" name="notes" rows={5} className="mt-1.5" />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Address</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4 sm:grid-cols-6">
+              <div className="sm:col-span-6">
+                <Label htmlFor="street">Street</Label>
+                <Input id="street" name="street" placeholder="2412 Elm St" className="mt-1.5" />
+              </div>
+              <div className="sm:col-span-3">
+                <Label htmlFor="city">City</Label>
+                <Input id="city" name="city" className="mt-1.5" />
+              </div>
+              <div className="sm:col-span-1">
+                <Label htmlFor="state">State</Label>
+                <Input id="state" name="state" placeholder="AZ" className="mt-1.5" />
+              </div>
+              <div className="sm:col-span-2">
+                <Label htmlFor="postalCode">Postal code</Label>
+                <Input id="postalCode" name="postalCode" className="mt-1.5" />
+              </div>
+              <div className="sm:col-span-3">
+                <Label htmlFor="country">Country</Label>
+                <Input id="country" name="country" placeholder="US" className="mt-1.5" />
+              </div>
+              <div className="sm:col-span-3">
+                <Label htmlFor="region">Region / territory</Label>
+                <Input id="region" name="region" placeholder="Southwest" className="mt-1.5" />
+              </div>
             </div>
-            <div className="flex gap-2 justify-end">
-              <Button type="reset" variant="ghost">Reset</Button>
-              <Button type="submit">Create contact</Button>
-            </div>
-          </form>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Notes</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Textarea id="notes" name="notes" rows={5} placeholder="Anything worth remembering…" />
+          </CardContent>
+        </Card>
+
+        <div className="flex gap-2 justify-end">
+          <Button type="reset" variant="ghost">Reset</Button>
+          <Button type="submit">Create contact</Button>
+        </div>
+      </form>
     </div>
   );
 }

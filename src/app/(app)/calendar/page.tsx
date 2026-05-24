@@ -8,30 +8,67 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { hasEntraConfigured } from "@/lib/env";
 import { CalendarWeek } from "@/components/calendar/calendar-week";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import Link from "next/link";
 
 export const metadata = { title: "Calendar" };
 
-export default async function CalendarPage() {
+function parseWeekParam(raw: string | undefined): Date {
+  // Accept ISO date strings like 2026-05-22; default = today.
+  if (raw && /^\d{4}-\d{2}-\d{2}/.test(raw)) {
+    const d = new Date(raw + "T00:00:00");
+    if (!isNaN(d.getTime())) return d;
+  }
+  return new Date();
+}
+
+function startOfWeek(d: Date): Date {
+  const s = new Date(d);
+  s.setHours(0, 0, 0, 0);
+  s.setDate(s.getDate() - s.getDay()); // Sunday-anchored
+  return s;
+}
+
+function formatYmd(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+export default async function CalendarPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ week?: string }>;
+}) {
   const session = await auth();
   if (!session?.user?.orgId) redirect("/sign-in");
 
-  // Pull local events + Microsoft Graph events, merge.
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  start.setDate(start.getDate() - start.getDay()); // start of week (Sun)
+  const sp = await searchParams;
+  const anchor = parseWeekParam(sp.week);
+  const start = startOfWeek(anchor);
   const end = new Date(start);
   end.setDate(end.getDate() + 7);
 
+  const prevWeek = new Date(start);
+  prevWeek.setDate(prevWeek.getDate() - 7);
+  const nextWeek = new Date(start);
+  nextWeek.setDate(nextWeek.getDate() + 7);
+  const today = new Date();
+
+  // Best-effort: failures shouldn't crash the page. Microsoft Graph errors
+  // (expired token, missing scope) fall back to empty array, mock adapter
+  // returns its baked-in data.
   const [localEvents, msEvents] = await Promise.all([
-    prisma.calendarEvent.findMany({
-      where: {
-        orgId: session.user.orgId,
-        startAt: { gte: start, lt: end },
-      },
-      orderBy: { startAt: "asc" },
-    }),
-    calendar.listEvents(session.user.id, { from: start, to: end }).catch(() => []),
+    prisma.calendarEvent
+      .findMany({
+        where: {
+          orgId: session.user.orgId,
+          startAt: { gte: start, lt: end },
+        },
+        orderBy: { startAt: "asc" },
+      })
+      .catch(() => []),
+    calendar
+      .listEvents(session.user.id, { from: start, to: end })
+      .catch(() => []),
   ]);
 
   const events = [
@@ -53,6 +90,15 @@ export default async function CalendarPage() {
     })),
   ];
 
+  const weekLabel = `${start.toLocaleString("en-US", {
+    month: "long",
+    day: "numeric",
+  })} – ${new Date(end.getTime() - 1).toLocaleString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  })}`;
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -72,10 +118,24 @@ export default async function CalendarPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">
-            Week of{" "}
-            {start.toLocaleString("en-US", { month: "long", day: "numeric", year: "numeric" })}
-          </CardTitle>
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle className="text-base">{weekLabel}</CardTitle>
+            <div className="flex items-center gap-1">
+              <Button asChild variant="ghost" size="icon" aria-label="Previous week">
+                <Link href={`/calendar?week=${formatYmd(prevWeek)}`}>
+                  <ChevronLeft className="h-4 w-4" />
+                </Link>
+              </Button>
+              <Button asChild variant="outline" size="sm">
+                <Link href={`/calendar?week=${formatYmd(today)}`}>Today</Link>
+              </Button>
+              <Button asChild variant="ghost" size="icon" aria-label="Next week">
+                <Link href={`/calendar?week=${formatYmd(nextWeek)}`}>
+                  <ChevronRight className="h-4 w-4" />
+                </Link>
+              </Button>
+            </div>
+          </div>
         </CardHeader>
         <CardContent>
           <CalendarWeek weekStart={start.toISOString()} events={events} />
@@ -85,10 +145,22 @@ export default async function CalendarPage() {
       {!hasEntraConfigured && (
         <p className="text-xs text-muted-foreground">
           Calendar is showing mock events. Configure Microsoft Entra in{" "}
-          <Link href="/admin/integrations" className="text-gold underline">
+          <Link href="/admin/integrations" className="text-amber-700 underline">
             Admin → Integrations
           </Link>{" "}
           to enable two-way sync with Outlook.
+        </p>
+      )}
+
+      {hasEntraConfigured && msEvents.length === 0 && (
+        <p className="text-xs text-muted-foreground">
+          Connected to Microsoft 365 but no events returned for this week. If
+          this looks wrong, your access token may have expired — sign out and
+          back in to refresh, or check{" "}
+          <Link href="/admin/integrations" className="text-amber-700 underline">
+            Admin → Integrations
+          </Link>
+          .
         </p>
       )}
     </div>

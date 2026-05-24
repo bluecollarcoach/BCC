@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "regions": ["iad1"],
+  "functions": {
+    "src/app/api/documents/route.ts": { "maxDuration": 60 },
+    "src/app/api/integrations/qbo/callback/route.ts": { "maxDuration": 30 },
+    "src/app/api/integrations/google-ads/callback/route.ts": { "maxDuration": 30 },
+    "src/app/api/integrations/linkedin/callback/route.ts": { "maxDuration": 30 },
+    "src/app/api/integrations/meta/callback/route.ts": { "maxDuration": 30 }
+  }
+}

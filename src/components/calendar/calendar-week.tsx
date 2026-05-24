@@ -1,5 +1,6 @@
 "use client";
 import * as React from "react";
+import Link from "next/link";
 import { cn } from "@/lib/utils";
 
 interface WeekEvent {
@@ -95,14 +96,20 @@ export function CalendarWeek({
                     );
                     const top = (minutesIntoHour / 60) * 56; // 56px per hour
                     const height = (durationMin / 60) * 56;
+                    const isLocal = e.source !== "MSGRAPH";
+                    const Wrapper = isLocal ? Link : "div" as const;
+                    const wrapperProps = isLocal
+                      ? { href: `/calendar/${e.id}` as const }
+                      : {};
                     return (
-                      <div
+                      <Wrapper
                         key={e.id}
+                        {...wrapperProps}
                         className={cn(
                           "absolute left-1 right-1 rounded px-2 py-0.5 text-[11px] overflow-hidden text-foreground",
-                          e.source === "MSGRAPH"
-                            ? "bg-blue-500/20 border-l-2 border-blue-400"
-                            : "bg-gold/15 border-l-2 border-gold",
+                          isLocal
+                            ? "bg-amber/15 border-l-2 border-amber cursor-pointer hover:bg-amber/25 transition-colors"
+                            : "bg-blue-500/20 border-l-2 border-blue-400",
                         )}
                         style={{ top, height }}
                         title={`${e.subject} · ${startD.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`}
@@ -111,7 +118,7 @@ export function CalendarWeek({
                         {e.location && (
                           <div className="truncate text-muted-foreground">{e.location}</div>
                         )}
-                      </div>
+                      </Wrapper>
                     );
                   })}
               </div>

@@ -49,3 +49,19 @@ desktop.ini
 # azure
 .azure/
 azurite/
+
+# local deploy secrets
+.deploy-secrets.txt
+.vercel-env-import.txt
+
+# legacy Azure zipdeploy artifacts
+release.zip
+.app-deploy-output.json
+.deploy-output.json
+
+# user's source brand artwork (kept on disk, not in git — duplicates of /public)
+LOGO*.png
+BCC_Logo_Full*.png
+
+# Vercel
+.vercel

@@ -1,16 +1,33 @@
 {
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "parameters_doc": "Fill in sqlAdminPassword + authSecret before deploying. The tier picker is 'free' (~$0/mo for first 12mo), 'dev' (~$25/mo, recommended for daily team use), or 'prod' (~$130/mo).",
   "contentVersion": "1.0.0.0",
   "parameters": {
-    "name":              { "value": "bccconnect" },
-    "tier":              { "value": "free" },
-    "sqlAdminLogin":     { "value": "bccadmin" },
-    "sqlAdminPassword":  { "value": "REPLACE_ME_WITH_STRONG_PASSWORD_16+CHARS" },
-    "authSecret":        { "value": "REPLACE_ME_RUN_openssl_rand_base64_32" },
-    "entraClientId":     { "value": "" },
-    "entraClientSecret": { "value": "" },
-    "entraTenantId":     { "value": "common" },
-    "qboClientId":       { "value": "" },
-    "qboClientSecret":   { "value": "" }
+    "name": {
+      "value": "bccinternal"
+    },
+    "tier": {
+      "value": "dev"
+    },
+    "sqlAdminLogin": {
+      "value": "bccadmin"
+    },
+    "sqlAdminPassword": {},
+    "authSecret": {},
+    "entraClientId": {
+      "value": ""
+    },
+    "entraClientSecret": {
+      "value": ""
+    },
+    "entraTenantId": {
+      "value": "81acb8ef-0b0b-4299-882c-ff07373e8cc7"
+    },
+    "qboClientId": {
+      "value": ""
+    },
+    "qboClientSecret": {
+      "value": ""
+    }
   }
 }

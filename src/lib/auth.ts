@@ -79,27 +79,72 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: providerList,
   callbacks: {
     ...authConfig.callbacks,
-    async jwt({ token, user }) {
-      // First sign-in stamps the user id
+    async jwt({ token, user, trigger }) {
+      // Enrich the JWT from the DB ONLY when the user object is provided
+      // (fresh sign-in) or when a session.update() is explicitly triggered.
+      // Doing it on every request makes serverless SQL slow + flaky, and a
+      // throw here causes the whole session to come back null → user gets
+      // bounced to /sign-in on every page nav. That bug was the reason for
+      // this rewrite.
+      const shouldEnrich = !!user?.id || trigger === "update";
       if (user?.id) token.userId = user.id;
-      // Always enrich from the DB so role/org changes propagate
-      if (token.userId) {
-        const dbUser = await prisma.user.findUnique({
-          where: { id: token.userId as string },
-          select: {
-            role: true,
-            orgId: true,
-            email: true,
-            name: true,
-            image: true,
-          },
-        });
-        if (dbUser) {
-          token.role = dbUser.role;
-          token.orgId = dbUser.orgId;
-          token.email = dbUser.email;
-          token.name = dbUser.name;
-          token.picture = dbUser.image;
+      if (shouldEnrich && token.userId) {
+        try {
+          let dbUser = await prisma.user.findUnique({
+            where: { id: token.userId as string },
+            select: {
+              role: true,
+              orgId: true,
+              email: true,
+              name: true,
+              image: true,
+            },
+          });
+          // Auto-bootstrap: brand-new sign-in via OAuth has no orgId yet.
+          // Attach to the default Org (creating it on first sign-in) so the
+          // per-page orgId guards don't bounce the user back to /sign-in.
+          if (dbUser && !dbUser.orgId) {
+            const org = await prisma.org.upsert({
+              where: { slug: "bcc-internal" },
+              update: {},
+              create: { name: "Blue Collar Coach", slug: "bcc-internal" },
+            });
+            const userCount = await prisma.user.count();
+            dbUser = await prisma.user.update({
+              where: { id: token.userId as string },
+              data: {
+                orgId: org.id,
+                // First-ever user becomes OWNER; everyone after that stays STAFF.
+                role: userCount === 1 ? "OWNER" : dbUser.role,
+              },
+              select: {
+                role: true,
+                orgId: true,
+                email: true,
+                name: true,
+                image: true,
+              },
+            });
+            logger.info("auth.user.bootstrapped", {
+              userId: token.userId,
+              orgId: dbUser.orgId,
+              role: dbUser.role,
+            });
+          }
+          if (dbUser) {
+            token.role = dbUser.role;
+            token.orgId = dbUser.orgId;
+            token.email = dbUser.email;
+            token.name = dbUser.name;
+            token.picture = dbUser.image;
+          }
+        } catch (err) {
+          // Never let a DB failure nuke the session — log and continue with
+          // whatever fields the JWT already has (or sane defaults).
+          logger.error("auth.jwt.enrich.failed", {
+            userId: token.userId,
+            err: err instanceof Error ? err.message : String(err),
+          });
         }
       }
       return token;

@@ -35,11 +35,9 @@ export default async function TrainingPage() {
         title="Training"
         description="Customer-facing courses and internal playbooks."
         actions={
-          <Button asChild>
-            <Link href="/training/new">
-              <Plus className="h-4 w-4" /> New course
-            </Link>
-          </Button>
+          <span className="text-xs text-muted-foreground italic">
+            Course authoring coming soon
+          </span>
         }
       />
 
