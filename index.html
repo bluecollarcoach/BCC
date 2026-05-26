@@ -10,261 +10,313 @@
 <link rel="icon" type="image/png" href="bcc-logo.png" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 <style>
   :root {
-    --p-charcoal:    #2b2b2b;
-    --p-charcoal-d:  #1a1a1a;
-    --p-red:         #a8884a;
-    --p-red-d:       #876d3a;
-    --p-gray:        #6b685f;
-    --p-light:       #f6f6f4;
-    --p-border:      #e2e1dd;
+    --ink:        #1a1a1a;
+    --ink-soft:   #2b2b2b;
+    --ink-line:   #2e2c27;
+    --gold:       #a8884a;
+    --gold-warm:  #c2a05c;
+    --gold-deep:  #876d3a;
+    --chrome:     #f6f6f4;
+    --chrome-mute:#e2e1dd;
+    --muted:      #8a877e;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; }
   body {
     font-family: 'Inter', system-ui, -apple-system, Segoe UI, Arial, sans-serif;
-    color: #1a1a1a;
+    color: var(--chrome);
     background:
-      radial-gradient(circle at 12% 18%, rgba(200,16,46,0.10) 0%, transparent 42%),
-      linear-gradient(160deg, #1a1a1a 0%, #2b2b2b 60%, #374151 100%);
+      radial-gradient(circle at 14% 22%, rgba(168,136,74,0.16) 0%, transparent 48%),
+      radial-gradient(circle at 86% 78%, rgba(168,136,74,0.10) 0%, transparent 52%),
+      linear-gradient(165deg, #141414 0%, #1a1a1a 45%, #2b2b2b 100%);
     min-height: 100vh;
     -webkit-font-smoothing: antialiased;
   }
 
+  /* Topbar — handled by bcc-api.js auth chip + the hamburger drawer, but we
+     give it a sharp BCC-branded header line. */
+  header.topbar {
+    display: flex; align-items: center; gap: 14px;
+    padding: 12px 22px;
+    background: linear-gradient(90deg, #141414 0%, #1f1f1f 100%);
+    border-bottom: 1px solid var(--ink-line);
+  }
+  header.topbar a.home { display: flex; align-items: center; gap: 12px; text-decoration: none; }
+  header.topbar img { height: 32px; }
+  header.topbar .wordmark {
+    font-family: 'Cinzel', serif;
+    color: var(--chrome);
+    font-size: 16px; font-weight: 700;
+    letter-spacing: 1.5px;
+  }
+  header.topbar .wordmark .light { color: var(--gold); }
+  header.topbar .product {
+    color: rgba(255,255,255,0.55);
+    font-size: 10.5px; font-weight: 700;
+    letter-spacing: 2.5px; text-transform: uppercase;
+    border-left: 1px solid rgba(255,255,255,0.18);
+    padding-left: 14px; margin-left: 4px;
+  }
+
   /* Hero */
   .hero {
-    padding: 56px 20px 28px;
+    padding: 56px 20px 22px;
     display: flex; flex-direction: column; align-items: center;
     text-align: center;
   }
-  .hero .logo {
-    background: #fff;
-    border-radius: 14px;
-    padding: 12px 22px;
-    box-shadow: 0 20px 50px rgba(0,0,0,0.30);
-    margin-bottom: 18px;
-  }
-  .hero .logo img { height: 56px; display: block; }
-  .hero .product {
-    color: rgba(255,255,255,0.55);
+  .hero .tag {
+    display: inline-block;
+    color: var(--gold-warm);
     font-size: 11px; font-weight: 700;
     letter-spacing: 3px; text-transform: uppercase;
-    margin-bottom: 4px;
+    padding: 6px 14px;
+    border: 1px solid rgba(168,136,74,0.35);
+    border-radius: 999px;
+    margin-bottom: 18px;
   }
-  .hero .product .accent { color: #ef4444; }
   .hero h1 {
-    color: #fff; font-size: 28px; font-weight: 800;
-    letter-spacing: -0.5px;
+    font-family: 'Cinzel', serif;
+    color: var(--chrome);
+    font-size: 38px; font-weight: 700;
+    letter-spacing: 0.5px;
+    max-width: 740px; line-height: 1.15;
   }
+  .hero h1 .accent { color: var(--gold); }
+  .hero .greeting {
+    color: rgba(255,255,255,0.7);
+    font-size: 15px; font-weight: 500;
+    margin-top: 14px; max-width: 600px;
+  }
+  .hero .greeting strong { color: #fff; font-weight: 700; }
 
-  /* Main quick-action grid */
+  /* Layout */
   .wrap {
-    max-width: 980px; margin: 0 auto;
-    padding: 8px 20px 60px;
+    max-width: 1080px; margin: 0 auto;
+    padding: 6px 22px 70px;
   }
-
   .section-label {
     color: rgba(255,255,255,0.45);
     font-size: 10.5px; font-weight: 700;
-    letter-spacing: 2px; text-transform: uppercase;
-    padding: 18px 4px 10px;
+    letter-spacing: 2.5px; text-transform: uppercase;
+    padding: 28px 4px 12px;
   }
 
-  /* Primary actions — two big tiles */
+  /* Primary tiles — large, daily-use modules */
   .primary {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
-    gap: 14px;
+    gap: 16px;
   }
   .primary .tile {
-    background: #fff;
+    background: linear-gradient(160deg, #1f1f1f 0%, #1a1a1a 100%);
+    border: 1px solid var(--ink-line);
     border-radius: 16px;
-    padding: 22px;
+    padding: 24px;
     text-decoration: none;
-    color: inherit;
+    color: var(--chrome);
     display: flex; flex-direction: column;
-    box-shadow: 0 16px 40px rgba(0,0,0,0.25);
-    border: 1px solid rgba(255,255,255,0.06);
-    transition: transform 0.18s ease, box-shadow 0.18s ease;
+    box-shadow: 0 22px 48px rgba(0,0,0,0.45);
+    transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
     position: relative; overflow: hidden;
-    min-height: 140px;
+    min-height: 156px;
   }
   .primary .tile::before {
-    content:''; position:absolute; top:0; left:0; right:0; height:4px;
-    background: var(--p-red);
+    content:''; position:absolute; top:0; left:0; right:0; height:3px;
+    background: linear-gradient(90deg, var(--gold) 0%, var(--gold-warm) 100%);
   }
   .primary .tile:hover {
     transform: translateY(-3px);
-    box-shadow: 0 22px 50px rgba(0,0,0,0.30);
+    border-color: rgba(168,136,74,0.4);
+    box-shadow: 0 28px 56px rgba(0,0,0,0.55);
   }
   .primary .tile .icon {
-    width: 44px; height: 44px;
-    background: #faf4e8; color: var(--p-red);
+    width: 46px; height: 46px;
+    background: rgba(168,136,74,0.14);
+    color: var(--gold);
+    border: 1px solid rgba(168,136,74,0.30);
     border-radius: 11px;
     display: flex; align-items: center; justify-content: center;
-    margin-bottom: 12px;
+    margin-bottom: 14px;
     font-size: 22px;
   }
   .primary .tile h2 {
-    font-size: 17px; font-weight: 800; letter-spacing: -0.3px;
-    color: var(--p-charcoal); margin-bottom: 4px;
+    font-family: 'Cinzel', serif;
+    font-size: 19px; font-weight: 700; letter-spacing: 0.3px;
+    color: var(--chrome); margin-bottom: 6px;
   }
   .primary .tile p {
-    color: var(--p-gray); font-size: 12.5px; line-height: 1.5; flex: 1;
+    color: rgba(255,255,255,0.65); font-size: 13px; line-height: 1.55; flex: 1;
   }
   .primary .tile .cta {
-    margin-top: 12px;
-    color: var(--p-red); font-weight: 700; font-size: 12.5px;
+    margin-top: 14px;
+    color: var(--gold-warm); font-weight: 700; font-size: 13px;
     display: flex; align-items: center; gap: 6px;
+    letter-spacing: 0.3px;
   }
   .primary .tile .cta .arrow { transition: transform 0.15s; }
   .primary .tile:hover .cta .arrow { transform: translateX(3px); }
 
-  /* Secondary actions — compact tiles */
+  /* Secondary tiles — compact module grid */
   .secondary {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 10px;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
   }
   .secondary .stile {
-    background: rgba(255,255,255,0.06);
-    border: 1px solid rgba(255,255,255,0.10);
-    border-radius: 12px;
-    padding: 14px 14px 12px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 13px;
+    padding: 16px 14px 14px;
     text-decoration: none;
-    color: #fff;
+    color: var(--chrome);
     display: flex; flex-direction: column;
     transition: background 0.15s, border-color 0.15s, transform 0.15s;
-    min-height: 92px;
+    min-height: 100px;
   }
   .secondary .stile:hover {
-    background: rgba(255,255,255,0.10);
-    border-color: rgba(255,255,255,0.20);
-    transform: translateY(-1px);
+    background: rgba(168,136,74,0.10);
+    border-color: rgba(168,136,74,0.32);
+    transform: translateY(-2px);
   }
   .secondary .stile .ic {
-    font-size: 18px; margin-bottom: 4px;
+    font-size: 20px; margin-bottom: 6px; color: var(--gold);
   }
   .secondary .stile .name {
-    font-size: 13.5px; font-weight: 700;
+    font-size: 14px; font-weight: 700;
   }
   .secondary .stile .sub {
-    font-size: 11px; color: rgba(255,255,255,0.55);
-    margin-top: 2px;
+    font-size: 11.5px; color: rgba(255,255,255,0.55);
+    margin-top: 3px; line-height: 1.4;
   }
+  .secondary .stile.stub::after {
+    content:'soon'; position:absolute; top:8px; right:10px;
+    font-size: 9px; font-weight: 700; color: var(--gold-warm);
+    letter-spacing: 1px; text-transform: uppercase;
+    background: rgba(168,136,74,0.18);
+    border-radius: 999px; padding: 2px 7px;
+  }
+  .secondary .stile { position: relative; }
 
-  .hero .greeting {
-    color: rgba(255,255,255,0.75);
-    font-size: 14px; font-weight: 500;
-    margin-top: 10px; max-width: 600px; text-align: center;
+  /* Tablet */
+  @media (max-width: 900px) {
+    .hero { padding: 38px 20px 14px; }
+    .hero h1 { font-size: 30px; }
+    .secondary { grid-template-columns: repeat(3, 1fr); }
   }
-  .hero .greeting strong { color: #fff; font-weight: 700; }
-
-  /* Tablet — moderate hero, primary tiles still side-by-side */
-  @media (max-width: 760px) {
-    .hero { padding: 32px 20px 14px; }
-    .hero .logo { padding: 10px 18px; margin-bottom: 14px; }
-    .hero .logo img { height: 48px; }
-    .hero h1 { font-size: 24px; }
-  }
-  /* Phone — compact hero so tiles are reachable without scrolling */
+  /* Phone */
   @media (max-width: 600px) {
-    .hero { padding: 22px 16px 8px; }
-    .hero .logo { padding: 8px 14px; margin-bottom: 10px; }
-    .hero .logo img { height: 38px; }
-    .hero .product { font-size: 10px; letter-spacing: 2px; }
-    .hero h1 { font-size: 19px; }
-    .hero .greeting { font-size: 13px; margin-top: 6px; }
-    .primary { grid-template-columns: 1fr; gap: 10px; }
-    .primary .tile { min-height: 0; padding: 18px; }
-    .secondary { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .hero { padding: 26px 16px 8px; }
+    .hero .tag { font-size: 10px; letter-spacing: 2px; padding: 5px 12px; }
+    .hero h1 { font-size: 22px; }
+    .hero .greeting { font-size: 13px; margin-top: 10px; }
+    .primary { grid-template-columns: 1fr; gap: 12px; }
+    .primary .tile { min-height: 0; padding: 20px; }
+    .secondary { grid-template-columns: repeat(2, 1fr); gap: 10px; }
     .wrap { padding: 4px 16px 40px; }
-    footer { padding: 12px 16px 20px; }
+    header.topbar { padding: 10px 16px; gap: 10px; }
+    header.topbar img { height: 28px; }
+    header.topbar .wordmark { font-size: 13px; }
+    header.topbar .product { font-size: 9.5px; letter-spacing: 2px; padding-left: 10px; }
   }
 
   footer {
-    color: rgba(255,255,255,0.35);
+    color: rgba(255,255,255,0.30);
     font-size: 11px;
     text-align: center;
-    padding: 18px 20px 32px;
+    padding: 20px 20px 36px;
     line-height: 1.6;
   }
   footer a { color: rgba(255,255,255,0.55); text-decoration: none; }
+  footer a:hover { color: var(--gold-warm); }
 </style>
 <script src="bcc-api.js" defer></script>
 </head>
 <body>
 
-<header class="topbar" style="background:linear-gradient(90deg,#1a1a1a,#2b2b2b);color:#fff;padding:10px 18px;display:flex;align-items:center;gap:14px;box-shadow:0 2px 12px rgba(0,0,0,0.18);">
-  <a class="home" href="index.html" style="display:flex;align-items:center;gap:10px;text-decoration:none;color:#fff;">
-    <img src="bcc-logo.png" alt="Blue Collar Coach" style="height:28px;background:#fff;padding:3px 8px;border-radius:6px;" />
-    <span class="module" style="font-size:12px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#ef4444;">Connect</span>
+<header class="topbar">
+  <a class="home" href="index.html">
+    <img src="bcc-logo.png" alt="Blue Collar Coach" />
+    <span class="wordmark">BLUE COLLAR <span class="light">COACH</span></span>
   </a>
-  <span class="spacer" style="flex:1;"></span>
+  <span class="product">Connect</span>
+  <span style="flex:1;"></span>
 </header>
 
 <div class="hero">
-  <div class="logo"><img src="bcc-logo-large.png" alt="Blue Collar Coach" /></div>
-  <div class="product">PRECISION <span class="accent">CONNECT</span></div>
-  <h1 id="heroTitle">What do you need to do?</h1>
+  <span class="tag">Internal workspace</span>
+  <h1>Coach <span class="accent">smarter</span>. Run the firm <span class="accent">tighter</span>.</h1>
   <div class="greeting" id="heroGreeting" hidden></div>
 </div>
 
 <div class="wrap">
+  <div class="section-label">Today</div>
   <div class="primary">
     <a class="tile" href="myday.html">
       <div class="icon">&#128205;</div>
       <h2>My Day</h2>
-      <p>Today's job, clock in/out, daily log with photos.</p>
+      <p>Today's coaching sessions, prep notes, and follow-ups. Clock in/out and submit your daily log.</p>
       <div class="cta">Open <span class="arrow">&rarr;</span></div>
     </a>
-    <a class="tile" href="scheduler.html">
+    <a class="tile" href="sessions.html">
       <div class="icon">&#128197;</div>
-      <h2>Scheduler</h2>
-      <p>Weekly plan. Assign crews, trucks, and hydrovacs to jobs.</p>
+      <h2>Sessions</h2>
+      <p>Coaching calendar synced to Microsoft 365. Book, reschedule, and prep with the client's notes alongside.</p>
       <div class="cta">Open <span class="arrow">&rarr;</span></div>
     </a>
   </div>
 
-  <div class="section-label">Everything else</div>
+  <div class="section-label">Revenue</div>
   <div class="secondary">
-    <a class="stile" href="jobs.html">
-      <span class="ic">&#128203;</span><span class="name">Job Board</span>
-      <span class="sub">Pipeline &amp; cards</span>
+    <a class="stile" href="crm.html">
+      <span class="ic">&#128101;</span><span class="name">CRM</span>
+      <span class="sub">Contacts, companies, deals</span>
     </a>
-    <a class="stile" href="inspections.html">
-      <span class="ic">&#128666;</span><span class="name">Inspections</span>
-      <span class="sub">Pre-trip &amp; equipment</span>
-    </a>
-    <a class="stile" href="tm.html">
-      <span class="ic">&#36;</span><span class="name">T&amp;M</span>
-      <span class="sub">Time &amp; materials</span>
-    </a>
-    <a class="stile" href="hydrant.html">
-      <span class="ic">&#128293;</span><span class="name">Fire Hydrant</span>
-      <span class="sub">Inspection form</span>
-    </a>
-    <a class="stile" href="trucking.html">
-      <span class="ic">&#128667;</span><span class="name">Trucking</span>
-      <span class="sub">Haul tickets</span>
-    </a>
-    <a class="stile" href="maintenance.html">
-      <span class="ic">&#128295;</span><span class="name">Maintenance</span>
-      <span class="sub">Issue inbox</span>
+    <a class="stile stub" href="jobs.html">
+      <span class="ic">&#128203;</span><span class="name">Engagements</span>
+      <span class="sub">Pipeline &amp; status</span>
     </a>
     <a class="stile" href="rates.html">
-      <span class="ic">&#128176;</span><span class="name">Rates</span>
-      <span class="sub">Emergency pricing</span>
+      <span class="ic">&#128176;</span><span class="name">Rate Sheet</span>
+      <span class="sub">Packages &amp; pricing</span>
     </a>
-    <a class="stile" href="inventory.html">
-      <span class="ic">&#128230;</span><span class="name">Inventory</span>
-      <span class="sub">Parts &amp; supplies</span>
+    <a class="stile stub" href="marketing.html">
+      <span class="ic">&#128226;</span><span class="name">Marketing</span>
+      <span class="sub">Google, Meta, LinkedIn</span>
+    </a>
+  </div>
+
+  <div class="section-label">Operations</div>
+  <div class="secondary">
+    <a class="stile" href="scheduler.html">
+      <span class="ic">&#128467;</span><span class="name">Scheduler</span>
+      <span class="sub">Week &amp; month views</span>
+    </a>
+    <a class="stile stub" href="bookkeeping.html">
+      <span class="ic">&#128202;</span><span class="name">Bookkeeping</span>
+      <span class="sub">QBO sync &amp; reports</span>
+    </a>
+    <a class="stile stub" href="documents.html">
+      <span class="ic">&#128196;</span><span class="name">Documents</span>
+      <span class="sub">Contracts &amp; SOPs</span>
     </a>
     <a class="stile" href="chat.html">
-      <span class="ic">&#128172;</span><span class="name">Chat</span>
-      <span class="sub">Crew channels</span>
+      <span class="ic">&#128172;</span><span class="name">Team Chat</span>
+      <span class="sub">Internal channels</span>
+    </a>
+    <a class="stile stub" href="training.html">
+      <span class="ic">&#127891;</span><span class="name">Training</span>
+      <span class="sub">Courses &amp; playbooks</span>
+    </a>
+    <a class="stile stub" href="events.html">
+      <span class="ic">&#127908;</span><span class="name">Events</span>
+      <span class="sub">Workshops &amp; meetups</span>
+    </a>
+    <a class="stile stub" href="kb.html">
+      <span class="ic">&#128218;</span><span class="name">Knowledge Base</span>
+      <span class="sub">Coaching playbooks</span>
     </a>
     <a class="stile" href="admin.html">
       <span class="ic">&#9881;</span><span class="name">Admin</span>
@@ -274,62 +326,37 @@
 </div>
 
 <footer>
-  BCC Connect &middot; <a href="guide.html">How-to guide</a><br/>
-  &copy; Blue Collar Coach
+  BCC Connect &middot; <a href="guide.html">How-to guide</a> &middot; <a href="activity.html">Activity log</a><br/>
+  &copy; <span id="yr"></span> Blue Collar Coach &middot; Internal use only
 </footer>
 
 <script>
-// Personalize the hero once bcc-api.js resolves the signed-in identity.
-// Greeting style ("Good morning, Bob.") + a hint that scans the schedule
-// for jobs assigned to this user today so the home page is immediately
-// actionable instead of generic.
-function personalizeHero() {
-  var who = (window.bccUser && window.bccUser.userDetails) || '';
-  if (!who) return;
+  document.getElementById('yr').textContent = new Date().getFullYear();
 
-  // Try to upgrade an email/UPN to a display name via bccPeopleFull
-  var label = who;
-  var full = (window.bccPeopleFull || []);
-  var me = full.find(function (u) {
-    var w = who.toLowerCase();
-    return (u.upn||'').toLowerCase() === w || (u.mail||'').toLowerCase() === w;
-  });
-  if (me && me.displayName) label = me.displayName;
-  // Show first name only — friendlier
-  var first = String(label).trim().split(/\s+/)[0];
-
-  var hour = new Date().getHours();
-  var greet = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
-
-  // Try to add a "you have N jobs today" hint from local schedule cache.
-  var jobsToday = 0;
-  try {
-    var sch = JSON.parse(localStorage.getItem('bcc-schedule-v1') || '{}');
-    var today = new Date(); today.setHours(0,0,0,0);
-    var iso = today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0')+'-'+String(today.getDate()).padStart(2,'0');
-    var meIds = [label, (me && me.upn), (me && me.mail), who]
-      .filter(Boolean).map(function (s) { return String(s).toLowerCase(); });
-    jobsToday = (sch.jobs || []).filter(function (j) {
-      if (j.day !== iso || !j.crewId) return false;
-      return (j.members || []).some(function (m) { return meIds.indexOf(String(m).toLowerCase()) >= 0; });
-    }).length;
-  } catch (e) {}
-
-  var hint = jobsToday > 0
-    ? ' You have <strong>' + jobsToday + (jobsToday === 1 ? ' job</strong> scheduled today.' : ' jobs</strong> scheduled today.')
-    : '';
-
-  var el = document.getElementById('heroGreeting');
-  if (el) {
-    el.innerHTML = greet + ', <strong>' + first.replace(/[<>&"']/g, '') + '</strong>.' + hint;
-    el.hidden = false;
+  // Personalized greeting once bcc-api.js resolves the signed-in identity.
+  // First-name + time-of-day; quietly upgrades from raw UPN to display name
+  // once Graph users come back via bcc-api.js's pull.
+  function personalizeHero() {
+    var who = (window.bccUser && window.bccUser.userDetails) || '';
+    if (!who) return;
+    var label = who;
+    var full = (window.bccPeopleFull || []);
+    var me = full.find(function (u) {
+      var w = who.toLowerCase();
+      return (u.upn||'').toLowerCase() === w || (u.mail||'').toLowerCase() === w;
+    });
+    if (me && me.displayName) label = me.displayName;
+    var first = String(label).trim().split(/\s+/)[0];
+    var hour = new Date().getHours();
+    var greet = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+    var el = document.getElementById('heroGreeting');
+    if (el) {
+      el.innerHTML = greet + ', <strong>' + first.replace(/[<>&"']/g, '') + '</strong>. Pick where to start.';
+      el.hidden = false;
+    }
   }
-  // Soften the headline once we have a personalized greeting in place.
-  var t = document.getElementById('heroTitle');
-  if (t) t.textContent = 'What do you need to do?';
-}
-window.addEventListener('bcc-auth-ready', personalizeHero);
-window.addEventListener('bcc-users-ready', personalizeHero);
+  window.addEventListener('bcc-auth-ready', personalizeHero);
+  window.addEventListener('bcc-users-ready', personalizeHero);
 </script>
 
 </body>
