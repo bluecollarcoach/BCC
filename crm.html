@@ -1,55 +1,430 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>CRM · BCC Connect</title>
-  <link rel="manifest" href="/manifest.json" />
-  <meta name="theme-color" content="#1a1a1a" />
-  <link rel="icon" href="/bcc-logo.png" />
-  <script defer src="/bcc-api.js"></script>
-  <style>
-    :root { color-scheme: light; }
-    * { box-sizing: border-box; }
-    body { margin: 0; font: 14px/1.45 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; color: #1a1a1a; background: #f6f6f4; }
-    header.topbar { display: flex; align-items: center; gap: 12px; padding: 12px 18px; background: #1a1a1a; color: #f6f6f4; }
-    header.topbar img { height: 28px; }
-    header.topbar h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: 0.2px; }
-    header.topbar .grow { flex: 1; }
-    main { max-width: 880px; margin: 0 auto; padding: 32px 18px; }
-    .module-stub {
-      background: #fff; border: 1px solid #e2e1dd; border-radius: 10px;
-      padding: 28px; box-shadow: 0 1px 3px rgba(0,0,0,.04);
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#1a1a1a" />
+<meta name="robots" content="noindex, nofollow" />
+<title>CRM · BCC Connect</title>
+<link rel="icon" type="image/png" href="bcc-logo.png" />
+<link rel="manifest" href="manifest.json" />
+<style>
+  :root {
+    --ink:        #1a1a1a;
+    --ink-soft:   #2b2b2b;
+    --ink-line:   #2e2c27;
+    --gold:       #a8884a;
+    --gold-warm:  #c2a05c;
+    --gold-deep:  #876d3a;
+    --gold-fade:  rgba(168,136,74,0.12);
+    --chrome:     #f6f6f4;
+    --chrome-mute:#e2e1dd;
+    --muted:      #8a877e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: 'Inter', system-ui, -apple-system, Segoe UI, Arial, sans-serif;
+    color: var(--ink);
+    background: var(--chrome);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  header.topbar {
+    display: flex; align-items: center; gap: 14px;
+    padding: 12px 22px; color: var(--chrome);
+    background: linear-gradient(90deg, #141414 0%, #1f1f1f 100%);
+    border-bottom: 1px solid var(--ink-line);
+    position: sticky; top: 0; z-index: 50;
+  }
+  header.topbar a.home { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--chrome); }
+  header.topbar img { height: 30px; }
+  header.topbar .wordmark { font-family: 'Cinzel', serif; font-size: 14px; font-weight: 700; letter-spacing: 1.5px; }
+  header.topbar .wordmark .light { color: var(--gold); }
+  header.topbar .module {
+    font-size: 11px; font-weight: 700; letter-spacing: 2.5px;
+    text-transform: uppercase; color: var(--gold-warm);
+    border-left: 1px solid rgba(255,255,255,0.18);
+    padding-left: 14px; margin-left: 4px;
+  }
+
+  .page { max-width: 1200px; margin: 0 auto; padding: 22px 22px 70px; }
+  .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+  .page-head h1 {
+    font-family: 'Cinzel', serif; font-size: 26px; font-weight: 700;
+    letter-spacing: 0.4px; margin: 0; color: var(--ink);
+  }
+  .page-head .sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .page-head .meta { font-size: 12px; color: var(--muted); }
+
+  .toolbar {
+    display: flex; align-items: center; gap: 8px;
+    background: #fff; padding: 12px; border: 1px solid var(--chrome-mute);
+    border-radius: 12px; margin-bottom: 14px; flex-wrap: wrap;
+  }
+  .toolbar .search { flex: 1; min-width: 200px; display: flex; align-items: center; gap: 8px;
+    background: var(--chrome); border: 1px solid var(--chrome-mute); border-radius: 8px;
+    padding: 8px 12px; min-height: 38px; }
+  .toolbar .search input { flex: 1; border: none; outline: none; background: transparent; font: inherit; font-size: 14px; min-width: 0; }
+  .toolbar .search svg { width: 16px; height: 16px; opacity: 0.6; flex-shrink: 0; }
+  .toolbar select { background: var(--chrome); border: 1px solid var(--chrome-mute); border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 13px; min-height: 38px; min-width: 130px; }
+  .toolbar .btn { min-height: 38px; border: 0; border-radius: 8px; padding: 0 14px; font: inherit; font-weight: 700; font-size: 13px; cursor: pointer; letter-spacing: 0.2px; }
+  .btn-primary { background: var(--gold); color: #fff; }
+  .btn-primary:hover { background: var(--gold-deep); }
+  .btn-ghost { background: transparent; color: var(--ink); border: 1px solid var(--chrome-mute); }
+  .btn-ghost:hover { background: var(--chrome-mute); }
+
+  .list { background: #fff; border: 1px solid var(--chrome-mute); border-radius: 12px; overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    text-align: left; font-size: 11px; font-weight: 700;
+    color: var(--muted); text-transform: uppercase; letter-spacing: 1.2px;
+    padding: 12px 14px; border-bottom: 1px solid var(--chrome-mute); background: var(--chrome);
+  }
+  tbody tr { border-bottom: 1px solid var(--chrome-mute); }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: var(--gold-fade); }
+  tbody td { padding: 12px 14px; vertical-align: middle; font-size: 13.5px; }
+  tbody td .name { font-weight: 700; color: var(--ink); }
+  tbody td .email { color: var(--gold-deep); font-size: 12.5px; }
+  tbody td .muted { color: var(--muted); font-size: 12.5px; }
+  tbody td.actions { text-align: right; white-space: nowrap; }
+  .stage {
+    display: inline-block; font-size: 10.5px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 1px;
+    padding: 3px 9px; border-radius: 999px;
+  }
+  .stage.lead      { background: rgba(168,136,74,0.18); color: var(--gold-deep); }
+  .stage.qualified { background: #ddeefd; color: #1d4ed8; }
+  .stage.customer  { background: #d1fae5; color: #065f46; }
+  .stage.inactive  { background: #f1f1ef; color: var(--muted); }
+
+  .icon-btn {
+    background: none; border: none; cursor: pointer;
+    color: var(--muted); padding: 6px 10px; border-radius: 6px;
+    font-size: 14px; transition: background 0.12s, color 0.12s;
+  }
+  .icon-btn:hover { background: var(--chrome-mute); color: var(--ink); }
+  .icon-btn.danger:hover { background: #fee2e2; color: #b91c1c; }
+
+  .empty { padding: 64px 20px; text-align: center; color: var(--muted); }
+  .empty .big { font-family: 'Cinzel', serif; font-size: 20px; color: var(--ink); margin-bottom: 6px; }
+
+  .panel { display: none; background: #fff; border: 1px solid var(--chrome-mute); border-radius: 12px; margin-bottom: 14px; padding: 18px; }
+  .panel.open { display: block; }
+  .panel h3 { margin: 0 0 12px; font-family: 'Cinzel', serif; font-size: 17px; color: var(--ink); }
+  .panel .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .panel label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  .panel input, .panel select, .panel textarea {
+    border: 1px solid var(--chrome-mute); border-radius: 8px;
+    padding: 9px 11px; font: inherit; font-size: 14px; color: var(--ink); background: #fff;
+    min-height: 38px;
+  }
+  .panel input:focus, .panel select:focus, .panel textarea:focus { outline: 2px solid var(--gold); outline-offset: -1px; border-color: var(--gold); }
+  .panel textarea { min-height: 60px; resize: vertical; }
+  .panel .full { grid-column: 1 / -1; }
+  .panel .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+
+  @media (max-width: 700px) {
+    .page { padding: 14px 14px 60px; }
+    .page-head h1 { font-size: 22px; }
+    table, thead, tbody, tr, td { display: block; }
+    thead { display: none; }
+    tbody tr {
+      background: #fff;
+      border: 1px solid var(--chrome-mute); border-radius: 10px;
+      margin-bottom: 10px; padding: 12px;
     }
-    .module-stub h2 { margin: 0 0 8px; font-size: 22px; }
-    .module-stub p { margin: 6px 0; color: #4b4b46; }
-    .module-stub .tag {
-      display: inline-block; padding: 3px 10px; border-radius: 999px;
-      background: #a8884a; color: #fff; font-size: 11px; font-weight: 700;
-      letter-spacing: 0.6px; text-transform: uppercase;
-    }
-    .module-stub ul { margin: 14px 0 0; padding-left: 22px; color: #1a1a1a; }
-    .module-stub li { padding: 3px 0; }
-    a { color: #a8884a; }
-  </style>
+    tbody td { padding: 4px 0; border: none; font-size: 14px; }
+    tbody td:before { content: attr(data-label); display: block; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 2px; }
+    tbody td.actions { text-align: left; padding-top: 8px; }
+    .list { background: transparent; border: 0; }
+    .panel .grid { grid-template-columns: 1fr; }
+  }
+
+  @media print {
+    header.topbar, .toolbar, .panel, .icon-btn, .page-head .meta { display: none !important; }
+    body { background: #fff; }
+    .list { box-shadow: none; border: 1px solid #ccc; }
+  }
+</style>
+<script src="bcc-api.js" defer></script>
 </head>
 <body>
-  <header class="topbar">
-    <img src="/bcc-logo.png" alt="BCC" />
-    <h1>CRM</h1>
-    <span class="grow"></span>
-  </header>
-  <main>
-    <div class="module-stub">
-      <span class="tag">Coming next</span>
-      <h2>CRM</h2>
-      <p>Contacts, companies, deals, and pipeline. Bulk CSV import + region filtering.</p>
-      <p>This page is a placeholder so the nav drawer doesn't 404. Real content
-      lands in a subsequent commit per the build plan.</p>
-      <ul>
-        <li><a href="/index.html">Back to Home</a></li>
-      </ul>
+
+<header class="topbar">
+  <a class="home" href="index.html">
+    <img src="bcc-logo.png" alt="Blue Collar Coach" />
+    <span class="wordmark">BLUE COLLAR <span class="light">COACH</span></span>
+  </a>
+  <span class="module">CRM</span>
+  <span style="flex:1;"></span>
+</header>
+
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1>Contacts</h1>
+      <div class="sub" id="subline">Loading…</div>
     </div>
-  </main>
+    <div class="meta" id="syncMeta"></div>
+  </div>
+
+  <div class="toolbar">
+    <div class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="q" type="search" placeholder="Search by name, email, company, or tag…" autocomplete="off" />
+    </div>
+    <select id="stageFilter" aria-label="Filter by stage">
+      <option value="">All stages</option>
+      <option value="lead">Lead</option>
+      <option value="qualified">Qualified</option>
+      <option value="customer">Customer</option>
+      <option value="inactive">Inactive</option>
+    </select>
+    <select id="regionFilter" aria-label="Filter by region">
+      <option value="">All regions</option>
+    </select>
+    <button class="btn btn-ghost" id="csvBtn" type="button">Import CSV</button>
+    <button class="btn btn-primary" id="newBtn" type="button">+ New contact</button>
+  </div>
+
+  <div class="panel" id="panel">
+    <h3>New contact</h3>
+    <div class="grid">
+      <label>First name<input id="f-first" type="text" required /></label>
+      <label>Last name<input id="f-last" type="text" /></label>
+      <label>Email<input id="f-email" type="email" /></label>
+      <label>Phone<input id="f-phone" type="tel" /></label>
+      <label>Title<input id="f-title" type="text" placeholder="Owner, GM, …" /></label>
+      <label>Company<input id="f-company" type="text" placeholder="Acme HVAC" /></label>
+      <label>City<input id="f-city" type="text" /></label>
+      <label>State / region<input id="f-state" type="text" placeholder="MN" /></label>
+      <label>Stage
+        <select id="f-stage">
+          <option value="lead">Lead</option>
+          <option value="qualified">Qualified</option>
+          <option value="customer">Customer</option>
+          <option value="inactive">Inactive</option>
+        </select>
+      </label>
+      <label>Tags<input id="f-tags" type="text" placeholder="hvac, signed, midwest" /></label>
+      <label class="full">Notes<textarea id="f-notes" rows="2"></textarea></label>
+    </div>
+    <div class="actions">
+      <button class="btn btn-ghost" id="cancelBtn" type="button">Cancel</button>
+      <button class="btn btn-primary" id="saveBtn" type="button">Save contact</button>
+    </div>
+  </div>
+
+  <input type="file" id="csvFile" accept=".csv,text/csv" style="display:none;" />
+
+  <div class="list" id="list" aria-live="polite">
+    <table id="tbl">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Company</th>
+          <th>Location</th>
+          <th>Stage</th>
+          <th>Tags</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden>
+      <div class="big">No contacts yet.</div>
+      <div>Add your first one with the "+ New contact" button, or import a CSV.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  /* Storage model:
+   * Each contact is one localStorage key: bcc-contact-<cuid>. The Storage
+   * setItem hook in bcc-api.js debounces 1.2s + PUTs to /api/data, so
+   * Cosmos picks it up automatically. No bespoke save endpoint needed. */
+  var KEY_PREFIX = 'bcc-contact-';
+  var REGION_BY_STATE = {
+    AK:'West',AZ:'West',CA:'West',CO:'West',HI:'West',ID:'West',MT:'West',NV:'West',NM:'West',OR:'West',UT:'West',WA:'West',WY:'West',
+    IA:'Midwest',IL:'Midwest',IN:'Midwest',KS:'Midwest',MI:'Midwest',MN:'Midwest',MO:'Midwest',ND:'Midwest',NE:'Midwest',OH:'Midwest',SD:'Midwest',WI:'Midwest',
+    AL:'South',AR:'South',DC:'South',DE:'South',FL:'South',GA:'South',KY:'South',LA:'South',MD:'South',MS:'South',NC:'South',OK:'South',SC:'South',TN:'South',TX:'South',VA:'South',WV:'South',
+    CT:'Northeast',MA:'Northeast',ME:'Northeast',NH:'Northeast',NJ:'Northeast',NY:'Northeast',PA:'Northeast',RI:'Northeast',VT:'Northeast'
+  };
+
+  function uid()   { return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 9); }
+  function nowIso(){ return new Date().toISOString(); }
+  function regionOf(s) { if (!s) return ''; var t = String(s).trim().toUpperCase().slice(0, 2); return REGION_BY_STATE[t] || ''; }
+  function esc(s)  { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
+
+  function allContacts() {
+    var out = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i);
+      if (!k || k.indexOf(KEY_PREFIX) !== 0) continue;
+      try { var c = JSON.parse(localStorage.getItem(k)); if (c && c.id) out.push(c); } catch (e) {}
+    }
+    return out.sort(function (a, b) { return (b.updatedAt || '').localeCompare(a.updatedAt || ''); });
+  }
+  function saveContact(c) {
+    c.updatedAt = nowIso();
+    if (!c.createdAt) c.createdAt = c.updatedAt;
+    if (!c.id) c.id = KEY_PREFIX + uid();
+    if (!c.tenantId) c.tenantId = 'blue-collar-coach';
+    c.docType = 'contact';
+    localStorage.setItem(c.id, JSON.stringify(c));
+    return c;
+  }
+  function deleteContact(id) { localStorage.removeItem(id); }
+
+  /* Render */
+  var qInput = document.getElementById('q');
+  var stageFilter = document.getElementById('stageFilter');
+  var regionFilter = document.getElementById('regionFilter');
+  var rowsEl = document.getElementById('rows');
+  var emptyEl = document.getElementById('empty');
+  var sublineEl = document.getElementById('subline');
+  var syncMetaEl = document.getElementById('syncMeta');
+
+  function render() {
+    var all = allContacts();
+    var q = (qInput.value || '').trim().toLowerCase();
+    var stage = stageFilter.value;
+    var region = regionFilter.value;
+
+    var matched = all.filter(function (c) {
+      if (stage && c.stage !== stage) return false;
+      if (region && regionOf(c.state) !== region) return false;
+      if (!q) return true;
+      var hay = [c.firstName, c.lastName, c.email, c.phone, c.company, c.city, c.state, (c.tags||[]).join(' ')].filter(Boolean).join(' ').toLowerCase();
+      return hay.indexOf(q) >= 0;
+    });
+
+    sublineEl.textContent = matched.length + ' of ' + all.length + ' contact' + (all.length === 1 ? '' : 's') + (q || stage || region ? ' shown' : '');
+
+    rowsEl.innerHTML = '';
+    if (matched.length === 0) {
+      emptyEl.hidden = false;
+      var firstChild = emptyEl.querySelector('.big');
+      if (firstChild) firstChild.textContent = all.length === 0 ? 'No contacts yet.' : 'No matches.';
+      return;
+    }
+    emptyEl.hidden = true;
+
+    var html = '';
+    matched.forEach(function (c) {
+      var name = ((c.firstName || '') + ' ' + (c.lastName || '')).trim() || '(no name)';
+      var loc = [c.city, c.state].filter(Boolean).join(', ');
+      var tags = (c.tags || []).map(function (t) { return esc(t); }).join(', ');
+      html +=
+        '<tr data-id="' + esc(c.id) + '">' +
+          '<td data-label="Name">' +
+            '<div class="name">' + esc(name) + (c.title ? ' <span class="muted">· ' + esc(c.title) + '</span>' : '') + '</div>' +
+            (c.email ? '<div class="email">' + esc(c.email) + '</div>' : '') +
+            (c.phone ? '<div class="muted">' + esc(c.phone) + '</div>' : '') +
+          '</td>' +
+          '<td data-label="Company">' + esc(c.company || '—') + '</td>' +
+          '<td data-label="Location">' + (loc ? esc(loc) : '<span class="muted">—</span>') + '</td>' +
+          '<td data-label="Stage"><span class="stage ' + esc(c.stage || 'lead') + '">' + esc(c.stage || 'lead') + '</span></td>' +
+          '<td data-label="Tags">' + (tags ? esc(tags) : '<span class="muted">—</span>') + '</td>' +
+          '<td class="actions">' +
+            '<button class="icon-btn danger" data-act="delete" title="Delete">&#10005;</button>' +
+          '</td>' +
+        '</tr>';
+    });
+    rowsEl.innerHTML = html;
+
+    var regions = {};
+    all.forEach(function (c) { var r = regionOf(c.state); if (r) regions[r] = true; });
+    var current = regionFilter.value;
+    regionFilter.innerHTML = '<option value="">All regions</option>' +
+      Object.keys(regions).sort().map(function (r) { return '<option value="' + esc(r) + '">' + esc(r) + '</option>'; }).join('');
+    regionFilter.value = current;
+  }
+
+  /* Events */
+  qInput.addEventListener('input', render);
+  stageFilter.addEventListener('change', render);
+  regionFilter.addEventListener('change', render);
+
+  var panel = document.getElementById('panel');
+  document.getElementById('newBtn').addEventListener('click', function () {
+    panel.classList.add('open');
+    document.getElementById('f-first').focus();
+    document.getElementById('f-first').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
+  document.getElementById('cancelBtn').addEventListener('click', function () {
+    panel.classList.remove('open'); resetForm();
+  });
+  function resetForm() {
+    ['f-first','f-last','f-email','f-phone','f-title','f-company','f-city','f-state','f-tags','f-notes'].forEach(function (id) { document.getElementById(id).value = ''; });
+    document.getElementById('f-stage').value = 'lead';
+  }
+  document.getElementById('saveBtn').addEventListener('click', function () {
+    var first = document.getElementById('f-first').value.trim();
+    if (!first) {
+      (window.bccNotify || alert)('First name is required.', 'warn');
+      document.getElementById('f-first').focus();
+      return;
+    }
+    var c = {
+      firstName: first,
+      lastName:  document.getElementById('f-last').value.trim(),
+      email:     document.getElementById('f-email').value.trim(),
+      phone:     document.getElementById('f-phone').value.trim(),
+      title:     document.getElementById('f-title').value.trim(),
+      company:   document.getElementById('f-company').value.trim(),
+      city:      document.getElementById('f-city').value.trim(),
+      state:     document.getElementById('f-state').value.trim(),
+      stage:     document.getElementById('f-stage').value || 'lead',
+      tags:      document.getElementById('f-tags').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean),
+      notes:     document.getElementById('f-notes').value.trim(),
+      ownerId:   (window.bccUser && window.bccUser.userDetails) || ''
+    };
+    saveContact(c);
+    if (window.bccAudit) window.bccAudit('contact-create', { key: c.id, path: '/crm.html' });
+    if (window.bccNotifySaved) window.bccNotifySaved('Contact saved.');
+    else (window.bccNotify || alert)('Saved.', 'success');
+    panel.classList.remove('open');
+    resetForm();
+    render();
+  });
+
+  rowsEl.addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-act]');
+    if (!btn) return;
+    var tr = btn.closest('tr'); if (!tr) return;
+    var id = tr.dataset.id;
+    if (btn.dataset.act === 'delete') {
+      if (!confirm('Delete this contact? This removes them from the cloud sync too.')) return;
+      deleteContact(id);
+      if (window.bccAudit) window.bccAudit('contact-delete', { key: id, path: '/crm.html' });
+      render();
+    }
+  });
+
+  document.getElementById('csvBtn').addEventListener('click', function () {
+    document.getElementById('csvFile').click();
+  });
+  document.getElementById('csvFile').addEventListener('change', function (e) {
+    var f = e.target.files && e.target.files[0]; if (!f) return;
+    (window.bccNotify || alert)('CSV import lands in the next commit. File noted: ' + f.name, 'warn');
+    e.target.value = '';
+  });
+
+  /* Bootstrap — bcc-api.js fires bcc-data-ready after it mirrors Cosmos
+   * into localStorage. Re-render then so cloud contacts show up. */
+  function init() {
+    if (syncMetaEl) syncMetaEl.textContent = 'Synced via bcc-api.js';
+    render();
+  }
+  window.addEventListener('bcc-data-ready', render);
+  window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
+  setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
+})();
+</script>
+
 </body>
 </html>
