@@ -4,43 +4,52 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Access denied &middot; BCC Connect</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
   * { box-sizing:border-box; }
   body {
     font-family:'Inter', system-ui, -apple-system, Segoe UI, Arial, sans-serif;
-    background:#f1f5f9; color:#1a1a1a;
+    background: radial-gradient(circle at top, #2b2b2b 0%, #1a1a1a 80%);
+    color:#f6f6f4;
     min-height:100vh; margin:0;
     display:flex; align-items:center; justify-content:center; padding:24px;
   }
   .card {
-    background:#fff; border-radius:14px; padding:32px 28px;
-    box-shadow:0 12px 40px rgba(15,23,42,0.10);
-    max-width:520px; width:100%; text-align:center;
+    background:#1f1f1f; border:1px solid #2e2c27; border-radius:14px;
+    padding:36px 30px; box-shadow:0 24px 60px rgba(0,0,0,0.45);
+    max-width:540px; width:100%; text-align:center;
   }
-  .card img { height:54px; margin-bottom:18px; }
-  .card h1 { color:#c8102e; font-size:24px; margin:0 0 6px; }
-  .card .lead { color:#1a1a1a; font-size:14px; line-height:1.55; margin:0 0 16px; }
-  .card .sub  { color:#64748b; font-size:13px; line-height:1.55; margin:0 0 14px; }
+  .card img { height:60px; margin-bottom:18px; }
+  .card h1 {
+    font-family:'Cinzel', serif; color:#a8884a;
+    font-size:26px; font-weight:700; letter-spacing:0.5px; margin:0 0 8px;
+  }
+  .card .lead { color:#e8e6e0; font-size:14px; line-height:1.6; margin:0 0 16px; }
+  .card .sub  { color:#8a877e; font-size:13px; line-height:1.55; margin:0 0 14px; }
   .card .who {
-    background:#fef2f2; color:#991b1b;
+    background:rgba(168,136,74,0.12); color:#d4b67a;
+    border:1px solid rgba(168,136,74,0.35);
     font-family:ui-monospace, SFMono-Regular, monospace;
     font-size:13px; padding:8px 14px;
-    border-radius:7px; display:inline-block; margin:0 0 16px;
+    border-radius:7px; display:inline-block; margin:0 0 18px;
     word-break:break-all;
   }
   .actions { display:flex; gap:8px; flex-direction:column; margin-top:8px; }
   .actions .btn {
     display:block; width:100%;
     padding:14px 18px; border-radius:9px;
-    text-decoration:none; font-weight:700; font-size:14px;
+    text-decoration:none; font-weight:700; font-size:14px; letter-spacing:0.3px;
     border:none; cursor:pointer; font-family:inherit;
   }
-  .btn-primary { background:#c8102e; color:#fff; }
-  .btn-primary:hover, .btn-primary:active { background:#9a0c22; }
-  .btn-ghost   { background:#f1f5f9; color:#1a1a1a; border:1px solid #e2e8f0; }
-  .btn-ghost:hover, .btn-ghost:active { background:#e2e8f0; }
-  .actions .small { font-size:12px; color:#64748b; margin-top:14px; }
-  .actions .small a { color:#1a1a1a; }
+  .btn-primary { background:#a8884a; color:#1a1a1a; }
+  .btn-primary:hover, .btn-primary:active { background:#c2a05c; }
+  .btn-ghost   { background:transparent; color:#e8e6e0; border:1px solid #3a3833; }
+  .btn-ghost:hover, .btn-ghost:active { background:#2a2823; }
+  .actions .small { font-size:12px; color:#8a877e; margin-top:14px; }
+  .actions .small a { color:#a8884a; text-decoration:none; font-weight:600; }
+  .actions .small a:hover { text-decoration:underline; }
 </style>
 </head>
 <body>

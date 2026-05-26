@@ -14,16 +14,16 @@
 <style>
   :root {
     --p-navy:#2b2b2b; --p-navy-dark:#1a1a1a; --p-navy-light:#374151;
-    --p-orange:#c8102e; --p-orange-soft:#ef4444;
+    --p-orange:#a8884a; --p-orange-soft:#ef4444;
     --p-cyan:#1d4ed8; --p-cream:#f3f4f6;
-    --p-slate:#1a1a1a; --p-gray:#64748b; --p-light:#f1f5f9;
-    --p-border:#e2e8f0; --p-green:#10b981; --p-red:#ef4444; --p-amber:#f59e0b;
+    --p-slate:#1a1a1a; --p-gray:#6b685f; --p-light:#f6f6f4;
+    --p-border:#e2e1dd; --p-green:#10b981; --p-red:#ef4444; --p-amber:#f59e0b;
   }
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { height:100%; }
   body {
     font-family:'Inter', system-ui, Segoe UI, Arial, sans-serif;
-    color:#1a1a1a; background:#f1f5f9; -webkit-font-smoothing:antialiased;
+    color:#1a1a1a; background:#f6f6f4; -webkit-font-smoothing:antialiased;
     min-height:100vh; display:flex; flex-direction:column;
   }
   header.topbar {
@@ -45,7 +45,7 @@
   .toolbar h1 { font-size:18px; font-weight:800; color:var(--p-navy); }
   .toolbar .lock-badge {
     display:inline-flex; align-items:center; gap:5px;
-    background:#fef2f2; color:#991b1b;
+    background:#faf4e8; color:#5c4520;
     padding:3px 9px; border-radius:6px; font-size:11px; font-weight:800;
     letter-spacing:0.5px; text-transform:uppercase;
   }
@@ -60,9 +60,9 @@
   }
   .btn { padding:8px 14px; border-radius:8px; border:none; cursor:pointer; font-weight:700; font-size:13px; }
   .btn-primary { background:var(--p-orange); color:#fff; box-shadow:0 2px 8px rgba(200,16,46,0.3); }
-  .btn-primary:hover { background:#9a0c22; }
+  .btn-primary:hover { background:#876d3a; }
   .btn-ghost { background:var(--p-light); color:var(--p-slate); border:1px solid var(--p-border); }
-  .btn-ghost:hover { background:#e2e8f0; }
+  .btn-ghost:hover { background:#e2e1dd; }
 
   /* Type chip filters */
   .type-filters { display:flex; gap:5px; flex-wrap:wrap; padding:10px 18px; background:#fff; border-bottom:1px solid var(--p-border); }
@@ -94,7 +94,7 @@
 
   /* View toggle (Table / Timeline) — sits in the toolbar */
   .view-toggle {
-    display:inline-flex; background:#f1f5f9;
+    display:inline-flex; background:#f6f6f4;
     border:1px solid var(--p-border); border-radius:8px;
     padding:2px;
   }
@@ -160,7 +160,7 @@
   .ev-method {
     display:inline-block; padding:1px 8px; border-radius:5px;
     font-size:11px; font-weight:800; letter-spacing:0.5px;
-    background:#e2e8f0; color:#475569;
+    background:#e2e1dd; color:#475569;
   }
   .ev-method.ev-m-get    { background:#dbeafe; color:#1e40af; }
   .ev-method.ev-m-post   { background:#dcfce7; color:#15803d; }
@@ -175,7 +175,7 @@
   /* Loading skeleton — animated gradient bars in the table cells */
   .sk {
     display:block; height:11px; border-radius:5px;
-    background:linear-gradient(90deg, #f1f5f9 0%, #e2e8f0 50%, #f1f5f9 100%);
+    background:linear-gradient(90deg, #f6f6f4 0%, #e2e1dd 50%, #f6f6f4 100%);
     background-size:200% 100%;
     animation: skShimmer 1.4s linear infinite;
   }
@@ -187,7 +187,7 @@
     100% { background-position: -100% 0; }
   }
   @media (prefers-reduced-motion: reduce) {
-    .sk { animation: none; background:#e2e8f0; }
+    .sk { animation: none; background:#e2e1dd; }
   }
 
   /* Timeline */
@@ -205,17 +205,17 @@
     font-size:15px;
   }
   .event.t-tm        .ic { background:#dbeafe; color:#1e40af; }
-  .event.t-pretrip   .ic { background:#fef2f2; color:#991b1b; }
+  .event.t-pretrip   .ic { background:#faf4e8; color:#5c4520; }
   .event.t-equip     .ic { background:#ecfeff; color:#1d4ed8; }
   .event.t-daily     .ic { background:#fff7ed; color:#9a3412; }
   .event.t-trucking  .ic { background:#fef3c7; color:#92400e; }
-  .event.t-maint     .ic { background:#fef2f2; color:#991b1b; }
-  .event.t-rate      .ic { background:var(--p-cream); color:#9a0c22; }
+  .event.t-maint     .ic { background:#faf4e8; color:#5c4520; }
+  .event.t-rate      .ic { background:var(--p-cream); color:#876d3a; }
   .event.t-chat      .ic { background:#ede9fe; color:#5b21b6; }
   .event.t-job-note  .ic { background:#d1fae5; color:#065f46; }
   .event.t-clock-in  .ic { background:#d1fae5; color:#065f46; }
   .event.t-clock-out .ic { background:#fef3c7; color:#92400e; }
-  .event.t-admin     .ic { background:#fee2e2; color:#991b1b; }
+  .event.t-admin     .ic { background:#fee2e2; color:#5c4520; }
 
   .event .body { flex:1; min-width:0; }
   .event .top  { display:flex; align-items:baseline; gap:8px; margin-bottom:2px; flex-wrap:wrap; }
@@ -231,7 +231,7 @@
   .event a.open {
     color:var(--p-orange); text-decoration:none; font-size:12px; font-weight:700; margin-left:6px;
   }
-  .event a.open:hover { color:#9a0c22; }
+  .event a.open:hover { color:#876d3a; }
 
   .day-sep {
     text-align:center; color:var(--p-gray);
@@ -502,7 +502,7 @@ function buildEvents() {
     const fails = (p.fails||[]).length;
     events.push({
       type:'pretrip', ts:p.at, user:p.driver || '(unknown)',
-      summary:`Pre-trip on ${p.vehicleName || 'vehicle'}${fails?` &mdash; <strong style="color:#991b1b;">${fails} fail${fails>1?'s':''}</strong>`:' &mdash; clear'}`,
+      summary:`Pre-trip on ${p.vehicleName || 'vehicle'}${fails?` &mdash; <strong style="color:#5c4520;">${fails} fail${fails>1?'s':''}</strong>`:' &mdash; clear'}`,
       meta:p.odometer ? `Odometer: ${p.odometer}` : '',
       location:p.location, link:'inspections.html#past'
     });
@@ -551,7 +551,7 @@ function buildEvents() {
     if (t.createdAt) events.push({
       type:'maint', ts:t.createdAt, user:t.reportedBy || '(unknown)',
       summary:`Ticket opened: ${escapeHtml(t.summary || '')}`,
-      meta:`from ${t.source} &middot; ${t.category}${t.severity==='high'?' &middot; <strong style="color:#991b1b;">URGENT</strong>':''}`,
+      meta:`from ${t.source} &middot; ${t.category}${t.severity==='high'?' &middot; <strong style="color:#5c4520;">URGENT</strong>':''}`,
       location:t.location, link:'maintenance.html'
     });
     (t.timeline||[]).forEach(tl => {
@@ -640,10 +640,10 @@ function buildEvents() {
       ? (a.method + ' ' + (a.path || ''))
       : (AUDIT_ACTION_LABEL[a.action] || a.action);
 
-    const ipBit  = a.ip ? `<span style="color:#64748b;">IP <code>${escapeHtml(a.ip)}</code></span>` : '';
-    const uaBit  = a.userAgent ? `<span style="color:#64748b;">${escapeHtml(uaShort(a.userAgent))}</span>` : '';
-    const pathBit = !isAccess && a.path ? `<span style="color:#94a3b8;font-family:ui-monospace,monospace;font-size:11px;">${escapeHtml(a.path)}</span>` : '';
-    const keyBit  = a.key ? `<code style="color:#64748b;font-size:11px;">${escapeHtml(a.key)}</code>` : '';
+    const ipBit  = a.ip ? `<span style="color:#6b685f;">IP <code>${escapeHtml(a.ip)}</code></span>` : '';
+    const uaBit  = a.userAgent ? `<span style="color:#6b685f;">${escapeHtml(uaShort(a.userAgent))}</span>` : '';
+    const pathBit = !isAccess && a.path ? `<span style="color:#8a877e;font-family:ui-monospace,monospace;font-size:11px;">${escapeHtml(a.path)}</span>` : '';
+    const keyBit  = a.key ? `<code style="color:#6b685f;font-size:11px;">${escapeHtml(a.key)}</code>` : '';
     const detail  = fmtAuditMeta(a.meta);
 
     // Stack: line 1 = detail (job name, customer, etc.), line 2 = IP / UA / path.
@@ -843,7 +843,7 @@ function renderTable(events) {
     const path = (r.isAccess ? '' : (r.path || ''));  // path shown inside event cell for access
     const statusVal = (typeof r.status === 'number') ? r.status : null;
     const statusCell = statusVal == null
-      ? '<span style="color:#94a3b8;">—</span>'
+      ? '<span style="color:#8a877e;">—</span>'
       : `<span class="st-${Math.floor(statusVal/100)}xx">${statusVal}</span>`;
 
     return `
@@ -854,9 +854,9 @@ function renderTable(events) {
         </td>
         <td class="t-event">${eventCell}</td>
         <td class="t-user">${escapeHtml(displayUser(e.user))}</td>
-        <td class="t-ip">${ip ? `<code>${escapeHtml(ip)}</code>` : '<span style="color:#94a3b8;">—</span>'}</td>
-        <td class="t-method">${r.isAccess ? `<span class="ev-method ev-m-${(method||'').toLowerCase()}">${escapeHtml(method)}</span>` : '<span style="color:#94a3b8;">—</span>'}</td>
-        <td class="t-path">${path ? `<code>${escapeHtml(path)}</code>` : '<span style="color:#94a3b8;">—</span>'}</td>
+        <td class="t-ip">${ip ? `<code>${escapeHtml(ip)}</code>` : '<span style="color:#8a877e;">—</span>'}</td>
+        <td class="t-method">${r.isAccess ? `<span class="ev-method ev-m-${(method||'').toLowerCase()}">${escapeHtml(method)}</span>` : '<span style="color:#8a877e;">—</span>'}</td>
+        <td class="t-path">${path ? `<code>${escapeHtml(path)}</code>` : '<span style="color:#8a877e;">—</span>'}</td>
         <td class="t-status">${statusCell}</td>
       </tr>
     `;

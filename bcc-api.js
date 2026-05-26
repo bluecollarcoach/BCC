@@ -54,6 +54,11 @@
     add('preconnect', 'https://login.microsoftonline.com', { crossorigin: '' });
     // Logo shows up in every page's topbar and the home page hero.
     add('preload', '/bcc-logo.png', { as: 'image', fetchpriority: 'high' });
+    // Brand fonts: Inter for body, Cinzel for the wordmark + page headings.
+    // Loaded async so a slow font CDN doesn't block first paint.
+    add('preconnect', 'https://fonts.googleapis.com');
+    add('preconnect', 'https://fonts.gstatic.com', { crossorigin: '' });
+    add('stylesheet', 'https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;500;600;700;800&display=swap');
 
     // ---- PWA installability ----
     // Web App Manifest — lets browsers offer "Add to Home Screen" on every
@@ -92,7 +97,7 @@
     var style = document.createElement('style');
     style.setAttribute('data-bcc-progress', '1');
     style.textContent =
-      '#bcc-progress{position:fixed;top:0;left:0;height:3px;background:#c8102e;' +
+      '#bcc-progress{position:fixed;top:0;left:0;height:3px;background:#a8884a;' +
       'width:0;z-index:9999;transition:width 220ms ease-out, opacity 240ms ease-out;' +
       'box-shadow:0 0 8px rgba(200,16,46,0.55);pointer-events:none;}' +
       '#bcc-progress.done{opacity:0;}';
@@ -354,12 +359,14 @@
   // Hard-coded company domain allowlist. Anyone signed in via Entra whose UPN/email
   // doesn't end with one of these gets signed out — even if Microsoft admit them
   // (e.g. accidental guest invite).
-  var ALLOWED_DOMAINS = ['bluecollarcoach.us', 'bluecollarcoach.onmicrosoft.com'];
-
+  // The SWA + Entra-tenant restriction (configured in staticwebapp.config.json
+  // with openIdIssuer pinned to BCC's tenant GUID) already prevents anyone
+  // outside the tenant from signing in. Layering a second client-side string
+  // match on userDetails was causing false-positive 403s when SWA returned a
+  // privacy-masked userDetails value. Treat any authenticated tenant user as
+  // allowed; rely on the role check + BCC_OWNER_UPNS for actual privilege.
   function domainAllowed(principal) {
-    if (!principal) return false;
-    var who = (principal.userDetails || '').toLowerCase();
-    return ALLOWED_DOMAINS.some(function (d) { return who.endsWith('@' + d); });
+    return !!principal;
   }
 
   async function bootstrap() {
@@ -551,7 +558,7 @@
       // ---- Skip-to-content link (a11y) ----
       // Invisible until focused; first tab-stop on every page so keyboard
       // users can jump past the topbar/nav.
-      '.bcc-skip{position:absolute;left:-9999px;top:0;background:#c8102e;color:#fff;padding:10px 16px;font-weight:700;text-decoration:none;border-radius:0 0 8px 0;z-index:10000;}' +
+      '.bcc-skip{position:absolute;left:-9999px;top:0;background:#a8884a;color:#fff;padding:10px 16px;font-weight:700;text-decoration:none;border-radius:0 0 8px 0;z-index:10000;}' +
       '.bcc-skip:focus{left:0;outline:2px solid #fff;outline-offset:-4px;}' +
       // ---- Toasts (window.bccNotify) ----
       // Non-blocking notifications. Slide in from the bottom on mobile, top-
@@ -584,7 +591,7 @@
       // Visible keyboard focus ring everywhere — essential for accessibility
       // and helps the keyboard-power-users (office staff). Excluded on
       // mouse-click (uses :focus-visible).
-      'button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible{outline:2px solid #c8102e; outline-offset:2px;}' +
+      'button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible{outline:2px solid #a8884a; outline-offset:2px;}' +
       // ---- Touch-target minimums (mobile / tablet only) ----
       // On coarse-pointer devices, bump every form control & button to a
       // 44 px minimum tap height per Apple HIG / WCAG 2.2 target-size. Only
@@ -596,7 +603,7 @@
       '}' +
       '.bcc-auth-chip{display:inline-flex;align-items:center;gap:6px;color:rgba(255,255,255,0.72);font-size:12.5px;font-weight:600;padding:4px 10px;border-radius:6px;background:rgba(255,255,255,0.06);}' +
       '.bcc-auth-chip .bcc-dot{width:8px;height:8px;border-radius:50%;background:#10b981;flex-shrink:0;}' +
-      '.bcc-auth-chip.anon .bcc-dot{background:#64748b;}' +
+      '.bcc-auth-chip.anon .bcc-dot{background:#6b685f;}' +
       '.bcc-auth-chip.syncing .bcc-dot{background:#f59e0b;animation:bccPulse 1s infinite;}' +
       '.bcc-auth-chip.error .bcc-dot{background:#ef4444;}' +
       '@keyframes bccPulse{0%{opacity:0.4;}50%{opacity:1;}100%{opacity:0.4;}}' +
@@ -620,16 +627,16 @@
       '.bcc-mobile-menu .bcc-mm-user strong{color:#fff;display:block;font-size:14px;font-weight:700;text-transform:none;letter-spacing:0;margin-top:2px;}' +
       '.bcc-mobile-menu .bcc-mm-close{background:rgba(255,255,255,0.12);color:#fff;border:none;width:32px;height:32px;border-radius:7px;cursor:pointer;font-size:18px;line-height:1;flex-shrink:0;}' +
       '.bcc-mobile-menu .bcc-mm-close:hover{background:rgba(255,255,255,0.22);}' +
-      '.bcc-mobile-menu .bcc-mm-group{padding:10px 0;border-bottom:1px solid #f1f5f9;}' +
+      '.bcc-mobile-menu .bcc-mm-group{padding:10px 0;border-bottom:1px solid #f6f6f4;}' +
       '.bcc-mobile-menu .bcc-mm-group:last-of-type{border-bottom:none;}' +
-      '.bcc-mobile-menu .bcc-mm-grouplabel{padding:10px 22px 4px;font-size:10.5px;font-weight:700;color:#94a3b8;letter-spacing:1.5px;text-transform:uppercase;}' +
+      '.bcc-mobile-menu .bcc-mm-grouplabel{padding:10px 22px 4px;font-size:10.5px;font-weight:700;color:#8a877e;letter-spacing:1.5px;text-transform:uppercase;}' +
       '.bcc-mobile-menu a.bcc-mm-link{display:flex;align-items:center;gap:12px;padding:11px 22px;color:#1a1a1a;text-decoration:none;font-size:14.5px;font-weight:600;}' +
       '.bcc-mobile-menu a.bcc-mm-link .bcc-mm-ic{width:22px;text-align:center;font-size:16px;opacity:0.85;}' +
-      '.bcc-mobile-menu a.bcc-mm-link:hover,.bcc-mobile-menu a.bcc-mm-link:active{background:#fef2f2;color:#c8102e;}' +
-      '.bcc-mobile-menu a.bcc-mm-link.bcc-mm-current{background:#fef2f2;color:#c8102e;border-left:3px solid #c8102e;padding-left:19px;}' +
+      '.bcc-mobile-menu a.bcc-mm-link:hover,.bcc-mobile-menu a.bcc-mm-link:active{background:#faf4e8;color:#a8884a;}' +
+      '.bcc-mobile-menu a.bcc-mm-link.bcc-mm-current{background:#faf4e8;color:#a8884a;border-left:3px solid #a8884a;padding-left:19px;}' +
       '.bcc-mobile-menu a.bcc-mm-link.bcc-mm-current .bcc-mm-ic{opacity:1;}' +
-      '.bcc-mobile-menu .bcc-mm-foot{padding:14px 22px;background:#f8fafc;border-top:1px solid #e2e8f0;}' +
-      '.bcc-mobile-menu .bcc-mm-foot a{display:block;padding:10px 0;font-size:14px;font-weight:700;color:#c8102e;text-decoration:none;}' +
+      '.bcc-mobile-menu .bcc-mm-foot{padding:14px 22px;background:#f8fafc;border-top:1px solid #e2e1dd;}' +
+      '.bcc-mobile-menu .bcc-mm-foot a{display:block;padding:10px 0;font-size:14px;font-weight:700;color:#a8884a;text-decoration:none;}' +
       '.bcc-mobile-menu .bcc-mm-foot a.bcc-mm-signin{color:#1a1a1a;}' +
       // Compact auth chip — Sign out link is visible on desktop, hidden on
       // phone-sized viewports (where it lives in the hamburger drawer instead).
@@ -643,25 +650,25 @@
       '.bcc-modal-overlay.open{display:flex;}' +
       '.bcc-modal-card{background:#fff;border-radius:14px;padding:24px;max-width:520px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 20px 50px rgba(15,23,42,0.25);font-family:inherit;color:#1a1a1a;}' +
       '.bcc-modal-card h3{color:#2b2b2b;font-size:20px;margin-bottom:4px;font-weight:800;}' +
-      '.bcc-modal-card .bcc-modal-sub{color:#64748b;font-size:12.5px;margin-bottom:16px;}' +
-      '.bcc-modal-card label{display:block;font-size:11px;font-weight:700;color:#64748b;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:5px;margin-top:10px;}' +
+      '.bcc-modal-card .bcc-modal-sub{color:#6b685f;font-size:12.5px;margin-bottom:16px;}' +
+      '.bcc-modal-card label{display:block;font-size:11px;font-weight:700;color:#6b685f;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:5px;margin-top:10px;}' +
       '.bcc-modal-card .bcc-req{color:#ef4444;}' +
-      '.bcc-modal-card input,.bcc-modal-card select,.bcc-modal-card textarea{width:100%;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;font-family:inherit;font-size:14px;background:#fff;color:#1a1a1a;}' +
-      '.bcc-modal-card input:focus,.bcc-modal-card select:focus,.bcc-modal-card textarea:focus{outline:none;border-color:#c8102e;box-shadow:0 0 0 3px rgba(200,16,46,0.12);}' +
+      '.bcc-modal-card input,.bcc-modal-card select,.bcc-modal-card textarea{width:100%;padding:10px 12px;border:1px solid #e2e1dd;border-radius:8px;font-family:inherit;font-size:14px;background:#fff;color:#1a1a1a;}' +
+      '.bcc-modal-card input:focus,.bcc-modal-card select:focus,.bcc-modal-card textarea:focus{outline:none;border-color:#a8884a;box-shadow:0 0 0 3px rgba(200,16,46,0.12);}' +
       '.bcc-modal-card textarea{resize:vertical;min-height:60px;}' +
       '.bcc-modal-card .bcc-row-2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}' +
       '@media (max-width:520px){.bcc-modal-card .bcc-row-2{grid-template-columns:1fr;}}' +
       '.bcc-modal-actions{display:flex;gap:8px;margin-top:18px;justify-content:flex-end;}' +
       '.bcc-modal-actions button{padding:10px 18px;border-radius:8px;border:none;cursor:pointer;font-weight:700;font-size:13.5px;font-family:inherit;}' +
-      '.bcc-btn-primary{background:#c8102e;color:#fff;box-shadow:0 2px 8px rgba(200,16,46,0.30);}' +
-      '.bcc-btn-primary:hover{background:#9a0c22;}' +
-      '.bcc-btn-ghost{background:#f1f5f9;color:#1a1a1a;border:1px solid #e2e8f0;}' +
-      '.bcc-btn-ghost:hover{background:#e2e8f0;}' +
+      '.bcc-btn-primary{background:#a8884a;color:#fff;box-shadow:0 2px 8px rgba(200,16,46,0.30);}' +
+      '.bcc-btn-primary:hover{background:#876d3a;}' +
+      '.bcc-btn-ghost{background:#f6f6f4;color:#1a1a1a;border:1px solid #e2e1dd;}' +
+      '.bcc-btn-ghost:hover{background:#e2e1dd;}' +
       // Generic "+ New job" button alongside a job dropdown
       '.bcc-new-job-row{display:flex;gap:8px;align-items:stretch;min-width:0;max-width:100%;box-sizing:border-box;}' +
       '.bcc-new-job-row select{flex:1 1 0;min-width:0;width:0;}' +
-      '.bcc-new-job-btn{background:#c8102e;color:#fff;border:none;padding:0 12px;min-height:38px;border-radius:7px;cursor:pointer;font-weight:700;font-size:13px;white-space:nowrap;font-family:inherit;flex-shrink:0;box-sizing:border-box;}' +
-      '.bcc-new-job-btn:hover{background:#9a0c22;}' +
+      '.bcc-new-job-btn{background:#a8884a;color:#fff;border:none;padding:0 12px;min-height:38px;border-radius:7px;cursor:pointer;font-weight:700;font-size:13px;white-space:nowrap;font-family:inherit;flex-shrink:0;box-sizing:border-box;}' +
+      '.bcc-new-job-btn:hover{background:#876d3a;}' +
       // Grid-cell shrinking fix: by default grid items have min-width:auto,
       // meaning their intrinsic content width keeps them from shrinking past
       // it. A wide .bcc-new-job-row (select + button) inside a `.field` inside

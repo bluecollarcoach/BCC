@@ -14,10 +14,10 @@
 <style>
   :root {
     --p-navy:#2b2b2b; --p-navy-dark:#1a1a1a; --p-navy-light:#374151;
-    --p-orange:#c8102e; --p-orange-soft:#ef4444;
+    --p-orange:#a8884a; --p-orange-soft:#ef4444;
     --p-cyan:#1d4ed8; --p-cream:#f3f4f6;
-    --p-slate:#1a1a1a; --p-gray:#64748b; --p-light:#f1f5f9;
-    --p-border:#e2e8f0; --p-green:#10b981; --p-red:#ef4444; --p-amber:#f59e0b;
+    --p-slate:#1a1a1a; --p-gray:#6b685f; --p-light:#f6f6f4;
+    --p-border:#e2e1dd; --p-green:#10b981; --p-red:#ef4444; --p-amber:#f59e0b;
   }
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { height:100%; }
@@ -54,10 +54,10 @@
     padding:10px 16px; border-radius:8px; font-size:13.5px; font-weight:700;
     cursor:pointer; color:var(--p-slate); white-space:nowrap;
     display:inline-flex; align-items:center; gap:6px;
-    background:#f1f5f9; border:1px solid var(--p-border);
+    background:#f6f6f4; border:1px solid var(--p-border);
     transition:background 0.15s, color 0.15s, border-color 0.15s;
   }
-  .tabs-bar .tab:hover { background:#e2e8f0; }
+  .tabs-bar .tab:hover { background:#e2e1dd; }
   .tabs-bar .tab.active { background:var(--p-navy); color:#fff; border-color:var(--p-navy); }
   .tabs-bar .tab .ct {
     background:#fff; color:var(--p-slate);
@@ -94,8 +94,8 @@
     background:var(--p-light); color:var(--p-slate);
     padding:4px 10px; border-radius:999px; margin-bottom:10px;
   }
-  .type-pill.t-emergency   { background:#fef2f2; color:var(--p-red); }
-  .type-pill.t-firehydrant { background:#fef2f2; color:var(--p-red); }
+  .type-pill.t-emergency   { background:#faf4e8; color:var(--p-red); }
+  .type-pill.t-firehydrant { background:#faf4e8; color:var(--p-red); }
   .type-pill.t-hydrovac    { background:#ecfeff; color:#1d4ed8; }
   .type-pill.t-excavation  { background:#fffbeb; color:#b45309; }
 
@@ -146,7 +146,7 @@
   .btn-tm        { background:var(--p-navy); color:#fff; }
   .btn-tm:hover  { background:var(--p-navy-light); }
   .btn-issue     { background:#fff; color:var(--p-orange); border:1px solid var(--p-orange); }
-  .btn-issue:hover { background:#fef2f2; }
+  .btn-issue:hover { background:#faf4e8; }
   .btn-full      { grid-column: span 2; }
 
   .clock-status {
@@ -166,7 +166,7 @@
     color:inherit; text-decoration:none;
     transition:border-color 0.12s, background 0.12s, box-shadow 0.12s;
   }
-  .up-card:hover { border-color:var(--p-orange); background:#fef2f2; box-shadow:0 4px 12px rgba(15,23,42,0.06); }
+  .up-card:hover { border-color:var(--p-orange); background:#faf4e8; box-shadow:0 4px 12px rgba(15,23,42,0.06); }
   .up-card:focus-visible { outline:2px solid var(--p-orange); outline-offset:2px; }
   .up-card .day {
     width:46px; text-align:center; flex-shrink:0;
@@ -300,11 +300,11 @@
   }
   .photo-grid .upload {
     aspect-ratio:1; background:var(--p-cream); border:2px dashed var(--p-orange);
-    border-radius:8px; cursor:pointer; color:#9a0c22;
+    border-radius:8px; cursor:pointer; color:#876d3a;
     display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px;
     font-size:12px; font-weight:700; text-align:center; padding:8px;
   }
-  .photo-grid .upload:hover { background:#fef2f2; }
+  .photo-grid .upload:hover { background:#faf4e8; }
 
   /* Sticky action bar at the bottom of the Submit Log form. Buttons are full-
      size with proper height so they read clearly as primary/secondary actions. */
@@ -322,7 +322,7 @@
     .form-actions .btn { width:100%; }
   }
   .btn-primary { background:var(--p-orange); color:#fff; box-shadow:0 2px 8px rgba(200,16,46,0.3); }
-  .btn-primary:hover { background:#9a0c22; }
+  .btn-primary:hover { background:#876d3a; }
   .btn-ghost   { background:#fff; color:var(--p-slate); border:1px solid var(--p-border); }
   .btn-ghost:hover { background:var(--p-light); }
 

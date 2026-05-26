@@ -33,3 +33,4 @@ desktop.ini
 .vscode/*
 !.vscode/extensions.json
 .idea/
+infra/main.parameters.bcc.json

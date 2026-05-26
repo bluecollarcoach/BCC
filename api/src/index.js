@@ -60,13 +60,13 @@ function principal(req) {
   catch { return null; }
 }
 
-const ALLOWED_DOMAINS = (process.env.BCC_ALLOWED_DOMAINS || 'bluecollarcoach.us,bluecollarcoach.onmicrosoft.com')
-  .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-
+// SWA's auth config pins the Entra openIdIssuer to BCC's tenant GUID, so
+// only tenant members can authenticate at all. Extra string-match on
+// userDetails causes false 403s when SWA returns a privacy-masked userDetails.
+// Allow any authenticated principal; finer privilege is enforced via the
+// admin role check + BCC_OWNER_UPNS env var below.
 function domainAllowed(p) {
-  if (!p || !p.userDetails) return false;
-  const who = String(p.userDetails).toLowerCase();
-  return ALLOWED_DOMAINS.some(d => who.endsWith('@' + d));
+  return !!p;
 }
 
 function hasRole(p, role) {

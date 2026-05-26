@@ -107,7 +107,7 @@ self.addEventListener('fetch', (event) => {
         }
         return new Response(
           '<!doctype html><meta charset="utf-8"><title>Offline</title>' +
-          '<body style="font:14px/1.5 system-ui;padding:30px;color:#1a1a1a;background:#f1f5f9">' +
+          '<body style="font:14px/1.5 system-ui;padding:30px;color:#1a1a1a;background:#f6f6f4">' +
           '<h2>You are offline</h2><p>This page hasn\'t been cached for offline use yet. Reconnect and try again.</p></body>',
           { status: 503, headers: { 'content-type': 'text/html; charset=utf-8' } }
         );

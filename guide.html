@@ -13,10 +13,10 @@
 <style>
   :root {
     --p-navy:#2b2b2b; --p-navy-dark:#1a1a1a; --p-navy-light:#374151;
-    --p-orange:#c8102e; --p-orange-soft:#ef4444;
+    --p-orange:#a8884a; --p-orange-soft:#ef4444;
     --p-cyan:#1d4ed8; --p-cream:#f3f4f6;
-    --p-slate:#1a1a1a; --p-gray:#64748b; --p-light:#f1f5f9;
-    --p-border:#e2e8f0; --p-green:#10b981; --p-red:#ef4444; --p-amber:#f59e0b;
+    --p-slate:#1a1a1a; --p-gray:#6b685f; --p-light:#f6f6f4;
+    --p-border:#e2e1dd; --p-green:#10b981; --p-red:#ef4444; --p-amber:#f59e0b;
   }
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { height:100%; }
@@ -106,7 +106,7 @@
   .content h2 .ic {
     width:32px; height:32px; background:var(--p-cream); border-radius:8px;
     display:inline-flex; align-items:center; justify-content:center;
-    color:#9a0c22; font-size:16px;
+    color:#876d3a; font-size:16px;
   }
   .content h2:first-of-type { border-top:none; padding-top:0; margin-top:18px; }
 
@@ -120,10 +120,10 @@
   .content ul, .content ol { margin:6px 0 14px 22px; }
   .content li { font-size:14.5px; color:var(--p-slate); margin-bottom:5px; }
   .content a {
-    color:#9a0c22; font-weight:600; text-decoration:none;
+    color:#876d3a; font-weight:600; text-decoration:none;
     border-bottom:1px solid rgba(15,118,110,0.3);
   }
-  .content a:hover { border-bottom-color:#9a0c22; }
+  .content a:hover { border-bottom-color:#876d3a; }
 
   .content .role-line {
     display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px;
@@ -133,8 +133,8 @@
     border-radius:6px; font-size:11px; font-weight:700; letter-spacing:0.5px; text-transform:uppercase;
   }
   .content .role-pill.field { background:#e0f2fe; color:#075985; }
-  .content .role-pill.office { background:var(--p-cream); color:#9a0c22; }
-  .content .role-pill.maint { background:#fef2f2; color:#991b1b; }
+  .content .role-pill.office { background:var(--p-cream); color:#876d3a; }
+  .content .role-pill.maint { background:#faf4e8; color:#5c4520; }
   .content .role-pill.driver { background:#fef3c7; color:#92400e; }
   .content .role-pill.everyone { background:#ede9fe; color:#5b21b6; }
 
@@ -143,14 +143,14 @@
     padding:6px 14px; border-radius:7px; font-size:12px; font-weight:700;
     text-decoration:none; border:none; margin-top:4px;
   }
-  .content .open-btn:hover { background:#9a0c22; border-bottom-color:transparent; color:#fff; }
+  .content .open-btn:hover { background:#876d3a; border-bottom-color:transparent; color:#fff; }
 
   .content .tip {
     background:var(--p-cream); border-left:3px solid var(--p-orange);
     padding:10px 14px; border-radius:7px; margin:10px 0;
     font-size:13.5px; color:#134e4a;
   }
-  .content .tip strong { color:#9a0c22; }
+  .content .tip strong { color:#876d3a; }
   .content .warn {
     background:#fef3c7; border-left:3px solid var(--p-amber);
     padding:10px 14px; border-radius:7px; margin:10px 0;
@@ -166,7 +166,7 @@
   }
   .content code {
     background:var(--p-light); padding:1px 6px; border-radius:4px;
-    font-family:ui-monospace, SFMono-Regular, monospace; font-size:13px; color:#9a0c22;
+    font-family:ui-monospace, SFMono-Regular, monospace; font-size:13px; color:#876d3a;
   }
 
   .content .quick-start {
@@ -489,7 +489,7 @@
 
     <h3>Stock tab</h3>
     <ul>
-      <li>Search filters live. Each row shows on-hand qty, location, status (<span style="color:#065f46;font-weight:700;">OK</span>, <span style="color:#92400e;font-weight:700;">LOW</span>, <span style="color:#991b1b;font-weight:700;">OUT</span>), and reorder threshold.</li>
+      <li>Search filters live. Each row shows on-hand qty, location, status (<span style="color:#065f46;font-weight:700;">OK</span>, <span style="color:#92400e;font-weight:700;">LOW</span>, <span style="color:#5c4520;font-weight:700;">OUT</span>), and reorder threshold.</li>
       <li>Use <strong>+ / &minus;</strong> buttons (or type) to adjust quantity as you use or restock items.</li>
       <li>Click <strong>&#9881;</strong> on a row to edit name, category, location, unit, qty, or reorder threshold.</li>
       <li>Hit <strong>+ Add item</strong> to add a new inventory line.</li>
@@ -499,7 +499,7 @@
     <p>Replaces the &ldquo;Groceries&rdquo; app. The list auto-fills from two sources:</p>
     <ul>
       <li><strong>Low-stock items</strong> (qty &le; reorder threshold) &mdash; tagged <span class="role-pill" style="background:#ecfeff;color:#1d4ed8;">AUTO</span>.</li>
-      <li><strong>Parts requests</strong> from Equipment Check or field issue reports &mdash; tagged <span class="role-pill" style="background:#fef2f2;color:#991b1b;">MAINT</span>.</li>
+      <li><strong>Parts requests</strong> from Equipment Check or field issue reports &mdash; tagged <span class="role-pill" style="background:#faf4e8;color:#5c4520;">MAINT</span>.</li>
     </ul>
     <p>You can also type items directly into the &ldquo;Add to list&rdquo; box. At the supply house, tap each item&rsquo;s checkbox as you pick it up; checked items move to a <em>Picked up</em> section at the bottom.</p>
 

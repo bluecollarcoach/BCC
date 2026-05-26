@@ -26,7 +26,7 @@ param location string = resourceGroup().location
 
 @description('SWA region (Free SKU is only available in select regions).')
 @allowed([ 'centralus', 'eastus2', 'westus2', 'westeurope', 'eastasia' ])
-param swaLocation string = 'centralus'
+param swaLocation string = 'westus2'
 
 @description('Enable Cosmos Free Tier (1000 RU/s + 25 GB). Only one free-tier account allowed per subscription.')
 param enableCosmosFreeTier bool = true

@@ -13,10 +13,10 @@
 <style>
   :root {
     --p-navy:#2b2b2b; --p-navy-dark:#1a1a1a; --p-navy-light:#374151;
-    --p-orange:#c8102e; --p-orange-soft:#ef4444;
+    --p-orange:#a8884a; --p-orange-soft:#ef4444;
     --p-cyan:#1d4ed8; --p-cream:#f3f4f6;
-    --p-slate:#1a1a1a; --p-gray:#64748b; --p-light:#f1f5f9;
-    --p-border:#e2e8f0; --p-green:#10b981; --p-red:#ef4444; --p-amber:#f59e0b;
+    --p-slate:#1a1a1a; --p-gray:#6b685f; --p-light:#f6f6f4;
+    --p-border:#e2e1dd; --p-green:#10b981; --p-red:#ef4444; --p-amber:#f59e0b;
   }
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { height:100%; }
@@ -57,7 +57,7 @@
     background:var(--p-light); border:1px solid var(--p-border); padding:7px 12px;
     border-radius:8px; cursor:pointer; font-weight:600; color:var(--p-slate); font-size:13px;
   }
-  .week-nav button:hover { background:#e2e8f0; }
+  .week-nav button:hover { background:#e2e1dd; }
   .week-nav .week-label { font-weight:700; color:var(--p-navy); padding:0 8px; font-size:13px; }
   .toolbar .spacer { flex:1; }
   .btn-primary {
@@ -65,7 +65,7 @@
     border-radius:8px; cursor:pointer; font-weight:700; font-size:13px;
     box-shadow:0 2px 8px rgba(200,16,46,0.3); transition:all 0.15s;
   }
-  .btn-primary:hover { background:#9a0c22; transform:translateY(-1px); }
+  .btn-primary:hover { background:#876d3a; transform:translateY(-1px); }
   .btn-ghost {
     background:transparent; border:1px solid var(--p-border); padding:8px 12px;
     border-radius:8px; cursor:pointer; font-weight:600; font-size:13px; color:var(--p-slate);
@@ -91,7 +91,7 @@
 
   /* ---------- View toggle (Week / Month) ---------- */
   .view-toggle {
-    display:inline-flex; gap:0; background:#f1f5f9;
+    display:inline-flex; gap:0; background:#f6f6f4;
     border:1px solid var(--p-border); border-radius:8px;
     padding:3px; margin-left:8px;
   }
@@ -161,7 +161,7 @@
     transition:border-color 0.12s, background 0.12s, box-shadow 0.12s;
   }
   .day-job:last-child { margin-bottom:0; }
-  .day-job:hover { border-color:var(--p-orange); background:#fef2f2; box-shadow:0 4px 12px rgba(15,23,42,0.06); }
+  .day-job:hover { border-color:var(--p-orange); background:#faf4e8; box-shadow:0 4px 12px rgba(15,23,42,0.06); }
   .day-job .top { display:flex; align-items:center; gap:8px; margin-bottom:4px; flex-wrap:wrap; }
   .day-job .idx {
     background:var(--p-navy); color:#fff; font-weight:800; font-size:11px;
@@ -222,7 +222,7 @@
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
     line-height:1.3;
   }
-  .month-body .mday .mjob.unassigned { background:#94a3b8; }
+  .month-body .mday .mjob.unassigned { background:#8a877e; }
   .month-body .mday .more {
     font-size:10.5px; font-weight:700; color:var(--p-gray); padding:2px 6px;
   }
@@ -302,7 +302,7 @@
   .day-job.drop-above::before { top:-4px; }
   .day-job.drop-below::after  { bottom:-4px; }
   /* Day-view crew section highlights when something is being dragged over it */
-  .day-crew.drop-target { border-color:var(--p-orange); background:#fef2f2; }
+  .day-crew.drop-target { border-color:var(--p-orange); background:#faf4e8; }
   .day-pool.drop-target { border-color:var(--p-orange); }
   .job .name { font-weight:700; color:var(--p-navy); margin-bottom:2px; }
   .job .loc { color:var(--p-gray); font-size:11px; }
@@ -319,7 +319,7 @@
   .job.t-firehydrant { border-left-color:var(--p-red); }
   .job.t-firehydrant .name { color:#b91c1c; }
   .job.t-demo { border-left-color:var(--p-slate); }
-  .job.t-emergency { border-left-color:var(--p-red); background:#fef2f2; }
+  .job.t-emergency { border-left-color:var(--p-red); background:#faf4e8; }
   .job.t-emergency .name { color:var(--p-red); }
 
   /* ---------- Detail panel ---------- */
@@ -373,7 +373,7 @@
     background:transparent; border:1px solid var(--p-red); color:var(--p-red);
     padding:9px 14px; border-radius:8px; cursor:pointer; font-weight:600; font-size:13px;
   }
-  .btn-danger:hover { background:#fef2f2; }
+  .btn-danger:hover { background:#faf4e8; }
 
   /* Tap-to-move banner */
   .tap-hint {
@@ -755,7 +755,7 @@ function renderMonth() {
   })();
 
   // Crew color palette for the job pills
-  const crewColors = ['#c8102e','#1d4ed8','#7c3aed','#0ea5e9','#15803d','#a16207','#be185d','#374151'];
+  const crewColors = ['#a8884a','#1d4ed8','#7c3aed','#0ea5e9','#15803d','#a16207','#be185d','#374151'];
   const crewColorById = {};
   const monthCrews = getCrews();
   monthCrews.forEach((c, i) => { crewColorById[c.id] = crewColors[i % crewColors.length]; });
@@ -784,7 +784,7 @@ function renderMonth() {
     html += `<div class="mday${isOther?' other-month':''}${weekend?' weekend':''}${isToday?' today':''}" data-iso="${iso}">` +
               `<span class="dnum">${d.getDate()}</span>`;
     visible.forEach(j => {
-      const color = crewColorById[j.crewId] || '#94a3b8';
+      const color = crewColorById[j.crewId] || '#8a877e';
       const crew = (monthCrews.find(c => c.id === j.crewId) || {}).name || '';
       html += `<div class="mjob" style="background:${color}" title="${escapeAttr(crew + ' · ' + j.name)}">${escapeHtml(j.name)}</div>`;
     });
