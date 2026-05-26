@@ -1,55 +1,413 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Sessions · BCC Connect</title>
-  <link rel="manifest" href="/manifest.json" />
-  <meta name="theme-color" content="#1a1a1a" />
-  <link rel="icon" href="/bcc-logo.png" />
-  <script defer src="/bcc-api.js"></script>
-  <style>
-    :root { color-scheme: light; }
-    * { box-sizing: border-box; }
-    body { margin: 0; font: 14px/1.45 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; color: #1a1a1a; background: #f6f6f4; }
-    header.topbar { display: flex; align-items: center; gap: 12px; padding: 12px 18px; background: #1a1a1a; color: #f6f6f4; }
-    header.topbar img { height: 28px; }
-    header.topbar h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: 0.2px; }
-    header.topbar .grow { flex: 1; }
-    main { max-width: 880px; margin: 0 auto; padding: 32px 18px; }
-    .module-stub {
-      background: #fff; border: 1px solid #e2e1dd; border-radius: 10px;
-      padding: 28px; box-shadow: 0 1px 3px rgba(0,0,0,.04);
-    }
-    .module-stub h2 { margin: 0 0 8px; font-size: 22px; }
-    .module-stub p { margin: 6px 0; color: #4b4b46; }
-    .module-stub .tag {
-      display: inline-block; padding: 3px 10px; border-radius: 999px;
-      background: #a8884a; color: #fff; font-size: 11px; font-weight: 700;
-      letter-spacing: 0.6px; text-transform: uppercase;
-    }
-    .module-stub ul { margin: 14px 0 0; padding-left: 22px; color: #1a1a1a; }
-    .module-stub li { padding: 3px 0; }
-    a { color: #a8884a; }
-  </style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#1a1a1a" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Sessions · BCC Connect</title>
+<link rel="icon" type="image/png" href="bcc-logo.png" />
+<link rel="manifest" href="manifest.json" />
+<style>
+  :root {
+    --ink:#1a1a1a; --ink-soft:#2b2b2b; --ink-line:#2e2c27;
+    --gold:#a8884a; --gold-warm:#c2a05c; --gold-deep:#876d3a;
+    --gold-fade:rgba(168,136,74,0.12);
+    --chrome:#f6f6f4; --chrome-mute:#e2e1dd; --muted:#8a877e;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:'Inter', system-ui, sans-serif; color:var(--ink); background:var(--chrome); }
+
+  header.topbar {
+    display:flex; align-items:center; gap:14px; padding:12px 22px; color:var(--chrome);
+    background:linear-gradient(90deg, #141414, #1f1f1f);
+    border-bottom:1px solid var(--ink-line); position:sticky; top:0; z-index:50;
+  }
+  header.topbar a.home { display:flex; align-items:center; gap:12px; text-decoration:none; color:var(--chrome); }
+  header.topbar img { height:30px; }
+  header.topbar .wordmark { font-family:'Cinzel', serif; font-size:14px; font-weight:700; letter-spacing:1.5px; }
+  header.topbar .wordmark .light { color:var(--gold); }
+  header.topbar .module {
+    font-size:11px; font-weight:700; letter-spacing:2.5px; text-transform:uppercase; color:var(--gold-warm);
+    border-left:1px solid rgba(255,255,255,0.18); padding-left:14px; margin-left:4px;
+  }
+
+  .page { max-width:1200px; margin:0 auto; padding:22px 22px 70px; }
+  .page-head { display:flex; align-items:flex-end; justify-content:space-between; gap:14px; margin-bottom:18px; flex-wrap:wrap; }
+  .page-head h1 { font-family:'Cinzel', serif; font-size:26px; margin:0; }
+  .page-head .sub { color:var(--muted); font-size:13px; margin-top:4px; }
+
+  .toolbar {
+    display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+    background:#fff; padding:12px; border:1px solid var(--chrome-mute);
+    border-radius:12px; margin-bottom:14px;
+  }
+  .toolbar .navbtns { display:flex; gap:6px; }
+  .toolbar .navbtns button { min-height:38px; padding:0 12px; border:1px solid var(--chrome-mute); background:#fff; border-radius:8px; cursor:pointer; font:inherit; font-weight:700; font-size:13px; color:var(--ink); }
+  .toolbar .navbtns button:hover { background:var(--chrome-mute); }
+  .toolbar .label { font-family:'Cinzel', serif; font-size:16px; flex:1; text-align:center; }
+  .toolbar .btn { min-height:38px; border:0; border-radius:8px; padding:0 14px; font:inherit; font-weight:700; font-size:13px; cursor:pointer; }
+  .btn-primary { background:var(--gold); color:#fff; }
+  .btn-primary:hover { background:var(--gold-deep); }
+  .btn-ghost { background:transparent; color:var(--ink); border:1px solid var(--chrome-mute); }
+  .btn-ghost:hover { background:var(--chrome-mute); }
+
+  .week {
+    display:grid; grid-template-columns:repeat(7,1fr); gap:10px;
+  }
+  .day {
+    background:#fff; border:1px solid var(--chrome-mute); border-radius:12px;
+    padding:12px; min-height:200px; display:flex; flex-direction:column;
+  }
+  .day.today { border-color:var(--gold); box-shadow:0 0 0 1px var(--gold) inset; }
+  .day .header { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px; }
+  .day .header .dow { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:1.4px; font-weight:700; }
+  .day .header .num { font-family:'Cinzel', serif; font-size:18px; color:var(--ink); }
+  .day.today .header .num { color:var(--gold-deep); }
+  .day .events { display:flex; flex-direction:column; gap:5px; flex:1; }
+  .day .events .ev {
+    background:var(--gold-fade); border-left:3px solid var(--gold);
+    border-radius:6px; padding:6px 8px; font-size:12px; cursor:pointer;
+    transition:background 0.12s;
+  }
+  .day .events .ev:hover { background:rgba(168,136,74,0.20); }
+  .day .events .ev.msgraph { border-left-color:#1d4ed8; background:#ddeefd; }
+  .day .events .ev .time { font-weight:700; color:var(--ink); font-size:11.5px; }
+  .day .events .ev .title { font-size:12.5px; color:var(--ink); margin-top:2px; line-height:1.3; }
+  .day .events .ev .who { font-size:11px; color:var(--muted); margin-top:2px; }
+  .day .empty-day { color:var(--muted); font-size:11.5px; text-align:center; padding-top:10px; font-style:italic; }
+  .day button.addday {
+    margin-top:auto; padding:6px 8px; font-size:11.5px; color:var(--gold);
+    background:transparent; border:1px dashed var(--chrome-mute); border-radius:6px; cursor:pointer; font-weight:700;
+  }
+  .day button.addday:hover { background:var(--gold-fade); border-color:var(--gold); color:var(--gold-deep); }
+
+  /* Edit modal */
+  .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:200; display:none; align-items:center; justify-content:center; padding:18px; }
+  .modal-bg.open { display:flex; }
+  .modal {
+    background:#fff; border-radius:14px; padding:22px; max-width:540px; width:100%;
+    max-height:90vh; overflow-y:auto;
+  }
+  .modal h3 { font-family:'Cinzel', serif; font-size:18px; margin:0 0 14px; }
+  .modal .form-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
+  .modal label { display:flex; flex-direction:column; gap:4px; font-size:12px; font-weight:600; color:var(--muted); }
+  .modal input, .modal select, .modal textarea {
+    border:1px solid var(--chrome-mute); border-radius:8px; padding:9px 11px; font:inherit; font-size:14px;
+    min-height:38px; color:var(--ink); background:#fff;
+  }
+  .modal textarea { min-height:60px; resize:vertical; }
+  .modal .full { grid-column:1 / -1; }
+  .modal .actions { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; flex-wrap:wrap; }
+
+  @media (max-width:900px) {
+    .week { grid-template-columns:1fr; gap:8px; }
+    .day { min-height:auto; }
+  }
+  @media print {
+    header.topbar, .toolbar, .day button.addday, .modal-bg { display:none !important; }
+    body { background:#fff; }
+    .day { box-shadow:none; border:1px solid #ccc; page-break-inside:avoid; }
+  }
+</style>
+<script src="bcc-api.js" defer></script>
 </head>
 <body>
-  <header class="topbar">
-    <img src="/bcc-logo.png" alt="BCC" />
-    <h1>Sessions</h1>
-    <span class="grow"></span>
-  </header>
-  <main>
-    <div class="module-stub">
-      <span class="tag">Coming next</span>
-      <h2>Sessions</h2>
-      <p>Coaching session calendar with bidirectional Microsoft 365 sync, prep notes, and post-session notes.</p>
-      <p>This page is a placeholder so the nav drawer doesn't 404. Real content
-      lands in a subsequent commit per the build plan.</p>
-      <ul>
-        <li><a href="/index.html">Back to Home</a></li>
-      </ul>
+<header class="topbar">
+  <a class="home" href="index.html">
+    <img src="bcc-logo.png" alt="Blue Collar Coach" />
+    <span class="wordmark">BLUE COLLAR <span class="light">COACH</span></span>
+  </a>
+  <span class="module">Sessions</span>
+  <span style="flex:1;"></span>
+</header>
+
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1>Coaching Calendar</h1>
+      <div class="sub" id="subline">Week of —</div>
     </div>
-  </main>
+  </div>
+
+  <div class="toolbar">
+    <div class="navbtns">
+      <button id="prevBtn" type="button">&larr;</button>
+      <button id="todayBtn" type="button">Today</button>
+      <button id="nextBtn" type="button">&rarr;</button>
+    </div>
+    <span class="label" id="weekLabel"></span>
+    <button class="btn btn-primary" id="newBtn" type="button">+ New session</button>
+    <button class="btn btn-ghost" id="printBtn" type="button">Print week</button>
+  </div>
+
+  <div class="week" id="weekGrid"></div>
+</div>
+
+<!-- Edit / new modal -->
+<div class="modal-bg" id="modalBg">
+  <div class="modal">
+    <h3 id="modalTitle">New session</h3>
+    <input type="hidden" id="m-id" />
+    <div class="form-grid">
+      <label class="full">Title<input type="text" id="m-title" placeholder="1:1 with Anna Mitchell" /></label>
+      <label>Start<input type="datetime-local" id="m-start" /></label>
+      <label>End<input type="datetime-local" id="m-end" /></label>
+      <label>Location<input type="text" id="m-loc" placeholder="Zoom / Office / Address" /></label>
+      <label>Linked contact
+        <select id="m-contact">
+          <option value="">— None —</option>
+        </select>
+      </label>
+      <label class="full">Prep notes<textarea id="m-prep" rows="2" placeholder="What's the agenda for this session?"></textarea></label>
+      <label class="full">Post-session notes<textarea id="m-post" rows="2" placeholder="Filled after — wins, commitments, follow-ups."></textarea></label>
+      <label>Status
+        <select id="m-status">
+          <option value="scheduled">Scheduled</option>
+          <option value="completed">Completed</option>
+          <option value="canceled">Canceled</option>
+          <option value="no-show">No-show</option>
+        </select>
+      </label>
+    </div>
+    <div class="actions">
+      <button class="btn btn-ghost" id="m-cancel" type="button">Cancel</button>
+      <button class="btn btn-ghost" id="m-delete" type="button" style="color:#b91c1c;border-color:#fecaca;display:none;">Delete</button>
+      <button class="btn btn-primary" id="m-save" type="button">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var SESSION_PREFIX = 'bcc-session-';
+  var CONTACT_PREFIX = 'bcc-contact-';
+
+  function uid()    { return 's' + Date.now().toString(36) + Math.random().toString(36).slice(2,9); }
+  function nowIso() { return new Date().toISOString(); }
+  function esc(s)   { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
+  function toLocalInput(iso) {
+    if (!iso) return '';
+    var d = new Date(iso); if (isNaN(d)) return '';
+    var pad = function (n) { return String(n).padStart(2, '0'); };
+    return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+  function fromLocalInput(v) {
+    if (!v) return '';
+    var d = new Date(v);
+    return isNaN(d) ? '' : d.toISOString();
+  }
+  function startOfWeek(d) {
+    d = new Date(d); d.setHours(0,0,0,0);
+    var dow = d.getDay(); // 0=Sun
+    d.setDate(d.getDate() - dow); // align to Sunday
+    return d;
+  }
+
+  function allSessions() {
+    var out = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i); if (!k || k.indexOf(SESSION_PREFIX) !== 0) continue;
+      try { var s = JSON.parse(localStorage.getItem(k)); if (s && s.id) out.push(s); } catch (e) {}
+    }
+    return out;
+  }
+  function getSession(id) { try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (e) { return null; } }
+  function saveSession(s) {
+    s.updatedAt = nowIso();
+    if (!s.createdAt) s.createdAt = s.updatedAt;
+    if (!s.id) s.id = SESSION_PREFIX + uid();
+    if (!s.tenantId) s.tenantId = 'blue-collar-coach';
+    s.docType = 'session';
+    if (!s.source) s.source = 'local';
+    if (!s.coachUpn) s.coachUpn = (window.bccUser && window.bccUser.userDetails) || '';
+    localStorage.setItem(s.id, JSON.stringify(s));
+    return s;
+  }
+  function deleteSession(id) { localStorage.removeItem(id); }
+
+  function allContacts() {
+    var out = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i); if (!k || k.indexOf(CONTACT_PREFIX) !== 0) continue;
+      try { var c = JSON.parse(localStorage.getItem(k)); if (c && c.id) out.push(c); } catch (e) {}
+    }
+    return out;
+  }
+  function contactById(id) { try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (e) { return null; } }
+  function contactName(c) {
+    if (!c) return '';
+    return ((c.firstName || '') + ' ' + (c.lastName || '')).trim() || c.email || c.company || '(no name)';
+  }
+
+  /* ===== Week navigation ===== */
+  var currentWeekStart = startOfWeek(new Date());
+
+  function renderWeek() {
+    var grid = document.getElementById('weekGrid');
+    grid.innerHTML = '';
+
+    var weekEnd = new Date(currentWeekStart); weekEnd.setDate(weekEnd.getDate() + 6);
+    var label = currentWeekStart.toLocaleDateString([], { month:'long', day:'numeric' }) + ' – ' + weekEnd.toLocaleDateString([], { month:'long', day:'numeric', year:'numeric' });
+    document.getElementById('weekLabel').textContent = label;
+    document.getElementById('subline').textContent = 'Week of ' + currentWeekStart.toLocaleDateString([], { month:'short', day:'numeric', year:'numeric' });
+
+    var sessions = allSessions();
+
+    var today = new Date(); today.setHours(0,0,0,0);
+
+    for (var i = 0; i < 7; i++) {
+      var d = new Date(currentWeekStart); d.setDate(d.getDate() + i);
+      var dayStart = d.getTime();
+      var dayEnd = dayStart + 24*60*60*1000;
+      var dayEvents = sessions
+        .filter(function (s) {
+          var t = new Date(s.startAt).getTime();
+          return !isNaN(t) && t >= dayStart && t < dayEnd;
+        })
+        .sort(function (a, b) { return new Date(a.startAt) - new Date(b.startAt); });
+
+      var dayEl = document.createElement('div');
+      dayEl.className = 'day' + (d.getTime() === today.getTime() ? ' today' : '');
+      var dow = d.toLocaleDateString([], { weekday:'short' });
+      var head = '<div class="header"><span class="dow">' + esc(dow) + '</span><span class="num">' + d.getDate() + '</span></div>';
+      var events = '<div class="events">';
+      if (dayEvents.length === 0) {
+        events += '<div class="empty-day">No sessions</div>';
+      } else {
+        dayEvents.forEach(function (s) {
+          var t = new Date(s.startAt);
+          var time = t.toLocaleTimeString([], { hour:'numeric', minute:'2-digit' });
+          var contact = s.contactId ? contactName(contactById(s.contactId)) : '';
+          events += '<div class="ev ' + (s.source === 'msgraph' ? 'msgraph' : '') + '" data-id="' + esc(s.id) + '">' +
+            '<div class="time">' + esc(time) + '</div>' +
+            '<div class="title">' + esc(s.title || '(untitled session)') + '</div>' +
+            (contact ? '<div class="who">' + esc(contact) + '</div>' : '') +
+          '</div>';
+        });
+      }
+      events += '</div>';
+      events += '<button class="addday" data-day="' + d.toISOString() + '" type="button">+ Add</button>';
+      dayEl.innerHTML = head + events;
+      grid.appendChild(dayEl);
+    }
+
+    grid.querySelectorAll('.ev[data-id]').forEach(function (el) {
+      el.addEventListener('click', function () { openModal(el.dataset.id); });
+    });
+    grid.querySelectorAll('button.addday').forEach(function (b) {
+      b.addEventListener('click', function () {
+        openModal(null, b.dataset.day);
+      });
+    });
+  }
+
+  document.getElementById('prevBtn').addEventListener('click', function () {
+    currentWeekStart.setDate(currentWeekStart.getDate() - 7);
+    renderWeek();
+  });
+  document.getElementById('nextBtn').addEventListener('click', function () {
+    currentWeekStart.setDate(currentWeekStart.getDate() + 7);
+    renderWeek();
+  });
+  document.getElementById('todayBtn').addEventListener('click', function () {
+    currentWeekStart = startOfWeek(new Date());
+    renderWeek();
+  });
+  document.getElementById('printBtn').addEventListener('click', function () { window.print(); });
+
+  /* ===== Modal ===== */
+  function populateContactDropdown(selectedId) {
+    var sel = document.getElementById('m-contact');
+    var contacts = allContacts().sort(function (a, b) {
+      return contactName(a).localeCompare(contactName(b));
+    });
+    sel.innerHTML = '<option value="">— None —</option>' +
+      contacts.map(function (c) {
+        return '<option value="' + esc(c.id) + '"' + (c.id === selectedId ? ' selected' : '') + '>' + esc(contactName(c)) + (c.company ? ' (' + esc(c.company) + ')' : '') + '</option>';
+      }).join('');
+  }
+
+  function openModal(id, defaultDayIso) {
+    var bg = document.getElementById('modalBg');
+    var titleEl = document.getElementById('modalTitle');
+    var delBtn = document.getElementById('m-delete');
+    document.getElementById('m-id').value = id || '';
+    if (id) {
+      var s = getSession(id);
+      if (!s) { (window.bccNotify || alert)('Session not found.', 'error'); return; }
+      titleEl.textContent = 'Edit session';
+      delBtn.style.display = '';
+      document.getElementById('m-title').value = s.title || '';
+      document.getElementById('m-start').value = toLocalInput(s.startAt);
+      document.getElementById('m-end').value   = toLocalInput(s.endAt);
+      document.getElementById('m-loc').value   = s.location || '';
+      document.getElementById('m-prep').value  = s.prepNotes || '';
+      document.getElementById('m-post').value  = s.postNotes || '';
+      document.getElementById('m-status').value = s.status || 'scheduled';
+      populateContactDropdown(s.contactId);
+    } else {
+      titleEl.textContent = 'New session';
+      delBtn.style.display = 'none';
+      var start = defaultDayIso ? new Date(defaultDayIso) : new Date();
+      start.setHours(10, 0, 0, 0); // default 10:00
+      var end = new Date(start); end.setHours(11, 0, 0, 0);
+      document.getElementById('m-title').value = '';
+      document.getElementById('m-start').value = toLocalInput(start.toISOString());
+      document.getElementById('m-end').value   = toLocalInput(end.toISOString());
+      document.getElementById('m-loc').value   = '';
+      document.getElementById('m-prep').value  = '';
+      document.getElementById('m-post').value  = '';
+      document.getElementById('m-status').value = 'scheduled';
+      populateContactDropdown('');
+    }
+    bg.classList.add('open');
+    setTimeout(function () { document.getElementById('m-title').focus(); }, 50);
+  }
+  function closeModal() { document.getElementById('modalBg').classList.remove('open'); }
+
+  document.getElementById('newBtn').addEventListener('click', function () { openModal(null); });
+  document.getElementById('m-cancel').addEventListener('click', closeModal);
+  document.getElementById('modalBg').addEventListener('click', function (e) {
+    if (e.target.id === 'modalBg') closeModal();
+  });
+
+  document.getElementById('m-save').addEventListener('click', function () {
+    var id = document.getElementById('m-id').value;
+    var s = id ? (getSession(id) || {}) : {};
+    s.title    = document.getElementById('m-title').value.trim() || '(untitled session)';
+    s.startAt  = fromLocalInput(document.getElementById('m-start').value);
+    s.endAt    = fromLocalInput(document.getElementById('m-end').value);
+    s.location = document.getElementById('m-loc').value.trim();
+    s.contactId= document.getElementById('m-contact').value || null;
+    s.prepNotes= document.getElementById('m-prep').value.trim();
+    s.postNotes= document.getElementById('m-post').value.trim();
+    s.status   = document.getElementById('m-status').value;
+    if (!s.startAt) { (window.bccNotify || alert)('Start time is required.', 'warn'); return; }
+    if (!s.endAt) s.endAt = s.startAt;
+    saveSession(s);
+    if (window.bccAudit) window.bccAudit(id ? 'session-update' : 'session-create', { key: s.id, path: '/sessions.html' });
+    if (window.bccNotifySaved) window.bccNotifySaved('Session saved.');
+    else (window.bccNotify || alert)('Saved.', 'success');
+    closeModal();
+    renderWeek();
+  });
+  document.getElementById('m-delete').addEventListener('click', function () {
+    var id = document.getElementById('m-id').value;
+    if (!id) return;
+    if (!confirm('Delete this session?')) return;
+    deleteSession(id);
+    if (window.bccAudit) window.bccAudit('session-delete', { key: id, path: '/sessions.html' });
+    closeModal();
+    renderWeek();
+  });
+
+  /* ===== Init ===== */
+  function init() { renderWeek(); }
+  window.addEventListener('bcc-data-ready', renderWeek);
+  window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
+  setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
+})();
+</script>
 </body>
 </html>
