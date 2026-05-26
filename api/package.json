@@ -10,6 +10,7 @@
   "dependencies": {
     "@azure/cosmos": "^4.2.0",
     "@azure/functions": "^4.6.0",
+    "@azure/storage-blob": "^12.31.0",
     "web-push": "^3.6.7"
   },
   "engines": {

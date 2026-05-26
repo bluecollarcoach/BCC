@@ -740,3 +740,222 @@ async function fanoutPush(action, body, p, context) {
     if (context && context.warn) context.warn('fanoutPush error', e && e.message);
   }
 }
+
+/* ============ Azure Blob — document storage ============
+ * Files don't fit in Cosmos (10 MB doc cap; not what it's designed for).
+ * Per the data-shapes.md sketch: file goes to Blob, metadata stays in
+ * Cosmos as bcc-document-* docs.
+ *
+ * AZURE_STORAGE_CONNECTION_STRING + AZURE_STORAGE_CONTAINER_DOCS must be
+ * set on the SWA's app settings (done by the Bicep deploy).
+ */
+
+let _blobContainer = null;
+let _blobAccount = null;
+
+function getBlobContainer() {
+  if (_blobContainer) return _blobContainer;
+  const conn = process.env.AZURE_STORAGE_CONNECTION_STRING;
+  if (!conn) throw new Error('AZURE_STORAGE_CONNECTION_STRING not set');
+  const { BlobServiceClient, StorageSharedKeyCredential } = require('@azure/storage-blob');
+  const containerName = process.env.AZURE_STORAGE_CONTAINER_DOCS || 'bcc-docs';
+  const svc = BlobServiceClient.fromConnectionString(conn);
+  _blobContainer = svc.getContainerClient(containerName);
+
+  // Also parse account + key for SAS URL generation.
+  const parts = {};
+  conn.split(';').forEach(p => {
+    const i = p.indexOf('=');
+    if (i > 0) parts[p.slice(0, i)] = p.slice(i + 1);
+  });
+  if (parts.AccountName && parts.AccountKey) {
+    _blobAccount = new StorageSharedKeyCredential(parts.AccountName, parts.AccountKey);
+  }
+  return _blobContainer;
+}
+
+function safeFilename(name) {
+  return String(name || 'file').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 120) || 'file';
+}
+function safeFolder(folder) {
+  let f = String(folder || '/').trim();
+  if (!f.startsWith('/')) f = '/' + f;
+  f = f.replace(/[^a-zA-Z0-9._\/-]+/g, '_');
+  return f.replace(/\/+/g, '/');
+}
+
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+const DOC_DOC_PREFIX = 'bcc-document-';
+
+/**
+ * POST /api/documents
+ *   multipart/form-data: file (required), folder, tags, docId
+ *
+ * Stores the file in Blob at <tenantId>/<folder>/<timestamp>-<safefilename>,
+ * then upserts a bcc-document-<docId> metadata doc in Cosmos.
+ *
+ * GET /api/documents
+ *   List all metadata docs for the tenant.
+ *
+ * GET /api/documents/{id}
+ *   Single doc metadata.
+ *
+ * GET /api/documents/{id}/download
+ *   302 redirect to a short-lived (15 min) SAS URL.
+ *
+ * DELETE /api/documents/{id}
+ *   Delete from Blob + Cosmos.
+ */
+app.http('documents-list-create', {
+  methods: ['GET', 'POST'],
+  authLevel: 'anonymous',
+  route: 'documents',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+
+    if (request.method === 'GET') {
+      // List metadata docs (same shape as /api/data filtered to docType=document).
+      try {
+        const c = container();
+        const q = {
+          query: 'SELECT * FROM c WHERE c.tenantId = @t AND c.docType = "document" ORDER BY c.createdAt DESC',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+        };
+        const { resources } = await c.items.query(q).fetchAll();
+        return { jsonBody: { items: resources } };
+      } catch (err) {
+        context.error('documents list error', err);
+        return { status: 500, jsonBody: { error: 'list failed', detail: String(err && err.message || err) } };
+      }
+    }
+
+    // POST — multipart upload.
+    try {
+      const form = await request.formData();
+      const file = form.get('file');
+      if (!file || typeof file === 'string') return badRequest('expected "file" form field');
+      const buf = Buffer.from(await file.arrayBuffer());
+      if (buf.length > MAX_UPLOAD_BYTES) return badRequest('file exceeds 25 MB');
+
+      const folder = safeFolder(form.get('folder') || '/');
+      const tags = String(form.get('tags') || '').trim();
+      const docId = String(form.get('docId') || (DOC_DOC_PREFIX + Date.now().toString(36) + Math.random().toString(36).slice(2, 9)));
+
+      const stamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15);
+      const filename = safeFilename(file.name || 'file');
+      const storageKey = (BCC_TENANT_ID + folder + '/' + stamp + '-' + filename).replace(/\/+/g, '/').replace(/^\//, '');
+
+      // Upload to Blob
+      const cont = getBlobContainer();
+      try { await cont.createIfNotExists(); } catch (_) {}
+      const blob = cont.getBlockBlobClient(storageKey);
+      await blob.uploadData(buf, {
+        blobHTTPHeaders: { blobContentType: file.type || 'application/octet-stream' }
+      });
+
+      // Upsert metadata doc in Cosmos
+      const who = (p.userDetails || p.userId || '').toLowerCase();
+      const now = new Date().toISOString();
+      const c = container();
+      const meta = {
+        id: docId,
+        tenantId: BCC_TENANT_ID,
+        docType: 'document',
+        name: file.name,
+        folder: folder,
+        tags: tags,
+        sizeBytes: buf.length,
+        mimeType: file.type || 'application/octet-stream',
+        storageKey: storageKey,
+        uploaderUpn: who,
+        createdAt: now,
+        updatedAt: now
+      };
+      await c.items.upsert(meta);
+
+      return { jsonBody: { ok: true, id: meta.id, storageKey: storageKey, sizeBytes: meta.sizeBytes } };
+    } catch (err) {
+      context.error('documents upload error', err);
+      return { status: 500, jsonBody: { error: 'upload failed', detail: String(err && err.message || err) } };
+    }
+  })
+});
+
+app.http('document-one', {
+  methods: ['GET', 'DELETE'],
+  authLevel: 'anonymous',
+  route: 'documents/{id}',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const id = request.params.id;
+    if (!id || id.indexOf(DOC_DOC_PREFIX) !== 0) return badRequest('bad id');
+
+    const c = container();
+    try {
+      if (request.method === 'GET') {
+        const { resource } = await c.item(id, BCC_TENANT_ID).read();
+        if (!resource) return { status: 404, jsonBody: { error: 'not found' } };
+        return { jsonBody: resource };
+      }
+
+      // DELETE — remove from Blob + Cosmos
+      let meta = null;
+      try { ({ resource: meta } = await c.item(id, BCC_TENANT_ID).read()); } catch (e) { if (e.code !== 404) throw e; }
+      if (meta && meta.storageKey) {
+        try {
+          const cont = getBlobContainer();
+          await cont.getBlockBlobClient(meta.storageKey).deleteIfExists();
+        } catch (be) { context.warn && context.warn('blob delete failed', be && be.message); }
+      }
+      try { await c.item(id, BCC_TENANT_ID).delete(); } catch (e) { if (e.code !== 404) throw e; }
+      return { status: 204 };
+    } catch (err) {
+      context.error('document one error', err);
+      return { status: 500, jsonBody: { error: 'server error', detail: String(err && err.message || err) } };
+    }
+  })
+});
+
+app.http('document-download', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'documents/{id}/download',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const id = request.params.id;
+    if (!id || id.indexOf(DOC_DOC_PREFIX) !== 0) return badRequest('bad id');
+
+    try {
+      const c = container();
+      const { resource: meta } = await c.item(id, BCC_TENANT_ID).read();
+      if (!meta || !meta.storageKey) return { status: 404, jsonBody: { error: 'no file' } };
+      const cont = getBlobContainer();
+      if (!_blobAccount) return { status: 500, jsonBody: { error: 'blob credentials not parseable for SAS generation' } };
+
+      const { BlobSASPermissions, generateBlobSASQueryParameters } = require('@azure/storage-blob');
+      const now = new Date();
+      const expiry = new Date(now.getTime() + 15 * 60 * 1000); // 15 minute window
+      const filename = String(meta.name || 'file').replace(/[\r\n"]/g, '');
+      const sas = generateBlobSASQueryParameters({
+        containerName: cont.containerName,
+        blobName: meta.storageKey,
+        permissions: BlobSASPermissions.parse('r'),
+        startsOn: new Date(now.getTime() - 60 * 1000),
+        expiresOn: expiry,
+        contentDisposition: 'attachment; filename="' + filename + '"',
+        contentType: meta.mimeType || 'application/octet-stream'
+      }, _blobAccount).toString();
+      const url = cont.getBlockBlobClient(meta.storageKey).url + '?' + sas;
+      return { status: 302, headers: { Location: url } };
+    } catch (err) {
+      context.error('document-download error', err);
+      return { status: 500, jsonBody: { error: 'download failed', detail: String(err && err.message || err) } };
+    }
+  })
+});
