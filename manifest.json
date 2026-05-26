@@ -1,0 +1,27 @@
+{
+  "name": "BCC Connect",
+  "short_name": "BCC",
+  "description": "Operations platform for Blue Collar Coach — CRM, coaching sessions, jobs board, chat, training, documents, and admin in one place.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#1a1a1a",
+  "theme_color": "#1a1a1a",
+  "icons": [
+    {
+      "src": "/bcc-logo.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/bcc-logo-large.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "categories": ["business", "productivity"],
+  "lang": "en-US"
+}

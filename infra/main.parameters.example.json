@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "appName":          { "value": "bcc-connect" },
+    "swaLocation":      { "value": "centralus" },
+    "enableCosmosFreeTier": { "value": true },
+    "repositoryUrl":    { "value": "https://github.com/<your-github-org-or-user>/<your-repo>" },
+    "branch":           { "value": "main" },
+    "bccTenantId":       { "value": "blue-collar-coach" },
+    "entraTenantId":    { "value": "<your-entra-tenant-guid>" },
+    "entraClientId":    { "value": "<your-entra-app-client-id>" },
+    "vapidPublicKey":   { "value": "" },
+    "vapidSubject":     { "value": "mailto:admin@bluecollarcoach.us" }
+  },
+  "_comment": "repositoryToken, entraClientSecret, and vapidPrivateKey are secrets — pass them on the CLI with -p name=value, NEVER commit them. Generate VAPID keys with: npx --yes -p web-push@3 web-push generate-vapid-keys --json"
+}

@@ -1,47 +1,50 @@
-# BCC Internal
+# BCC Connect
 
-Internal operations workspace for the Blue Collar Coach team. Forked from `BCC Connect` (the customer-facing app), re-themed for internal use, and stripped of public marketing surfaces.
+Operations workspace for the **Blue Collar Coach** team — CRM, coaching
+sessions, jobs board, chat, training, documents, and admin in one place.
+Built on the same template as the rest of the **Connect** family
+(Precision Connect, Caliber Connect, Falcon Connect): static HTML + Azure
+Functions + Cosmos DB + Static Web Apps Free, gated by Microsoft 365
+(Entra ID) sign-in.
 
-## What's different from BCC Connect
+## Stack
 
-| | BCC Connect (customer-facing) | **BCC Internal (this app)** |
-| --- | --- | --- |
-| Theme | Dark surfaces throughout, gold accent, Georgia serif | Dark chrome (sidebar/topbar) + light content cards, amber accent, Inter typography |
-| Landing | Marketing landing at `/` | `/` redirects to `/sign-in` or `/dashboard` |
-| Audience | Trade business customers | BCC team only — coaches, staff, ops |
-| Robots | Indexable | `noindex, nofollow` (metadata) |
-| Auth | Email / Entra | Same |
+- **Frontend:** plain HTML per page, no framework, no build step
+- **Shared client layer:** `bcc-api.js` (~1400 lines) injected into every page
+- **Backend:** Azure Functions v4 (Node 20), all endpoints in `api/src/index.js`
+- **Database:** Cosmos DB Free tier, single container, schemaless docs
+  partitioned by `/tenantId`
+- **Auth:** SWA built-in Entra ID OIDC; admin role app-managed
+- **Offline:** Service worker pre-caches the highest-traffic pages
+- **Hosting:** Azure Static Web Apps Free + Cosmos DB Free = $0/mo
 
-Everything else (CRM, calendar, chat, time tracking, marketing, bookkeeping, documents, training, events, admin, audit, integrations, Azure infra) is identical to BCC Connect — see `../BCC/README.md` for the full module breakdown and architecture docs.
+## Layout
 
-## Quick start
-
-```powershell
-cd C:\Users\Apric\Downloads\BCC-Internal
-npm install
-Copy-Item .env.example .env
-npm run db:push
-npm run db:seed
-npm run dev
+```
+.
+├── *.html              one page per module (index, myday, scheduler, crm, ...)
+├── bcc-api.js          shared client layer
+├── sw.js               service worker (offline cache)
+├── manifest.json       PWA manifest
+├── staticwebapp.config.json  SWA routes + auth
+├── 403.html            access denied
+├── api/                Azure Functions
+│   └── src/index.js    all endpoints
+├── infra/              Bicep IaC + deploy scripts
+└── DEPLOY.md           runbook
 ```
 
-Open <http://localhost:3000> → redirects to `/sign-in` → sign in with `owner@bluecollarcoach.us` (dev bypass).
+## Local dev
 
-## Design system
+You can't really run a SWA app locally without the SWA CLI + Functions Core
+Tools. Easiest workflow is: push to a feature branch, let Vercel/SWA build
+the preview URL, click through there. See `DEPLOY.md` for one-time setup.
 
-The visual system is built on Tailwind tokens that auto-flip with the theme. Key changes from BCC Connect:
+## Discovery
 
-- **`bg-chrome` / `text-chrome-foreground`** — dark navigation surfaces (sidebar, topbar, sign-in backdrop)
-- **`bg-card` / `text-card-foreground`** — white content surfaces (light-mode by default)
-- **`bg-amber` / `text-amber`** — primary accent (`#c8901c`)
-- **`card-accent`** CSS utility class adds the 3px amber stripe at the top of a card. Use sparingly on featured cards / KPIs.
-- **`chrome-backdrop`** — full dark gradient background used by sign-in / standalone screens
-- Inter is loaded via `next/font` and exposed as `var(--font-inter)` / Tailwind's `font-sans`
+Architectural decisions and module inclusions are in `docs/DISCOVERY-BCC.md`.
 
-`gold-*` Tailwind classes still work — they're aliased to amber for backwards-compat with code copied from BCC Connect.
+## Reference implementation
 
-## Deployment
-
-The Azure infrastructure (Bicep templates, GitHub Actions workflow) is unchanged from BCC Connect. Provision a separate resource group (e.g. `rg-bcc-internal`) and re-run the Bicep template — see `infra/azure/README.md`.
-
-If you're running both apps in the same Azure subscription, give them different `name` parameters so the App Service / SQL / SignalR resources don't collide.
+This codebase is a sibling of [bluecollarcoach/precision-connect](https://github.com/bluecollarcoach/precision-connect).
+When in doubt about a pattern, check there first.

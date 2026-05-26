@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Knowledge Base · BCC Connect</title>
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#1a1a1a" />
+  <link rel="icon" href="/bcc-logo.png" />
+  <script defer src="/bcc-api.js"></script>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 14px/1.45 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; color: #1a1a1a; background: #f6f6f4; }
+    header.topbar { display: flex; align-items: center; gap: 12px; padding: 12px 18px; background: #1a1a1a; color: #f6f6f4; }
+    header.topbar img { height: 28px; }
+    header.topbar h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: 0.2px; }
+    header.topbar .grow { flex: 1; }
+    main { max-width: 880px; margin: 0 auto; padding: 32px 18px; }
+    .module-stub {
+      background: #fff; border: 1px solid #e2e1dd; border-radius: 10px;
+      padding: 28px; box-shadow: 0 1px 3px rgba(0,0,0,.04);
+    }
+    .module-stub h2 { margin: 0 0 8px; font-size: 22px; }
+    .module-stub p { margin: 6px 0; color: #4b4b46; }
+    .module-stub .tag {
+      display: inline-block; padding: 3px 10px; border-radius: 999px;
+      background: #a8884a; color: #fff; font-size: 11px; font-weight: 700;
+      letter-spacing: 0.6px; text-transform: uppercase;
+    }
+    .module-stub ul { margin: 14px 0 0; padding-left: 22px; color: #1a1a1a; }
+    .module-stub li { padding: 3px 0; }
+    a { color: #a8884a; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <img src="/bcc-logo.png" alt="BCC" />
+    <h1>Knowledge Base</h1>
+    <span class="grow"></span>
+  </header>
+  <main>
+    <div class="module-stub">
+      <span class="tag">Coming next</span>
+      <h2>Knowledge Base</h2>
+      <p>Internal coaching playbooks and team SOPs.</p>
+      <p>This page is a placeholder so the nav drawer doesn't 404. Real content
+      lands in a subsequent commit per the build plan.</p>
+      <ul>
+        <li><a href="/index.html">Back to Home</a></li>
+      </ul>
+    </div>
+  </main>
+</body>
+</html>

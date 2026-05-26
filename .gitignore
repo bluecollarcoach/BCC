@@ -1,67 +1,35 @@
-# dependencies
+# dependencies (only api/ uses npm now)
 node_modules/
-.pnp
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
 
-# next
-.next/
-out/
-build/
-dist/
-
-# env
+# env / secrets (gitignored, kept locally)
 .env
 .env.local
-.env.development.local
-.env.production.local
-
-# logs
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-*.log
-
-# prisma
-prisma/dev.db
-prisma/dev.db-journal
-prisma/migrations/dev/
-
-# misc
-.DS_Store
-*.pem
-.vscode/*
-!.vscode/extensions.json
-!.vscode/settings.json.example
-.idea/
-coverage/
-*.tsbuildinfo
-next-env.d.ts
-
-# os
-Thumbs.db
-desktop.ini
-
-# azure
-.azure/
-azurite/
-
-# local deploy secrets
 .deploy-secrets.txt
 .vercel-env-import.txt
 
-# legacy Azure zipdeploy artifacts
-release.zip
+# Vercel artifacts from prior Next.js setup (no longer in use; safe to delete)
+.vercel/
+.next/
+
+# Azure deploy artifacts from prior setup
 .app-deploy-output.json
 .deploy-output.json
+release.zip
 
-# user's source brand artwork (kept on disk, not in git — duplicates of /public)
+# Azure Functions local settings (template provided; never commit real one)
+api/local.settings.json
+
+# user's source brand artwork (kept on disk, not in git — duplicates of /bcc-logo.png)
 LOGO*.png
 BCC_Logo_Full*.png
 
-# Vercel
-.vercel
+# logs
+*.log
+
+# editor / OS
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/*
+!.vscode/extensions.json
+.idea/
