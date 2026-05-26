@@ -1,0 +1,1032 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#2b2b2b" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Activity Log &middot; BCC Connect</title>
+<link rel="icon" type="image/png" href="bcc-logo.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<script src="bcc-api.js" defer></script>
+<style>
+  :root {
+    --p-navy:#2b2b2b; --p-navy-dark:#1a1a1a; --p-navy-light:#374151;
+    --p-orange:#c8102e; --p-orange-soft:#ef4444;
+    --p-cyan:#1d4ed8; --p-cream:#f3f4f6;
+    --p-slate:#1a1a1a; --p-gray:#64748b; --p-light:#f1f5f9;
+    --p-border:#e2e8f0; --p-green:#10b981; --p-red:#ef4444; --p-amber:#f59e0b;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; }
+  body {
+    font-family:'Inter', system-ui, Segoe UI, Arial, sans-serif;
+    color:#1a1a1a; background:#f1f5f9; -webkit-font-smoothing:antialiased;
+    min-height:100vh; display:flex; flex-direction:column;
+  }
+  header.topbar {
+    background:linear-gradient(90deg, var(--p-navy-dark), var(--p-navy));
+    color:#fff; padding:10px 18px; display:flex; align-items:center; gap:16px;
+    box-shadow:0 2px 12px rgba(0,0,0,0.18); position:sticky; top:0; z-index:50;
+  }
+  header.topbar a.home { display:flex; align-items:center; gap:10px; text-decoration:none; color:#fff; }
+  header.topbar img { height:30px; background:#fff; padding:3px 8px; border-radius:6px; }
+  header.topbar .module { font-size:13px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--p-orange-soft); }
+  header.topbar .spacer { flex:1; }
+  header.topbar .nav-link { color:rgba(255,255,255,0.7); text-decoration:none; font-size:13px; font-weight:600; padding:6px 10px; border-radius:6px; }
+  header.topbar .nav-link:hover { background:rgba(255,255,255,0.08); color:#fff; }
+
+  .toolbar {
+    background:#fff; border-bottom:1px solid var(--p-border);
+    padding:12px 18px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  }
+  .toolbar h1 { font-size:18px; font-weight:800; color:var(--p-navy); }
+  .toolbar .lock-badge {
+    display:inline-flex; align-items:center; gap:5px;
+    background:#fef2f2; color:#991b1b;
+    padding:3px 9px; border-radius:6px; font-size:11px; font-weight:800;
+    letter-spacing:0.5px; text-transform:uppercase;
+  }
+  .toolbar .spacer { flex:1; }
+  .toolbar input.search {
+    padding:8px 12px; border:1px solid var(--p-border); border-radius:8px;
+    font-family:inherit; font-size:13px; min-width:200px;
+  }
+  .toolbar select, .toolbar input[type=date] {
+    padding:8px 10px; border:1px solid var(--p-border); border-radius:8px;
+    font-family:inherit; font-size:13px;
+  }
+  .btn { padding:8px 14px; border-radius:8px; border:none; cursor:pointer; font-weight:700; font-size:13px; }
+  .btn-primary { background:var(--p-orange); color:#fff; box-shadow:0 2px 8px rgba(200,16,46,0.3); }
+  .btn-primary:hover { background:#9a0c22; }
+  .btn-ghost { background:var(--p-light); color:var(--p-slate); border:1px solid var(--p-border); }
+  .btn-ghost:hover { background:#e2e8f0; }
+
+  /* Type chip filters */
+  .type-filters { display:flex; gap:5px; flex-wrap:wrap; padding:10px 18px; background:#fff; border-bottom:1px solid var(--p-border); }
+  .type-chip {
+    padding:5px 11px; border-radius:6px; background:var(--p-light); border:1px solid var(--p-border);
+    font-size:11.5px; font-weight:700; color:var(--p-slate); cursor:pointer; letter-spacing:0.3px;
+    display:inline-flex; align-items:center; gap:5px;
+  }
+  .type-chip .ct {
+    background:#fff; color:var(--p-gray); padding:1px 6px; border-radius:5px;
+    font-size:10px; font-weight:700;
+  }
+  .type-chip.on { background:var(--p-navy); color:#fff; border-color:var(--p-navy); }
+  .type-chip.on .ct { background:rgba(255,255,255,0.18); color:#fff; }
+
+  /* Stats summary */
+  .summary {
+    display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px;
+    padding:14px 18px 0; max-width:1180px; width:100%; margin:0 auto;
+  }
+  .stat {
+    background:#fff; border-radius:10px; padding:12px 14px;
+    border:1px solid var(--p-border);
+  }
+  .stat .num { font-size:22px; font-weight:800; color:var(--p-navy); letter-spacing:-0.5px; }
+  .stat .lbl { font-size:11px; font-weight:700; color:var(--p-gray); text-transform:uppercase; letter-spacing:0.5px; margin-top:2px; }
+
+  .wrap { max-width:1180px; width:100%; margin:0 auto; padding:14px 18px 60px; flex:1; }
+
+  /* View toggle (Table / Timeline) — sits in the toolbar */
+  .view-toggle {
+    display:inline-flex; background:#f1f5f9;
+    border:1px solid var(--p-border); border-radius:8px;
+    padding:2px;
+  }
+  .view-toggle .vt-btn {
+    background:transparent; border:none; color:var(--p-slate);
+    font-weight:700; font-size:12.5px; padding:6px 12px; border-radius:6px;
+    cursor:pointer;
+  }
+  .view-toggle .vt-btn.active { background:var(--p-navy); color:#fff; }
+
+  /* Falcon-style access/audit table */
+  .table-wrap {
+    background:#fff; border:1px solid var(--p-border); border-radius:10px;
+    overflow:auto;
+  }
+  .log-table { width:100%; border-collapse:collapse; font-size:13px; }
+  .log-table thead th {
+    background:#f8fafc; color:var(--p-gray);
+    font-weight:700; font-size:11px; text-transform:uppercase; letter-spacing:1px;
+    text-align:left; padding:10px 12px; border-bottom:1px solid var(--p-border);
+    position:sticky; top:0; z-index:2;
+    white-space:nowrap;
+  }
+  .log-table tbody tr {
+    border-bottom:1px solid var(--p-border);
+    transition:background 0.1s;
+  }
+  .log-table tbody tr:hover { background:#fafbfc; }
+  .log-table tbody tr:last-child { border-bottom:none; }
+  .log-table td {
+    padding:10px 12px; vertical-align:top;
+    color:var(--p-slate);
+  }
+  .log-table .t-time { white-space:nowrap; font-size:12px; }
+  .log-table .t-time .t-date { color:var(--p-gray); font-weight:600; }
+  .log-table .t-time .t-clock { color:var(--p-slate); font-weight:700; margin-top:2px; }
+  .log-table .t-event { max-width:380px; word-wrap:break-word; }
+  .log-table .t-event .ev-sub { color:var(--p-gray); font-size:11.5px; margin-top:3px; line-height:1.4; }
+  .log-table .t-user { white-space:nowrap; font-weight:600; color:var(--p-slate); font-size:12.5px; }
+  .log-table .t-ip code { background:transparent; color:var(--p-slate); font-size:12px; }
+  .log-table .t-method { white-space:nowrap; }
+  .log-table .t-path code { background:transparent; color:var(--p-slate); font-size:12px; font-family:ui-monospace, SFMono-Regular, monospace; }
+  .log-table .t-status { white-space:nowrap; font-weight:700; }
+  /* Responsive column collapse: less-critical columns drop off as the
+     viewport narrows so the most-useful info (when / who / what /
+     status) stays visible without a horizontal scrollbar.
+     - <= 1200px: hide IP + Path  (the URL is in the Event cell anyway)
+     - <= 900px:  also hide Method
+     - <= 600px:  also hide User (signed-in identity is in the topbar)
+     The full table is still reachable on wider screens. */
+  @media (max-width:1200px) {
+    .log-table .t-ip, .log-table .t-path,
+    .log-table thead th:nth-child(4), .log-table thead th:nth-child(6) { display:none; }
+  }
+  @media (max-width:900px) {
+    .log-table .t-method, .log-table thead th:nth-child(5) { display:none; }
+  }
+  @media (max-width:600px) {
+    .log-table .t-user, .log-table thead th:nth-child(3) { display:none; }
+    .log-table thead th, .log-table td { padding:8px 9px; font-size:12.5px; }
+  }
+  /* HTTP method badges */
+  .ev-method {
+    display:inline-block; padding:1px 8px; border-radius:5px;
+    font-size:11px; font-weight:800; letter-spacing:0.5px;
+    background:#e2e8f0; color:#475569;
+  }
+  .ev-method.ev-m-get    { background:#dbeafe; color:#1e40af; }
+  .ev-method.ev-m-post   { background:#dcfce7; color:#15803d; }
+  .ev-method.ev-m-put    { background:#fef3c7; color:#a16207; }
+  .ev-method.ev-m-delete { background:#fee2e2; color:#b91c1c; }
+  /* HTTP status colors */
+  .st-2xx { color:#15803d; }
+  .st-3xx { color:#1e40af; }
+  .st-4xx { color:#b45309; }
+  .st-5xx { color:#b91c1c; }
+
+  /* Loading skeleton — animated gradient bars in the table cells */
+  .sk {
+    display:block; height:11px; border-radius:5px;
+    background:linear-gradient(90deg, #f1f5f9 0%, #e2e8f0 50%, #f1f5f9 100%);
+    background-size:200% 100%;
+    animation: skShimmer 1.4s linear infinite;
+  }
+  .sk-xs { width:48px; }
+  .sk-s  { width:84px; }
+  .sk-m  { width:160px; }
+  @keyframes skShimmer {
+    0%   { background-position: 100% 0; }
+    100% { background-position: -100% 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sk { animation: none; background:#e2e8f0; }
+  }
+
+  /* Timeline */
+  .timeline { display:flex; flex-direction:column; gap:6px; }
+  .event {
+    background:#fff; border-radius:10px; padding:12px 14px;
+    border:1px solid var(--p-border);
+    display:flex; gap:12px; align-items:flex-start;
+    transition:box-shadow 0.12s;
+  }
+  .event:hover { box-shadow:0 4px 12px rgba(15,23,42,0.06); }
+  .event .ic {
+    width:34px; height:34px; flex-shrink:0; border-radius:8px;
+    background:var(--p-light); display:flex; align-items:center; justify-content:center;
+    font-size:15px;
+  }
+  .event.t-tm        .ic { background:#dbeafe; color:#1e40af; }
+  .event.t-pretrip   .ic { background:#fef2f2; color:#991b1b; }
+  .event.t-equip     .ic { background:#ecfeff; color:#1d4ed8; }
+  .event.t-daily     .ic { background:#fff7ed; color:#9a3412; }
+  .event.t-trucking  .ic { background:#fef3c7; color:#92400e; }
+  .event.t-maint     .ic { background:#fef2f2; color:#991b1b; }
+  .event.t-rate      .ic { background:var(--p-cream); color:#9a0c22; }
+  .event.t-chat      .ic { background:#ede9fe; color:#5b21b6; }
+  .event.t-job-note  .ic { background:#d1fae5; color:#065f46; }
+  .event.t-clock-in  .ic { background:#d1fae5; color:#065f46; }
+  .event.t-clock-out .ic { background:#fef3c7; color:#92400e; }
+  .event.t-admin     .ic { background:#fee2e2; color:#991b1b; }
+
+  .event .body { flex:1; min-width:0; }
+  .event .top  { display:flex; align-items:baseline; gap:8px; margin-bottom:2px; flex-wrap:wrap; }
+  .event .who  { font-weight:800; color:var(--p-navy); font-size:13.5px; }
+  .event .type-pill {
+    background:var(--p-light); color:var(--p-slate);
+    padding:1px 7px; border-radius:5px; font-size:10px; font-weight:800;
+    letter-spacing:0.5px; text-transform:uppercase;
+  }
+  .event .when { font-size:11.5px; color:var(--p-gray); margin-left:auto; }
+  .event .desc { font-size:13px; color:var(--p-slate); line-height:1.5; }
+  .event .meta { font-size:11.5px; color:var(--p-gray); margin-top:3px; }
+  .event a.open {
+    color:var(--p-orange); text-decoration:none; font-size:12px; font-weight:700; margin-left:6px;
+  }
+  .event a.open:hover { color:#9a0c22; }
+
+  .day-sep {
+    text-align:center; color:var(--p-gray);
+    font-size:11px; font-weight:800; letter-spacing:1.5px; text-transform:uppercase;
+    padding:14px 0 6px;
+  }
+  .day-sep span {
+    background:var(--p-light); padding:3px 12px; border-radius:999px;
+  }
+
+  .empty {
+    background:#fff; border-radius:14px; padding:50px 24px; text-align:center;
+    color:var(--p-gray); border:1px solid var(--p-border);
+  }
+  .empty .big { font-size:42px; margin-bottom:10px; }
+  .empty h3 { color:var(--p-slate); margin-bottom:6px; }
+
+  /* Password gate */
+  .gate {
+    flex:1; display:flex; align-items:center; justify-content:center; padding:24px;
+  }
+  .gate-card {
+    background:#fff; border-radius:14px; padding:30px;
+    box-shadow:0 12px 40px rgba(15,23,42,0.10);
+    max-width:420px; width:100%; text-align:center;
+  }
+  .gate-card .ic-big {
+    width:64px; height:64px; background:var(--p-cream);
+    border-radius:50%; display:inline-flex; align-items:center; justify-content:center;
+    font-size:28px; color:var(--p-orange); margin-bottom:12px;
+  }
+  .gate-card h2 { color:var(--p-navy); font-size:22px; margin-bottom:6px; }
+  .gate-card p { color:var(--p-gray); font-size:13.5px; margin-bottom:18px; line-height:1.5; }
+  .gate-card input {
+    width:100%; padding:12px 14px; border:1px solid var(--p-border);
+    border-radius:8px; font-family:inherit; font-size:15px; text-align:center;
+    letter-spacing:2px;
+  }
+  .gate-card input:focus { outline:none; border-color:var(--p-orange); box-shadow:0 0 0 3px rgba(200,16,46,0.12); }
+  .gate-card .gate-actions { display:flex; gap:8px; margin-top:14px; }
+  .gate-card .gate-actions .btn { flex:1; padding:11px; }
+  .gate-card .err { color:var(--p-red); font-size:13px; font-weight:700; margin-top:10px; display:none; }
+  .gate-card .err.show { display:block; }
+  .gate-card .hint { font-size:11.5px; color:var(--p-gray); margin-top:10px; }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <a class="home" href="index.html">
+    <img src="bcc-logo.png" alt="Blue Collar Coach" />
+    <span class="module">Activity Log</span>
+  </a>
+  <span class="spacer"></span>
+  <a class="nav-link" href="admin.html">Admin</a>
+  <a class="nav-link" href="guide.html">Help</a>
+</header>
+
+<div id="root"></div>
+
+<script>
+const LS_CFG       = 'bcc-admin-config-v1';
+const LS_SCHEDULE  = 'bcc-schedule-v1';
+const LS_TM        = 'bcc-tm-sheets-v1';
+const LS_PRETRIPS  = 'bcc-pretrips-v1';
+const LS_EQCHECKS  = 'bcc-eqchecks-v1';
+const LS_DAILY     = 'bcc-daily-logs-v1';
+const LS_TRUCKING  = 'bcc-trucking-slips-v1';
+const LS_MAINT     = 'bcc-maint-inbox-v1';
+const LS_RATEAUTH  = 'bcc-rate-authorizations-v1';
+const LS_CHATMSGS  = 'bcc-chat-messages-v1';
+const LS_FIELDCLOCK = 'bcc-field-clock';
+
+const SS_UNLOCKED = 'bcc-activity-unlocked';
+const DEFAULT_PASSWORD = 'PUAdmin2026';
+
+function loadCfg() { try { return JSON.parse(localStorage.getItem(LS_CFG)) || null; } catch { return null; } }
+function getPassword() {
+  const cfg = loadCfg();
+  return (cfg && cfg.activityPassword) ? cfg.activityPassword : DEFAULT_PASSWORD;
+}
+function isUnlocked() { return sessionStorage.getItem(SS_UNLOCKED) === '1'; }
+
+const TYPE_META = {
+  tm:         { label:'T&M',         ic:'$',          group:'Submissions' },
+  pretrip:    { label:'Pre-Trip',    ic:'&#128666;',  group:'Inspections' },
+  equip:      { label:'Equipment',   ic:'&#9881;',    group:'Inspections' },
+  daily:      { label:'Daily Log',   ic:'&#128221;',  group:'Submissions' },
+  trucking:   { label:'Trucking',    ic:'&#128667;',  group:'Submissions' },
+  maint:      { label:'Maintenance', ic:'&#128295;',  group:'Maintenance' },
+  rate:       { label:'Rate Auth',   ic:'&#128176;',  group:'Sales' },
+  chat:       { label:'Chat',        ic:'&#128172;',  group:'Comms' },
+  'job-note': { label:'Job Note',    ic:'&#128203;',  group:'Jobs' },
+  'clock-in': { label:'Clock In',    ic:'&#9201;',    group:'Time' },
+  'clock-out':{ label:'Clock Out',   ic:'&#9201;',    group:'Time' },
+  admin:      { label:'Admin',       ic:'&#9881;',    group:'Admin' },
+  // Server-side audit events (sign-ins, denied attempts, etc.)
+  audit:      { label:'Audit',       ic:'&#128737;',  group:'Audit' }
+};
+
+const AUDIT_ACTION_LABEL = {
+  'signin':                  'Signed in',
+  'signin-denied':           'Sign-in denied (wrong domain)',
+  'signout':                 'Signed out',
+  'data-write':              'Saved data',
+  'data-delete':             'Deleted data',
+  'admin-save':              'Saved admin settings',
+  'admin-discard':           'Discarded admin changes',
+  'activity-unlock':         'Unlocked activity log',
+  'activity-unlock-failed':  'Failed activity-log password attempt',
+  'rate-authorize':          'Authorized rate sheet',
+  'page-view':               'Viewed page',
+  'tm-submit':               'Submitted T&M sheet',
+  'tm-edit':                 'Edited T&M sheet',
+  'tm-delete':               'Deleted T&M sheet',
+  'daily-submit':            'Submitted daily log',
+  'daily-edit':              'Edited daily log',
+  'daily-delete':            'Deleted daily log',
+  'pretrip-submit':          'Submitted pre-trip',
+  'pretrip-edit':            'Edited pre-trip',
+  'equipment-submit':        'Submitted equipment check',
+  'equipment-edit':          'Edited equipment check',
+  'trucking-submit':         'Submitted trucking slip',
+  'trucking-edit':           'Edited trucking slip',
+  'trucking-delete':         'Deleted trucking slip',
+  'trucking-lock':           'Locked trucking slip (final)',
+  'trucking-unlock':         'Re-opened trucking slip (admin)',
+  'clockin':                 'Clocked in',
+  'clockout':                'Clocked out',
+  'maint-create':            'Created maintenance ticket',
+  'maint-update':            'Updated maintenance ticket',
+  'maint-close':             'Closed maintenance ticket',
+  'job-create':              'Created job',
+  'job-update':              'Updated job',
+  'job-assign':              'Assigned job to crew',
+  'job-status':              'Changed job status',
+  'job-delete':              'Deleted job',
+  'chat-send':               'Sent chat message',
+  'chat-delete':             'Deleted chat message',
+  'chat-clear-channel':      'Cleared chat channel',
+  'issue-report':            'Reported field issue'
+};
+
+// Parse a user-agent string into a short "Browser · OS" label.
+function uaShort(ua) {
+  if (!ua) return '';
+  let browser = 'Browser', os = 'Device';
+  if (/Edg\//i.test(ua))            browser = 'Edge';
+  else if (/Chrome\//i.test(ua))    browser = 'Chrome';
+  else if (/Firefox\//i.test(ua))   browser = 'Firefox';
+  else if (/Safari\//i.test(ua))    browser = 'Safari';
+  if (/iPhone|iPad|iPod/i.test(ua)) os = 'iOS';
+  else if (/Android/i.test(ua))     os = 'Android';
+  else if (/Windows/i.test(ua))     os = 'Windows';
+  else if (/Mac OS X/i.test(ua))    os = 'macOS';
+  else if (/Linux/i.test(ua))       os = 'Linux';
+  return browser + ' · ' + os;
+}
+
+// Format the meta object for an audit event into a readable comma-joined
+// line of "key: value" fragments. Skips noise (null/empty) and the very
+// long `userAgent` (already parsed separately).
+function fmtAuditMeta(meta) {
+  if (!meta || typeof meta !== 'object') return '';
+  const PRIORITY = ['jobName','customer','vehicleName','equipmentName','ticketNo','channel','page',
+                    'driver','foreman','operator','assignee','from','to','status','severity',
+                    'preview','grandTotal','loads','qty','material','hours','failCount',
+                    'partsNeeded','photos','crew','weather'];
+  const out = [];
+  PRIORITY.forEach(k => {
+    if (k in meta && meta[k] != null && meta[k] !== '') {
+      let v = meta[k];
+      if (Array.isArray(v)) v = v.join(', ');
+      if (typeof v === 'number' && k === 'grandTotal') v = '$' + v.toLocaleString(undefined, {maximumFractionDigits:2});
+      out.push(`<span style="color:#475569;font-weight:600;">${escapeHtml(k)}:</span> ${escapeHtml(String(v)).slice(0,140)}`);
+    }
+  });
+  // Catch-all for anything else not in PRIORITY
+  Object.keys(meta).forEach(k => {
+    if (PRIORITY.indexOf(k) >= 0) return;
+    if (k === 'location' || k === 'who') return;
+    if (meta[k] == null || meta[k] === '') return;
+    if (typeof meta[k] === 'object') return;
+    out.push(`<span style="color:#475569;font-weight:600;">${escapeHtml(k)}:</span> ${escapeHtml(String(meta[k])).slice(0,140)}`);
+  });
+  return out.join(' &middot; ');
+}
+
+// Holds the latest audit response from /api/audit; renderFeed re-runs after
+// it lands so the timeline includes audit rows the moment they're fetched.
+let _auditEvents = [];
+
+let state = {
+  query: '',
+  type: '',       // type id or ''
+  user: '',       // display name or ''
+  from: '',       // YYYY-MM-DD
+  to: '',
+};
+
+function init() {
+  if (!isUnlocked()) renderGate();
+  else renderFeed();
+}
+
+/* ============ Password gate ============ */
+function renderGate() {
+  document.getElementById('root').innerHTML = `
+    <div class="gate">
+      <div class="gate-card">
+        <div class="ic-big">&#128274;</div>
+        <h2>Activity Log</h2>
+        <p>This page shows every submission, ticket, and message across the app. Enter the activity password to continue.</p>
+        <input id="pwd" type="password" placeholder="Password" autocomplete="off" autofocus />
+        <div class="gate-actions">
+          <a href="index.html" class="btn btn-ghost" style="display:flex;align-items:center;justify-content:center;text-decoration:none;">Cancel</a>
+          <button class="btn btn-primary" id="unlock">Unlock</button>
+        </div>
+        <div class="err" id="err">Wrong password.</div>
+        <div class="hint">Ask an administrator for the password. Admins can manage it in Admin &rsaquo; Company.</div>
+      </div>
+    </div>
+  `;
+  const pwd = document.getElementById('pwd');
+  const err = document.getElementById('err');
+  function tryUnlock() {
+    if (pwd.value === getPassword()) {
+      sessionStorage.setItem(SS_UNLOCKED, '1');
+      window.bccAudit && window.bccAudit('activity-unlock');
+      renderFeed();
+    } else {
+      window.bccAudit && window.bccAudit('activity-unlock-failed');
+      err.classList.add('show');
+      pwd.select();
+    }
+  }
+  document.getElementById('unlock').onclick = tryUnlock;
+  pwd.onkeydown = e => { if (e.key === 'Enter') tryUnlock(); };
+}
+
+/* ============ Aggregate everything into one event stream ============ */
+function loadJSON(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key)) || fallback; } catch { return fallback; }
+}
+
+function buildEvents() {
+  const events = [];
+
+  // T&M sheets
+  loadJSON(LS_TM, []).forEach(s => {
+    const ts = s.updatedAt || s.submittedAt;
+    if (!ts) return;
+    const labor = (s.labor||[]).reduce((a,r)=> a + (r.st||0)*(r.rate||0) + (r.ot||0)*(r.otRate||0), 0);
+    const equip = (s.equipment||[]).reduce((a,r)=> a + (r.hours||0)*(r.rate||0), 0);
+    const mats  = (s.materials||[]).reduce((a,r)=> a + (r.qty||0)*(r.price||0), 0);
+    const total = labor + equip + mats + mats*((s.markupPct||0)/100);
+    events.push({
+      type:'tm', ts, user:s.foreman || '(unknown)',
+      summary:'T&M sheet ' + (s.status||''),
+      meta:`${s.customer ? s.customer + ' &middot; ' : ''}$${(total||0).toFixed(2)} &middot; ${s.date || ''}`,
+      link:'tm.html'
+    });
+  });
+
+  // Pre-trips
+  loadJSON(LS_PRETRIPS, []).forEach(p => {
+    if (!p.at) return;
+    const fails = (p.fails||[]).length;
+    events.push({
+      type:'pretrip', ts:p.at, user:p.driver || '(unknown)',
+      summary:`Pre-trip on ${p.vehicleName || 'vehicle'}${fails?` &mdash; <strong style="color:#991b1b;">${fails} fail${fails>1?'s':''}</strong>`:' &mdash; clear'}`,
+      meta:p.odometer ? `Odometer: ${p.odometer}` : '',
+      location:p.location, link:'inspections.html#past'
+    });
+  });
+
+  // Equipment checks
+  loadJSON(LS_EQCHECKS, []).forEach(c => {
+    if (!c.at) return;
+    const fails = (c.fails||[]).length;
+    const parts = (c.partsNeeded||[]).length;
+    events.push({
+      type:'equip', ts:c.at, user:c.operator || '(unknown)',
+      summary:`Equipment check on ${c.equipmentName || 'equipment'}${fails||parts?` &mdash; ${fails} fail, ${parts} parts`:' &mdash; clear'}`,
+      meta:c.hours ? `Hour-meter: ${c.hours}` : '',
+      location:c.location, link:'inspections.html#past'
+    });
+  });
+
+  // Daily logs
+  loadJSON(LS_DAILY, []).forEach(l => {
+    if (!l.submittedAt) return;
+    const sch = loadJSON(LS_SCHEDULE, {jobs:[]});
+    const job = sch.jobs.find(j => j.id === l.jobId);
+    events.push({
+      type:'daily', ts:l.submittedAt, user:l.submittedBy || '(unknown)',
+      summary:`Daily log: ${job ? escapeHtml(job.name) : '(job removed)'}`,
+      meta:`${(l.crew||[]).length} on site &middot; ${(l.photos||[]).length} photo${(l.photos||[]).length===1?'':'s'} &middot; ${l.date || ''}`,
+      location:l.location, link:'myday.html#past'
+    });
+  });
+
+  // Trucking slips
+  loadJSON(LS_TRUCKING, []).forEach(s => {
+    if (!s.submittedAt) return;
+    const loads = (s.haul||[]).filter(r => r.start && r.stop).length;
+    events.push({
+      type:'trucking', ts:s.submittedAt, user:s.driver || '(unknown)',
+      summary:`Trucking slip #${s.ticketNo || ''} &middot; ${loads} load${loads===1?'':'s'}`,
+      meta:`${s.truckNo || ''}${s.billTo ? ' &middot; bill: ' + escapeHtml(s.billTo) : ''}`,
+      location:s.location, link:'trucking.html'
+    });
+  });
+
+  // Maintenance tickets (creation + status changes via timeline)
+  loadJSON(LS_MAINT, []).forEach(t => {
+    if (t.createdAt) events.push({
+      type:'maint', ts:t.createdAt, user:t.reportedBy || '(unknown)',
+      summary:`Ticket opened: ${escapeHtml(t.summary || '')}`,
+      meta:`from ${t.source} &middot; ${t.category}${t.severity==='high'?' &middot; <strong style="color:#991b1b;">URGENT</strong>':''}`,
+      location:t.location, link:'maintenance.html'
+    });
+    (t.timeline||[]).forEach(tl => {
+      if (!tl.at) return;
+      events.push({
+        type:'maint', ts:tl.at, user:tl.by || '(unknown)',
+        summary:`Maintenance update on &ldquo;${escapeHtml(t.summary || '')}&rdquo;`,
+        meta:escapeHtml(tl.text || ''), link:'maintenance.html'
+      });
+    });
+  });
+
+  // Rate-sheet authorizations
+  loadJSON(LS_RATEAUTH, []).forEach(a => {
+    if (!a.capturedAt) return;
+    events.push({
+      type:'rate', ts:a.capturedAt, user:a.signature || '(customer)',
+      summary:`Rate-sheet authorization: ${escapeHtml(a.companyName || '')}`,
+      meta:a.jobLocation ? 'Job: ' + escapeHtml(a.jobLocation) : '',
+      link:'rates.html'
+    });
+  });
+
+  // Chat messages (per-channel)
+  const msgs = loadJSON(LS_CHATMSGS, {});
+  Object.keys(msgs).forEach(channelId => {
+    (msgs[channelId]||[]).forEach(m => {
+      if (!m.at) return;
+      events.push({
+        type:'chat', ts:new Date(m.at).toISOString(), user:m.author || '(unknown)',
+        summary:`<strong>#${escapeHtml(channelId)}</strong>: ${escapeHtml((m.text||'').slice(0,120))}${(m.text||'').length>120?'&hellip;':''}`,
+        meta:m.photo ? '&#128247; photo attached' : '', link:'chat.html'
+      });
+    });
+  });
+
+  // Job activity notes (under jobs[].attachments.notes)
+  loadJSON(LS_SCHEDULE, {jobs:[]}).jobs.forEach(j => {
+    ((j.attachments && j.attachments.notes) || []).forEach(n => {
+      if (!n.at) return;
+      events.push({
+        type:'job-note', ts:n.at, user:n.by || '(unknown)',
+        summary:`Note on <strong>${escapeHtml(j.name)}</strong>: ${escapeHtml(n.text || '')}`,
+        meta:j.customer || j.location || '', link:'jobs.html'
+      });
+    });
+  });
+
+  // Field clock-in / -out
+  const clock = loadJSON(LS_FIELDCLOCK, {});
+  Object.keys(clock).forEach(key => {
+    // Keys look like  jobId_user_date  with optional suffix _start / _end / _loc_in / _loc_out
+    if (key.endsWith('_start') || key.endsWith('_end') || key.endsWith('_loc_in') || key.endsWith('_loc_out')) return;
+    const state = clock[key];           // 'in' or 'out'
+    const startMs = clock[key + '_start'];
+    const endMs   = clock[key + '_end'];
+    const locIn   = clock[key + '_loc_in'];
+    const locOut  = clock[key + '_loc_out'];
+    const parts = key.split('_');
+    // jobId is parts[0], user is everything except first and last, date is last
+    if (parts.length < 3) return;
+    const jobId = parts[0];
+    const date  = parts[parts.length - 1];
+    const user  = parts.slice(1, -1).join(' ');
+    const sch   = loadJSON(LS_SCHEDULE, {jobs:[]});
+    const job   = sch.jobs.find(x => x.id === jobId);
+    const jobName = job ? job.name : '(unknown job)';
+    if (startMs) events.push({
+      type:'clock-in', ts:new Date(startMs).toISOString(), user,
+      summary:`Clocked in to <strong>${escapeHtml(jobName)}</strong>`,
+      meta:date, location:locIn, link:'myday.html#today'
+    });
+    if (endMs) events.push({
+      type:'clock-out', ts:new Date(endMs).toISOString(), user,
+      summary:`Clocked out of <strong>${escapeHtml(jobName)}</strong>`,
+      meta:date + ' &middot; ' + fmtElapsed(startMs, endMs), location:locOut, link:'myday.html#today'
+    });
+  });
+
+  // Server-side audit events (sign-ins, IP-bearing actions, denials, etc.)
+  // AND server-side access log rows. Both arrive via /api/audit GET.
+  _auditEvents.forEach(a => {
+    if (!a.ts) return;
+    const isAccess = a.docType === 'access';
+    const label = isAccess
+      ? (a.method + ' ' + (a.path || ''))
+      : (AUDIT_ACTION_LABEL[a.action] || a.action);
+
+    const ipBit  = a.ip ? `<span style="color:#64748b;">IP <code>${escapeHtml(a.ip)}</code></span>` : '';
+    const uaBit  = a.userAgent ? `<span style="color:#64748b;">${escapeHtml(uaShort(a.userAgent))}</span>` : '';
+    const pathBit = !isAccess && a.path ? `<span style="color:#94a3b8;font-family:ui-monospace,monospace;font-size:11px;">${escapeHtml(a.path)}</span>` : '';
+    const keyBit  = a.key ? `<code style="color:#64748b;font-size:11px;">${escapeHtml(a.key)}</code>` : '';
+    const detail  = fmtAuditMeta(a.meta);
+
+    // Stack: line 1 = detail (job name, customer, etc.), line 2 = IP / UA / path.
+    const lines = [];
+    if (detail) lines.push(detail);
+    const ctx = [ipBit, uaBit, pathBit, keyBit].filter(Boolean).join(' &middot; ');
+    if (ctx) lines.push(ctx);
+
+    events.push({
+      type: 'audit',
+      ts: a.ts,
+      user: a.user || '(unknown)',
+      summary: `<strong>${escapeHtml(label)}</strong>`,
+      meta: lines.join('<br/>'),
+      // Bubble up the GPS coords if the action carried one
+      location: (a.meta && a.meta.location) || null,
+      link: null,
+      // Table-view columns (filled for audit + access rows, blank for
+      // localStorage-derived events).
+      _row: {
+        ts: a.ts,
+        event: isAccess ? null : label,
+        action: a.action || null,
+        user: a.user || '',
+        ip: a.ip || '',
+        method: a.method || '',
+        path: a.path || '',
+        status: (typeof a.status === 'number') ? a.status : null,
+        userAgent: a.userAgent || '',
+        meta: a.meta || null,
+        key: a.key || null,
+        isAccess: isAccess
+      }
+    });
+  });
+
+  return events.sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+}
+
+let _auditLoading = false;
+async function fetchAudit() {
+  _auditLoading = true;
+  if (document.getElementById('root').querySelector('.toolbar')) renderFeed();
+  try {
+    const r = await fetch('/api/audit?limit=1000');
+    if (!r.ok) {
+      console.warn('[activity] audit fetch failed', r.status);
+      if (window.bccNotify) window.bccNotify('Could not load the server activity feed. Local events still shown.', 'warn', 5000);
+      return;
+    }
+    const j = await r.json();
+    _auditEvents = j.items || [];
+  } catch (e) {
+    console.warn('[activity] audit fetch error', e);
+    if (window.bccNotify) window.bccNotify('Activity feed offline. Local events still shown.', 'warn', 5000);
+  } finally {
+    _auditLoading = false;
+    // Re-render so the just-arrived audit rows (or empty result) fold in.
+    if (document.getElementById('root').querySelector('.toolbar')) renderFeed();
+  }
+}
+
+function fmtElapsed(startMs, endMs) {
+  if (!startMs || !endMs) return '';
+  const mins = Math.round((endMs - startMs) / 60000);
+  if (mins < 60) return mins + ' min';
+  return Math.floor(mins/60) + 'h ' + String(mins%60).padStart(2,'0') + 'm';
+}
+
+/* ============ Render feed ============ */
+let _auditFetched = false;
+// 'table' = Falcon-style access/audit table (default)
+// 'timeline' = card-based timeline grouped by day
+let _viewMode = (function () {
+  try { return localStorage.getItem('bcc-activity-view') || 'table'; } catch { return 'table'; }
+})();
+function setViewMode(m) {
+  _viewMode = m;
+  try { localStorage.setItem('bcc-activity-view', m); } catch {}
+  renderFeed();
+}
+
+function renderFeed() {
+  // Kick off the server-side audit fetch the first time the feed is shown
+  // (after password unlock). It re-renders when it lands.
+  if (!_auditFetched) { _auditFetched = true; fetchAudit(); }
+
+  const all = buildEvents();
+  const filtered = applyFilters(all);
+
+  document.getElementById('root').innerHTML = `
+    <div class="toolbar">
+      <h1>Activity Log</h1>
+      <span class="lock-badge">&#128274; Restricted</span>
+      <span class="spacer"></span>
+      <input type="search" id="fSearch" class="search" placeholder="Search activity..." value="${escapeAttr(state.query)}" />
+      <select id="fUser">
+        <option value="">All users</option>
+        ${allUsersList(all).map(u => `<option value="${escapeAttr(u)}" ${u===state.user?'selected':''}>${escapeHtml(displayUser(u))}</option>`).join('')}
+      </select>
+      <input type="date" id="fFrom" value="${state.from}" title="From date" />
+      <input type="date" id="fTo"   value="${state.to}"   title="To date" />
+      <div class="view-toggle" role="group" aria-label="View">
+        <button class="vt-btn ${_viewMode==='table'?'active':''}"    data-view="table">Table</button>
+        <button class="vt-btn ${_viewMode==='timeline'?'active':''}" data-view="timeline">Timeline</button>
+      </div>
+      <button class="btn btn-ghost" id="fReset">Reset</button>
+      <button class="btn btn-ghost" id="fLogout" title="Lock again">&#128274; Lock</button>
+    </div>
+
+    <div class="type-filters">
+      <span class="type-chip ${state.type===''?'on':''}" data-type="">All <span class="ct">${all.length}</span></span>
+      ${Object.keys(TYPE_META).map(t => {
+        const ct = all.filter(e => e.type === t).length;
+        return `<span class="type-chip ${state.type===t?'on':''}" data-type="${t}">${TYPE_META[t].ic} ${TYPE_META[t].label} <span class="ct">${ct}</span></span>`;
+      }).join('')}
+    </div>
+
+    <div class="summary">
+      <div class="stat"><div class="num">${filtered.length}</div><div class="lbl">Shown</div></div>
+      <div class="stat"><div class="num">${all.length}</div><div class="lbl">Total events</div></div>
+      <div class="stat"><div class="num">${allUsersList(all).length}</div><div class="lbl">Distinct users</div></div>
+      <div class="stat"><div class="num">${all.length ? fmtRelative(all[0].ts) : '—'}</div><div class="lbl">Latest</div></div>
+    </div>
+
+    <div class="wrap">
+      ${_auditLoading && all.length === 0
+        ? renderSkeleton()
+        : (filtered.length === 0
+            ? `<div class="empty">
+                 <div class="big">&#128221;</div>
+                 <h3>No activity matches</h3>
+                 <p style="font-size:13px;">Adjust the filters or clear them to see everything.</p>
+               </div>`
+            : (_viewMode === 'table'
+                ? renderTable(filtered)
+                : `<div class="timeline">${renderTimeline(filtered)}</div>`))}
+    </div>
+  `;
+
+  bind();
+}
+
+/* Loading skeleton — shown for the brief moment between unlocking
+ * activity-log and the /api/audit fetch returning. Same shape as the
+ * eventual table rows so the page doesn't jolt when content arrives. */
+function renderSkeleton() {
+  const rows = Array.from({ length: 8 }).map(() => `
+    <tr>
+      <td><div class="sk sk-s"></div><div class="sk sk-xs" style="margin-top:4px;"></div></td>
+      <td><div class="sk sk-m"></div><div class="sk sk-s" style="margin-top:4px;"></div></td>
+      <td><div class="sk sk-s"></div></td>
+      <td><div class="sk sk-s"></div></td>
+    </tr>
+  `).join('');
+  return `
+    <div class="table-wrap" aria-busy="true" aria-label="Loading activity">
+      <table class="log-table">
+        <thead>
+          <tr><th>Time</th><th>Event</th><th>User</th><th>Status</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+/* Falcon-style access/audit table. Columns: Time | Event | User | IP |
+ * Method | Path | Status. Rows come from server access log + client
+ * audits + localStorage events; method/path/status are blank ("—") for
+ * rows that don't have them. */
+function renderTable(events) {
+  const rows = events.map(e => {
+    const r = e._row || {};
+    const d = new Date(e.ts);
+    const dateStr = d.toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' });
+    const timeStr = d.toLocaleTimeString(undefined, { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+    const typeMeta = TYPE_META[e.type] || { label:'?', ic:'&#128221;' };
+
+    // Event column: for access log rows show "GET /api/data"; for everything
+    // else show the human-readable label from the timeline view.
+    let eventCell;
+    if (r.isAccess) {
+      eventCell = `<span class="ev-method ev-m-${(r.method||'GET').toLowerCase()}">${escapeHtml(r.method || '')}</span> ` +
+                  `<code style="color:#475569;">${escapeHtml(r.path || '')}</code>`;
+    } else if (e.type === 'audit') {
+      const act = (r.action && AUDIT_ACTION_LABEL[r.action]) || r.action || '—';
+      const ctx = fmtAuditMeta(r.meta);
+      eventCell = `<strong>${escapeHtml(act)}</strong>` + (ctx ? `<div class="ev-sub">${ctx}</div>` : '');
+    } else {
+      const ctx = e.meta ? `<div class="ev-sub">${e.summary || ''}</div>` : '';
+      eventCell = `<strong>${typeMeta.label}</strong>${e.summary ? `: ${e.summary}` : ''}`;
+    }
+
+    const ip = r.ip || '';
+    const method = r.method || '—';
+    const path = (r.isAccess ? '' : (r.path || ''));  // path shown inside event cell for access
+    const statusVal = (typeof r.status === 'number') ? r.status : null;
+    const statusCell = statusVal == null
+      ? '<span style="color:#94a3b8;">—</span>'
+      : `<span class="st-${Math.floor(statusVal/100)}xx">${statusVal}</span>`;
+
+    return `
+      <tr>
+        <td class="t-time">
+          <div class="t-date">${dateStr}</div>
+          <div class="t-clock">${timeStr}</div>
+        </td>
+        <td class="t-event">${eventCell}</td>
+        <td class="t-user">${escapeHtml(displayUser(e.user))}</td>
+        <td class="t-ip">${ip ? `<code>${escapeHtml(ip)}</code>` : '<span style="color:#94a3b8;">—</span>'}</td>
+        <td class="t-method">${r.isAccess ? `<span class="ev-method ev-m-${(method||'').toLowerCase()}">${escapeHtml(method)}</span>` : '<span style="color:#94a3b8;">—</span>'}</td>
+        <td class="t-path">${path ? `<code>${escapeHtml(path)}</code>` : '<span style="color:#94a3b8;">—</span>'}</td>
+        <td class="t-status">${statusCell}</td>
+      </tr>
+    `;
+  }).join('');
+
+  return `
+    <div class="table-wrap">
+      <table class="log-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Event</th>
+            <th>User</th>
+            <th>IP</th>
+            <th>Method</th>
+            <th>Path</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderTimeline(events) {
+  let html = '';
+  let lastDay = '';
+  events.forEach(e => {
+    const d = new Date(e.ts);
+    const day = d.toDateString();
+    if (day !== lastDay) {
+      html += `<div class="day-sep"><span>${dayLabel(d)}</span></div>`;
+      lastDay = day;
+    }
+    const meta = TYPE_META[e.type] || { label:'?', ic:'&#128221;' };
+    html += `
+      <div class="event t-${e.type}">
+        <div class="ic">${meta.ic}</div>
+        <div class="body">
+          <div class="top">
+            <span class="who">${escapeHtml(displayUser(e.user))}</span>
+            <span class="type-pill">${meta.label}</span>
+            <span class="when">${d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}${e.link ? ` &middot; <a class="open" href="${e.link}">open &rsaquo;</a>` : ''}</span>
+          </div>
+          <div class="desc">${e.summary || ''}</div>
+          ${e.meta ? `<div class="meta">${e.meta}</div>` : ''}
+          ${e.location ? `<div class="meta">${bccLocChipLocal(e.location)}</div>` : ''}
+        </div>
+      </div>
+    `;
+  });
+  return html;
+}
+
+function dayLabel(d) {
+  const today = new Date(); today.setHours(0,0,0,0);
+  const yesterday = new Date(today); yesterday.setDate(today.getDate()-1);
+  const md = new Date(d); md.setHours(0,0,0,0);
+  if (md.getTime() === today.getTime()) return 'Today';
+  if (md.getTime() === yesterday.getTime()) return 'Yesterday';
+  return d.toLocaleDateString(undefined, { weekday:'long', month:'short', day:'numeric', year:'numeric' });
+}
+
+function fmtRelative(iso) {
+  const ms = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(ms/60000);
+  if (m < 1) return 'now';
+  if (m < 60) return m + 'm ago';
+  const h = Math.floor(m/60);
+  if (h < 24) return h + 'h ago';
+  const d = Math.floor(h/24);
+  return d + 'd ago';
+}
+
+function bccLocChipLocal(loc) {
+  if (!loc || !isFinite(loc.lat) || !isFinite(loc.lng)) return '';
+  const url = 'https://maps.google.com/?q=' + loc.lat + ',' + loc.lng;
+  const txt = loc.lat.toFixed(4) + ', ' + loc.lng.toFixed(4);
+  return `<a href="${url}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:3px;background:#e0e7ff;color:#3730a3;padding:1px 7px;border-radius:5px;font-size:11px;font-weight:700;text-decoration:none;">&#128205; ${txt}</a>`;
+}
+
+function applyFilters(events) {
+  const q = state.query.toLowerCase().trim();
+  const fromTs = state.from ? new Date(state.from + 'T00:00:00').getTime() : null;
+  const toTs   = state.to   ? new Date(state.to   + 'T23:59:59').getTime() : null;
+  return events.filter(e => {
+    if (state.type && e.type !== state.type) return false;
+    if (state.user && e.user !== state.user) return false;
+    const ts = e.ts ? new Date(e.ts).getTime() : 0;
+    if (fromTs && ts < fromTs) return false;
+    if (toTs   && ts > toTs)   return false;
+    if (q) {
+      const haystack = (e.user + ' ' + (e.summary||'') + ' ' + (e.meta||'')).toLowerCase().replace(/<[^>]*>/g,'');
+      if (haystack.indexOf(q) < 0) return false;
+    }
+    return true;
+  });
+}
+
+function allUsersList(events) {
+  const seen = new Set();
+  events.forEach(e => { if (e.user) seen.add(e.user); });
+  return Array.from(seen).sort();
+}
+
+function bind() {
+  document.getElementById('fSearch').oninput = e => { state.query = e.target.value; refresh(); };
+  document.getElementById('fUser').onchange = e => { state.user = e.target.value; refresh(); };
+  document.getElementById('fFrom').onchange = e => { state.from = e.target.value; refresh(); };
+  document.getElementById('fTo').onchange = e => { state.to = e.target.value; refresh(); };
+  document.getElementById('fReset').onclick = () => { state = { query:'', type:'', user:'', from:'', to:'' }; renderFeed(); };
+  document.getElementById('fLogout').onclick = () => { sessionStorage.removeItem(SS_UNLOCKED); renderGate(); };
+  document.querySelectorAll('.type-chip').forEach(el => {
+    el.onclick = () => { state.type = el.dataset.type; renderFeed(); };
+  });
+  document.querySelectorAll('.view-toggle .vt-btn').forEach(el => {
+    el.onclick = () => setViewMode(el.dataset.view);
+  });
+}
+
+function refresh() {
+  // Re-render only the body + stats, not the whole page (to keep input focus)
+  const all = buildEvents();
+  const filtered = applyFilters(all);
+  const wrap = document.querySelector('.wrap');
+  if (filtered.length === 0) {
+    wrap.innerHTML = `<div class="empty"><div class="big">&#128221;</div><h3>No activity matches</h3><p style="font-size:13px;">Adjust the filters or clear them to see everything.</p></div>`;
+  } else if (_viewMode === 'table') {
+    wrap.innerHTML = renderTable(filtered);
+  } else {
+    wrap.innerHTML = `<div class="timeline">${renderTimeline(filtered)}</div>`;
+  }
+  const stats = document.querySelector('.summary');
+  if (stats) {
+    stats.querySelector('.stat:first-child .num').textContent = filtered.length;
+  }
+}
+
+// Legacy-entity normalizer: pre-existing audit rows (e.g. ticket summaries
+// stored as "Hydrovac 1 — Mirror &amp; glass" before the entity cleanup)
+// get decoded back to plain text BEFORE escapeHtml runs, so the display
+// shows "&" not "&amp;". Display-time only — stored docs are untouched.
+function cleanLegacyEntities(s) {
+  return String(s || '')
+    .replace(/&amp;/g,   '&')
+    .replace(/&mdash;/g, '—')
+    .replace(/&middot;/g,'·')
+    .replace(/&nbsp;/g,  ' ')
+    .replace(/&rsquo;/g, '’')
+    .replace(/&lsquo;/g, '‘')
+    .replace(/&quot;/g,  '"')
+    .replace(/&#39;/g,   "'")
+    .replace(/&lt;/g,    '<')
+    .replace(/&gt;/g,    '>');
+}
+function escapeHtml(s){ return String(cleanLegacyEntities(s)).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function escapeAttr(s){ return escapeHtml(s); }
+// Audit data stores whatever identifier was current when the event happened
+// (often the email/UPN). Display it as "Lewis Koljonen" instead via
+// bccPeopleFull, falling back to the original string if unknown.
+function displayUser(u){ return (window.bccDisplayName && window.bccDisplayName(u)) || u || '(unknown)'; }
+// Re-render once the Entra user list arrives so emails upgrade to "First Last".
+window.addEventListener('bcc-users-ready', function () {
+  if (document.getElementById('root') && document.getElementById('root').querySelector('.toolbar')) {
+    try { renderFeed(); } catch (e) {}
+  }
+});
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,1404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#2b2b2b" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Scheduler &middot; BCC Connect</title>
+<link rel="icon" type="image/png" href="bcc-logo.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --p-navy:#2b2b2b; --p-navy-dark:#1a1a1a; --p-navy-light:#374151;
+    --p-orange:#c8102e; --p-orange-soft:#ef4444;
+    --p-cyan:#1d4ed8; --p-cream:#f3f4f6;
+    --p-slate:#1a1a1a; --p-gray:#64748b; --p-light:#f1f5f9;
+    --p-border:#e2e8f0; --p-green:#10b981; --p-red:#ef4444; --p-amber:#f59e0b;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; }
+  body {
+    font-family:'Inter', system-ui, Segoe UI, Arial, sans-serif;
+    color:#1a1a1a; background:#f8fafc; -webkit-font-smoothing:antialiased;
+    display:flex; flex-direction:column; min-height:100vh;
+  }
+
+  /* ---------- Top bar ---------- */
+  header.topbar {
+    background:linear-gradient(90deg, var(--p-navy-dark), var(--p-navy));
+    color:#fff; padding:10px 18px; display:flex; align-items:center; gap:16px;
+    box-shadow:0 2px 12px rgba(0,0,0,0.18); position:sticky; top:0; z-index:50;
+  }
+  header.topbar a.home { display:flex; align-items:center; gap:10px; text-decoration:none; color:#fff; }
+  header.topbar img { height:30px; background:#fff; padding:3px 8px; border-radius:6px; }
+  header.topbar .module {
+    font-size:13px; font-weight:700; letter-spacing:2px; text-transform:uppercase;
+    color:var(--p-orange-soft); margin-left:6px;
+  }
+  header.topbar .spacer { flex:1; }
+  header.topbar .nav-link {
+    color:rgba(255,255,255,0.7); text-decoration:none; font-size:13px; font-weight:600;
+    padding:6px 10px; border-radius:6px; transition:all 0.15s;
+  }
+  header.topbar .nav-link:hover { background:rgba(255,255,255,0.08); color:#fff; }
+  @media (max-width: 720px) { header.topbar .nav-link.optional { display:none; } }
+
+  /* ---------- Toolbar ---------- */
+  .toolbar {
+    background:#fff; border-bottom:1px solid var(--p-border);
+    padding:12px 18px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+  }
+  .toolbar h1 { font-size:18px; font-weight:800; color:var(--p-navy); margin-right:6px; }
+  .week-nav { display:flex; align-items:center; gap:6px; }
+  .week-nav button {
+    background:var(--p-light); border:1px solid var(--p-border); padding:7px 12px;
+    border-radius:8px; cursor:pointer; font-weight:600; color:var(--p-slate); font-size:13px;
+  }
+  .week-nav button:hover { background:#e2e8f0; }
+  .week-nav .week-label { font-weight:700; color:var(--p-navy); padding:0 8px; font-size:13px; }
+  .toolbar .spacer { flex:1; }
+  .btn-primary {
+    background:var(--p-orange); color:#fff; border:none; padding:9px 16px;
+    border-radius:8px; cursor:pointer; font-weight:700; font-size:13px;
+    box-shadow:0 2px 8px rgba(200,16,46,0.3); transition:all 0.15s;
+  }
+  .btn-primary:hover { background:#9a0c22; transform:translateY(-1px); }
+  .btn-ghost {
+    background:transparent; border:1px solid var(--p-border); padding:8px 12px;
+    border-radius:8px; cursor:pointer; font-weight:600; font-size:13px; color:var(--p-slate);
+  }
+  .btn-ghost:hover { background:var(--p-light); }
+
+  /* ---------- Layout ---------- */
+  .app { display:grid; grid-template-columns:280px 1fr; flex:1; min-height:0; }
+  @media (max-width: 900px) { .app { grid-template-columns:1fr; } }
+
+  /* ---------- Job pool ---------- */
+  .pool {
+    background:#fff; border-right:1px solid var(--p-border);
+    padding:14px; overflow-y:auto;
+  }
+  .pool h2 {
+    font-size:11px; font-weight:800; letter-spacing:1.5px; text-transform:uppercase;
+    color:var(--p-gray); margin-bottom:10px;
+  }
+  .pool .hint { font-size:11px; color:var(--p-gray); margin-bottom:10px; line-height:1.5; }
+  .pool-list { display:flex; flex-direction:column; gap:8px; min-height:80px; }
+  .pool-list.over { background:rgba(200,16,46,0.05); border-radius:8px; }
+
+  /* ---------- View toggle (Week / Month) ---------- */
+  .view-toggle {
+    display:inline-flex; gap:0; background:#f1f5f9;
+    border:1px solid var(--p-border); border-radius:8px;
+    padding:3px; margin-left:8px;
+  }
+  .view-toggle .vt-btn {
+    background:transparent; border:none; color:var(--p-slate);
+    font-weight:700; font-size:12.5px; padding:6px 14px; border-radius:6px;
+    cursor:pointer;
+  }
+  .view-toggle .vt-btn.active { background:var(--p-navy); color:#fff; }
+
+  /* ---------- Month calendar ---------- */
+  /* Month view sits in its own full-width container so the pool's grid
+     track doesn't squeeze it. CSS Grid keeps explicit track widths even
+     for hidden items, so the only reliable fix is to give month view
+     its own root that the .app grid never claims. */
+  .month-area {
+    flex:1; min-width:0; overflow:auto; padding:14px;
+    display:none;
+  }
+  .month-area.show { display:block; }
+  .month-grid { width:100%; max-width:1400px; margin:0 auto; }
+
+  /* ---------- Day view ---------- *
+   * Single vertical column, crew-grouped. Same full-width container
+   * pattern as the month view so neither can be squeezed by the
+   * week-view's pool track. */
+  .day-area {
+    flex:1; min-width:0; overflow:auto; padding:14px;
+    display:none;
+  }
+  .day-area.show { display:block; }
+  .day-wrap { width:100%; max-width:840px; margin:0 auto; }
+
+  .day-pool, .day-crew {
+    background:#fff; border:1px solid var(--p-border); border-radius:12px;
+    margin-bottom:12px; padding:14px 16px;
+    box-shadow:0 2px 6px rgba(15,23,42,0.04);
+  }
+  .day-pool { border-color:#fde68a; background:#fffbeb; }
+  .day-pool h3 {
+    font-size:11px; font-weight:800; color:#92400e;
+    letter-spacing:1px; text-transform:uppercase; margin-bottom:8px;
+    display:flex; align-items:center; gap:8px;
+  }
+  .day-pool h3 .ct {
+    background:#fde68a; color:#92400e; padding:1px 8px; border-radius:5px; font-size:11px;
+  }
+  .day-pool .empty-pool { color:var(--p-gray); font-size:12.5px; font-style:italic; }
+
+  .day-crew h3 {
+    font-size:12px; font-weight:800; color:var(--p-navy);
+    letter-spacing:1px; text-transform:uppercase; margin-bottom:10px;
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  }
+  .day-crew h3 .lead { color:var(--p-gray); font-size:11px; font-weight:600; letter-spacing:0; text-transform:none; }
+  .day-crew h3 .ct {
+    margin-left:auto; background:var(--p-light); color:var(--p-gray);
+    padding:1px 8px; border-radius:5px; font-size:11px; font-weight:700;
+  }
+  .day-crew .day-empty {
+    color:var(--p-gray); font-size:12.5px; font-style:italic; padding:6px 0 2px;
+  }
+
+  .day-job {
+    background:#f8fafc; border:1px solid var(--p-border); border-radius:9px;
+    padding:11px 13px; margin-bottom:8px; cursor:pointer;
+    transition:border-color 0.12s, background 0.12s, box-shadow 0.12s;
+  }
+  .day-job:last-child { margin-bottom:0; }
+  .day-job:hover { border-color:var(--p-orange); background:#fef2f2; box-shadow:0 4px 12px rgba(15,23,42,0.06); }
+  .day-job .top { display:flex; align-items:center; gap:8px; margin-bottom:4px; flex-wrap:wrap; }
+  .day-job .idx {
+    background:var(--p-navy); color:#fff; font-weight:800; font-size:11px;
+    width:22px; height:22px; border-radius:5px; display:inline-flex;
+    align-items:center; justify-content:center; flex-shrink:0;
+  }
+  .day-job .name { font-weight:700; color:var(--p-navy); font-size:14px; flex:1; min-width:0; }
+  .day-job .type-pill {
+    font-size:10px; font-weight:800; padding:1px 7px; border-radius:4px;
+    background:var(--p-light); color:var(--p-gray); letter-spacing:0.5px; text-transform:uppercase;
+  }
+  .day-job .meta {
+    font-size:12px; color:var(--p-gray); line-height:1.45; margin-top:2px;
+  }
+  .day-job .meta .lbl { color:var(--p-slate); font-weight:600; }
+  .day-job .meta + .meta { margin-top:1px; }
+  .day-pool .day-job .idx { display:none; }
+
+  /* Day view mobile: tighter padding, no idx number badge */
+  @media (max-width:600px) {
+    .day-wrap { max-width:100%; }
+    .day-pool, .day-crew { padding:12px 12px; }
+    .day-job { padding:10px 11px; }
+  }
+  .month-head {
+    display:grid; grid-template-columns:repeat(7, 1fr); gap:6px;
+    margin-bottom:6px;
+  }
+  .month-head .dow {
+    background:var(--p-navy); color:#fff;
+    padding:8px 10px; border-radius:7px; text-align:center;
+    font-size:11px; font-weight:700; letter-spacing:1px; text-transform:uppercase;
+  }
+  .month-head .dow.weekend { background:#374151; }
+  .month-body {
+    display:grid; grid-template-columns:repeat(7, 1fr); gap:6px;
+    grid-auto-rows:minmax(110px, auto);
+  }
+  .month-body .mday {
+    background:#fff; border:1px solid var(--p-border); border-radius:8px;
+    padding:6px 7px; display:flex; flex-direction:column; gap:3px;
+    min-height:110px; cursor:pointer; transition:border-color 0.12s, box-shadow 0.12s;
+  }
+  .month-body .mday:hover { border-color:var(--p-orange); box-shadow:0 4px 12px rgba(15,23,42,0.06); }
+  .month-body .mday.weekend { background:#fafbfc; }
+  .month-body .mday.other-month { opacity:0.45; background:#f8fafc; }
+  .month-body .mday.today .dnum { color:#fff; background:var(--p-orange); }
+  .month-body .mday .dnum {
+    font-size:12px; font-weight:800; color:var(--p-slate);
+    width:22px; height:22px; border-radius:50%;
+    display:inline-flex; align-items:center; justify-content:center;
+    align-self:flex-start;
+  }
+  .month-body .mday .mjob {
+    font-size:11px; font-weight:700; color:#fff;
+    padding:3px 6px; border-radius:4px;
+    background:var(--p-navy);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    line-height:1.3;
+  }
+  .month-body .mday .mjob.unassigned { background:#94a3b8; }
+  .month-body .mday .more {
+    font-size:10.5px; font-weight:700; color:var(--p-gray); padding:2px 6px;
+  }
+  @media (max-width:760px) {
+    .month-body { grid-auto-rows:minmax(78px, auto); }
+    .month-body .mday { min-height:78px; padding:4px 5px; }
+    .month-body .mday .mjob { font-size:10px; padding:2px 4px; }
+  }
+
+  /* ---------- Week grid ---------- */
+  .grid-wrap { overflow:auto; padding:14px; }
+  .grid {
+    display:grid;
+    grid-template-columns: 130px repeat(7, minmax(160px, 1fr));
+    gap:8px;
+    min-width:1280px;
+  }
+  /* Faintly tint Saturday/Sunday so weekend cells read at a glance */
+  .grid .day-head.weekend { background:#374151; }
+  .grid .cell.weekend { background:#fafbfc; }
+  .grid .day-head {
+    background:var(--p-navy); color:#fff; padding:10px 12px; border-radius:8px;
+    font-weight:700; font-size:12px; letter-spacing:1px; text-transform:uppercase;
+    text-align:center; position:sticky; top:0; z-index:10;
+    box-shadow:0 2px 8px rgba(0,0,0,0.12);
+  }
+  .grid .corner {
+    background:#f8fafc; position:sticky; top:0; left:0; z-index:12;
+  }
+  .grid .crew-cell {
+    background:var(--p-slate); color:#fff; padding:12px; border-radius:8px;
+    font-weight:700; font-size:13px; position:sticky; left:0; z-index:9;
+    display:flex; flex-direction:column; gap:3px;
+  }
+  .grid .crew-cell .lead { font-size:11px; color:rgba(255,255,255,0.6); font-weight:500; }
+  .cell {
+    background:#fff; border:1px dashed var(--p-border); border-radius:8px;
+    min-height:120px; padding:6px; display:flex; flex-direction:column; gap:6px;
+    transition:background 0.12s, border-color 0.12s;
+  }
+  .cell.over { background:rgba(200,16,46,0.08); border-color:var(--p-orange); border-style:solid; }
+  .cell.weekend { background:#f8fafc; }
+  .cell .empty {
+    color:var(--p-gray); font-size:11px; text-align:center; padding:20px 0;
+    opacity:0.6;
+  }
+
+  /* ---------- Job card ---------- */
+  .job {
+    background:#fff; border-left:4px solid var(--p-navy);
+    border-radius:6px; padding:8px 10px; cursor:grab;
+    box-shadow:0 1px 3px rgba(0,0,0,0.08);
+    font-size:12px; user-select:none;
+    transition:transform 0.12s, box-shadow 0.12s;
+  }
+  .job:hover { box-shadow:0 4px 10px rgba(0,0,0,0.12); transform:translateY(-1px); }
+  .job:active { cursor:grabbing; }
+  .job.selected { outline:2px solid var(--p-orange); outline-offset:1px; }
+  .job.dragging { opacity:0.45; cursor:grabbing; }
+  /* Within-day drop indicator: red bar above / below the target card */
+  .job.drop-above, .job.drop-below { position:relative; }
+  .job.drop-above::before, .job.drop-below::after {
+    content:''; position:absolute; left:-2px; right:-2px; height:3px;
+    background:var(--p-orange); border-radius:2px; pointer-events:none;
+    box-shadow:0 0 6px rgba(200,16,46,0.55);
+  }
+  .job.drop-above::before { top:-3px; }
+  .job.drop-below::after  { bottom:-3px; }
+  /* Same indicator on the day-view cards */
+  .day-job.dragging { opacity:0.45; cursor:grabbing; }
+  .day-job.drop-above, .day-job.drop-below { position:relative; }
+  .day-job.drop-above::before, .day-job.drop-below::after {
+    content:''; position:absolute; left:0; right:0; height:3px;
+    background:var(--p-orange); border-radius:2px; pointer-events:none;
+    box-shadow:0 0 6px rgba(200,16,46,0.55);
+  }
+  .day-job.drop-above::before { top:-4px; }
+  .day-job.drop-below::after  { bottom:-4px; }
+  /* Day-view crew section highlights when something is being dragged over it */
+  .day-crew.drop-target { border-color:var(--p-orange); background:#fef2f2; }
+  .day-pool.drop-target { border-color:var(--p-orange); }
+  .job .name { font-weight:700; color:var(--p-navy); margin-bottom:2px; }
+  .job .loc { color:var(--p-gray); font-size:11px; }
+  .job .meta { display:flex; gap:6px; margin-top:4px; flex-wrap:wrap; }
+  .job .chip {
+    background:var(--p-light); color:var(--p-slate);
+    padding:1px 6px; border-radius:4px; font-size:10px; font-weight:600;
+  }
+  .job.t-hydrovac { border-left-color:var(--p-cyan); }
+  .job.t-hydrovac .name { color:#1d4ed8; }
+  .job.t-excavation { border-left-color:var(--p-amber); }
+  .job.t-excavation .name { color:#b45309; }
+  .job.t-watersewer { border-left-color:var(--p-navy); }
+  .job.t-firehydrant { border-left-color:var(--p-red); }
+  .job.t-firehydrant .name { color:#b91c1c; }
+  .job.t-demo { border-left-color:var(--p-slate); }
+  .job.t-emergency { border-left-color:var(--p-red); background:#fef2f2; }
+  .job.t-emergency .name { color:var(--p-red); }
+
+  /* ---------- Detail panel ---------- */
+  .detail-overlay {
+    position:fixed; inset:0; background:rgba(15,23,42,0.5);
+    display:none; align-items:center; justify-content:flex-end; z-index:100;
+  }
+  .detail-overlay.open { display:flex; }
+  .detail {
+    background:#fff; width:420px; max-width:100%; height:100%;
+    overflow-y:auto; padding:22px; box-shadow:-12px 0 30px rgba(0,0,0,0.2);
+    animation: slideIn 0.18s ease;
+  }
+  @keyframes slideIn { from { transform:translateX(20px); opacity:0; } to { transform:translateX(0); opacity:1; } }
+  @media (max-width:600px) {
+    .detail-overlay { align-items:stretch; justify-content:stretch; }
+    .detail { width:100%; padding:18px 14px 80px; }
+    @keyframes slideIn { from { transform:translateY(20px); opacity:0; } to { transform:translateY(0); opacity:1; } }
+  }
+  .detail h2 { color:var(--p-navy); font-size:18px; margin-bottom:14px; }
+  .detail .row { display:flex; flex-direction:column; gap:4px; margin-bottom:14px; }
+  .detail label { font-size:11px; font-weight:700; color:var(--p-gray); letter-spacing:0.5px; text-transform:uppercase; }
+  .detail input, .detail select, .detail textarea {
+    width:100%; padding:9px 11px; border:1px solid var(--p-border); border-radius:7px;
+    font-family:inherit; font-size:13px; color:var(--p-slate); background:#fff;
+  }
+  .detail input:focus, .detail select:focus, .detail textarea:focus {
+    outline:none; border-color:var(--p-orange); box-shadow:0 0 0 3px rgba(200,16,46,0.12);
+  }
+  .detail textarea { resize:vertical; min-height:70px; }
+  .detail .members {
+    display:flex; flex-wrap:wrap; gap:6px; padding:8px; border:1px solid var(--p-border);
+    border-radius:7px; background:var(--p-light); min-height:42px;
+  }
+  .detail .member-chip {
+    background:#fff; border:1px solid var(--p-border); border-radius:999px;
+    padding:3px 10px; font-size:12px; font-weight:600; cursor:pointer;
+    transition:all 0.12s;
+  }
+  .detail .member-chip.on {
+    background:var(--p-navy); color:#fff; border-color:var(--p-navy);
+  }
+  .detail .equipment-chip {
+    background:#fff; border:1px solid var(--p-border); border-radius:6px;
+    padding:4px 10px; font-size:12px; font-weight:600; cursor:pointer;
+  }
+  .detail .equipment-chip.on { background:var(--p-cyan); color:#fff; border-color:var(--p-cyan); }
+  .detail .actions { display:flex; gap:8px; margin-top:18px; flex-wrap:wrap; }
+  .detail .actions .btn-primary { flex:1; }
+  .btn-danger {
+    background:transparent; border:1px solid var(--p-red); color:var(--p-red);
+    padding:9px 14px; border-radius:8px; cursor:pointer; font-weight:600; font-size:13px;
+  }
+  .btn-danger:hover { background:#fef2f2; }
+
+  /* Tap-to-move banner */
+  .tap-hint {
+    position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
+    background:var(--p-navy); color:#fff; padding:10px 18px; border-radius:999px;
+    font-size:13px; font-weight:600; box-shadow:0 8px 24px rgba(0,0,0,0.25);
+    display:none; z-index:60;
+  }
+  .tap-hint.show { display:block; }
+
+  /* Mobile */
+  @media (max-width: 900px) {
+    .pool { border-right:none; border-bottom:1px solid var(--p-border); max-height:200px; }
+    .grid { min-width:auto; grid-template-columns: 100px repeat(7, minmax(130px, 1fr)); }
+  }
+</style>
+  <script src="bcc-api.js" defer></script>
+</head>
+<body>
+
+<header class="topbar">
+  <a class="home" href="index.html">
+    <img src="bcc-logo.png" alt="Blue Collar Coach" />
+    <span class="module">Scheduler</span>
+  </a>
+  <span class="spacer"></span>
+  <a class="nav-link" href="myday.html#today">My Day</a>
+  <a class="nav-link optional" href="tm.html">T&amp;M</a>
+  <a class="nav-link optional" href="inventory.html">Inventory</a>
+  <a class="nav-link" href="maintenance.html">Maintenance</a>
+  <a class="nav-link" href="trucking.html">Trucking</a>
+  <a class="nav-link" href="rates.html">Rates</a>
+  <a class="nav-link" href="admin.html">Admin</a>
+  <a class="nav-link" href="guide.html">Help</a>
+</header>
+
+<div class="toolbar">
+  <h1>Scheduler</h1>
+  <div class="week-nav">
+    <button id="prevWeek">&larr;</button>
+    <button id="todayBtn">Today</button>
+    <span class="week-label" id="weekLabel">&mdash;</span>
+    <button id="nextWeek">&rarr;</button>
+  </div>
+  <div class="view-toggle" role="group" aria-label="View mode">
+    <button class="vt-btn" id="dayViewBtn"   data-view="day">Day</button>
+    <button class="vt-btn active" id="weekViewBtn" data-view="week">Week</button>
+    <button class="vt-btn" id="monthViewBtn" data-view="month">Month</button>
+  </div>
+  <span class="spacer"></span>
+  <button class="btn-ghost" id="addCrewBtn">+ Crew</button>
+  <button class="btn-primary" id="addJobBtn">+ New Job</button>
+</div>
+
+<div class="app" id="weekArea">
+
+  <aside class="pool" id="poolPane">
+    <h2>Unscheduled</h2>
+    <div class="hint">Drag a job into a crew/day cell. On phone, tap a job, then tap the cell.</div>
+    <div class="pool-list" id="poolList"></div>
+  </aside>
+
+  <main class="grid-wrap">
+    <div class="grid" id="grid"></div>
+  </main>
+
+</div>
+
+<section class="month-area" id="monthArea">
+  <div class="month-grid" id="monthGrid"></div>
+</section>
+
+<section class="day-area" id="dayArea">
+  <div class="day-wrap" id="dayWrap"></div>
+</section>
+
+<div class="detail-overlay" id="detailOverlay">
+  <div class="detail" id="detailPanel"></div>
+</div>
+
+<div class="tap-hint" id="tapHint">Tap a cell to place the job</div>
+
+<script>
+/* ============ Storage helpers ============ */
+const LS_KEY = 'bcc-schedule-v1';
+function load() {
+  try { return JSON.parse(localStorage.getItem(LS_KEY)) || null; } catch { return null; }
+}
+function save(s) { localStorage.setItem(LS_KEY, JSON.stringify(s)); }
+
+/* ============ Seed data ============ */
+let PEOPLE = (window.bccPeople || []).slice();
+window.addEventListener('bcc-users-ready', function () {
+  PEOPLE = (window.bccPeople || []).slice();
+  if (typeof render === 'function') { try { render(); } catch (e) {} }
+  if (typeof updateTabs === 'function') { try { updateTabs(); } catch (e) {} }
+});
+
+const SEED_EQUIPMENT = [
+  'Hydrovac 1','Hydrovac 2','Hydrovac 3','Mini Excavator','Excavator 320','Skid Steer','Dump Truck 1','Dump Truck 2','Vac Trailer','Compactor','Generator','Light Tower'
+];
+
+function defaultState() {
+  // Crews keep their stable structural names but ship with no members/lead.
+  // Admin (or this scheduler) assigns people from the live Entra list.
+  const crews = [
+    { id:'c1', name:'Crew Alpha',   lead:'', members:[] },
+    { id:'c2', name:'Crew Bravo',   lead:'', members:[] },
+    { id:'c3', name:'Crew Charlie', lead:'', members:[] },
+    { id:'c4', name:'Hydrovac 1',   lead:'', members:[] },
+    { id:'c5', name:'Hydrovac 2',   lead:'', members:[] }
+  ];
+  // today's monday
+  const today = new Date(); today.setHours(0,0,0,0);
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - ((today.getDay()+6)%7));
+  const iso = d => d.toISOString().slice(0,10);
+
+  // No seed jobs — board starts empty. Use "+ New job" to create real ones.
+  const jobs = [];
+
+  return { crews, jobs, weekStart: iso(monday), equipment: SEED_EQUIPMENT };
+}
+
+let state = load() || defaultState();
+
+/* ============ Crews — source of truth is admin config ============
+ * Crews are managed in Admin > Crews and stored in bcc-admin-config-v1.crews.
+ * The scheduler reads from there on every render so new/edited crews show
+ * up immediately. We fall back to the legacy in-state crew list only if
+ * admin config has no crews yet (shouldn't happen post-seed, but keeps
+ * old schedules from breaking).
+ */
+function getCrews() {
+  try {
+    const raw = localStorage.getItem('bcc-admin-config-v1');
+    const cfg = raw ? JSON.parse(raw) : null;
+    if (cfg && Array.isArray(cfg.crews) && cfg.crews.length) return cfg.crews;
+  } catch (e) {}
+  return state.crews || [];
+}
+
+/* Source of truth for the equipment chip picker on a job. Combines
+ * Admin > Equipment & Vehicles into one alphabetized list of names that
+ * can be tagged onto a job. Falls back to the legacy in-state list for
+ * old schedules. Admin additions show up immediately. */
+function getJobAssets() {
+  try {
+    const raw = localStorage.getItem('bcc-admin-config-v1');
+    const cfg = raw ? JSON.parse(raw) : null;
+    if (cfg) {
+      const names = [];
+      const seen = new Set();
+      const push = (item) => {
+        const n = item && item.name && String(item.name).trim();
+        if (!n) return;
+        const k = n.toLowerCase();
+        if (seen.has(k)) return;
+        seen.add(k);
+        names.push(n);
+      };
+      (cfg.vehicles  || []).forEach(push);
+      (cfg.equipment || []).forEach(push);
+      if (names.length) return names.sort((a, b) => a.localeCompare(b));
+    }
+  } catch (e) {}
+  return state.equipment || [];
+}
+
+// Re-render when another tab (e.g. Admin > Crews) saves changes.
+window.addEventListener('storage', (e) => {
+  if (e.key === 'bcc-admin-config-v1') {
+    try { render(); } catch {}
+  }
+});
+
+/* ============ Date helpers ============ */
+function parseIso(s) { const [y,m,d] = s.split('-').map(Number); return new Date(y, m-1, d); }
+function isoOf(d) {
+  const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), dd = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${dd}`;
+}
+function addDays(iso, n) { const d = parseIso(iso); d.setDate(d.getDate()+n); return isoOf(d); }
+function weekDays(weekStart) {
+  // 7-day week — Mon through Sun. Weekend days are styled differently in the
+  // grid (faintly tinted) but are first-class scheduling slots.
+  return Array.from({length:7}, (_, i) => addDays(weekStart, i));
+}
+function isWeekend(iso) {
+  const d = parseIso(iso).getDay();
+  return d === 0 || d === 6;
+}
+function fmtDay(iso) {
+  const d = parseIso(iso);
+  return d.toLocaleDateString(undefined, { weekday:'short', month:'short', day:'numeric' });
+}
+function fmtWeekLabel(weekStart) {
+  const end = addDays(weekStart, 6);
+  const a = parseIso(weekStart).toLocaleDateString(undefined, { month:'short', day:'numeric' });
+  const b = parseIso(end).toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' });
+  return `${a} – ${b}`;
+}
+
+/* ============ Sort order within a day ============
+ * Each job MAY carry a numeric `daySortIndex` (0..N-1) that controls its
+ * position within its (crewId, day) group. Jobs from older schedules
+ * predating this field have `daySortIndex === undefined`; we sort them
+ * to the end stably by their original array index so render order is
+ * IDENTICAL to what the page produced before this change. The field is
+ * additive — never destructive — and pages that don't write it keep
+ * working unchanged.
+ *
+ * Phase 3 of this change-set adds the drag handler that WRITES the
+ * field. Phase 1 (this commit) only adds the read-side helper and
+ * threads it through the existing renderers so the foundation is in
+ * place. Until something writes daySortIndex, this helper is a no-op.
+ */
+function sortJobsByDayOrder(arr) {
+  if (!Array.isArray(arr) || arr.length < 2) return arr;
+  // Capture original positions for the stable tiebreak.
+  const indexed = arr.map((j, i) => ({ j, i }));
+  indexed.sort((a, b) => {
+    const av = (typeof a.j.daySortIndex === 'number') ? a.j.daySortIndex : Number.POSITIVE_INFINITY;
+    const bv = (typeof b.j.daySortIndex === 'number') ? b.j.daySortIndex : Number.POSITIVE_INFINITY;
+    if (av !== bv) return av - bv;
+    return a.i - b.i; // stable
+  });
+  return indexed.map(x => x.j);
+}
+
+/* ============ Render ============ */
+let selectedJobId = null; // for tap-to-move
+
+/* ============ View mode + day-view state ============
+ * viewMode is now 'day' | 'week' | 'month'. URL hash is the
+ * authoritative deep-link form (refresh / share keeps the view AND
+ * date); localStorage is the per-user "what view I last used" fallback.
+ *
+ * Hash format:  #view=day&date=2026-05-27
+ *               #view=week&date=2026-05-25   (date = the Monday)
+ *               #view=month&date=2026-05-01  (date = any date in the month)
+ *
+ * When the user opens scheduler.html with no hash, we read localStorage
+ * (preserving the existing 'last-view-I-used' behavior) and pick a
+ * sensible date — today for day view, today's Monday for week view,
+ * any date in the current month for month view.
+ */
+function todayLocalIso() {
+  const d = new Date(); d.setHours(0,0,0,0);
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+function mondayOf(iso) {
+  const d = parseIso(iso);
+  d.setDate(d.getDate() - ((d.getDay()+6)%7));
+  return isoOf(d);
+}
+function parseHash() {
+  const out = { view: null, date: null };
+  const h = (location.hash || '').replace(/^#/, '');
+  if (!h) return out;
+  h.split('&').forEach(p => {
+    const i = p.indexOf('=');
+    if (i < 0) return;
+    const k = decodeURIComponent(p.slice(0, i));
+    const v = decodeURIComponent(p.slice(i + 1));
+    if (k === 'view' && /^(day|week|month)$/.test(v)) out.view = v;
+    if (k === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(v)) out.date = v;
+  });
+  return out;
+}
+function writeHash() {
+  let dateForHash = state.weekStart;
+  if (viewMode === 'day') dateForHash = dayDate;
+  const next = '#view=' + viewMode + '&date=' + dateForHash;
+  if (location.hash !== next) {
+    try { history.replaceState(null, '', next); } catch (e) {}
+  }
+}
+
+let dayDate = todayLocalIso();    // day-view selected date
+let viewMode;
+(function bootViewMode() {
+  const fromHash = parseHash();
+  const saved = (function () {
+    try { return localStorage.getItem('bcc-sched-view'); } catch (e) { return null; }
+  })();
+  if (fromHash.view === 'day' || fromHash.view === 'week' || fromHash.view === 'month') {
+    viewMode = fromHash.view;
+  } else if (saved === 'day' || saved === 'week' || saved === 'month') {
+    viewMode = saved;
+  } else {
+    viewMode = 'week';
+  }
+  if (fromHash.date) {
+    if (viewMode === 'day')   dayDate = fromHash.date;
+    if (viewMode === 'week')  { state.weekStart = mondayOf(fromHash.date); save(state); }
+    if (viewMode === 'month') { state.weekStart = fromHash.date;            save(state); }
+  } else if (viewMode === 'day') {
+    dayDate = todayLocalIso();
+  }
+})();
+
+function setViewMode(m) {
+  // Carry the date across the toggle so "the day I'm looking at" is the
+  // same after I click Week or Month (and vice versa). Acceptance crit:
+  // "switching between day/week/month preserves the selected date."
+  if (m !== viewMode) {
+    if (viewMode === 'day' && m === 'week')        { state.weekStart = mondayOf(dayDate); save(state); }
+    else if (viewMode === 'day' && m === 'month')  { state.weekStart = dayDate;            save(state); }
+    else if ((viewMode === 'week' || viewMode === 'month') && m === 'day') {
+      // From week/month → day: prefer today if it falls within the displayed
+      // range, otherwise the displayed range's anchor.
+      const today = todayLocalIso();
+      if (viewMode === 'week') {
+        const end = addDays(state.weekStart, 6);
+        dayDate = (today >= state.weekStart && today <= end) ? today : state.weekStart;
+      } else {
+        const d = parseIso(state.weekStart);
+        const sameMonth = (parseIso(today).getMonth() === d.getMonth() &&
+                           parseIso(today).getFullYear() === d.getFullYear());
+        dayDate = sameMonth ? today : state.weekStart;
+      }
+    }
+    // Month ↔ Week and other unchanged combinations keep their anchors
+    // as-is — they already point at the same calendar region.
+  }
+  viewMode = m;
+  try { localStorage.setItem('bcc-sched-view', m); } catch (e) {}
+  document.querySelectorAll('.view-toggle .vt-btn').forEach(b => b.classList.toggle('active', b.dataset.view === m));
+  // Three areas swap visibility wholesale so nobody can be squeezed.
+  document.getElementById('weekArea').style.display = (m === 'week') ? '' : 'none';
+  document.getElementById('monthArea').classList.toggle('show', m === 'month');
+  document.getElementById('dayArea').classList.toggle('show',   m === 'day');
+  writeHash();
+  render();
+}
+
+function render() {
+  if (viewMode === 'month') {
+    document.getElementById('weekLabel').textContent = fmtMonthLabel(state.weekStart);
+    renderMonth();
+  } else if (viewMode === 'day') {
+    document.getElementById('weekLabel').textContent = fmtDayLabel(dayDate);
+    renderDay();
+  } else {
+    document.getElementById('weekLabel').textContent = fmtWeekLabel(state.weekStart);
+    renderPool();
+    renderGrid();
+  }
+}
+
+function fmtDayLabel(iso) {
+  const d = parseIso(iso);
+  return d.toLocaleDateString(undefined, { weekday:'long', month:'long', day:'numeric', year:'numeric' });
+}
+
+function fmtMonthLabel(weekStart) {
+  const d = parseIso(weekStart);
+  return d.toLocaleDateString(undefined, { month:'long', year:'numeric' });
+}
+
+/* Build a 6-row × 7-col calendar grid for the month of state.weekStart.
+ * Each day shows the date number + up to 3 colored job pills (by crew),
+ * with "+N more" if the day is overscheduled. Clicking a day opens that
+ * week in week-view. */
+function renderMonth() {
+  const host = document.getElementById('monthGrid');
+  const anchor = parseIso(state.weekStart);
+  const year = anchor.getFullYear();
+  const month = anchor.getMonth();
+  const first = new Date(year, month, 1);
+  // Calendar starts on Monday (matches our week-view Mon-first)
+  const offset = (first.getDay() + 6) % 7;
+  const gridStart = new Date(first);
+  gridStart.setDate(first.getDate() - offset);
+  const todayIso = (function () {
+    const d = new Date(); d.setHours(0,0,0,0);
+    return isoOf(d);
+  })();
+
+  // Crew color palette for the job pills
+  const crewColors = ['#c8102e','#1d4ed8','#7c3aed','#0ea5e9','#15803d','#a16207','#be185d','#374151'];
+  const crewColorById = {};
+  const monthCrews = getCrews();
+  monthCrews.forEach((c, i) => { crewColorById[c.id] = crewColors[i % crewColors.length]; });
+
+  let html =
+    '<div class="month-head">' +
+      ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map((d, i) =>
+        `<div class="dow${(i>=5)?' weekend':''}">${d}</div>`
+      ).join('') +
+    '</div><div class="month-body">';
+
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(gridStart);
+    d.setDate(gridStart.getDate() + i);
+    const iso = isoOf(d);
+    const isOther = d.getMonth() !== month;
+    const weekend = (d.getDay() === 0 || d.getDay() === 6);
+    const isToday = (iso === todayIso);
+
+    // Month view: same per-day sort as week view, so "+N more" overflow
+    // hides the LATER jobs and never the first three the user expects.
+    const dayJobs = sortJobsByDayOrder(state.jobs.filter(j => j.day === iso && j.crewId));
+    const visible = dayJobs.slice(0, 3);
+    const extra = dayJobs.length - visible.length;
+
+    html += `<div class="mday${isOther?' other-month':''}${weekend?' weekend':''}${isToday?' today':''}" data-iso="${iso}">` +
+              `<span class="dnum">${d.getDate()}</span>`;
+    visible.forEach(j => {
+      const color = crewColorById[j.crewId] || '#94a3b8';
+      const crew = (monthCrews.find(c => c.id === j.crewId) || {}).name || '';
+      html += `<div class="mjob" style="background:${color}" title="${escapeAttr(crew + ' · ' + j.name)}">${escapeHtml(j.name)}</div>`;
+    });
+    if (extra > 0) html += `<div class="more">+${extra} more</div>`;
+    html += '</div>';
+  }
+  html += '</div>';
+  host.innerHTML = html;
+
+  // Click a day → jump to that week in week view
+  host.querySelectorAll('.mday').forEach(el => {
+    el.onclick = () => {
+      const iso = el.dataset.iso;
+      // Day-click in month view: drill into the new Day view on that
+      // exact date (was: snap to that week and switch to week view).
+      dayDate = iso;
+      setViewMode('day');
+    };
+  });
+}
+
+/* ============ Day view ============
+ * Single vertical column listing every crew, with that day's jobs in
+ * daySortIndex order inside each crew. Unscheduled jobs (no crew or no
+ * day) appear in a small pool card at the top so the office can still
+ * see the queue without leaving day view. Click a job → existing
+ * detail panel (same handler as week + month).
+ *
+ * Drag-to-reorder is wired in Phase 3 of this change-set. Cross-day
+ * drag is intentionally NOT supported in day view (per decision 3) —
+ * use week or month view for moving jobs between days.
+ */
+function renderDay() {
+  const host = document.getElementById('dayWrap');
+  const crews = getCrews();
+  const dayJobs = sortJobsByDayOrder(state.jobs.filter(j => j.day === dayDate && j.crewId));
+  const unscheduled = state.jobs.filter(j => !j.crewId || !j.day);
+
+  let html = '';
+
+  // Unscheduled pool — small amber card at the top
+  html += '<div class="day-pool">' +
+            '<h3>&#9888; Unscheduled <span class="ct">' + unscheduled.length + '</span></h3>';
+  if (unscheduled.length === 0) {
+    html += '<div class="empty-pool">All jobs are scheduled.</div>';
+  } else {
+    unscheduled.forEach(j => { html += dayJobCard(j, /*showIdx*/ false); });
+  }
+  html += '</div>';
+
+  // One card per crew, in admin/cfg order
+  crews.forEach((crew) => {
+    const jobsForCrew = dayJobs.filter(j => j.crewId === crew.id);
+    html += '<div class="day-crew" data-crew="' + escapeAttr(crew.id) + '">' +
+              '<h3>' + escapeHtml(crew.name) +
+                (crew.lead ? '<span class="lead">Lead: ' + escapeHtml(crew.lead) + '</span>' : '') +
+                '<span class="ct">' + jobsForCrew.length + ' job' + (jobsForCrew.length === 1 ? '' : 's') + '</span>' +
+              '</h3>';
+    if (jobsForCrew.length === 0) {
+      html += '<div class="day-empty">No jobs scheduled for ' + escapeHtml(crew.name) + ' on this day.</div>';
+    } else {
+      jobsForCrew.forEach((j, i) => { html += dayJobCard(j, /*showIdx*/ true, i + 1); });
+    }
+    html += '</div>';
+  });
+
+  host.innerHTML = html;
+
+  // ---- Day view drag-and-drop wiring ----
+  // Cross-day moves intentionally NOT supported in day view (per
+  // decision 3 — single-day surface, you'd need week/month to see
+  // both days anyway). Within-day reorder + cross-crew move + send-
+  // to-pool all work.
+
+  // Job-card handlers: drag start + within-section reorder targeting
+  host.querySelectorAll('.day-job').forEach(el => {
+    const jobId = el.dataset.id;
+    el.draggable = true;
+
+    el.ondragstart = e => {
+      e.dataTransfer.setData('text/job-id', jobId);
+      e.dataTransfer.effectAllowed = 'move';
+      el.classList.add('dragging');
+    };
+    el.ondragend = () => el.classList.remove('dragging');
+
+    el.ondragover = e => {
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = el.getBoundingClientRect();
+      const above = (e.clientY - rect.top) < rect.height / 2;
+      el.classList.remove('drop-above', 'drop-below');
+      el.classList.add(above ? 'drop-above' : 'drop-below');
+    };
+    el.ondragleave = () => el.classList.remove('drop-above', 'drop-below');
+
+    el.ondrop = e => {
+      e.preventDefault();
+      e.stopPropagation();
+      const above = el.classList.contains('drop-above');
+      el.classList.remove('drop-above', 'drop-below');
+      const draggedId = e.dataTransfer.getData('text/job-id');
+      if (!draggedId || draggedId === jobId) return;
+      // Find the target job to read crewId + daySortIndex
+      const target = state.jobs.find(x => x.id === jobId);
+      if (!target) return;
+      const refIdx = (typeof target.daySortIndex === 'number') ? target.daySortIndex : 0;
+      const insertBefore = above ? refIdx : refIdx + 1;
+      // dayDate, not target.day — but they're the same in day view
+      moveJob(draggedId, target.crewId, target.day, { insertBefore });
+    };
+
+    el.onclick = () => openDetail(jobId);
+    el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(jobId); } };
+  });
+
+  // Crew sections: drop anywhere in the section to add to that crew on
+  // the current dayDate. If a card inside already handled the drop, it
+  // called stopPropagation and we won't see the event here.
+  host.querySelectorAll('.day-crew').forEach(section => {
+    const crewId = section.dataset.crew;
+    section.ondragover = e => {
+      e.preventDefault();
+      section.classList.add('drop-target');
+    };
+    section.ondragleave = e => {
+      // Don't clear if the dragleave is just moving onto a child element
+      if (section.contains(e.relatedTarget)) return;
+      section.classList.remove('drop-target');
+    };
+    section.ondrop = e => {
+      e.preventDefault();
+      section.classList.remove('drop-target');
+      const id = e.dataTransfer.getData('text/job-id');
+      if (!id) return;
+      moveJob(id, crewId, dayDate);
+    };
+  });
+
+  // Pool: drop to unschedule
+  const poolEl = host.querySelector('.day-pool');
+  if (poolEl) {
+    poolEl.ondragover = e => { e.preventDefault(); poolEl.classList.add('drop-target'); };
+    poolEl.ondragleave = e => {
+      if (poolEl.contains(e.relatedTarget)) return;
+      poolEl.classList.remove('drop-target');
+    };
+    poolEl.ondrop = e => {
+      e.preventDefault();
+      poolEl.classList.remove('drop-target');
+      const id = e.dataTransfer.getData('text/job-id');
+      if (!id) return;
+      moveJob(id, null, null);  // null crew + null day = unschedule
+    };
+  }
+}
+
+/* Build one card for the day view. showIdx renders the position number
+ * (1, 2, 3 ...) — only meaningful inside a crew, not for the pool. */
+function dayJobCard(j, showIdx, idx) {
+  const members  = (j.members || []);
+  const equipNms = (j.equipment || []);
+  const typeLbl  = typeLabel(j.type);
+  return '<div class="day-job" data-id="' + escapeAttr(j.id) + '" role="button" tabindex="0">' +
+           '<div class="top">' +
+             (showIdx ? '<span class="idx">' + idx + '</span>' : '') +
+             '<span class="name">' + escapeHtml(j.name || '(untitled)') + '</span>' +
+             (typeLbl ? '<span class="type-pill">' + escapeHtml(typeLbl) + '</span>' : '') +
+           '</div>' +
+           (j.customer ? '<div class="meta"><span class="lbl">Customer:</span> ' + escapeHtml(j.customer) + '</div>' : '') +
+           (j.location ? '<div class="meta"><span class="lbl">Location:</span> ' + escapeHtml(j.location) + '</div>' : '') +
+           (members.length  ? '<div class="meta"><span class="lbl">Crew:</span> ' + members.map(escapeHtml).join(', ') + '</div>' : '') +
+           (equipNms.length ? '<div class="meta"><span class="lbl">Equipment:</span> ' + equipNms.map(escapeHtml).join(', ') + '</div>' : '') +
+           (typeof j.hours === 'number' && j.hours > 0 ? '<div class="meta"><span class="lbl">Est. hours:</span> ' + escapeHtml(String(j.hours)) + '</div>' : '') +
+         '</div>';
+}
+
+/* typeLabel — short human label for a job type id. Mirrors the
+ * mapping inside the existing detail panel. */
+function typeLabel(t) {
+  return ({
+    watersewer:  'Water / Sewer',
+    hydrovac:    'Hydrovac',
+    excavation:  'Excavation',
+    firehydrant: 'Fire Hydrant',
+    demo:        'Demolition',
+    emergency:   'Emergency',
+    other:       'Other'
+  })[t] || (t || '');
+}
+
+function renderPool() {
+  const pool = document.getElementById('poolList');
+  pool.innerHTML = '';
+  const unscheduled = state.jobs.filter(j => !j.crewId || !j.day);
+  if (unscheduled.length === 0) {
+    pool.innerHTML = '<div style="color:var(--p-gray);font-size:12px;padding:14px;text-align:center;">No unscheduled jobs.</div>';
+  }
+  unscheduled.forEach(j => pool.appendChild(jobCard(j)));
+  // dnd target
+  pool.ondragover = e => { e.preventDefault(); pool.classList.add('over'); };
+  pool.ondragleave = () => pool.classList.remove('over');
+  pool.ondrop = e => {
+    e.preventDefault(); pool.classList.remove('over');
+    const id = e.dataTransfer.getData('text/job-id');
+    moveJob(id, null, null);
+  };
+  pool.onclick = e => {
+    // tap an empty area? do nothing
+    if (e.target === pool && selectedJobId) {
+      moveJob(selectedJobId, null, null);
+      clearSelection();
+    }
+  };
+}
+
+function renderGrid() {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  const days = weekDays(state.weekStart);
+
+  // header row
+  const corner = document.createElement('div'); corner.className = 'corner';
+  grid.appendChild(corner);
+  days.forEach(d => {
+    const h = document.createElement('div');
+    h.className = 'day-head' + (isWeekend(d) ? ' weekend' : '');
+    h.textContent = fmtDay(d);
+    grid.appendChild(h);
+  });
+
+  // body rows — crews come from admin config (see getCrews()).
+  getCrews().forEach(crew => {
+    const ch = document.createElement('div');
+    ch.className = 'crew-cell';
+    ch.innerHTML = `<div>${escapeHtml(crew.name)}</div><div class="lead">Lead: ${escapeHtml(crew.lead || '—')}</div>`;
+    grid.appendChild(ch);
+
+    days.forEach(d => {
+      const cell = document.createElement('div');
+      cell.className = 'cell' + (isWeekend(d) ? ' weekend' : '');
+      cell.dataset.crew = crew.id;
+      cell.dataset.day = d;
+      // Week view: per-(crew,day) job list ordered by daySortIndex (Phase 1).
+      const jobs = sortJobsByDayOrder(state.jobs.filter(j => j.crewId === crew.id && j.day === d));
+      if (jobs.length === 0) {
+        const e = document.createElement('div'); e.className = 'empty'; e.textContent = '+ drop here';
+        cell.appendChild(e);
+      }
+      jobs.forEach(j => cell.appendChild(jobCard(j)));
+
+      cell.ondragover = e => { e.preventDefault(); cell.classList.add('over'); };
+      cell.ondragleave = () => cell.classList.remove('over');
+      cell.ondrop = e => {
+        e.preventDefault(); cell.classList.remove('over');
+        const id = e.dataTransfer.getData('text/job-id');
+        moveJob(id, crew.id, d);
+      };
+      cell.onclick = e => {
+        if (selectedJobId && (e.target === cell || e.target.classList.contains('empty'))) {
+          moveJob(selectedJobId, crew.id, d);
+          clearSelection();
+        }
+      };
+      grid.appendChild(cell);
+    });
+  });
+}
+
+function jobCard(j) {
+  const el = document.createElement('div');
+  el.className = `job t-${j.type}`;
+  el.draggable = true;
+  el.dataset.id = j.id;
+  if (j.id === selectedJobId) el.classList.add('selected');
+  el.innerHTML = `
+    <div class="name">${escapeHtml(j.name)}</div>
+    <div class="loc">${escapeHtml(j.customer || '')}${j.customer && j.location ? ' &middot; ' : ''}${escapeHtml(j.location || '')}</div>
+    <div class="meta">
+      <span class="chip">${j.hours || 0}h</span>
+      ${j.members && j.members.length ? `<span class="chip">${j.members.length} crew</span>` : ''}
+      ${j.equipment && j.equipment.length ? `<span class="chip">${j.equipment.length} equip</span>` : ''}
+    </div>
+  `;
+  el.ondragstart = e => {
+    e.dataTransfer.setData('text/job-id', j.id);
+    e.dataTransfer.effectAllowed = 'move';
+    el.classList.add('dragging');
+  };
+  el.ondragend = () => {
+    el.classList.remove('dragging');
+  };
+  // Within-cell reorder: dragover/drop ON THIS card → drop indicator
+  // above or below depending on cursor Y, and insertion at that exact
+  // position when the user releases. stopPropagation so the parent
+  // cell's drop handler doesn't ALSO fire as a "append to end".
+  el.ondragover = e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = el.getBoundingClientRect();
+    const above = (e.clientY - rect.top) < rect.height / 2;
+    el.classList.remove('drop-above', 'drop-below');
+    el.classList.add(above ? 'drop-above' : 'drop-below');
+  };
+  el.ondragleave = () => {
+    el.classList.remove('drop-above', 'drop-below');
+  };
+  el.ondrop = e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const above = el.classList.contains('drop-above');
+    el.classList.remove('drop-above', 'drop-below');
+    const id = e.dataTransfer.getData('text/job-id');
+    if (!id || id === j.id) return;     // dropped on self → no-op
+    const refIdx = (typeof j.daySortIndex === 'number') ? j.daySortIndex : 0;
+    const insertBefore = above ? refIdx : refIdx + 1;
+    moveJob(id, j.crewId, j.day, { insertBefore });
+  };
+  el.onclick = e => {
+    e.stopPropagation();
+    // if a job is already selected and this one isn't, treat as no-op (we'd open detail instead)
+    if (selectedJobId === j.id) {
+      clearSelection();
+      openDetail(j.id);
+    } else if (selectedJobId) {
+      // user has a tap-selected job and now tapped another job — just open this one
+      clearSelection();
+      openDetail(j.id);
+    } else {
+      // long-tap behavior would be nicer but for simplicity, open detail on tap
+      openDetail(j.id);
+    }
+  };
+  // double-tap (or long-press equivalent): toggle tap-to-move selection
+  let pressTimer = null;
+  el.ontouchstart = () => {
+    pressTimer = setTimeout(() => {
+      selectedJobId = j.id;
+      document.getElementById('tapHint').classList.add('show');
+      render();
+    }, 450);
+  };
+  el.ontouchend = () => { if (pressTimer) clearTimeout(pressTimer); };
+  el.ontouchmove = () => { if (pressTimer) clearTimeout(pressTimer); };
+  return el;
+}
+
+function clearSelection() {
+  selectedJobId = null;
+  document.getElementById('tapHint').classList.remove('show');
+  render();
+}
+
+/* ============ Move / reorder ============
+ * moveJob(id, crewId, day, opts?)
+ *   crewId / day  : null means "unschedule into the pool"
+ *   opts.insertBefore : optional integer (or fractional 0.5) — the
+ *                       position to slot the job into within the
+ *                       destination (crewId,day) group. If omitted,
+ *                       the job is appended at the end of the group.
+ *
+ * After every move:
+ *   - source group (if different from destination AND non-pool) is
+ *     renumbered to dense 0..N-1 to fill the hole
+ *   - destination group is renumbered to dense 0..N-1 after the new
+ *     job has been slotted in by its insertBefore value (using a
+ *     0.5 trick so the slot lands between two existing integers,
+ *     then normalized away)
+ *
+ * No new audit action — per decision 4 we piggy-back on the existing
+ * activity model; reorders don't generate audit rows. The cloud sync
+ * happens automatically via the localStorage write hook.
+ */
+function moveJob(id, crewId, day, opts) {
+  const j = state.jobs.find(x => x.id === id);
+  if (!j) return;
+  const fromCrew = j.crewId || null;
+  const fromDay  = j.day    || null;
+  const isSame   = (fromCrew === crewId && fromDay === day);
+
+  // Apply the move
+  j.crewId = crewId || null;
+  j.day    = day    || null;
+
+  // Position within the destination group
+  if (crewId && day) {
+    if (opts && typeof opts.insertBefore === 'number') {
+      // 0.5 trick: slot between two existing dense integers; the
+      // normalization pass below collapses them back to 0..N-1.
+      j.daySortIndex = opts.insertBefore - 0.5;
+    } else {
+      // Append at the end of the destination group.
+      const dest = state.jobs.filter(x => x.id !== id && x.crewId === crewId && x.day === day);
+      const max = dest.reduce((m, x) =>
+        (typeof x.daySortIndex === 'number' && x.daySortIndex > m) ? x.daySortIndex : m, -1);
+      j.daySortIndex = max + 1;
+    }
+  } else {
+    // Pool — strip any leftover sort index so it doesn't compete with
+    // scheduled jobs if re-scheduled later.
+    delete j.daySortIndex;
+  }
+
+  // Normalize the destination group to dense integers 0..N-1
+  if (crewId && day) {
+    const destOrdered = sortJobsByDayOrder(
+      state.jobs.filter(x => x.crewId === crewId && x.day === day)
+    );
+    destOrdered.forEach((x, i) => { x.daySortIndex = i; });
+  }
+
+  // Normalize the source group too (if we left a different group behind)
+  if (!isSame && fromCrew && fromDay) {
+    const srcOrdered = sortJobsByDayOrder(
+      state.jobs.filter(x => x.crewId === fromCrew && x.day === fromDay)
+    );
+    srcOrdered.forEach((x, i) => { x.daySortIndex = i; });
+  }
+
+  save(state); render();
+}
+
+/* ============ Detail panel ============ */
+function openDetail(jobId) {
+  const j = state.jobs.find(x => x.id === jobId);
+  if (!j) return;
+  const panel = document.getElementById('detailPanel');
+  const overlay = document.getElementById('detailOverlay');
+
+  panel.innerHTML = `
+    <h2>Edit Job</h2>
+    <div class="row">
+      <label>Job name</label>
+      <input id="d_name" value="${escapeAttr(j.name)}" />
+    </div>
+    <div class="row">
+      <label>Type</label>
+      <select id="d_type">
+        ${['hydrovac','excavation','watersewer','firehydrant','demo','emergency','other'].map(t =>
+          `<option value="${t}" ${t===j.type?'selected':''}>${typeLabel(t)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="row">
+      <label>Customer</label>
+      <input id="d_customer" value="${escapeAttr(j.customer||'')}" />
+    </div>
+    <div class="row">
+      <label>Location</label>
+      <input id="d_location" value="${escapeAttr(j.location||'')}" />
+    </div>
+    <div class="row">
+      <label>Estimated hours</label>
+      <input id="d_hours" type="number" min="0" step="0.5" value="${j.hours||0}" />
+    </div>
+    <div class="row">
+      <label>Crew members</label>
+      <div class="members" id="d_members">
+        ${PEOPLE.map(p => {
+          const on = (j.members||[]).includes(p);
+          return `<span class="member-chip ${on?'on':''}" data-name="${escapeAttr(p)}">${escapeHtml(p)}</span>`;
+        }).join('')}
+      </div>
+    </div>
+    <div class="row">
+      <label>Trucks &amp; equipment</label>
+      <div class="members" id="d_equipment">
+        ${getJobAssets().map(eq => {
+          const on = (j.equipment||[]).includes(eq);
+          return `<span class="equipment-chip ${on?'on':''}" data-name="${escapeAttr(eq)}">${escapeHtml(eq)}</span>`;
+        }).join('')}
+      </div>
+    </div>
+    <div class="row">
+      <label>Notes</label>
+      <textarea id="d_notes">${escapeHtml(j.notes||'')}</textarea>
+    </div>
+    <div class="actions">
+      <button class="btn-primary" id="d_save">Save</button>
+      <button class="btn-ghost" id="d_cancel">Cancel</button>
+      <button class="btn-danger" id="d_delete">Delete</button>
+    </div>
+  `;
+  overlay.classList.add('open');
+
+  panel.querySelectorAll('#d_members .member-chip').forEach(c => {
+    c.onclick = () => c.classList.toggle('on');
+  });
+  panel.querySelectorAll('#d_equipment .equipment-chip').forEach(c => {
+    c.onclick = () => c.classList.toggle('on');
+  });
+  panel.querySelector('#d_cancel').onclick = closeDetail;
+  panel.querySelector('#d_save').onclick = () => {
+    j.name = panel.querySelector('#d_name').value.trim() || 'Untitled';
+    j.type = panel.querySelector('#d_type').value;
+    j.customer = panel.querySelector('#d_customer').value.trim();
+    j.location = panel.querySelector('#d_location').value.trim();
+    j.hours = parseFloat(panel.querySelector('#d_hours').value) || 0;
+    j.notes = panel.querySelector('#d_notes').value;
+    j.members = Array.from(panel.querySelectorAll('#d_members .member-chip.on')).map(c => c.dataset.name);
+    j.equipment = Array.from(panel.querySelectorAll('#d_equipment .equipment-chip.on')).map(c => c.dataset.name);
+    save(state); closeDetail(); render();
+  };
+  panel.querySelector('#d_delete').onclick = () => {
+    if (confirm('Delete this job?')) {
+      state.jobs = state.jobs.filter(x => x.id !== j.id);
+      save(state); closeDetail(); render();
+    }
+  };
+  document.getElementById('detailOverlay').onclick = e => {
+    if (e.target.id === 'detailOverlay') closeDetail();
+  };
+}
+function closeDetail() { document.getElementById('detailOverlay').classList.remove('open'); }
+
+function typeLabel(t) {
+  return { hydrovac:'Hydrovac', excavation:'Excavation', watersewer:'Water / Sewer', firehydrant:'Fire Hydrant', demo:'Demolition', emergency:'Emergency', other:'Other' }[t] || t;
+}
+
+/* ============ Add job + add crew ============ */
+document.getElementById('addJobBtn').onclick = () => {
+  window.bccOpenNewJobModal().then(job => {
+    if (!job) return;
+    state = load();  // pull the just-saved job into our in-memory state
+    render();
+    openDetail(job.id);
+  });
+};
+document.getElementById('addCrewBtn').onclick = () => {
+  if (window.bccIsAdmin && !window.bccIsAdmin()) {
+    alert('Only admins can add crews. Ask an admin to add one in Admin > Crews.');
+    return;
+  }
+  const name = prompt('Crew or unit name?', 'New Crew');
+  if (!name) return;
+  const lead = prompt('Crew lead?', '');
+  const id = 'c' + Date.now();
+  // Crews are owned by admin config now — write there so the rest of the
+  // app (and other devices) sees the new crew the moment it's saved.
+  let cfg = null;
+  try { cfg = JSON.parse(localStorage.getItem('bcc-admin-config-v1')) || {}; }
+  catch { cfg = {}; }
+  cfg.crews = Array.isArray(cfg.crews) ? cfg.crews.slice() : [];
+  cfg.crews.push({ id, name, lead: lead || '', members: [] });
+  localStorage.setItem('bcc-admin-config-v1', JSON.stringify(cfg));
+  render();
+};
+// In month view, prev/next step a full month; in week view, step 7 days.
+// Prev/Next nav: ±1 day in day view, ±7 days in week view, ±1 month in month view.
+function stepBack() {
+  if (viewMode === 'day')        { dayDate        = addDays(dayDate, -1); }
+  else if (viewMode === 'month') { state.weekStart = stepMonth(state.weekStart, -1); save(state); }
+  else                           { state.weekStart = addDays(state.weekStart, -7);   save(state); }
+  writeHash(); render();
+}
+function stepForward() {
+  if (viewMode === 'day')        { dayDate        = addDays(dayDate,  1); }
+  else if (viewMode === 'month') { state.weekStart = stepMonth(state.weekStart,  1); save(state); }
+  else                           { state.weekStart = addDays(state.weekStart,  7);   save(state); }
+  writeHash(); render();
+}
+function stepMonth(iso, n) {
+  const d = parseIso(iso);
+  d.setMonth(d.getMonth() + n);
+  return isoOf(d);
+}
+document.getElementById('prevWeek').onclick = stepBack;
+document.getElementById('nextWeek').onclick = stepForward;
+// Today button: in day view, snap dayDate to today; in week/month view,
+// snap weekStart to today's Monday (existing behavior preserved).
+document.getElementById('todayBtn').onclick = () => {
+  if (viewMode === 'day') {
+    dayDate = todayLocalIso();
+  } else {
+    state.weekStart = defaultState().weekStart;
+    save(state);
+  }
+  writeHash(); render();
+};
+
+document.getElementById('dayViewBtn')  .onclick = () => setViewMode('day');
+document.getElementById('weekViewBtn') .onclick = () => setViewMode('week');
+document.getElementById('monthViewBtn').onclick = () => setViewMode('month');
+
+// Browser back/forward (or a pasted deep-link) — re-resolve view + date
+// from the hash and re-render. Skips if the hash matches current state
+// (i.e. we ourselves just wrote it via writeHash()).
+window.addEventListener('hashchange', () => {
+  const h = parseHash();
+  let changed = false;
+  if (h.view && h.view !== viewMode) {
+    viewMode = h.view;
+    document.querySelectorAll('.view-toggle .vt-btn').forEach(b => b.classList.toggle('active', b.dataset.view === viewMode));
+    document.getElementById('weekArea').style.display = (viewMode === 'week') ? '' : 'none';
+    document.getElementById('monthArea').classList.toggle('show', viewMode === 'month');
+    document.getElementById('dayArea').classList.toggle('show',   viewMode === 'day');
+    changed = true;
+  }
+  if (h.date) {
+    if (viewMode === 'day'   && h.date !== dayDate)         { dayDate = h.date; changed = true; }
+    if (viewMode === 'week'  && mondayOf(h.date) !== state.weekStart) { state.weekStart = mondayOf(h.date); save(state); changed = true; }
+    if (viewMode === 'month' && h.date !== state.weekStart) { state.weekStart = h.date; save(state); changed = true; }
+  }
+  if (changed) render();
+});
+
+// Apply saved view-mode on first render
+setViewMode(viewMode);
+
+/* ============ Utils ============ */
+function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function escapeAttr(s){ return escapeHtml(s); }
+
+// setViewMode (called above) already triggered the initial render in the
+// correct mode (week or month, from saved preference).
+</script>
+</body>
+</html>

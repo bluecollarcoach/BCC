@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#2b2b2b" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Emergency Rate Sheet &middot; BCC Connect</title>
+<link rel="icon" type="image/png" href="bcc-logo.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --p-navy:#2b2b2b; --p-navy-dark:#1a1a1a; --p-navy-light:#374151;
+    --p-orange:#c8102e; --p-orange-soft:#ef4444;
+    --p-cyan:#1d4ed8; --p-cream:#f3f4f6;
+    --p-slate:#1a1a1a; --p-gray:#64748b; --p-light:#f1f5f9;
+    --p-border:#e2e8f0; --p-green:#10b981; --p-red:#ef4444; --p-amber:#f59e0b;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; }
+  body {
+    font-family:'Inter', system-ui, Segoe UI, Arial, sans-serif;
+    color:#1a1a1a; background:#f1f5f9; -webkit-font-smoothing:antialiased;
+    display:flex; flex-direction:column; min-height:100vh;
+  }
+  header.topbar {
+    background:linear-gradient(90deg, var(--p-navy-dark), var(--p-navy));
+    color:#fff; padding:10px 18px; display:flex; align-items:center; gap:16px;
+    box-shadow:0 2px 12px rgba(0,0,0,0.18); position:sticky; top:0; z-index:50;
+  }
+  header.topbar a.home { display:flex; align-items:center; gap:10px; text-decoration:none; color:#fff; }
+  header.topbar img { height:30px; background:#fff; padding:3px 8px; border-radius:6px; }
+  header.topbar .module { font-size:13px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--p-orange-soft); }
+  header.topbar .spacer { flex:1; }
+  header.topbar .nav-link { color:rgba(255,255,255,0.7); text-decoration:none; font-size:13px; font-weight:600; padding:6px 10px; border-radius:6px; }
+  header.topbar .nav-link:hover { background:rgba(255,255,255,0.08); color:#fff; }
+
+  .toolbar {
+    background:#fff; border-bottom:1px solid var(--p-border);
+    padding:12px 18px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+  }
+  .toolbar h1 { font-size:18px; font-weight:800; color:var(--p-navy); }
+  .toolbar .spacer { flex:1; }
+  .toolbar .tabs { display:flex; gap:8px; flex-wrap:wrap; }
+  .toolbar .tab {
+    padding:10px 16px; border-radius:8px; font-size:13.5px; font-weight:700; cursor:pointer; color:var(--p-slate);
+    background:#f1f5f9; border:1px solid var(--p-border);
+    transition:background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .toolbar .tab:hover { background:#e2e8f0; }
+  .toolbar .tab.active { background:var(--p-navy); color:#fff; border-color:var(--p-navy); }
+  .toolbar .tab .ct { background:#fff; color:var(--p-slate); padding:1px 7px; border-radius:5px; margin-left:4px; font-size:11px; }
+  .toolbar .tab.active .ct { background:rgba(255,255,255,0.2); color:#fff; }
+  .btn { padding:9px 16px; border-radius:8px; border:none; cursor:pointer; font-weight:700; font-size:13px; }
+  .btn-primary { background:var(--p-orange); color:#fff; box-shadow:0 2px 8px rgba(200,16,46,0.3); }
+  .btn-primary:hover { background:#9a0c22; }
+  .btn-ghost { background:var(--p-light); color:var(--p-slate); border:1px solid var(--p-border); }
+
+  .wrap { max-width:920px; width:100%; margin:0 auto; padding:20px 16px 80px; flex:1; }
+
+  /* ============ Rate sheet (printable doc) ============ */
+  .doc {
+    background:#fff; border-radius:14px; padding:32px 36px;
+    box-shadow:0 8px 24px rgba(15,23,42,0.06);
+    border:1px solid var(--p-border);
+  }
+  @media (max-width:600px) { .doc { padding:22px 18px; } }
+
+  .doc-head {
+    display:flex; align-items:flex-start; gap:20px; padding-bottom:18px;
+    border-bottom:3px solid var(--p-orange); margin-bottom:24px; flex-wrap:wrap;
+  }
+  .doc-head img { height:80px; }
+  .doc-head .title-block { flex:1; min-width:240px; }
+  .doc-head h1 {
+    font-size:24px; font-weight:800; color:var(--p-navy);
+    letter-spacing:0.5px;
+  }
+  .doc-head .red-badge {
+    display:inline-block; background:var(--p-orange); color:#fff;
+    padding:3px 12px; border-radius:6px; font-size:11px; font-weight:800;
+    letter-spacing:1px; text-transform:uppercase; margin-top:4px;
+  }
+  .doc-head .contact { font-size:12px; color:var(--p-gray); line-height:1.7; }
+  .doc-head .contact strong { color:var(--p-slate); }
+
+  .effective {
+    background:var(--p-light); padding:8px 14px; border-radius:8px;
+    font-size:12px; color:var(--p-slate); margin-bottom:22px;
+    display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px;
+  }
+  .effective strong { color:var(--p-navy); }
+
+  .rate-section { margin-bottom:24px; }
+  .rate-section h2 {
+    font-size:13px; font-weight:800; color:var(--p-navy);
+    letter-spacing:1px; text-transform:uppercase;
+    padding:8px 12px; background:var(--p-cream);
+    border-left:3px solid var(--p-orange);
+    border-radius:0 7px 7px 0; margin-bottom:10px;
+    display:flex; align-items:baseline; gap:10px;
+  }
+  .rate-section h2 .basis { font-size:11px; color:var(--p-gray); margin-left:auto; font-weight:600; letter-spacing:0.5px; }
+
+  .rate-row {
+    display:flex; align-items:baseline; gap:10px;
+    padding:8px 12px; border-bottom:1px dashed var(--p-border);
+    font-size:14px;
+  }
+  .rate-row:last-child { border-bottom:none; }
+  .rate-row .name { flex:1; color:var(--p-slate); font-weight:600; }
+  .rate-row .price { font-weight:800; color:var(--p-orange); font-size:15px; min-width:120px; text-align:right; }
+  .rate-row .unit { color:var(--p-gray); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; min-width:64px; text-align:right; }
+  .rate-row .note { font-size:11px; color:var(--p-gray); padding-left:6px; }
+
+  .rate-grid {
+    display:grid; grid-template-columns:1fr 1fr; gap:20px;
+  }
+  @media (max-width:680px) { .rate-grid { grid-template-columns:1fr; } }
+
+  /* Terms */
+  .terms {
+    background:var(--p-cream); border-radius:10px; padding:16px 20px; margin-top:20px;
+  }
+  .terms h2 {
+    font-size:11px; font-weight:800; color:var(--p-navy);
+    letter-spacing:1.5px; text-transform:uppercase; margin-bottom:10px;
+  }
+  .terms ul { list-style:none; }
+  .terms li {
+    font-size:13px; color:var(--p-slate); line-height:1.6;
+    padding:3px 0 3px 18px; position:relative;
+  }
+  .terms li::before {
+    content:'•'; color:var(--p-orange); font-weight:800;
+    position:absolute; left:5px;
+  }
+
+  /* Legal */
+  .legal {
+    margin-top:20px; padding-top:18px; border-top:1px solid var(--p-border);
+    font-size:11px; color:var(--p-gray); line-height:1.6;
+  }
+  .legal h3 {
+    color:var(--p-slate); font-size:11px; font-weight:800;
+    letter-spacing:1px; text-transform:uppercase; margin-bottom:6px;
+  }
+  .legal ol { margin-left:18px; margin-top:6px; }
+  .legal li { margin-bottom:8px; }
+
+  /* Authorization form */
+  .auth {
+    margin-top:30px; padding-top:24px; border-top:3px solid var(--p-navy);
+  }
+  .auth h2 {
+    font-size:16px; font-weight:800; color:var(--p-navy); margin-bottom:14px;
+    letter-spacing:-0.2px;
+  }
+  .auth .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:8px; }
+  @media (max-width:600px) { .auth .grid { grid-template-columns:1fr; } }
+  .field { display:flex; flex-direction:column; gap:4px; margin-bottom:12px; }
+  .field label { font-size:11px; font-weight:700; color:var(--p-gray); letter-spacing:0.5px; text-transform:uppercase; }
+  .field input, .field textarea {
+    padding:10px 12px; border:1px solid var(--p-border); border-radius:8px;
+    font-family:inherit; font-size:13.5px; background:#fff;
+  }
+  .field input:focus, .field textarea:focus {
+    outline:none; border-color:var(--p-orange); box-shadow:0 0 0 3px rgba(200,16,46,0.10);
+  }
+  .field textarea { resize:vertical; min-height:60px; }
+  .field.full { grid-column:1 / -1; }
+
+  .signature-block {
+    margin-top:16px; padding:16px; background:var(--p-light); border-radius:10px;
+    display:grid; grid-template-columns:2fr 1fr; gap:14px;
+  }
+  @media (max-width:520px) { .signature-block { grid-template-columns:1fr; } }
+  .signature-block .field input { background:#fff; border-bottom:2px solid var(--p-navy); border-radius:4px; }
+
+  .actions-bar {
+    display:flex; gap:10px; margin-top:20px; flex-wrap:wrap; justify-content:flex-end;
+  }
+
+  /* Saved list */
+  .auth-list { display:flex; flex-direction:column; gap:8px; }
+  .auth-row {
+    background:#fff; border:1px solid var(--p-border); border-radius:10px;
+    padding:14px 16px; display:flex; gap:12px; align-items:center;
+    box-shadow:0 1px 4px rgba(0,0,0,0.04);
+  }
+  .auth-row .info { flex:1; min-width:0; }
+  .auth-row .info .nm { font-weight:800; color:var(--p-navy); font-size:14px; }
+  .auth-row .info .sub { font-size:12px; color:var(--p-gray); }
+  .auth-row .date {
+    background:var(--p-light); padding:6px 10px; border-radius:7px;
+    font-size:11px; font-weight:800; color:var(--p-slate);
+  }
+
+  /* Print */
+  @media print {
+    body { background:#fff; }
+    header.topbar, .toolbar, .actions-bar, .nav-link { display:none !important; }
+    .wrap { padding:0; max-width:none; }
+    .doc { box-shadow:none; border:none; padding:24px; border-radius:0; }
+    .rate-section h2 { background:#f3f4f6 !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    .doc-head { border-bottom-color:#c8102e !important; }
+    .terms { background:#fafafa !important; }
+    .signature-block { background:#fafafa !important; }
+    a[href]:after { content:''; }
+  }
+</style>
+  <script src="bcc-api.js" defer></script>
+</head>
+<body>
+
+<header class="topbar">
+  <a class="home" href="index.html">
+    <img src="bcc-logo.png" alt="Blue Collar Coach" />
+    <span class="module">Rate Sheet</span>
+  </a>
+  <span class="spacer"></span>
+  <a class="nav-link" href="tm.html">T&amp;M</a>
+  <a class="nav-link" href="jobs.html">Jobs</a>
+  <a class="nav-link" href="admin.html">Admin</a>
+  <a class="nav-link" href="guide.html">Help</a>
+</header>
+
+<div class="toolbar">
+  <h1>24 Hour Emergency Service Rate Sheet</h1>
+  <span class="spacer"></span>
+  <div class="tabs">
+    <div class="tab active" id="tab_sheet">Rate Sheet</div>
+    <div class="tab" id="tab_auth">Authorizations <span class="ct" id="authCt">0</span></div>
+  </div>
+</div>
+
+<div class="wrap" id="wrap"></div>
+
+<script>
+const LS_AUTH = 'bcc-rate-authorizations-v1';
+
+/* ============ Rate data — from 2026 Emergency Service Pricing 5.15.26.xlsx ============
+   Editable from /admin.html; this hardcoded block is the fallback.            */
+let RATES = {
+  excavators: {
+    title: 'Excavators',
+    basis: 'with operator &middot; rate per hour',
+    items: [
+      { name: 'Mini Excavator',          price: 175, unit: '/hr' },
+      { name: 'Mid-Size PC-88',          price: 195, unit: '/hr' },
+      { name: 'Mid-Size PC-138',         price: 205, unit: '/hr' },
+      { name: 'Cat 316',                 price: 215, unit: '/hr' }
+    ]
+  },
+  compaction: {
+    title: 'Compaction',
+    basis: 'with operator &middot; rate per day',
+    items: [
+      { name: 'Jumping Jack',            price: 120, unit: '/day' },
+      { name: 'Plate Tamper',            price: 180, unit: '/day' },
+      { name: 'Walk-Behind Drum',        price: 235, unit: '/day' }
+    ]
+  },
+  loaders: {
+    title: 'Loaders &amp; Dozer',
+    basis: 'with operator &middot; rate per hour',
+    items: [
+      { name: 'Track Skid Loader',       price: 165, unit: '/hr' },
+      { name: 'Front End Loader',        price: 215, unit: '/hr' },
+      { name: 'Dozer',                   price: 215, unit: '/hr' }
+    ]
+  },
+  attachments: {
+    title: 'Attachments',
+    basis: 'rate per day',
+    items: [
+      { name: 'Hydro Hammer',            price: 350, unit: '/day' },
+      { name: 'Plate Packer',            price: 275, unit: '/day' }
+    ]
+  },
+  labor: {
+    title: 'Labor',
+    basis: 'rate per man-hour',
+    items: [
+      { name: 'Laborer (regular)',       price: 135, unit: '/hr' },
+      { name: 'Overtime premium',        price: 67.50, unit: '/hr', note: 'on top of laborer rate' },
+      { name: 'Double Time premium',     price: 135, unit: '/hr', note: 'on top of laborer rate' }
+    ]
+  },
+  other: {
+    title: 'Other Charges',
+    basis: '',
+    items: [
+      { name: 'Mobilization',            price: 400, unit: '/move' },
+      { name: 'Trench Box',              price: 340, unit: '/day' },
+      { name: 'Trucking',                price: 150, unit: '/hr' }
+    ]
+  }
+};
+
+const TERMS = [
+  'Permit and administrative fees begin at $300.',
+  'All credit card payments will have a 4% service fee.',
+  'Blue Collar Coach is NOT responsible for any unmarked utilities.',
+  'Blue Collar Coach is NOT responsible for locating, marking, or repairing irrigation lines.',
+  'All jobs are billed on a time-and-material basis with a retention of 0%.',
+  'A 20% mark-up on all materials and subcontractors will be added.',
+  'Terms: Net 30 days. A finance charge will be added to any outstanding balance after 30 days of signed contract.'
+];
+
+const LIEN_NOTICES = [
+  'ANY PERSON OR COMPANY SUPPLYING MATERIAL OR LABOR FOR THIS IMPROVEMENT TO YOUR PROPERTY MAY FILE A LIEN AGAINST YOUR PROPERTY IF THAT COMPANY OR PERSON IS NOT PAID FOR THE CONTRIBUTIONS.',
+  'UNDER MINNESOTA LAW, YOU HAVE THE RIGHT TO PAY PERSONS WHO SUPPLIED MATERIAL OR LABOR FOR THIS IMPROVEMENT DIRECTLY AND DEDUCT THIS AMOUNT FROM OUR CONTRACT PRICE, OR WITHHOLD THE AMOUNT DUE THEM FROM US UNTIL 120 DAYS AFTER COMPLETION OF IMPROVEMENT, UNLESS WE GIVE A LIEN WAIVER SIGNED BY PERSONS WHO SUPPLIED ANY LABOR OR MATERIAL FOR IMPROVEMENT AND WHO GAVE YOU A TIMELY NOTICE.'
+];
+
+let EFFECTIVE_DATE = 'May 15, 2026';
+let COMPANY = {
+  name: 'Blue Collar Coach',
+  contact: '',
+  phone: '(612) 251-1976',
+  address: 'PO Box 405, Montrose, MN 55363',
+  url: 'www.bluecollarcoach.us'
+};
+
+/* ============ Apply admin config overrides ============ */
+(function applyAdminConfig() {
+  let cfg = null;
+  try { cfg = JSON.parse(localStorage.getItem('bcc-admin-config-v1')); } catch {}
+  if (!cfg) return;
+  if (cfg.rates && cfg.rates.emergency) {
+    const e = cfg.rates.emergency;
+    const setGroup = (key, title, basis, items) => {
+      if (Array.isArray(items)) RATES[key] = { title, basis, items };
+    };
+    setGroup('excavators',  'Excavators',          'with operator &middot; rate per hour', e.excavators);
+    setGroup('compaction',  'Compaction',          'with operator &middot; rate per day',  e.compaction);
+    setGroup('loaders',     'Loaders &amp; Dozer', 'with operator &middot; rate per hour', e.loaders);
+    setGroup('attachments', 'Attachments',         'rate per day',                         e.attachments);
+    setGroup('labor',       'Labor',               'rate per man-hour',                    e.labor);
+    setGroup('other',       'Other Charges',       '',                                     e.other);
+    if (e.effectiveDate) EFFECTIVE_DATE = e.effectiveDate;
+  }
+  if (cfg.company) {
+    COMPANY = {
+      name:    cfg.company.legalName || COMPANY.name,
+      contact: cfg.company.contact   || COMPANY.contact,
+      phone:   cfg.company.emergency || COMPANY.phone,
+      address: cfg.company.address   || COMPANY.address,
+      url:     cfg.company.url       || COMPANY.url
+    };
+  }
+})();
+
+/* ============ State ============ */
+function loadAuths(){ try { return JSON.parse(localStorage.getItem(LS_AUTH)) || []; } catch { return []; } }
+function saveAuths(v){ localStorage.setItem(LS_AUTH, JSON.stringify(v)); }
+let auths = loadAuths();
+let tab = 'sheet';
+let form = blankForm();
+
+function blankForm() {
+  return {
+    companyName: '', address: '',
+    contact: '', email: '',
+    phone: '', cell: '', fax: '',
+    jobLocation: '',
+    signature: '', signedDate: new Date().toISOString().slice(0,10)
+  };
+}
+
+function init() {
+  document.getElementById('tab_sheet').onclick = () => { tab='sheet'; render(); };
+  document.getElementById('tab_auth').onclick = () => { tab='auth'; render(); };
+  render();
+}
+
+function render() {
+  document.getElementById('authCt').textContent = auths.length;
+  document.getElementById('tab_sheet').classList.toggle('active', tab==='sheet');
+  document.getElementById('tab_auth').classList.toggle('active', tab==='auth');
+  document.getElementById('wrap').innerHTML = tab === 'sheet' ? renderSheet() : renderAuthList();
+  if (tab === 'sheet') bindSheet();
+  else bindAuthList();
+}
+
+function renderSheet() {
+  return `
+    <div class="doc">
+      <div class="doc-head">
+        <img src="bcc-logo.png" alt="Blue Collar Coach" />
+        <div class="title-block">
+          <h1>24 Hour Emergency Service</h1>
+          <span class="red-badge">Rate Sheet</span>
+        </div>
+        <div class="contact">
+          <strong>${COMPANY.name}</strong><br/>
+          ${COMPANY.address}<br/>
+          ${COMPANY.url}<br/>
+          ${COMPANY.contact} &middot; <strong>${COMPANY.phone}</strong>
+        </div>
+      </div>
+
+      <div class="effective">
+        <div><strong>Effective:</strong> ${EFFECTIVE_DATE}</div>
+        <div>Rates listed below include operator unless otherwise noted.</div>
+      </div>
+
+      <div class="rate-grid">
+        ${renderRateCard(RATES.excavators)}
+        ${renderRateCard(RATES.loaders)}
+        ${renderRateCard(RATES.compaction)}
+        ${renderRateCard(RATES.attachments)}
+        ${renderRateCard(RATES.labor)}
+        ${renderRateCard(RATES.other)}
+      </div>
+
+      <div class="terms">
+        <h2>Additional Contract Terms</h2>
+        <ul>
+          ${TERMS.map(t => `<li>${t}</li>`).join('')}
+        </ul>
+      </div>
+
+      <div class="legal">
+        <h3>Contractor Notice to Owner</h3>
+        <ol>
+          ${LIEN_NOTICES.map(n => `<li>${n}</li>`).join('')}
+        </ol>
+      </div>
+
+      <div class="auth">
+        <h2>Customer Authorization</h2>
+        <p style="font-size:13px; color:var(--p-gray); margin-bottom:14px;">
+          Please list the name, address, and phone number of a contact person authorized to approve this work.
+          Sign at the bottom to authorize Blue Collar Coach to proceed based on the rates above.
+        </p>
+
+        <div class="grid">
+          <div class="field"><label>Company name</label><input id="f_company" value="${escapeAttr(form.companyName)}" /></div>
+          <div class="field"><label>Address</label><input id="f_address" value="${escapeAttr(form.address)}" /></div>
+          <div class="field"><label>Contact person</label><input id="f_contact" value="${escapeAttr(form.contact)}" /></div>
+          <div class="field"><label>E-mail address</label><input id="f_email" type="email" value="${escapeAttr(form.email)}" /></div>
+          <div class="field"><label>Phone number</label><input id="f_phone" type="tel" value="${escapeAttr(form.phone)}" /></div>
+          <div class="field"><label>Cell phone</label><input id="f_cell" type="tel" value="${escapeAttr(form.cell)}" /></div>
+        </div>
+        <div class="field full">
+          <label>Job location (if different than billing address)</label>
+          <input id="f_jobloc" value="${escapeAttr(form.jobLocation)}" />
+        </div>
+
+        <div class="signature-block">
+          <div class="field"><label>Authorized customer signature / title</label><input id="f_sig" value="${escapeAttr(form.signature)}" placeholder="Type full name to sign" /></div>
+          <div class="field"><label>Date</label><input id="f_sigdate" type="date" value="${form.signedDate}" /></div>
+        </div>
+      </div>
+
+      <div class="actions-bar">
+        <button class="btn btn-ghost" id="resetBtn">Reset form</button>
+        <button class="btn btn-ghost" onclick="window.print()">&#128424; Print / Save PDF</button>
+        <button class="btn btn-primary" id="saveBtn">Save Authorization</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderRateCard(group) {
+  return `
+    <div class="rate-section">
+      <h2>${group.title} ${group.basis ? `<span class="basis">${group.basis}</span>` : ''}</h2>
+      ${group.items.map(it => `
+        <div class="rate-row">
+          <div class="name">${it.name}${it.note ? ` <span class="note">${it.note}</span>` : ''}</div>
+          <div class="price">$${fmtNum(it.price)}</div>
+          <div class="unit">${it.unit}</div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function bindSheet() {
+  const $ = id => document.getElementById(id);
+  const map = {
+    f_company:'companyName', f_address:'address', f_contact:'contact', f_email:'email',
+    f_phone:'phone', f_cell:'cell', f_jobloc:'jobLocation',
+    f_sig:'signature', f_sigdate:'signedDate'
+  };
+  Object.entries(map).forEach(([id, k]) => {
+    const el = $(id); if (el) el.oninput = e => form[k] = e.target.value;
+  });
+  $('resetBtn').onclick = () => { if (confirm('Reset the authorization form?')) { form = blankForm(); render(); } };
+  $('saveBtn').onclick = async () => {
+    if (!form.companyName.trim()) { alert('Company name is required.'); return; }
+    if (!form.signature.trim()) { alert('Signature (typed name) is required.'); return; }
+    const loc = window.bccGetLocation ? await window.bccGetLocation() : null;
+    const auth = {
+      id:'auth'+Date.now(),
+      ...form,
+      effectiveDate: EFFECTIVE_DATE,
+      capturedAt: new Date().toISOString(),
+      capturedBy: localStorage.getItem('bcc-field-who') || (window.bccUser && window.bccUser.userDetails) || '',
+      location: loc
+    };
+    auths.unshift(auth);
+    saveAuths(auths);
+    // Activity log: customer authorized emergency rates.
+    window.bccAudit && window.bccAudit('rate-authorize', {
+      key: auth.id,
+      meta: {
+        companyName: form.companyName,
+        signature:   form.signature,
+        contact:     form.contact || null,
+        location:    loc || null
+      }
+    });
+    form = blankForm();
+    tab = 'auth';
+    (window.bccNotify || alert)('Authorization saved. Use Print / Save PDF to send a copy to the customer.', 'success', 5000);
+    render();
+  };
+}
+
+function renderAuthList() {
+  if (auths.length === 0) {
+    return `<div class="doc" style="text-align:center; padding:50px 24px; color:var(--p-gray);">
+      <div style="font-size:42px; margin-bottom:10px;">&#128221;</div>
+      <h3 style="color:var(--p-slate); margin-bottom:6px;">No authorizations yet</h3>
+      <p style="font-size:13px;">Signed rate-sheet authorizations from customers will land here.</p>
+    </div>`;
+  }
+  return `<div class="auth-list">${auths.map(a => `
+    <div class="auth-row" data-id="${a.id}">
+      <div class="info">
+        <div class="nm">${escapeHtml(a.companyName)}</div>
+        <div class="sub">${escapeHtml(a.contact || '')}${a.contact && a.phone ? ' &middot; ' : ''}${escapeHtml(a.phone || '')}${a.jobLocation ? ' &middot; ' + escapeHtml(a.jobLocation) : ''}</div>
+        <div class="sub" style="margin-top:3px;">Signed by <strong>${escapeHtml(a.signature)}</strong> on ${a.signedDate}</div>
+      </div>
+      <div class="date">${new Date(a.capturedAt).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'2-digit'})}</div>
+      <button class="btn btn-ghost view-btn" data-id="${a.id}">View</button>
+      <button class="btn btn-ghost del-btn" data-id="${a.id}" style="color:var(--p-red); border-color:var(--p-red);">Delete</button>
+    </div>
+  `).join('')}</div>`;
+}
+
+function bindAuthList() {
+  document.querySelectorAll('.view-btn').forEach(b => {
+    b.onclick = () => {
+      const a = auths.find(x => x.id === b.dataset.id);
+      if (!a) return;
+      form = JSON.parse(JSON.stringify(a));
+      tab = 'sheet'; render();
+    };
+  });
+  document.querySelectorAll('.del-btn').forEach(b => {
+    b.onclick = () => {
+      if (!confirm('Delete this authorization record?')) return;
+      auths = auths.filter(x => x.id !== b.dataset.id);
+      saveAuths(auths); render();
+    };
+  });
+}
+
+function fmtNum(n) {
+  return Number.isInteger(n) ? n.toString() : n.toFixed(2);
+}
+function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function escapeAttr(s){ return escapeHtml(s); }
+
+init();
+</script>
+</body>
+</html>

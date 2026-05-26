@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#2b2b2b" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Crew Chat &middot; BCC Connect</title>
+<link rel="icon" type="image/png" href="bcc-logo.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --p-navy:#2b2b2b; --p-navy-dark:#1a1a1a; --p-navy-light:#374151;
+    --p-orange:#c8102e; --p-orange-soft:#ef4444;
+    --p-cyan:#1d4ed8; --p-cream:#f3f4f6;
+    --p-slate:#1a1a1a; --p-gray:#64748b; --p-light:#f1f5f9;
+    --p-border:#e2e8f0; --p-green:#10b981; --p-red:#ef4444; --p-amber:#f59e0b;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; }
+  body {
+    font-family:'Inter', system-ui, Segoe UI, Arial, sans-serif;
+    color:#1a1a1a; background:#f8fafc; -webkit-font-smoothing:antialiased;
+    display:flex; flex-direction:column; min-height:100vh;
+    overflow:hidden;
+  }
+  header.topbar {
+    background:linear-gradient(90deg, var(--p-navy-dark), var(--p-navy));
+    color:#fff; padding:10px 16px; display:flex; align-items:center; gap:14px;
+    box-shadow:0 2px 12px rgba(0,0,0,0.18);
+  }
+  header.topbar a.home { display:flex; align-items:center; gap:10px; text-decoration:none; color:#fff; }
+  header.topbar img { height:30px; background:#fff; padding:3px 8px; border-radius:6px; }
+  header.topbar .module { font-size:13px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--p-orange-soft); }
+  header.topbar .spacer { flex:1; }
+  header.topbar .nav-link { color:rgba(255,255,255,0.7); text-decoration:none; font-size:13px; font-weight:600; padding:6px 10px; border-radius:6px; }
+  header.topbar .nav-link:hover { background:rgba(255,255,255,0.08); color:#fff; }
+  header.topbar select.who {
+    background:rgba(255,255,255,0.12); color:#fff; border:1px solid rgba(255,255,255,0.2);
+    padding:6px 10px; border-radius:7px; font-weight:600; font-size:13px;
+  }
+  header.topbar select.who option { color:#1a1a1a; }
+  header.topbar .menu-btn {
+    display:none; background:rgba(255,255,255,0.12); border:none; color:#fff;
+    width:34px; height:34px; border-radius:7px; cursor:pointer; font-size:18px;
+  }
+  @media (max-width:760px) { header.topbar .menu-btn { display:inline-flex; align-items:center; justify-content:center; } }
+
+  .app { display:grid; grid-template-columns:240px 1fr; flex:1; min-height:0; }
+  @media (max-width:760px) { .app { grid-template-columns:1fr; } }
+
+  /* Sidebar */
+  .sidebar {
+    background:#fff; border-right:1px solid var(--p-border);
+    display:flex; flex-direction:column; overflow-y:auto;
+  }
+  .sidebar h2 {
+    font-size:11px; font-weight:800; letter-spacing:1.5px; text-transform:uppercase;
+    color:var(--p-gray); padding:16px 16px 8px;
+  }
+  .sidebar .chan {
+    padding:10px 16px; cursor:pointer; display:flex; align-items:center; gap:8px;
+    font-size:13.5px; color:var(--p-slate); font-weight:600;
+    transition:background 0.12s;
+  }
+  .sidebar .chan:hover { background:var(--p-light); }
+  .sidebar .chan.active { background:var(--p-light); color:var(--p-navy); }
+  .sidebar .chan .hash { color:var(--p-gray); font-weight:800; }
+  .sidebar .chan.active .hash { color:var(--p-orange); }
+  .sidebar .chan .unread {
+    margin-left:auto; background:var(--p-red); color:#fff; font-size:10px; font-weight:800;
+    border-radius:999px; padding:1px 7px; min-width:18px; text-align:center;
+  }
+  .sidebar .add-chan {
+    margin:8px 14px; padding:8px 10px; background:transparent;
+    border:1px dashed var(--p-border); border-radius:7px; cursor:pointer;
+    color:var(--p-gray); font-weight:600; font-size:12px;
+  }
+  .sidebar .add-chan:hover { background:var(--p-light); color:var(--p-navy); border-color:var(--p-orange); }
+  @media (max-width:760px) {
+    .sidebar { position:absolute; top:54px; bottom:0; left:0; width:260px; z-index:30; transform:translateX(-100%); transition:transform 0.2s; box-shadow:4px 0 12px rgba(0,0,0,0.1); }
+    .sidebar.open { transform:translateX(0); }
+  }
+
+  /* Main thread */
+  .thread { display:flex; flex-direction:column; min-height:0; }
+  .thread-head {
+    padding:14px 18px; border-bottom:1px solid var(--p-border); background:#fff;
+    display:flex; align-items:center; gap:10px;
+  }
+  .thread-head .name { font-size:15px; font-weight:800; color:var(--p-navy); }
+  .thread-head .hash { color:var(--p-gray); font-weight:800; }
+  .thread-head .meta { color:var(--p-gray); font-size:12px; }
+
+  .messages {
+    flex:1; overflow-y:auto; padding:14px 18px;
+    display:flex; flex-direction:column; gap:6px;
+  }
+  .msg { display:flex; gap:10px; }
+  .msg .avatar {
+    width:34px; height:34px; flex-shrink:0; border-radius:50%;
+    background:var(--p-navy); color:#fff; font-size:12px; font-weight:800;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .msg .body { flex:1; min-width:0; }
+  .msg .head {
+    display:flex; align-items:baseline; gap:8px; margin-bottom:2px;
+  }
+  .msg .author { font-weight:800; color:var(--p-navy); font-size:13.5px; }
+  .msg .when { font-size:11px; color:var(--p-gray); }
+  .msg .text { font-size:14px; color:var(--p-slate); line-height:1.45; white-space:pre-wrap; word-wrap:break-word; }
+  .msg .photo { margin-top:6px; max-width:280px; border-radius:8px; overflow:hidden; }
+  .msg .photo img { width:100%; display:block; }
+  .msg.continued .avatar { visibility:hidden; }
+  .msg.continued .head { display:none; }
+  .day-sep { text-align:center; color:var(--p-gray); font-size:11px; font-weight:700; letter-spacing:1px; text-transform:uppercase; padding:10px 0 4px; }
+
+  /* Admin message-delete affordance (hover on desktop, always visible on touch) */
+  .msg { position:relative; padding:2px 30px 2px 0; border-radius:6px; transition:background 0.1s; }
+  .msg:hover { background:#fafbfc; }
+  .msg .del {
+    position:absolute; top:0; right:4px;
+    background:rgba(200,16,46,0.08); color:var(--p-red);
+    border:none; border-radius:6px; width:28px; height:28px;
+    cursor:pointer; font-size:14px; line-height:1;
+    opacity:0; transition:opacity 0.12s, background 0.12s;
+  }
+  .msg:hover .del { opacity:1; }
+  .msg .del:hover { background:rgba(200,16,46,0.18); }
+  @media (hover:none) { .msg .del { opacity:1; } }
+  .thread-head .clear-btn {
+    background:transparent; border:1px solid var(--p-border);
+    color:var(--p-red); padding:6px 12px; border-radius:7px;
+    cursor:pointer; font-weight:700; font-size:12px;
+  }
+  .thread-head .clear-btn:hover { background:rgba(200,16,46,0.08); border-color:var(--p-red); }
+
+  .composer {
+    border-top:1px solid var(--p-border); background:#fff;
+    padding:10px 14px; display:flex; align-items:flex-end; gap:8px;
+  }
+  .composer .input-wrap {
+    flex:1; background:var(--p-light); border-radius:14px; padding:6px 10px;
+    display:flex; align-items:center; gap:6px;
+  }
+  .composer textarea {
+    flex:1; border:none; outline:none; background:transparent;
+    resize:none; padding:6px 4px; max-height:120px; font-family:inherit; font-size:14px;
+    line-height:1.4; color:var(--p-slate); min-height:22px;
+  }
+  .composer .ic-btn {
+    background:transparent; border:none; cursor:pointer;
+    color:var(--p-gray); font-size:20px; padding:4px;
+  }
+  .composer .ic-btn:hover { color:var(--p-orange); }
+  .composer button.send {
+    background:var(--p-orange); color:#fff; border:none;
+    width:42px; height:42px; border-radius:50%; cursor:pointer; font-size:16px;
+    box-shadow:0 2px 8px rgba(200,16,46,0.4);
+  }
+  .composer button.send:hover { background:#9a0c22; }
+  .composer .preview {
+    width:100%; padding:6px 12px;
+  }
+  .composer .preview .ph {
+    display:inline-flex; align-items:center; gap:6px;
+    background:var(--p-light); padding:4px 10px; border-radius:8px; font-size:12px;
+  }
+  .composer .preview .ph button { background:none; border:none; color:var(--p-red); cursor:pointer; font-size:14px; }
+
+  .empty-state {
+    flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    color:var(--p-gray); padding:40px;
+  }
+  .empty-state .big { font-size:48px; margin-bottom:14px; }
+  .empty-state h3 { color:var(--p-navy); margin-bottom:6px; }
+</style>
+  <script src="bcc-api.js" defer></script>
+</head>
+<body>
+
+<header class="topbar">
+  <button class="menu-btn" id="menuBtn">&#9776;</button>
+  <a class="home" href="index.html">
+    <img src="bcc-logo.png" alt="Blue Collar Coach" />
+    <span class="module">Chat</span>
+  </a>
+  <span class="spacer"></span>
+</header>
+
+<div class="app">
+  <aside class="sidebar" id="sidebar">
+    <h2>Channels</h2>
+    <div id="chanList"></div>
+    <button class="add-chan" id="addChan">+ New channel</button>
+  </aside>
+
+  <main class="thread" id="thread"></main>
+</div>
+
+<script>
+const LS_CHANS = 'bcc-chat-channels-v1';
+const LS_MSGS = 'bcc-chat-messages-v1';
+const LS_READ = 'bcc-chat-last-read-v1';
+const LS_WHO = 'bcc-field-who';
+
+let PEOPLE = (window.bccPeople || []).slice();
+window.addEventListener('bcc-users-ready', function () {
+  PEOPLE = (window.bccPeople || []).slice();
+  if (typeof render === 'function') { try { render(); } catch (e) {} }
+  if (typeof updateTabs === 'function') { try { updateTabs(); } catch (e) {} }
+});
+
+function defaultChans() {
+  // Channel structure is stable for BCC; lead annotations were
+  // intentionally removed so a channel description never names a specific
+  // employee. Each channel's lead is set by admin via crew assignment.
+  return [
+    { id:'general',     name:'general',     desc:'Company-wide announcements' },
+    { id:'office',      name:'office',      desc:'Office / PM team' },
+    { id:'crew-alpha',  name:'crew-alpha',  desc:'Crew Alpha' },
+    { id:'crew-bravo',  name:'crew-bravo',  desc:'Crew Bravo' },
+    { id:'crew-charlie',name:'crew-charlie',desc:'Crew Charlie' },
+    { id:'hydrovac-1',  name:'hydrovac-1',  desc:'Hydrovac 1 crew' },
+    { id:'hydrovac-2',  name:'hydrovac-2',  desc:'Hydrovac 2 crew' },
+    { id:'maintenance', name:'maintenance', desc:'Mechanics / equipment' }
+  ];
+}
+
+function loadChans() {
+  try { const v = JSON.parse(localStorage.getItem(LS_CHANS)); return (v && v.length) ? v : defaultChans(); }
+  catch { return defaultChans(); }
+}
+function saveChans(v) { localStorage.setItem(LS_CHANS, JSON.stringify(v)); }
+function loadMsgs() { try { return JSON.parse(localStorage.getItem(LS_MSGS)) || {}; } catch { return {}; } }
+function saveMsgs(v) { localStorage.setItem(LS_MSGS, JSON.stringify(v)); }
+function loadRead() { try { return JSON.parse(localStorage.getItem(LS_READ)) || {}; } catch { return {}; } }
+function saveRead(v) { localStorage.setItem(LS_READ, JSON.stringify(v)); }
+
+// No seed messages — every chat starts empty so the first thing anyone
+// sees is real conversation, not demo content with hardcoded employee names.
+
+let chans = loadChans();
+saveChans(chans);
+let msgs = loadMsgs();
+let read = loadRead();
+let who = localStorage.getItem(LS_WHO) || '';
+let active = chans[0].id;
+let pendingPhoto = null;
+
+function init() {
+  // Identity comes from Entra SSO (bcc-api.js seeds LS_WHO from the signed-in
+  // user); fall back to whatever is stored locally.
+  who = localStorage.getItem(LS_WHO) || who;
+  document.getElementById('addChan').onclick = () => {
+    const n = prompt('Channel name (no spaces):');
+    if (!n) return;
+    const id = n.toLowerCase().replace(/[^a-z0-9-]/g,'-');
+    if (chans.some(c => c.id === id)) { alert('Already exists.'); return; }
+    chans.push({ id, name:id, desc:'' }); saveChans(chans); render();
+  };
+  document.getElementById('menuBtn').onclick = () => document.getElementById('sidebar').classList.toggle('open');
+  render();
+}
+
+function render() {
+  msgs = loadMsgs(); read = loadRead();
+  renderSidebar();
+  renderThread();
+}
+
+function unreadCount(chId) {
+  const last = read[chId] || 0;
+  const list = msgs[chId] || [];
+  return list.filter(m => m.at > last && m.author !== who).length;
+}
+
+function renderSidebar() {
+  document.getElementById('chanList').innerHTML = chans.map(c => {
+    const u = unreadCount(c.id);
+    return `
+      <div class="chan ${c.id===active?'active':''}" data-id="${c.id}">
+        <span class="hash">#</span>
+        <span class="cname">${escapeHtml(c.name)}</span>
+        ${u ? `<span class="unread">${u}</span>` : ''}
+      </div>
+    `;
+  }).join('');
+  document.querySelectorAll('.chan').forEach(el => {
+    el.onclick = () => {
+      active = el.dataset.id;
+      read[active] = Date.now(); saveRead(read);
+      document.getElementById('sidebar').classList.remove('open');
+      render();
+    };
+  });
+}
+
+function isAdmin() { return !!(window.bccIsAdmin && window.bccIsAdmin()); }
+function msgId(m) { return m.id || ('m' + m.at + '-' + (m.author||'').slice(0,4).replace(/\W/g,'')); }
+
+function renderThread() {
+  const c = chans.find(x => x.id === active);
+  if (!c) {
+    document.getElementById('thread').innerHTML = `<div class="empty-state"><div class="big">&#128172;</div><h3>Pick a channel</h3></div>`;
+    return;
+  }
+  const list = (msgs[active] || []).slice().sort((a,b) => a.at - b.at);
+  let lastAuthor = null, lastDay = null;
+  const admin = isAdmin();
+  let html = `
+    <div class="thread-head">
+      <span class="hash" style="font-size:18px; color:var(--p-gray); font-weight:800;">#</span>
+      <span class="name">${escapeHtml(c.name)}</span>
+      ${c.desc ? `<span class="meta">&middot; ${escapeHtml(c.desc)}</span>` : ''}
+      <span class="spacer" style="flex:1;"></span>
+      <span class="meta">${list.length} message${list.length===1?'':'s'}</span>
+      ${admin && list.length ? `<button class="clear-btn" id="clearChan" title="Delete every message in this channel">&#128465; Clear channel</button>` : ''}
+    </div>
+    <div class="messages" id="messages">
+  `;
+  if (list.length === 0) {
+    html += `<div class="empty-state"><div class="big">&#128075;</div><h3>This is the start of #${escapeHtml(c.name)}</h3><p style="font-size:13px;">Drop the first message.</p></div>`;
+  }
+  list.forEach(m => {
+    const d = new Date(m.at);
+    const day = d.toDateString();
+    if (day !== lastDay) {
+      html += `<div class="day-sep">${dayLabel(d)}</div>`;
+      lastDay = day; lastAuthor = null;
+    }
+    const continued = lastAuthor === m.author;
+    const canDelete = admin || m.author === who;
+    html += `
+      <div class="msg ${continued?'continued':''}" data-mid="${escapeHtml(msgId(m))}">
+        <div class="avatar" style="background:${colorFor(m.author)}">${initials(m.author)}</div>
+        <div class="body">
+          <div class="head"><span class="author">${escapeHtml(m.author)}</span><span class="when">${d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span></div>
+          <div class="text">${linkify(m.text)}</div>
+          ${m.photo ? `<div class="photo"><img src="${m.photo}" /></div>` : ''}
+        </div>
+        ${canDelete ? `<button class="del" title="Delete this message" data-mid="${escapeHtml(msgId(m))}">&#10005;</button>` : ''}
+      </div>
+    `;
+    lastAuthor = m.author;
+  });
+  html += `</div>
+    <div class="composer">
+      ${pendingPhoto ? `<div class="preview" style="width:100%;"><span class="ph">&#128247; photo attached <button id="rmPhoto">&times;</button></span></div>` : ''}
+      <div class="input-wrap">
+        <label class="ic-btn" title="Attach photo">&#128206;<input type="file" id="c_file" accept="image/*" capture="environment" style="display:none;" /></label>
+        <textarea id="c_text" placeholder="Message #${escapeHtml(c.name)}..." rows="1"></textarea>
+      </div>
+      <button class="send" id="c_send" title="Send">&#9658;</button>
+    </div>
+  `;
+  document.getElementById('thread').innerHTML = html;
+
+  const m = document.getElementById('messages');
+  if (m) m.scrollTop = m.scrollHeight;
+
+  document.getElementById('c_text').oninput = e => {
+    e.target.style.height = 'auto';
+    e.target.style.height = Math.min(120, e.target.scrollHeight) + 'px';
+  };
+  document.getElementById('c_text').onkeydown = e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); document.getElementById('c_send').click(); }
+  };
+  document.getElementById('c_send').onclick = send;
+  document.getElementById('c_file').onchange = e => {
+    const f = (e.target.files||[])[0]; if (!f) return;
+    const r = new FileReader(); r.onload = () => { pendingPhoto = r.result; render(); }; r.readAsDataURL(f);
+  };
+  const rmp = document.getElementById('rmPhoto');
+  if (rmp) rmp.onclick = () => { pendingPhoto = null; render(); };
+
+  // Admin / author message-delete
+  document.querySelectorAll('.msg .del').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const mid = btn.dataset.mid;
+      const arr = msgs[active] || [];
+      const idx = arr.findIndex(x => msgId(x) === mid);
+      if (idx < 0) return;
+      const m = arr[idx];
+      const isMine = m.author === who;
+      if (!confirm(`Delete this message from ${m.author}?` + (isMine ? '' : '\n\nIt will be removed for everyone.'))) return;
+      arr.splice(idx, 1);
+      msgs[active] = arr;
+      saveMsgs(msgs);
+      window.bccAudit && window.bccAudit('chat-delete', {
+        key: mid,
+        meta: { channel: active, originalAuthor: m.author, preview: (m.text||'').slice(0, 80) }
+      });
+      render();
+    };
+  });
+
+  // Admin clear-channel
+  const cb = document.getElementById('clearChan');
+  if (cb) {
+    cb.onclick = () => {
+      const count = (msgs[active] || []).length;
+      if (!confirm(`Delete all ${count} messages in #${active}?\n\nThis cannot be undone.`)) return;
+      msgs[active] = [];
+      saveMsgs(msgs);
+      window.bccAudit && window.bccAudit('chat-clear-channel', {
+        key: active,
+        meta: { channel: active, deletedCount: count }
+      });
+      render();
+    };
+  }
+}
+
+function send() {
+  const t = document.getElementById('c_text').value.trim();
+  if (!t && !pendingPhoto) return;
+  msgs[active] = msgs[active] || [];
+  const at = Date.now();
+  const newMsg = {
+    id: 'm' + at + '-' + Math.random().toString(36).slice(2, 6),
+    author: who, at, text: t, photo: pendingPhoto
+  };
+  msgs[active].push(newMsg);
+  pendingPhoto = null;
+  read[active] = Date.now();
+  saveMsgs(msgs); saveRead(read);
+  // Activity log: capture channel + a short preview (no full text, for noise).
+  window.bccAudit && window.bccAudit('chat-send', {
+    key: newMsg.id,
+    meta: { channel: active, preview: (t||'').slice(0, 80), hasPhoto: !!newMsg.photo }
+  });
+  render();
+}
+
+function dayLabel(d) {
+  const today = new Date(); today.setHours(0,0,0,0);
+  const yesterday = new Date(today); yesterday.setDate(today.getDate()-1);
+  const md = new Date(d); md.setHours(0,0,0,0);
+  if (md.getTime() === today.getTime()) return 'Today';
+  if (md.getTime() === yesterday.getTime()) return 'Yesterday';
+  return d.toLocaleDateString(undefined, { weekday:'long', month:'short', day:'numeric' });
+}
+function initials(name) {
+  return name.split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase();
+}
+function colorFor(name) {
+  const palette = ['#2b2b2b','#c8102e','#1d4ed8','#374151','#1a1a1a','#9a0c22','#1e40af','#7c3aed','#be185d','#a16207','#15803d','#9f1239'];
+  let h = 0; for (const c of name) h = (h*31 + c.charCodeAt(0))>>>0;
+  return palette[h % palette.length];
+}
+function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function linkify(s) {
+  return escapeHtml(s).replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener" style="color:var(--p-orange);">$1</a>');
+}
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "name": "bcc-connect-api",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Azure Functions backing BCC Connect. Cosmos DB Free + Entra ID auth via SWA.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "func start"
+  },
+  "dependencies": {
+    "@azure/cosmos": "^4.2.0",
+    "@azure/functions": "^4.6.0",
+    "web-push": "^3.6.7"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

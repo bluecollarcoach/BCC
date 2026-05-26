@@ -1,0 +1,60 @@
+{
+  "auth": {
+    "identityProviders": {
+      "azureActiveDirectory": {
+        "registration": {
+          "openIdIssuer": "https://login.microsoftonline.com/81acb8ef-0b0b-4299-882c-ff07373e8cc7/v2.0",
+          "clientIdSettingName": "AZURE_CLIENT_ID",
+          "clientSecretSettingName": "AZURE_CLIENT_SECRET"
+        },
+        "userDetailsClaim": "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn",
+        "login": {
+          "loginParameters": [
+            "scope=openid profile email",
+            "domain_hint=bluecollarcoach.us"
+          ]
+        }
+      }
+    }
+  },
+
+  "routes": [
+    { "route": "/login",       "rewrite": "/.auth/login/aad" },
+    { "route": "/logout",      "redirect": "/.auth/logout" },
+
+    { "route": "/403.html",      "allowedRoles": ["anonymous", "authenticated"] },
+    { "route": "/manifest.json", "allowedRoles": ["anonymous", "authenticated"] },
+    { "route": "/sw.js",         "allowedRoles": ["anonymous", "authenticated"] },
+
+    { "route": "/api/data/*",  "allowedRoles": ["authenticated"] },
+    { "route": "/api/profile", "allowedRoles": ["anonymous", "authenticated"] },
+
+    { "route": "/api/*",  "allowedRoles": ["authenticated"] },
+    { "route": "/*.html", "allowedRoles": ["authenticated"] },
+    { "route": "/",       "allowedRoles": ["authenticated"], "rewrite": "/index.html" }
+  ],
+
+  "responseOverrides": {
+    "401": { "redirect": "/login", "statusCode": 302 },
+    "403": { "rewrite": "/403.html", "statusCode": 403 }
+  },
+
+  "globalHeaders": {
+    "X-Frame-Options": "SAMEORIGIN",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "geolocation=(self), camera=(self)"
+  },
+
+  "mimeTypes": {
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".json": "application/json"
+  },
+
+  "platform": {
+    "apiRuntime": "node:20"
+  },
+
+  "_comment": "81acb8ef-0b0b-4299-882c-ff07373e8cc7 is replaced by the deploy script. AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, COSMOS_ENDPOINT, COSMOS_KEY, BCC_TENANT_ID are configured as Static Web App application settings — see DEPLOY.md."
+}

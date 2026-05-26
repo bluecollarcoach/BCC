@@ -1,0 +1,1134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#2b2b2b" />
+<meta name="robots" content="noindex, nofollow" />
+<title>My Day &middot; BCC Connect</title>
+<link rel="icon" type="image/png" href="bcc-logo.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="bcc-api.js" defer></script>
+<style>
+  :root {
+    --p-navy:#2b2b2b; --p-navy-dark:#1a1a1a; --p-navy-light:#374151;
+    --p-orange:#c8102e; --p-orange-soft:#ef4444;
+    --p-cyan:#1d4ed8; --p-cream:#f3f4f6;
+    --p-slate:#1a1a1a; --p-gray:#64748b; --p-light:#f1f5f9;
+    --p-border:#e2e8f0; --p-green:#10b981; --p-red:#ef4444; --p-amber:#f59e0b;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; }
+  body {
+    font-family:'Inter', system-ui, Segoe UI, Arial, sans-serif;
+    color:#1a1a1a; background:#f8fafc; -webkit-font-smoothing:antialiased;
+    display:flex; flex-direction:column; min-height:100vh;
+  }
+  header.topbar {
+    background:linear-gradient(90deg, var(--p-navy-dark), var(--p-navy));
+    color:#fff; padding:10px 16px; display:flex; align-items:center; gap:14px;
+    box-shadow:0 2px 12px rgba(0,0,0,0.18);
+  }
+  header.topbar a.home { display:flex; align-items:center; gap:10px; text-decoration:none; color:#fff; }
+  header.topbar img { height:28px; background:#fff; padding:3px 8px; border-radius:6px; }
+  header.topbar .module { font-size:12px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--p-orange-soft); }
+  header.topbar .spacer { flex:1; }
+  header.topbar select.who {
+    background:rgba(255,255,255,0.12); color:#fff; border:1px solid rgba(255,255,255,0.2);
+    padding:6px 10px; border-radius:7px; font-weight:600; font-size:13px;
+  }
+  header.topbar select.who option { color:#1a1a1a; }
+  header.topbar .nav-link { color:rgba(255,255,255,0.7); text-decoration:none; font-size:13px; font-weight:600; padding:6px 10px; border-radius:6px; }
+  header.topbar .nav-link:hover { background:rgba(255,255,255,0.08); color:#fff; }
+
+  /* Tab strip — every tab is a clearly-visible button. Inactive tabs have a
+     filled light background + dark text + visible border so they don't
+     disappear next to the dark active tab. */
+  .tabs-bar {
+    background:#fff; border-bottom:1px solid var(--p-border);
+    padding:12px 16px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  }
+  .tabs-bar .tab {
+    padding:10px 16px; border-radius:8px; font-size:13.5px; font-weight:700;
+    cursor:pointer; color:var(--p-slate); white-space:nowrap;
+    display:inline-flex; align-items:center; gap:6px;
+    background:#f1f5f9; border:1px solid var(--p-border);
+    transition:background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .tabs-bar .tab:hover { background:#e2e8f0; }
+  .tabs-bar .tab.active { background:var(--p-navy); color:#fff; border-color:var(--p-navy); }
+  .tabs-bar .tab .ct {
+    background:#fff; color:var(--p-slate);
+    padding:1px 7px; border-radius:5px; font-size:11px;
+  }
+  .tabs-bar .tab.active .ct { background:rgba(255,255,255,0.2); color:#fff; }
+
+  .wrap { max-width:620px; width:100%; margin:0 auto; padding:18px 16px 80px; flex:1; }
+
+  /* ============ Today tab ============ */
+  .hello { font-size:14px; color:var(--p-gray); margin-bottom:4px; }
+  .greeting { font-size:24px; font-weight:800; color:var(--p-navy); margin-bottom:18px; letter-spacing:-0.5px; }
+  .greeting .name { color:var(--p-orange); }
+  .section-label { font-size:11px; font-weight:800; letter-spacing:1.5px; text-transform:uppercase; color:var(--p-gray); margin:18px 0 10px; }
+
+  .today-card {
+    background:#fff; border-radius:16px; padding:20px;
+    box-shadow:0 12px 30px rgba(15,23,42,0.08);
+    border:1px solid var(--p-border); position:relative; overflow:hidden;
+  }
+  .today-card::before {
+    content:''; position:absolute; top:0; left:0; right:0; height:5px; background:var(--p-orange-soft);
+  }
+  .today-card.t-hydrovac::before    { background:var(--p-orange-soft); }
+  .today-card.t-excavation::before  { background:var(--p-amber); }
+  .today-card.t-watersewer::before  { background:var(--p-navy); }
+  .today-card.t-firehydrant::before { background:var(--p-red); }
+  .today-card.t-demo::before        { background:var(--p-slate); }
+  .today-card.t-emergency::before   { background:var(--p-red); }
+
+  .type-pill {
+    display:inline-block; font-size:11px; font-weight:800;
+    text-transform:uppercase; letter-spacing:1px;
+    background:var(--p-light); color:var(--p-slate);
+    padding:4px 10px; border-radius:999px; margin-bottom:10px;
+  }
+  .type-pill.t-emergency   { background:#fef2f2; color:var(--p-red); }
+  .type-pill.t-firehydrant { background:#fef2f2; color:var(--p-red); }
+  .type-pill.t-hydrovac    { background:#ecfeff; color:#1d4ed8; }
+  .type-pill.t-excavation  { background:#fffbeb; color:#b45309; }
+
+  .job-name { font-size:22px; font-weight:800; color:var(--p-navy); margin-bottom:4px; letter-spacing:-0.4px; }
+  .customer { color:var(--p-gray); font-size:14px; font-weight:500; margin-bottom:14px; }
+
+  .row { display:flex; gap:10px; align-items:center; margin-bottom:10px; font-size:14px; }
+  .row .icon {
+    width:34px; height:34px; flex-shrink:0;
+    background:var(--p-light); border-radius:8px;
+    display:flex; align-items:center; justify-content:center; font-size:16px;
+  }
+  .row .text { flex:1; line-height:1.4; }
+  .row .text .label { font-size:11px; color:var(--p-gray); font-weight:600; text-transform:uppercase; letter-spacing:0.5px; }
+  .row .text .value { color:var(--p-slate); font-weight:600; }
+  .row .text a { color:var(--p-navy); text-decoration:none; font-weight:600; }
+  .row .text a:hover { color:var(--p-orange); }
+
+  .crewmates { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
+  .crewmates .mate {
+    background:var(--p-light); color:var(--p-slate);
+    padding:5px 10px; border-radius:999px; font-size:12px; font-weight:600;
+    display:flex; align-items:center; gap:6px;
+  }
+  .crewmates .mate .dot { width:6px; height:6px; border-radius:50%; background:var(--p-green); }
+
+  .equipment { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
+  .equipment .eq {
+    background:#ecfeff; color:#1d4ed8;
+    padding:5px 10px; border-radius:6px; font-size:12px; font-weight:600;
+  }
+
+  .notes {
+    background:var(--p-cream); border-radius:10px; padding:12px 14px;
+    margin-top:14px; font-size:13.5px; color:var(--p-slate); line-height:1.5;
+  }
+  .notes .label { font-size:11px; color:var(--p-orange); font-weight:800; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px; }
+
+  .actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:16px; }
+  .btn {
+    padding:13px; border-radius:10px; border:none; cursor:pointer;
+    font-weight:700; font-size:14px; text-align:center;
+    text-decoration:none; display:flex; align-items:center; justify-content:center; gap:6px;
+  }
+  .btn-clock-in  { background:var(--p-green); color:#fff; }
+  .btn-clock-in:hover  { background:#059669; }
+  .btn-clock-out { background:var(--p-red); color:#fff; }
+  .btn-tm        { background:var(--p-navy); color:#fff; }
+  .btn-tm:hover  { background:var(--p-navy-light); }
+  .btn-issue     { background:#fff; color:var(--p-orange); border:1px solid var(--p-orange); }
+  .btn-issue:hover { background:#fef2f2; }
+  .btn-full      { grid-column: span 2; }
+
+  .clock-status {
+    text-align:center; padding:10px; border-radius:10px; margin-top:12px;
+    font-size:13px; font-weight:700;
+  }
+  .clock-status.in  { background:#d1fae5; color:#065f46; }
+  .clock-status.out { background:var(--p-light); color:var(--p-gray); }
+
+  .upcoming { display:flex; flex-direction:column; gap:8px; }
+  .up-card {
+    background:#fff; border-radius:10px; padding:12px 14px;
+    border:1px solid var(--p-border);
+    display:flex; align-items:center; gap:12px;
+    /* anchor-styled-as-card: strip default underline + inherit color,
+       click target spans the whole row, hover signals it's actionable */
+    color:inherit; text-decoration:none;
+    transition:border-color 0.12s, background 0.12s, box-shadow 0.12s;
+  }
+  .up-card:hover { border-color:var(--p-orange); background:#fef2f2; box-shadow:0 4px 12px rgba(15,23,42,0.06); }
+  .up-card:focus-visible { outline:2px solid var(--p-orange); outline-offset:2px; }
+  .up-card .day {
+    width:46px; text-align:center; flex-shrink:0;
+    background:var(--p-light); border-radius:8px; padding:6px 0;
+  }
+  .up-card .day .wd { font-size:10px; font-weight:800; color:var(--p-gray); letter-spacing:1px; }
+  .up-card .day .dn { font-size:18px; font-weight:800; color:var(--p-navy); }
+  .up-card .info { flex:1; min-width:0; }
+  .up-card .info .nm  { font-weight:700; color:var(--p-navy); font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .up-card .info .loc { color:var(--p-gray); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .up-card .pill {
+    font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:1px;
+    padding:3px 7px; border-radius:5px; background:var(--p-light); color:var(--p-slate);
+  }
+  .up-card .info .with {
+    color:var(--p-slate); font-size:11.5px; margin-top:3px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .up-card .info .with .lbl { color:var(--p-gray); font-weight:600; margin-right:3px; }
+
+  /* Per-day header inside the Rest-of-week + Next-week sections */
+  .day-label {
+    font-size:12px; font-weight:700; color:var(--p-navy);
+    margin:10px 4px 4px; letter-spacing:0.2px;
+  }
+  .day-label:first-of-type { margin-top:0; }
+
+  /* Empty-row stub (small, in-line) — used when a section has zero jobs
+     but we still want the section label visible. */
+  .empty-row {
+    background:#fff; border:1px dashed var(--p-border); border-radius:9px;
+    padding:10px 14px; color:var(--p-gray); font-size:12.5px; font-style:italic;
+  }
+
+  /* Next-week collapsible — built on native <details>. Animated chevron
+     via the summary marker; sticks to brand colors. */
+  .next-week {
+    background:#fff; border:1px solid var(--p-border); border-radius:10px;
+    margin-top:12px;
+  }
+  .next-week summary {
+    list-style:none; cursor:pointer; padding:12px 14px;
+    font-size:11px; font-weight:800; letter-spacing:1.5px; text-transform:uppercase;
+    color:var(--p-gray); display:flex; align-items:center; gap:10px;
+    user-select:none;
+  }
+  .next-week summary::-webkit-details-marker { display:none; }
+  .next-week summary::before {
+    content:'\\25B8'; display:inline-block; transition:transform 0.15s;
+    color:var(--p-gray);
+  }
+  .next-week[open] summary::before { transform:rotate(90deg); }
+  .next-week summary .ct {
+    background:var(--p-light); color:var(--p-gray);
+    padding:1px 7px; border-radius:5px; font-size:11px; letter-spacing:0;
+    margin-left:auto;
+  }
+  .next-week .next-week-body { padding:0 14px 14px; }
+
+  .empty-state {
+    background:#fff; border-radius:14px; padding:30px 20px; text-align:center;
+    border:1px dashed var(--p-border); color:var(--p-gray);
+  }
+  .empty-state .big { font-size:30px; margin-bottom:8px; }
+  .empty-state h3 { color:var(--p-slate); font-size:16px; margin-bottom:6px; }
+  .empty-state p { font-size:13px; line-height:1.5; }
+
+  /* Issue modal */
+  .modal { position:fixed; inset:0; background:rgba(15,23,42,0.55); display:none; align-items:flex-end; justify-content:center; z-index:90; }
+  .modal.open { display:flex; }
+  .sheet {
+    background:#fff; width:100%; max-width:560px;
+    border-radius:18px 18px 0 0; padding:22px;
+    animation:slideUp 0.2s ease;
+  }
+  @keyframes slideUp { from { transform:translateY(20px); opacity:0; } to { transform:translateY(0); opacity:1; } }
+  .sheet h3 { color:var(--p-navy); font-size:18px; margin-bottom:14px; }
+  .sheet label { font-size:11px; font-weight:700; color:var(--p-gray); letter-spacing:0.5px; text-transform:uppercase; }
+  .sheet input, .sheet textarea, .sheet select {
+    width:100%; padding:11px; border:1px solid var(--p-border); border-radius:8px;
+    font-family:inherit; font-size:14px; margin-top:5px; margin-bottom:12px;
+  }
+  .sheet textarea { min-height:80px; resize:vertical; }
+  .sheet .row-btn { display:flex; gap:8px; margin-top:6px; }
+  .sheet .row-btn .btn { flex:1; }
+
+  /* ============ Submit Log tab ============ */
+  .form { background:#fff; border-radius:14px; padding:22px; box-shadow:0 8px 24px rgba(15,23,42,0.06); border:1px solid var(--p-border); }
+  .form .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:6px; }
+  @media (max-width:580px) { .form .grid { grid-template-columns:1fr; } }
+  .field { display:flex; flex-direction:column; gap:4px; margin-bottom:13px; }
+  .field label { font-size:11px; font-weight:700; color:var(--p-gray); letter-spacing:0.5px; text-transform:uppercase; }
+  .field input, .field select, .field textarea {
+    padding:10px 12px; border:1px solid var(--p-border); border-radius:8px;
+    font-family:inherit; font-size:14px; background:#fff;
+  }
+  .field input:focus, .field select:focus, .field textarea:focus {
+    outline:none; border-color:var(--p-orange); box-shadow:0 0 0 3px rgba(200,16,46,0.12);
+  }
+  .field textarea { resize:vertical; min-height:80px; }
+
+  .weather-pick { display:flex; flex-wrap:wrap; gap:6px; }
+  .weather-pick .w {
+    border:1px solid var(--p-border); background:#fff; padding:8px 12px;
+    border-radius:8px; cursor:pointer; font-size:13px; font-weight:600;
+    color:var(--p-slate); display:flex; align-items:center; gap:6px;
+  }
+  .weather-pick .w.on { background:var(--p-navy); color:#fff; border-color:var(--p-navy); }
+  .weather-pick .w .ic { font-size:16px; line-height:1; }
+
+  .members-pick {
+    display:flex; flex-wrap:wrap; gap:6px; padding:8px;
+    border:1px solid var(--p-border); border-radius:8px; background:var(--p-light);
+  }
+  .members-pick .m {
+    background:#fff; border:1px solid var(--p-border); border-radius:999px;
+    padding:4px 12px; font-size:12.5px; font-weight:600; cursor:pointer;
+  }
+  .members-pick .m.on { background:var(--p-navy); color:#fff; border-color:var(--p-navy); }
+
+  .photo-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(110px, 1fr)); gap:8px; }
+  .photo-grid .ph {
+    aspect-ratio:1; background:var(--p-light); border-radius:8px;
+    overflow:hidden; position:relative;
+  }
+  .photo-grid .ph img { width:100%; height:100%; object-fit:cover; display:block; }
+  .photo-grid .ph .rm {
+    position:absolute; top:4px; right:4px;
+    background:rgba(15,23,42,0.7); color:#fff; border:none; width:24px; height:24px;
+    border-radius:50%; cursor:pointer; font-size:14px;
+  }
+  .photo-grid .upload {
+    aspect-ratio:1; background:var(--p-cream); border:2px dashed var(--p-orange);
+    border-radius:8px; cursor:pointer; color:#9a0c22;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px;
+    font-size:12px; font-weight:700; text-align:center; padding:8px;
+  }
+  .photo-grid .upload:hover { background:#fef2f2; }
+
+  /* Sticky action bar at the bottom of the Submit Log form. Buttons are full-
+     size with proper height so they read clearly as primary/secondary actions. */
+  .form-actions {
+    display:flex; gap:12px; justify-content:flex-end; flex-wrap:wrap;
+    margin:20px -22px -22px;
+    padding:16px 22px;
+    background:#f8fafc;
+    border-top:1px solid var(--p-border);
+    border-radius:0 0 14px 14px;
+  }
+  .form-actions .btn { padding:14px 22px; font-size:14.5px; border-radius:10px; min-height:48px; min-width:120px; }
+  @media (max-width:520px) {
+    .form-actions { flex-direction:column-reverse; }
+    .form-actions .btn { width:100%; }
+  }
+  .btn-primary { background:var(--p-orange); color:#fff; box-shadow:0 2px 8px rgba(200,16,46,0.3); }
+  .btn-primary:hover { background:#9a0c22; }
+  .btn-ghost   { background:#fff; color:var(--p-slate); border:1px solid var(--p-border); }
+  .btn-ghost:hover { background:var(--p-light); }
+
+  /* ============ Past logs ============ */
+  .logs { display:flex; flex-direction:column; gap:10px; }
+  .log-card {
+    background:#fff; border-radius:12px; padding:14px 16px;
+    border:1px solid var(--p-border); cursor:pointer;
+    box-shadow:0 2px 8px rgba(15,23,42,0.04);
+    transition:transform 0.12s, box-shadow 0.12s;
+  }
+  .log-card:hover { transform:translateY(-1px); box-shadow:0 8px 18px rgba(15,23,42,0.08); }
+  .log-card .top { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+  .log-card .date {
+    background:var(--p-light); padding:6px 10px; border-radius:8px;
+    font-size:11px; font-weight:800; color:var(--p-slate); letter-spacing:0.5px;
+  }
+  .log-card .job { font-weight:800; color:var(--p-navy); font-size:14px; flex:1; min-width:0; }
+  .log-card .author { font-size:11px; color:var(--p-gray); }
+  .log-card .sub { font-size:12.5px; color:var(--p-gray); line-height:1.5; }
+  .log-card .photos-row { display:flex; gap:5px; margin-top:8px; }
+  .log-card .photos-row .ph {
+    width:54px; height:54px; border-radius:7px; overflow:hidden; flex-shrink:0; background:var(--p-light);
+  }
+  .log-card .photos-row .ph img { width:100%; height:100%; object-fit:cover; display:block; }
+  .log-card .photos-row .more {
+    width:54px; height:54px; border-radius:7px; flex-shrink:0;
+    background:var(--p-light); color:var(--p-slate);
+    display:flex; align-items:center; justify-content:center;
+    font-size:13px; font-weight:800;
+  }
+
+  .lightbox { position:fixed; inset:0; background:rgba(15,23,42,0.85); z-index:100; display:none; align-items:center; justify-content:center; padding:20px; }
+  .lightbox.open { display:flex; }
+  .lightbox img { max-width:95%; max-height:95vh; border-radius:8px; }
+  .lightbox .close { position:absolute; top:18px; right:18px; background:rgba(255,255,255,0.15); color:#fff; border:none; width:38px; height:38px; border-radius:50%; cursor:pointer; font-size:20px; }
+
+  .loc-chip { display:inline-flex; align-items:center; background:#e0e7ff; color:#3730a3; padding:2px 7px; border-radius:5px; font-size:11px; font-weight:700; text-decoration:none; line-height:1.4; }
+  .loc-chip:hover { background:#c7d2fe; }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <a class="home" href="index.html">
+    <img src="bcc-logo.png" alt="Blue Collar Coach" />
+    <span class="module">My Day</span>
+  </a>
+  <span class="spacer"></span>
+</header>
+
+<div class="tabs-bar">
+  <div class="tab" data-tab="today"><span>&#128205;</span> Today</div>
+  <div class="tab" data-tab="log"><span>&#128221;</span> Submit Log</div>
+  <div class="tab" data-tab="past"><span>&#128196;</span> Past Logs <span class="ct" id="pastCt">0</span></div>
+</div>
+
+<div class="wrap" id="wrap"></div>
+
+<div class="modal" id="issueModal">
+  <div class="sheet">
+    <h3>Report an Issue</h3>
+    <label>What&rsquo;s the issue?</label>
+    <input id="i_summary" placeholder="e.g. Hydrovac boom hose leaking" />
+    <label>Category</label>
+    <select id="i_cat">
+      <option value="truck">Truck / Vehicle</option>
+      <option value="equipment">Equipment</option>
+      <option value="site">Site / Safety</option>
+      <option value="supply">Parts / Supply</option>
+    </select>
+    <label>Details</label>
+    <textarea id="i_notes" placeholder="Where on the unit, when it started, photos pending&hellip;"></textarea>
+    <div class="row-btn">
+      <button class="btn btn-issue" id="i_cancel" style="border-color:var(--p-border); color:var(--p-slate);">Cancel</button>
+      <button class="btn btn-tm" id="i_submit">Send to Maintenance</button>
+    </div>
+  </div>
+</div>
+
+<div class="lightbox" id="lightbox"><button class="close" id="lbClose">&times;</button><img id="lbImg" /></div>
+
+<script>
+/* ============ Shared helpers ============ */
+function bccGetLocation(opts) {
+  return new Promise(function(resolve) {
+    if (!navigator.geolocation) return resolve(null);
+    var t = (opts && opts.timeout) || 8000;
+    navigator.geolocation.getCurrentPosition(
+      function(p){ resolve({lat:p.coords.latitude, lng:p.coords.longitude, accuracy:p.coords.accuracy, ts:Date.now()}); },
+      function(){ resolve(null); },
+      { timeout: t, maximumAge: 60000, enableHighAccuracy: false }
+    );
+  });
+}
+function bccMapsUrl(loc) { return (loc && isFinite(loc.lat) && isFinite(loc.lng)) ? ('https://maps.google.com/?q=' + loc.lat + ',' + loc.lng) : null; }
+function bccLocChip(loc, label) {
+  if (!loc) return '';
+  var url = bccMapsUrl(loc);
+  var txt = label || (loc.lat.toFixed(4) + ', ' + loc.lng.toFixed(4));
+  return '<a class="loc-chip" href="' + url + '" target="_blank" rel="noopener">&#128205; ' + txt + '</a>';
+}
+
+const LS_SCHEDULE = 'bcc-schedule-v1';
+const LS_DAILY    = 'bcc-daily-logs-v1';
+const LS_WHO      = 'bcc-field-who';
+const LS_CLOCK    = 'bcc-field-clock';
+const LS_MAINT    = 'bcc-maint-inbox-v1';
+
+let PEOPLE = (window.bccPeople || []).slice();
+window.addEventListener('bcc-users-ready', function () {
+  PEOPLE = (window.bccPeople || []).slice();
+  rebuildWho();
+  render();
+});
+// Re-render whenever the schedule changes in another tab — e.g. a foreman
+// assigns the crew member to a job from scheduler.html. Without this,
+// My Day's Today tab stays empty until the user refreshes.
+window.addEventListener('storage', (e) => {
+  if (e.key === 'bcc-schedule-v1' || e.key === 'bcc-admin-config-v1') {
+    try { render(); } catch {}
+  }
+});
+
+const WEATHER = [
+  { id:'sunny',    ic:'☀️',         label:'Sunny' },
+  { id:'cloudy',   ic:'⛅',               label:'Cloudy' },
+  { id:'overcast', ic:'☁️',         label:'Overcast' },
+  { id:'rain',     ic:'🌧️',   label:'Rain' },
+  { id:'snow',     ic:'❄️',         label:'Snow' },
+  { id:'wind',     ic:'💨',         label:'Windy' },
+  { id:'cold',     ic:'🥶',         label:'Cold' },
+  { id:'hot',      ic:'🔥',         label:'Hot' }
+];
+
+function loadSchedule(){ try { return JSON.parse(localStorage.getItem(LS_SCHEDULE)) || {jobs:[]}; } catch { return {jobs:[]}; } }
+function loadClock()   { try { return JSON.parse(localStorage.getItem(LS_CLOCK)) || {}; } catch { return {}; } }
+function saveClock(c)  { localStorage.setItem(LS_CLOCK, JSON.stringify(c)); }
+function loadMaint()   { try { return JSON.parse(localStorage.getItem(LS_MAINT)) || []; } catch { return []; } }
+function saveMaint(m)  { localStorage.setItem(LS_MAINT, JSON.stringify(m)); }
+function loadLogs()    { try { return JSON.parse(localStorage.getItem(LS_DAILY)) || []; } catch { return []; } }
+function saveLogs(v)   { localStorage.setItem(LS_DAILY, JSON.stringify(v)); }
+
+let who   = localStorage.getItem(LS_WHO) || '';
+let clock = loadClock();
+let logs  = loadLogs();
+
+let activeTab = (location.hash || '').replace('#','') || (new URLSearchParams(location.search).get('tab')) || 'today';
+if (!['today','log','past'].includes(activeTab)) activeTab = 'today';
+
+let currentLog = blankLog();
+let editingLogId = null;
+
+function blankLog() {
+  const today = (window.bccTodayIso ? window.bccTodayIso() : new Date().toISOString().slice(0,10));
+  const params = new URLSearchParams(location.search);
+  const jobId = params.get('job') || '';
+  return {
+    id: 'dl' + Date.now(),
+    date: today, jobId,
+    weather: '', tempF: '',
+    crew: [],
+    timeStart: '07:00', timeEnd: '15:30',
+    workDone: '', materials: '', delays: '',
+    photos: [],
+    submittedBy: localStorage.getItem(LS_WHO) || (who || ''),
+    submittedAt: null
+  };
+}
+
+// Single user identity comes from Entra SSO (bcc-api.js seeds bcc-field-who from
+// the signed-in account on bootstrap). Fall back to a saved value or first
+// known person if running anonymously.
+function rebuildWho() {
+  who = localStorage.getItem(LS_WHO) || (PEOPLE[0] || '');
+}
+
+function init() {
+  rebuildWho();
+  document.querySelectorAll('.tabs-bar .tab').forEach(t => t.onclick = () => { activeTab = t.dataset.tab; location.hash = activeTab; render(); });
+  document.getElementById('lbClose').onclick = () => document.getElementById('lightbox').classList.remove('open');
+  document.getElementById('lightbox').onclick = e => { if (e.target.id==='lightbox') document.getElementById('lightbox').classList.remove('open'); };
+  document.getElementById('i_cancel').onclick = () => document.getElementById('issueModal').classList.remove('open');
+  document.getElementById('i_submit').onclick = submitIssue;
+  render();
+}
+
+function render() {
+  document.querySelectorAll('.tabs-bar .tab').forEach(t => t.classList.toggle('active', t.dataset.tab === activeTab));
+  document.getElementById('pastCt').textContent = logs.length;
+  const wrap = document.getElementById('wrap');
+  if (activeTab === 'today')     wrap.innerHTML = renderToday();
+  else if (activeTab === 'log')  wrap.innerHTML = renderLogForm();
+  else                           wrap.innerHTML = renderPastLogs();
+  if (activeTab === 'log')   bindLogForm();
+  if (activeTab === 'past')  bindPastLogs();
+  if (activeTab === 'today') bindToday();
+}
+
+function todayIso() {
+  const d = new Date(); d.setHours(0,0,0,0);
+  const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), dd = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${dd}`;
+}
+
+/* Matches the current signed-in user against a job-member name. Jobs save
+ * members as display names (from the scheduler's chip picker), but `who`
+ * (bcc-field-who) can be a display name OR a UPN/email depending on whether
+ * bcc-api.js was able to re-point it. This helper bridges both forms via
+ * bccPeopleFull so a person scheduled by name still matches when they're
+ * signed in by email. */
+function userMatches(who, memberName) {
+  if (!who || !memberName) return false;
+  const w = String(who).toLowerCase().trim();
+  const m = String(memberName).toLowerCase().trim();
+  if (w === m) return true;
+  const full = window.bccPeopleFull || [];
+  const me = full.find(u =>
+    (u.upn         || '').toLowerCase() === w ||
+    (u.mail        || '').toLowerCase() === w ||
+    (u.displayName || '').toLowerCase() === w
+  );
+  if (!me) return false;
+  return [me.displayName, me.upn, me.mail]
+    .map(s => (s || '').toLowerCase())
+    .some(id => id && id === m);
+}
+
+/* ============ Today tab ============
+ * Restructured into four explicit sections so the field crew can see
+ * their week at a glance without scrolling past one job at a time:
+ *
+ *   Today         — full interactive card (clock in/out, T&M, issue)
+ *   Tomorrow      — preview card (no clock controls)
+ *   Rest of week  — grouped by day, day-after-tomorrow through Sunday
+ *   Next week     — collapsible <details>, Monday→Sunday of next week
+ *
+ * Every job card across these sections shows a "With:" line listing
+ * the OTHER crew members assigned (matched against the signed-in
+ * user via userMatches so the user isn't listed alongside themselves).
+ *
+ * Jobs within a single day are ordered by daySortIndex from the
+ * scheduler — the per-day sort the office sets — so what the field
+ * sees matches what was scheduled.
+ */
+
+// Identical helper to scheduler.html — kept inline to avoid coupling.
+function sortJobsByDayOrder(arr) {
+  if (!Array.isArray(arr) || arr.length < 2) return arr;
+  const indexed = arr.map((j, i) => ({ j, i }));
+  indexed.sort((a, b) => {
+    const av = (typeof a.j.daySortIndex === 'number') ? a.j.daySortIndex : Number.POSITIVE_INFINITY;
+    const bv = (typeof b.j.daySortIndex === 'number') ? b.j.daySortIndex : Number.POSITIVE_INFINITY;
+    if (av !== bv) return av - bv;
+    return a.i - b.i;
+  });
+  return indexed.map(x => x.j);
+}
+
+function addDaysIso(iso, n) {
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + n);
+  return dt.getFullYear() + '-' +
+    String(dt.getMonth() + 1).padStart(2, '0') + '-' +
+    String(dt.getDate()).padStart(2, '0');
+}
+
+// Sunday of the same Mon-Sun week as `iso`
+function endOfWeekIso(iso) {
+  const d = new Date(iso + 'T00:00:00');
+  const dow = (d.getDay() + 6) % 7; // 0 = Mon ... 6 = Sun
+  return addDaysIso(iso, 6 - dow);
+}
+
+// { start: Monday-of-next-week, end: Sunday-of-next-week }
+function nextWeekRange(iso) {
+  const thisSun = endOfWeekIso(iso);
+  return { start: addDaysIso(thisSun, 1), end: addDaysIso(thisSun, 7) };
+}
+
+function dayHeader(iso) {
+  const dt = new Date(iso + 'T00:00:00');
+  return dt.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+}
+
+function renderToday() {
+  const sch = loadSchedule();
+  const today    = todayIso();
+  const tomorrow = addDaysIso(today, 1);
+  const thisSun  = endOfWeekIso(today);
+  const nextWk   = nextWeekRange(today);
+
+  // All jobs assigned to me that have a real (crewId, day) anchor
+  const myJobs = sch.jobs.filter(j =>
+    (j.members || []).some(n => userMatches(who, n)) && j.crewId && j.day
+  );
+
+  const todayJobs    = sortJobsByDayOrder(myJobs.filter(j => j.day === today));
+  const tomorrowJobs = sortJobsByDayOrder(myJobs.filter(j => j.day === tomorrow));
+
+  // Group helpers
+  const groupByDay = (jobs) => {
+    const by = {};
+    jobs.forEach(j => { (by[j.day] = by[j.day] || []).push(j); });
+    Object.keys(by).forEach(k => { by[k] = sortJobsByDayOrder(by[k]); });
+    return by;
+  };
+  const restByDay    = groupByDay(myJobs.filter(j => j.day > tomorrow && j.day <= thisSun));
+  const nextWkByDay  = groupByDay(myJobs.filter(j => j.day >= nextWk.start && j.day <= nextWk.end));
+  const nextWkCount  = Object.values(nextWkByDay).reduce((n, arr) => n + arr.length, 0);
+
+  const hour = new Date().getHours();
+  const greet = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  let html =
+    `<div class="hello">${greet},</div>` +
+    `<div class="greeting"><span class="name">${escapeHtml((who || '').split(' ')[0])}</span>.</div>`;
+
+  // ---- Today ----
+  html += `<div class="section-label">Today</div>`;
+  if (todayJobs.length === 0) {
+    html += `
+      <div class="empty-state">
+        <div class="big">&#127881;</div>
+        <h3>No job assigned today</h3>
+        <p>Check back later or contact your foreman.<br/>Submit a daily log or report an issue below.</p>
+        <div style="margin-top:14px; display:flex; gap:8px; justify-content:center; flex-wrap:wrap;">
+          <a class="btn btn-tm" href="tm.html" style="text-decoration:none;">Open T&amp;M</a>
+          <button class="btn btn-issue" id="report1">Report Issue</button>
+        </div>
+      </div>
+    `;
+  } else {
+    todayJobs.forEach(j => html += renderTodayCard(j));
+  }
+
+  // ---- Tomorrow ----
+  html += `<div class="section-label">Tomorrow</div>`;
+  if (tomorrowJobs.length === 0) {
+    html += `<div class="empty-row">No jobs tomorrow.</div>`;
+  } else {
+    html += `<div class="upcoming">${tomorrowJobs.map(renderUpcoming).join('')}</div>`;
+  }
+
+  // ---- Rest of week ----
+  const restDays = Object.keys(restByDay).sort();
+  html += `<div class="section-label">Rest of week</div>`;
+  if (restDays.length === 0) {
+    html += `<div class="empty-row">No jobs scheduled for the rest of this week.</div>`;
+  } else {
+    restDays.forEach(d => {
+      html += `<div class="day-label">${escapeHtml(dayHeader(d))}</div>`;
+      html += `<div class="upcoming">${restByDay[d].map(renderUpcoming).join('')}</div>`;
+    });
+  }
+
+  // ---- Next week (collapsible) ----
+  const nextDays = Object.keys(nextWkByDay).sort();
+  html += `
+    <details class="next-week"${nextWkCount > 0 ? '' : ''}>
+      <summary>Next week <span class="ct">${nextWkCount}</span></summary>
+      <div class="next-week-body">`;
+  if (nextDays.length === 0) {
+    html += `<div class="empty-row">Nothing scheduled for next week yet.</div>`;
+  } else {
+    nextDays.forEach(d => {
+      html += `<div class="day-label">${escapeHtml(dayHeader(d))}</div>`;
+      html += `<div class="upcoming">${nextWkByDay[d].map(renderUpcoming).join('')}</div>`;
+    });
+  }
+  html += `</div></details>`;
+
+  return html;
+}
+
+function renderTodayCard(j) {
+  const crew = (j.members || []).filter(m => !userMatches(who, m));
+  const crewHtml = crew.map(m =>
+    `<a class="mate" href="tel:" style="text-decoration:none;color:inherit;"><span class="dot"></span>${escapeHtml(m)}</a>`
+  ).join('');
+  const eqHtml  = (j.equipment||[]).map(e => `<span class="eq">${escapeHtml(e)}</span>`).join('');
+  const mapsUrl = j.location ? `https://maps.google.com/?q=${encodeURIComponent(j.location)}` : null;
+  const clockKey   = `${j.id}_${who}_${todayIso()}`;
+  const clockState = clock[clockKey] || 'out';
+  const clockLoc   = clock[clockKey + '_loc_in'] || null;
+
+  return `
+    <div class="today-card t-${j.type}">
+      <div class="type-pill t-${j.type}">${typeLabel(j.type)}${j.type==='emergency' ? ' &middot; ALL-HANDS' : ''}</div>
+      <div class="job-name">${escapeHtml(j.name)}</div>
+      <div class="customer">${escapeHtml(j.customer || '—')}</div>
+
+      ${j.location ? `
+        <div class="row">
+          <div class="icon">&#128205;</div>
+          <div class="text">
+            <div class="label">Location</div>
+            ${mapsUrl ? `<a href="${mapsUrl}" target="_blank" rel="noopener">${escapeHtml(j.location)} &rsaquo;</a>` : `<div class="value">${escapeHtml(j.location)}</div>`}
+          </div>
+        </div>` : ''}
+
+      <div class="row">
+        <div class="icon">&#9201;</div>
+        <div class="text">
+          <div class="label">Estimated hours</div>
+          <div class="value">${j.hours || 0} h</div>
+        </div>
+      </div>
+
+      ${crew.length ? `
+        <div class="row" style="align-items:flex-start;">
+          <div class="icon">&#128101;</div>
+          <div class="text">
+            <div class="label">Crew with you</div>
+            <div class="crewmates">${crewHtml}</div>
+          </div>
+        </div>` : ''}
+
+      ${eqHtml ? `
+        <div class="row" style="align-items:flex-start;">
+          <div class="icon">&#9881;</div>
+          <div class="text">
+            <div class="label">Equipment</div>
+            <div class="equipment">${eqHtml}</div>
+          </div>
+        </div>` : ''}
+
+      ${j.notes ? `<div class="notes"><div class="label">Job notes</div>${escapeHtml(j.notes)}</div>` : ''}
+
+      <div class="clock-status ${clockState==='in'?'in':'out'}">
+        ${clockState==='in' ? 'CLOCKED IN' : 'Not clocked in'}
+        ${clockState==='in' && clockLoc ? ' &middot; ' + bccLocChip(clockLoc, 'On site') : ''}
+      </div>
+
+      <div class="actions">
+        ${clockState==='in'
+          ? `<button class="btn btn-clock-out" data-action="clock" data-job="${j.id}">Clock Out</button>`
+          : `<button class="btn btn-clock-in"  data-action="clock" data-job="${j.id}">Clock In</button>`}
+        <a class="btn btn-tm" href="tm.html?job=${encodeURIComponent(j.id)}">Open T&amp;M</a>
+        <button class="btn btn-issue btn-full" data-action="issue" data-job="${j.id}">&#9888; Report Issue</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderUpcoming(j) {
+  const d = new Date(j.day + 'T00:00:00');
+  const wd = d.toLocaleDateString(undefined, {weekday:'short'}).toUpperCase();
+  // "With:" — every other crew member assigned to this job, with the
+  // signed-in user themselves filtered out so they aren't listed
+  // alongside themselves. Uses the same userMatches helper as the
+  // Today filter so display-name vs UPN/email mismatch still works.
+  const others = (j.members || []).filter(m => !userMatches(who, m));
+  // Preview cards link to scheduler.html day-view focused on that
+  // date — reuses Phase 2's hash routing so the user can click
+  // through to the full day context (other crews, sort position).
+  const href = 'scheduler.html#view=day&date=' + encodeURIComponent(j.day);
+  return `
+    <a class="up-card" href="${href}">
+      <div class="day"><div class="wd">${wd}</div><div class="dn">${d.getDate()}</div></div>
+      <div class="info">
+        <div class="nm">${escapeHtml(j.name)}</div>
+        <div class="loc">${escapeHtml(j.customer || '')}${j.customer && j.location ? ' &middot; ' : ''}${escapeHtml(j.location || '')}</div>
+        ${others.length
+          ? `<div class="with"><span class="lbl">With:</span>${escapeHtml(others.join(', '))}</div>`
+          : `<div class="with"><span class="lbl">With:</span><span style="color:var(--p-gray);">solo</span></div>`}
+      </div>
+      <div class="pill">${typeLabel(j.type)}</div>
+    </a>
+  `;
+}
+
+function bindToday() {
+  document.querySelectorAll('[data-action="clock"]').forEach(b => b.onclick = () => toggleClock(b.dataset.job));
+  document.querySelectorAll('[data-action="issue"]').forEach(b => b.onclick = () => openIssue(b.dataset.job));
+  const r1 = document.getElementById('report1');
+  if (r1) r1.onclick = () => openIssue('');
+}
+
+function toggleClock(jobId) {
+  const key = `${jobId}_${who}_${todayIso()}`;
+  const next = clock[key] === 'in' ? 'out' : 'in';
+  clock[key] = next;
+  if (next === 'in') clock[key + '_start'] = Date.now();
+  else               clock[key + '_end']   = Date.now();
+  saveClock(clock);
+  render();
+  const job = loadSchedule().jobs.find(j => j.id === jobId);
+  bccGetLocation().then(loc => {
+    if (loc) {
+      clock[key + (next==='in' ? '_loc_in' : '_loc_out')] = loc;
+      saveClock(clock);
+      render();
+    }
+    // Activity log: clock-in / clock-out with job context + GPS.
+    window.bccAudit && window.bccAudit(next === 'in' ? 'clockin' : 'clockout', {
+      key: jobId,
+      meta: {
+        jobId, jobName: (job && job.name) || null,
+        customer: (job && job.customer) || null,
+        location: loc || null
+      }
+    });
+  });
+}
+
+function openIssue(jobId) {
+  document.getElementById('issueModal').classList.add('open');
+  document.getElementById('issueModal').dataset.job = jobId || '';
+}
+
+async function submitIssue() {
+  const summary = document.getElementById('i_summary').value.trim();
+  const cat     = document.getElementById('i_cat').value;
+  const notes   = document.getElementById('i_notes').value.trim();
+  if (!summary) { alert('What\'s the issue?'); return; }
+  const jobId = document.getElementById('issueModal').dataset.job;
+  const loc   = await bccGetLocation();
+  const ticket = {
+    id: 'm' + Date.now(),
+    source: 'field', category: cat,
+    summary, notes,
+    reportedBy: who, jobId: jobId || null,
+    status: 'open', severity: cat === 'site' ? 'high' : 'normal',
+    location: loc, createdAt: new Date().toISOString()
+  };
+  const inbox = loadMaint();
+  inbox.unshift(ticket);
+  saveMaint(inbox);
+  // Activity log: a field crew reported an issue (auto-creates a maint ticket).
+  window.bccAudit && window.bccAudit('issue-report', {
+    key: ticket.id,
+    meta: { summary, category: cat, jobId: jobId || null, location: loc || null }
+  });
+  document.getElementById('i_summary').value = '';
+  document.getElementById('i_notes').value = '';
+  document.getElementById('issueModal').classList.remove('open');
+  (window.bccNotifySaved || window.bccNotify || alert)('Sent to Maintenance.');
+}
+
+/* ============ Submit Log tab ============ */
+function renderLogForm() {
+  const sch = loadSchedule();
+  return `
+    <div class="form">
+      <div class="grid">
+        <div class="field">
+          <label>Date</label>
+          <input type="date" id="f_date" value="${currentLog.date}" />
+        </div>
+        <div class="field">
+          <label>Job</label>
+          <div class="bcc-new-job-row">
+            <select id="f_job">
+              <option value="">&mdash; Pick job &mdash;</option>
+              ${sch.jobs.filter(j => j.name && j.name.trim() && j.name.trim().toLowerCase() !== 'new job').map(j => `<option value="${j.id}" ${j.id===currentLog.jobId?'selected':''}>${escapeHtml(j.name)}${j.customer?' &mdash; '+escapeHtml(j.customer):''}</option>`).join('')}
+            </select>
+            <button type="button" class="bcc-new-job-btn" id="f_newjob">+ New</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Weather <span id="f_wxhint" style="text-transform:none;letter-spacing:0;font-weight:600;color:var(--p-orange);font-size:11px;margin-left:6px;display:none;">&middot; fetching current conditions&hellip;</span></label>
+        <div class="weather-pick" id="f_weather">
+          ${WEATHER.map(w => `<div class="w ${currentLog.weather===w.id?'on':''}" data-id="${w.id}"><span class="ic">${w.ic}</span>${w.label}</div>`).join('')}
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="field"><label>Temperature (&deg;F)</label><input type="number" id="f_temp" value="${currentLog.tempF||''}" placeholder="e.g. 64" /></div>
+        <div class="field"><label>Submitted by</label>
+          <select id="f_sub">
+            <option value="">&mdash; Select &mdash;</option>
+            ${PEOPLE.map(p => `<option ${p===currentLog.submittedBy?'selected':''}>${p}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="field"><label>Start time</label><input type="time" id="f_start" value="${currentLog.timeStart}" /></div>
+        <div class="field"><label>End time</label><input type="time" id="f_end" value="${currentLog.timeEnd}" /></div>
+      </div>
+
+      <div class="field">
+        <label>Crew on site</label>
+        <div class="members-pick" id="f_crew">
+          ${PEOPLE.map(p => `<div class="m ${currentLog.crew.includes(p)?'on':''}" data-name="${escapeAttr(p)}">${escapeHtml(p)}</div>`).join('')}
+        </div>
+      </div>
+
+      <div class="field"><label>Work performed</label><textarea id="f_work">${escapeHtml(currentLog.workDone)}</textarea></div>
+      <div class="field"><label>Materials installed / used</label><textarea id="f_mats">${escapeHtml(currentLog.materials)}</textarea></div>
+      <div class="field"><label>Delays / issues</label><textarea id="f_delays" placeholder="Locates not in, weather hold, customer change order...">${escapeHtml(currentLog.delays)}</textarea></div>
+
+      <div class="field">
+        <label>Photos (${currentLog.photos.length})</label>
+        <div class="photo-grid" id="photoGrid">
+          <label class="upload">
+            &#128247; Add photo
+            <input type="file" accept="image/*" capture="environment" multiple style="display:none;" id="f_photo" />
+          </label>
+          ${currentLog.photos.map((p,i) => `<div class="ph" data-i="${i}"><img src="${p}" data-src="${p}" /><button class="rm" data-i="${i}">&times;</button></div>`).join('')}
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-ghost" id="resetBtn">Reset</button>
+        <button class="btn btn-primary" id="submitBtn">${editingLogId ? 'Update log' : 'Submit log'}</button>
+      </div>
+    </div>
+  `;
+}
+
+function bindLogForm() {
+  const $ = id => document.getElementById(id);
+  $('f_date').oninput = e => currentLog.date = e.target.value;
+  $('f_job').onchange = e => currentLog.jobId = e.target.value;
+  $('f_newjob').onclick = () => {
+    window.bccOpenNewJobModal().then(job => {
+      if (!job) return;
+      currentLog.jobId = job.id;
+      render();
+    });
+  };
+  $('f_temp').oninput = e => currentLog.tempF = e.target.value;
+  $('f_sub').onchange = e => { currentLog.submittedBy = e.target.value; if (e.target.value) localStorage.setItem(LS_WHO, e.target.value); };
+  $('f_start').oninput = e => currentLog.timeStart = e.target.value;
+  $('f_end').oninput   = e => currentLog.timeEnd = e.target.value;
+  $('f_work').oninput   = e => currentLog.workDone = e.target.value;
+  $('f_mats').oninput   = e => currentLog.materials = e.target.value;
+  $('f_delays').oninput = e => currentLog.delays = e.target.value;
+
+  document.querySelectorAll('#f_weather .w').forEach(el => {
+    el.onclick = () => {
+      document.querySelectorAll('#f_weather .w').forEach(x => x.classList.remove('on'));
+      el.classList.add('on');
+      currentLog.weather = el.dataset.id;
+    };
+  });
+  document.querySelectorAll('#f_crew .m').forEach(el => {
+    el.onclick = () => {
+      el.classList.toggle('on');
+      const name = el.dataset.name;
+      if (el.classList.contains('on') && !currentLog.crew.includes(name)) currentLog.crew.push(name);
+      else if (!el.classList.contains('on')) currentLog.crew = currentLog.crew.filter(x => x !== name);
+    };
+  });
+
+  $('f_photo').onchange = e => {
+    const files = Array.from(e.target.files || []);
+    Promise.all(files.map(toDataUrl)).then(urls => {
+      currentLog.photos = currentLog.photos.concat(urls);
+      render();
+    });
+  };
+  document.querySelectorAll('#photoGrid .rm').forEach(b => {
+    b.onclick = e => { e.stopPropagation(); currentLog.photos.splice(parseInt(b.dataset.i), 1); render(); };
+  });
+  document.querySelectorAll('#photoGrid .ph img').forEach(img => { img.onclick = () => openLightbox(img.dataset.src); });
+
+  $('resetBtn').onclick = () => { if (confirm('Reset this entry?')) { currentLog = blankLog(); editingLogId = null; render(); } };
+  $('submitBtn').onclick = async () => {
+    if (!currentLog.jobId) { alert('Pick a job.'); return; }
+    if (!currentLog.submittedBy) { alert('Pick who is submitting.'); return; }
+    currentLog.submittedAt = new Date().toISOString();
+    currentLog.location = await bccGetLocation();
+    const idx = logs.findIndex(l => l.id === currentLog.id);
+    const wasEdit = idx >= 0;
+    if (wasEdit) logs[idx] = currentLog; else logs.unshift(currentLog);
+    saveLogs(logs);
+    // Activity log: record what was submitted and against which job.
+    const job = loadSchedule().jobs.find(j => j.id === currentLog.jobId);
+    window.bccAudit && window.bccAudit(wasEdit ? 'daily-edit' : 'daily-submit', {
+      key: currentLog.id,
+      meta: {
+        date:    currentLog.date,
+        jobId:   currentLog.jobId,
+        jobName: (job && job.name) || null,
+        customer:(job && job.customer) || null,
+        crew:    currentLog.crew,
+        hours:   ((Date.parse('1970-01-01T'+currentLog.timeEnd+':00') - Date.parse('1970-01-01T'+currentLog.timeStart+':00'))/3600000) || null,
+        weather: currentLog.weather,
+        photos:  currentLog.photos.length
+      }
+    });
+    currentLog = blankLog(); editingLogId = null;
+    activeTab = 'past'; location.hash = 'past'; render();
+  };
+
+  // Auto-fill weather + temp from current conditions at the crew's location.
+  // Only fills empty fields — never overwrites what the user has set.
+  // bcc-api.js (deferred) may not have loaded yet on first paint, so wait for
+  // bcc-auth-ready if the helper isn't available yet.
+  function tryAutoFillWeather() {
+    if (editingLogId) return;
+    if (currentLog.weather && currentLog.tempF) return;
+    if (!window.bccGetWeather) return;
+    const hint = document.getElementById('f_wxhint');
+    if (hint) hint.style.display = 'inline';
+    window.bccGetWeather().then(w => {
+      if (hint) hint.style.display = 'none';
+      if (!w) return;
+      if (!currentLog.weather) {
+        currentLog.weather = w.weather;
+        document.querySelectorAll('#f_weather .w').forEach(el => {
+          el.classList.toggle('on', el.dataset.id === w.weather);
+        });
+      }
+      if (!currentLog.tempF) {
+        currentLog.tempF = w.tempF;
+        const t = $('f_temp'); if (t) t.value = w.tempF;
+      }
+    });
+  }
+  if (window.bccGetWeather) tryAutoFillWeather();
+  else window.addEventListener('bcc-auth-ready', tryAutoFillWeather, { once: true });
+
+  // Auto-fill "Submitted by" from the signed-in Entra identity if blank.
+  function tryAutoFillSubmittedBy() {
+    if (currentLog.submittedBy) return;
+    const fromLs = localStorage.getItem(LS_WHO) || '';
+    const fromSso = (window.bccUser && window.bccUser.userDetails) || '';
+    const pick = fromLs || fromSso;
+    if (!pick) return;
+    // Match against the dropdown's options so the select reflects the choice.
+    const sel = $('f_sub');
+    if (!sel) return;
+    let matched = '';
+    for (let i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value && sel.options[i].value.toLowerCase() === pick.toLowerCase()) {
+        matched = sel.options[i].value; break;
+      }
+    }
+    if (matched) {
+      sel.value = matched;
+      currentLog.submittedBy = matched;
+    }
+  }
+  if (window.bccUser !== undefined) tryAutoFillSubmittedBy();
+  else window.addEventListener('bcc-auth-ready', tryAutoFillSubmittedBy, { once: true });
+  // Also retry when the live Entra user list arrives (so dropdown options exist).
+  window.addEventListener('bcc-users-ready', tryAutoFillSubmittedBy);
+}
+
+/* ============ Past logs ============ */
+function renderPastLogs() {
+  if (logs.length === 0) {
+    return `<div class="empty-state"><div class="big">&#128221;</div><h3>No logs yet</h3><p>Submitted daily logs land here. Pinned to the job for the office to review.</p></div>`;
+  }
+  const sch = loadSchedule();
+  return `<div class="logs">${logs.map(l => {
+    const j = sch.jobs.find(x => x.id === l.jobId);
+    const date = new Date(l.date + 'T00:00:00');
+    return `
+      <div class="log-card" data-id="${l.id}">
+        <div class="top">
+          <div class="date">${date.toLocaleDateString(undefined,{weekday:'short', month:'short', day:'numeric'}).toUpperCase()}</div>
+          <div class="job">${escapeHtml(j ? j.name : '(no job)')}</div>
+          <div class="author">${escapeHtml(l.submittedBy)}</div>
+          ${l.location ? bccLocChip(l.location) : ''}
+        </div>
+        <div class="sub">${escapeHtml((l.workDone||'').slice(0,140))}${(l.workDone||'').length>140?'...':''}</div>
+        ${l.photos && l.photos.length ? `<div class="photos-row">
+          ${l.photos.slice(0,4).map(p => `<div class="ph"><img src="${p}" data-src="${p}" /></div>`).join('')}
+          ${l.photos.length>4 ? `<div class="more">+${l.photos.length-4}</div>` : ''}
+        </div>` : ''}
+      </div>
+    `;
+  }).join('')}</div>`;
+}
+
+function bindPastLogs() {
+  document.querySelectorAll('.log-card').forEach(el => {
+    el.onclick = () => {
+      const id = el.dataset.id;
+      const l = logs.find(x => x.id === id);
+      if (!l) return;
+      currentLog = JSON.parse(JSON.stringify(l));
+      editingLogId = id;
+      activeTab = 'log'; location.hash = 'log'; render();
+    };
+  });
+  document.querySelectorAll('.log-card img').forEach(img => {
+    img.onclick = e => { e.stopPropagation(); openLightbox(img.dataset.src); };
+  });
+}
+
+function openLightbox(src) {
+  document.getElementById('lbImg').src = src;
+  document.getElementById('lightbox').classList.add('open');
+}
+
+function toDataUrl(file) {
+  return new Promise(resolve => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.readAsDataURL(file);
+  });
+}
+
+function typeLabel(t) { return { hydrovac:'Hydrovac', excavation:'Excavation', watersewer:'Water / Sewer', firehydrant:'Fire Hydrant', demo:'Demolition', emergency:'Emergency', other:'Other' }[t] || t; }
+function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function escapeAttr(s){ return escapeHtml(s); }
+
+init();
+</script>
+</body>
+</html>

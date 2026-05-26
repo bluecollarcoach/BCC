@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#1a1a1a" />
+<meta name="robots" content="noindex, nofollow, noarchive, nosnippet" />
+<meta name="referrer" content="no-referrer" />
+<title>BCC Connect</title>
+<link rel="icon" type="image/png" href="bcc-logo.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --p-charcoal:    #2b2b2b;
+    --p-charcoal-d:  #1a1a1a;
+    --p-red:         #c8102e;
+    --p-red-d:       #9a0c22;
+    --p-gray:        #64748b;
+    --p-light:       #f1f5f9;
+    --p-border:      #e2e8f0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    font-family: 'Inter', system-ui, -apple-system, Segoe UI, Arial, sans-serif;
+    color: #1a1a1a;
+    background:
+      radial-gradient(circle at 12% 18%, rgba(200,16,46,0.10) 0%, transparent 42%),
+      linear-gradient(160deg, #1a1a1a 0%, #2b2b2b 60%, #374151 100%);
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Hero */
+  .hero {
+    padding: 56px 20px 28px;
+    display: flex; flex-direction: column; align-items: center;
+    text-align: center;
+  }
+  .hero .logo {
+    background: #fff;
+    border-radius: 14px;
+    padding: 12px 22px;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.30);
+    margin-bottom: 18px;
+  }
+  .hero .logo img { height: 56px; display: block; }
+  .hero .product {
+    color: rgba(255,255,255,0.55);
+    font-size: 11px; font-weight: 700;
+    letter-spacing: 3px; text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .hero .product .accent { color: #ef4444; }
+  .hero h1 {
+    color: #fff; font-size: 28px; font-weight: 800;
+    letter-spacing: -0.5px;
+  }
+
+  /* Main quick-action grid */
+  .wrap {
+    max-width: 980px; margin: 0 auto;
+    padding: 8px 20px 60px;
+  }
+
+  .section-label {
+    color: rgba(255,255,255,0.45);
+    font-size: 10.5px; font-weight: 700;
+    letter-spacing: 2px; text-transform: uppercase;
+    padding: 18px 4px 10px;
+  }
+
+  /* Primary actions — two big tiles */
+  .primary {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 14px;
+  }
+  .primary .tile {
+    background: #fff;
+    border-radius: 16px;
+    padding: 22px;
+    text-decoration: none;
+    color: inherit;
+    display: flex; flex-direction: column;
+    box-shadow: 0 16px 40px rgba(0,0,0,0.25);
+    border: 1px solid rgba(255,255,255,0.06);
+    transition: transform 0.18s ease, box-shadow 0.18s ease;
+    position: relative; overflow: hidden;
+    min-height: 140px;
+  }
+  .primary .tile::before {
+    content:''; position:absolute; top:0; left:0; right:0; height:4px;
+    background: var(--p-red);
+  }
+  .primary .tile:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 22px 50px rgba(0,0,0,0.30);
+  }
+  .primary .tile .icon {
+    width: 44px; height: 44px;
+    background: #fef2f2; color: var(--p-red);
+    border-radius: 11px;
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 12px;
+    font-size: 22px;
+  }
+  .primary .tile h2 {
+    font-size: 17px; font-weight: 800; letter-spacing: -0.3px;
+    color: var(--p-charcoal); margin-bottom: 4px;
+  }
+  .primary .tile p {
+    color: var(--p-gray); font-size: 12.5px; line-height: 1.5; flex: 1;
+  }
+  .primary .tile .cta {
+    margin-top: 12px;
+    color: var(--p-red); font-weight: 700; font-size: 12.5px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .primary .tile .cta .arrow { transition: transform 0.15s; }
+  .primary .tile:hover .cta .arrow { transform: translateX(3px); }
+
+  /* Secondary actions — compact tiles */
+  .secondary {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+  }
+  .secondary .stile {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 12px;
+    padding: 14px 14px 12px;
+    text-decoration: none;
+    color: #fff;
+    display: flex; flex-direction: column;
+    transition: background 0.15s, border-color 0.15s, transform 0.15s;
+    min-height: 92px;
+  }
+  .secondary .stile:hover {
+    background: rgba(255,255,255,0.10);
+    border-color: rgba(255,255,255,0.20);
+    transform: translateY(-1px);
+  }
+  .secondary .stile .ic {
+    font-size: 18px; margin-bottom: 4px;
+  }
+  .secondary .stile .name {
+    font-size: 13.5px; font-weight: 700;
+  }
+  .secondary .stile .sub {
+    font-size: 11px; color: rgba(255,255,255,0.55);
+    margin-top: 2px;
+  }
+
+  .hero .greeting {
+    color: rgba(255,255,255,0.75);
+    font-size: 14px; font-weight: 500;
+    margin-top: 10px; max-width: 600px; text-align: center;
+  }
+  .hero .greeting strong { color: #fff; font-weight: 700; }
+
+  /* Tablet — moderate hero, primary tiles still side-by-side */
+  @media (max-width: 760px) {
+    .hero { padding: 32px 20px 14px; }
+    .hero .logo { padding: 10px 18px; margin-bottom: 14px; }
+    .hero .logo img { height: 48px; }
+    .hero h1 { font-size: 24px; }
+  }
+  /* Phone — compact hero so tiles are reachable without scrolling */
+  @media (max-width: 600px) {
+    .hero { padding: 22px 16px 8px; }
+    .hero .logo { padding: 8px 14px; margin-bottom: 10px; }
+    .hero .logo img { height: 38px; }
+    .hero .product { font-size: 10px; letter-spacing: 2px; }
+    .hero h1 { font-size: 19px; }
+    .hero .greeting { font-size: 13px; margin-top: 6px; }
+    .primary { grid-template-columns: 1fr; gap: 10px; }
+    .primary .tile { min-height: 0; padding: 18px; }
+    .secondary { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .wrap { padding: 4px 16px 40px; }
+    footer { padding: 12px 16px 20px; }
+  }
+
+  footer {
+    color: rgba(255,255,255,0.35);
+    font-size: 11px;
+    text-align: center;
+    padding: 18px 20px 32px;
+    line-height: 1.6;
+  }
+  footer a { color: rgba(255,255,255,0.55); text-decoration: none; }
+</style>
+<script src="bcc-api.js" defer></script>
+</head>
+<body>
+
+<header class="topbar" style="background:linear-gradient(90deg,#1a1a1a,#2b2b2b);color:#fff;padding:10px 18px;display:flex;align-items:center;gap:14px;box-shadow:0 2px 12px rgba(0,0,0,0.18);">
+  <a class="home" href="index.html" style="display:flex;align-items:center;gap:10px;text-decoration:none;color:#fff;">
+    <img src="bcc-logo.png" alt="Blue Collar Coach" style="height:28px;background:#fff;padding:3px 8px;border-radius:6px;" />
+    <span class="module" style="font-size:12px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#ef4444;">Connect</span>
+  </a>
+  <span class="spacer" style="flex:1;"></span>
+</header>
+
+<div class="hero">
+  <div class="logo"><img src="bcc-logo-large.png" alt="Blue Collar Coach" /></div>
+  <div class="product">PRECISION <span class="accent">CONNECT</span></div>
+  <h1 id="heroTitle">What do you need to do?</h1>
+  <div class="greeting" id="heroGreeting" hidden></div>
+</div>
+
+<div class="wrap">
+  <div class="primary">
+    <a class="tile" href="myday.html">
+      <div class="icon">&#128205;</div>
+      <h2>My Day</h2>
+      <p>Today's job, clock in/out, daily log with photos.</p>
+      <div class="cta">Open <span class="arrow">&rarr;</span></div>
+    </a>
+    <a class="tile" href="scheduler.html">
+      <div class="icon">&#128197;</div>
+      <h2>Scheduler</h2>
+      <p>Weekly plan. Assign crews, trucks, and hydrovacs to jobs.</p>
+      <div class="cta">Open <span class="arrow">&rarr;</span></div>
+    </a>
+  </div>
+
+  <div class="section-label">Everything else</div>
+  <div class="secondary">
+    <a class="stile" href="jobs.html">
+      <span class="ic">&#128203;</span><span class="name">Job Board</span>
+      <span class="sub">Pipeline &amp; cards</span>
+    </a>
+    <a class="stile" href="inspections.html">
+      <span class="ic">&#128666;</span><span class="name">Inspections</span>
+      <span class="sub">Pre-trip &amp; equipment</span>
+    </a>
+    <a class="stile" href="tm.html">
+      <span class="ic">&#36;</span><span class="name">T&amp;M</span>
+      <span class="sub">Time &amp; materials</span>
+    </a>
+    <a class="stile" href="hydrant.html">
+      <span class="ic">&#128293;</span><span class="name">Fire Hydrant</span>
+      <span class="sub">Inspection form</span>
+    </a>
+    <a class="stile" href="trucking.html">
+      <span class="ic">&#128667;</span><span class="name">Trucking</span>
+      <span class="sub">Haul tickets</span>
+    </a>
+    <a class="stile" href="maintenance.html">
+      <span class="ic">&#128295;</span><span class="name">Maintenance</span>
+      <span class="sub">Issue inbox</span>
+    </a>
+    <a class="stile" href="rates.html">
+      <span class="ic">&#128176;</span><span class="name">Rates</span>
+      <span class="sub">Emergency pricing</span>
+    </a>
+    <a class="stile" href="inventory.html">
+      <span class="ic">&#128230;</span><span class="name">Inventory</span>
+      <span class="sub">Parts &amp; supplies</span>
+    </a>
+    <a class="stile" href="chat.html">
+      <span class="ic">&#128172;</span><span class="name">Chat</span>
+      <span class="sub">Crew channels</span>
+    </a>
+    <a class="stile" href="admin.html">
+      <span class="ic">&#9881;</span><span class="name">Admin</span>
+      <span class="sub">Users &amp; settings</span>
+    </a>
+  </div>
+</div>
+
+<footer>
+  BCC Connect &middot; <a href="guide.html">How-to guide</a><br/>
+  &copy; Blue Collar Coach
+</footer>
+
+<script>
+// Personalize the hero once bcc-api.js resolves the signed-in identity.
+// Greeting style ("Good morning, Bob.") + a hint that scans the schedule
+// for jobs assigned to this user today so the home page is immediately
+// actionable instead of generic.
+function personalizeHero() {
+  var who = (window.bccUser && window.bccUser.userDetails) || '';
+  if (!who) return;
+
+  // Try to upgrade an email/UPN to a display name via bccPeopleFull
+  var label = who;
+  var full = (window.bccPeopleFull || []);
+  var me = full.find(function (u) {
+    var w = who.toLowerCase();
+    return (u.upn||'').toLowerCase() === w || (u.mail||'').toLowerCase() === w;
+  });
+  if (me && me.displayName) label = me.displayName;
+  // Show first name only — friendlier
+  var first = String(label).trim().split(/\s+/)[0];
+
+  var hour = new Date().getHours();
+  var greet = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+
+  // Try to add a "you have N jobs today" hint from local schedule cache.
+  var jobsToday = 0;
+  try {
+    var sch = JSON.parse(localStorage.getItem('bcc-schedule-v1') || '{}');
+    var today = new Date(); today.setHours(0,0,0,0);
+    var iso = today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0')+'-'+String(today.getDate()).padStart(2,'0');
+    var meIds = [label, (me && me.upn), (me && me.mail), who]
+      .filter(Boolean).map(function (s) { return String(s).toLowerCase(); });
+    jobsToday = (sch.jobs || []).filter(function (j) {
+      if (j.day !== iso || !j.crewId) return false;
+      return (j.members || []).some(function (m) { return meIds.indexOf(String(m).toLowerCase()) >= 0; });
+    }).length;
+  } catch (e) {}
+
+  var hint = jobsToday > 0
+    ? ' You have <strong>' + jobsToday + (jobsToday === 1 ? ' job</strong> scheduled today.' : ' jobs</strong> scheduled today.')
+    : '';
+
+  var el = document.getElementById('heroGreeting');
+  if (el) {
+    el.innerHTML = greet + ', <strong>' + first.replace(/[<>&"']/g, '') + '</strong>.' + hint;
+    el.hidden = false;
+  }
+  // Soften the headline once we have a personalized greeting in place.
+  var t = document.getElementById('heroTitle');
+  if (t) t.textContent = 'What do you need to do?';
+}
+window.addEventListener('bcc-auth-ready', personalizeHero);
+window.addEventListener('bcc-users-ready', personalizeHero);
+</script>
+
+</body>
+</html>

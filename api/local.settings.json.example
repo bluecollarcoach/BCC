@@ -1,0 +1,16 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "",
+    "FUNCTIONS_WORKER_RUNTIME": "node",
+    "COSMOS_ENDPOINT": "https://<your-cosmos-account>.documents.azure.com:443/",
+    "COSMOS_KEY": "<get from `az cosmosdb keys list` — see DEPLOY.md>",
+    "COSMOS_DB": "precision-connect",
+    "COSMOS_CONTAINER": "data",
+    "PC_TENANT_ID": "precision-utilities"
+  },
+  "Host": {
+    "LocalHttpPort": 7071,
+    "CORS": "*"
+  }
+}

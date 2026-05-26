@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Access denied &middot; BCC Connect</title>
+<style>
+  * { box-sizing:border-box; }
+  body {
+    font-family:'Inter', system-ui, -apple-system, Segoe UI, Arial, sans-serif;
+    background:#f1f5f9; color:#1a1a1a;
+    min-height:100vh; margin:0;
+    display:flex; align-items:center; justify-content:center; padding:24px;
+  }
+  .card {
+    background:#fff; border-radius:14px; padding:32px 28px;
+    box-shadow:0 12px 40px rgba(15,23,42,0.10);
+    max-width:520px; width:100%; text-align:center;
+  }
+  .card img { height:54px; margin-bottom:18px; }
+  .card h1 { color:#c8102e; font-size:24px; margin:0 0 6px; }
+  .card .lead { color:#1a1a1a; font-size:14px; line-height:1.55; margin:0 0 16px; }
+  .card .sub  { color:#64748b; font-size:13px; line-height:1.55; margin:0 0 14px; }
+  .card .who {
+    background:#fef2f2; color:#991b1b;
+    font-family:ui-monospace, SFMono-Regular, monospace;
+    font-size:13px; padding:8px 14px;
+    border-radius:7px; display:inline-block; margin:0 0 16px;
+    word-break:break-all;
+  }
+  .actions { display:flex; gap:8px; flex-direction:column; margin-top:8px; }
+  .actions .btn {
+    display:block; width:100%;
+    padding:14px 18px; border-radius:9px;
+    text-decoration:none; font-weight:700; font-size:14px;
+    border:none; cursor:pointer; font-family:inherit;
+  }
+  .btn-primary { background:#c8102e; color:#fff; }
+  .btn-primary:hover, .btn-primary:active { background:#9a0c22; }
+  .btn-ghost   { background:#f1f5f9; color:#1a1a1a; border:1px solid #e2e8f0; }
+  .btn-ghost:hover, .btn-ghost:active { background:#e2e8f0; }
+  .actions .small { font-size:12px; color:#64748b; margin-top:14px; }
+  .actions .small a { color:#1a1a1a; }
+</style>
+</head>
+<body>
+<div class="card" id="card">
+  <img src="bcc-logo.png" alt="Blue Collar Coach" />
+  <h1>Access denied</h1>
+  <p class="lead" id="lead">You&rsquo;re signed in, but your account doesn&rsquo;t have permission for this page. Ask an administrator to grant you the right role.</p>
+  <div id="who"></div>
+  <div class="actions" id="actions">
+    <a class="btn btn-primary" id="switchBtn" href="#">Sign in with a different account</a>
+    <a class="btn btn-ghost"   id="signOutBtn" href="#">Sign out completely</a>
+  </div>
+  <div class="small">
+    Still stuck? <a href="#" id="hardClearBtn">Hard-clear session + cookies</a>
+  </div>
+</div>
+
+<script>
+(function () {
+  var p = new URLSearchParams(location.search);
+  var reason = p.get('reason');
+  var who    = p.get('who');
+
+  if (reason === 'domain') {
+    document.getElementById('lead').innerHTML =
+      'BCC Connect is restricted to <strong>@bluecollarcoach.us</strong> accounts. ' +
+      'If you have multiple Microsoft accounts on this device, tap the button below and pick your Blue Collar Coach one.';
+  }
+  if (who) {
+    document.getElementById('who').innerHTML =
+      '<div class="who">Signed in as: ' + who.replace(/[<>&"']/g, '') + '</div>';
+  }
+
+  // Microsoft's "logout from this device" endpoint. We chain SWA logout into
+  // Microsoft logout so the user is signed out of BOTH the SWA session AND the
+  // Microsoft federated session — otherwise Microsoft's still-active token
+  // silently re-signs them into the wrong account and they bounce right back.
+  var origin = location.origin;
+  var msLogout = 'https://login.microsoftonline.com/common/oauth2/v2.0/logout' +
+                 '?post_logout_redirect_uri=' + encodeURIComponent(origin + '/index.html');
+  var msLogoutThenPick =
+    'https://login.microsoftonline.com/common/oauth2/v2.0/logout' +
+    '?post_logout_redirect_uri=' + encodeURIComponent(
+      origin + '/.auth/login/aad?prompt=select_account&domain_hint=bluecollarcoach.us' +
+      '&post_login_redirect_uri=' + encodeURIComponent(origin + '/')
+    );
+
+  // "Sign in with a different account" — full Microsoft logout, then bounce
+  // straight into the account picker. This is the only reliable way to switch
+  // accounts on a device that has multiple Microsoft tokens cached.
+  document.getElementById('switchBtn').onclick = function (e) {
+    e.preventDefault();
+    location.href = '/.auth/logout?post_logout_redirect_uri=' + encodeURIComponent(msLogoutThenPick);
+  };
+
+  // "Sign out completely" — SWA + Microsoft sign-out, land back on landing.
+  document.getElementById('signOutBtn').onclick = function (e) {
+    e.preventDefault();
+    location.href = '/.auth/logout?post_logout_redirect_uri=' + encodeURIComponent(msLogout);
+  };
+
+  // "Hard-clear" — also wipes our localStorage / sessionStorage on the way out
+  // (in case the wrong account's bcc-* keys are still cached locally).
+  document.getElementById('hardClearBtn').onclick = function (e) {
+    e.preventDefault();
+    try {
+      Object.keys(localStorage).forEach(function (k) {
+        if (k.indexOf('bcc-') === 0) localStorage.removeItem(k);
+      });
+      sessionStorage.clear();
+    } catch (err) {}
+    location.href = '/.auth/logout?post_logout_redirect_uri=' + encodeURIComponent(msLogout);
+  };
+})();
+</script>
+</body>
+</html>
