@@ -64,10 +64,8 @@ param vapidPrivateKey string = ''
 @description('Contact for VAPID subject (mailto: URL recommended).')
 param vapidSubject string = 'mailto:admin@bluecollarcoach.us'
 
-@description('Custom hostnames to bind to the Static Web App. CNAMEs at the DNS level must already point at the SWA default hostname; Azure issues a free managed cert per entry once validation passes. Pass an empty array to skip.')
-param customHostnames array = [
-  'apps.bluecollarcoach.us'
-]
+@description('Custom hostnames to bind to the Static Web App. CNAMEs at the DNS level must already point at the SWA default hostname; Azure issues a free managed cert per entry once validation passes. Pass an empty array on first deploy — bind the custom hostname later once the CNAME is in place (see DEPLOY.md).')
+param customHostnames array = []
 
 var cosmosAccountName  = toLower('${appName}-cdb-${uniqueString(resourceGroup().id)}')
 var cosmosDatabaseName = 'bcc-connect'
@@ -148,8 +146,9 @@ resource swa 'Microsoft.Web/staticSites@2023-12-01' = {
     branch: branch
     repositoryToken: repositoryToken
     buildProperties: {
-      appLocation: '/bcc-connect'
-      apiLocation: '/bcc-connect/api'
+      // Code lives at the repo root in this project (not in a subfolder).
+      appLocation: '/'
+      apiLocation: '/api'
       outputLocation: ''
     }
     allowConfigFileUpdates: true
