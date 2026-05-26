@@ -73,6 +73,8 @@
   .btn-primary:hover { background: var(--gold-deep); }
   .btn-ghost { background: transparent; color: var(--ink); border: 1px solid var(--chrome-mute); }
   .btn-ghost:hover { background: var(--chrome-mute); }
+  .btn-danger { background: transparent; color: #b91c1c; border: 1px solid #fecaca; }
+  .btn-danger:hover { background: #fee2e2; }
 
   .list { background: #fff; border: 1px solid var(--chrome-mute); border-radius: 12px; overflow: hidden; }
   table { width: 100%; border-collapse: collapse; }
@@ -81,7 +83,7 @@
     color: var(--muted); text-transform: uppercase; letter-spacing: 1.2px;
     padding: 12px 14px; border-bottom: 1px solid var(--chrome-mute); background: var(--chrome);
   }
-  tbody tr { border-bottom: 1px solid var(--chrome-mute); }
+  tbody tr { border-bottom: 1px solid var(--chrome-mute); cursor: pointer; }
   tbody tr:last-child { border-bottom: none; }
   tbody tr:hover { background: var(--gold-fade); }
   tbody td { padding: 12px 14px; vertical-align: middle; font-size: 13.5px; }
@@ -89,7 +91,7 @@
   tbody td .email { color: var(--gold-deep); font-size: 12.5px; }
   tbody td .muted { color: var(--muted); font-size: 12.5px; }
   tbody td.actions { text-align: right; white-space: nowrap; }
-  .stage {
+  .stage, .ctype {
     display: inline-block; font-size: 10.5px; font-weight: 700;
     text-transform: uppercase; letter-spacing: 1px;
     padding: 3px 9px; border-radius: 999px;
@@ -125,6 +127,82 @@
   .panel .full { grid-column: 1 / -1; }
   .panel .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
 
+  /* ---- Detail view (mode=detail) ---- */
+  .detail-head {
+    background: linear-gradient(160deg, #1f1f1f 0%, #1a1a1a 100%);
+    color: var(--chrome); border-radius: 14px; padding: 22px 24px;
+    border: 1px solid var(--ink-line); margin-bottom: 16px;
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  }
+  .detail-head .who h2 { font-family: 'Cinzel', serif; font-size: 24px; margin: 0 0 4px; color: #fff; }
+  .detail-head .who .meta-line { font-size: 13px; color: rgba(255,255,255,0.65); }
+  .detail-head .who .meta-line a { color: var(--gold-warm); text-decoration: none; }
+  .detail-head .who .meta-line a:hover { text-decoration: underline; }
+  .detail-head .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .detail-head .back { font-size: 13px; color: var(--gold-warm); text-decoration: none; }
+  .detail-head .back:hover { color: #fff; }
+  .detail-head .top-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+  .detail-grid {
+    display: grid; grid-template-columns: 1fr 1.4fr; gap: 16px;
+  }
+  @media (max-width: 880px) { .detail-grid { grid-template-columns: 1fr; } }
+
+  .card {
+    background: #fff; border: 1px solid var(--chrome-mute); border-radius: 12px; padding: 18px;
+    margin-bottom: 14px;
+  }
+  .card h4 {
+    margin: 0 0 10px; font-family: 'Cinzel', serif; font-size: 15px; color: var(--ink);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .card h4 .count { font-family: 'Inter', sans-serif; font-size: 11px; color: var(--muted); font-weight: 600; }
+  .card h4 .add { font-family: 'Inter', sans-serif; font-size: 12px; color: var(--gold); cursor: pointer; font-weight: 700; background: none; border: 0; padding: 0; }
+  .card h4 .add:hover { color: var(--gold-deep); }
+  .field-row { display: grid; grid-template-columns: 110px 1fr; gap: 8px; padding: 6px 0; font-size: 13.5px; border-bottom: 1px dashed #f1efe9; }
+  .field-row:last-child { border-bottom: none; }
+  .field-row .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.8px; font-weight: 700; padding-top: 4px; }
+  .field-row .v { color: var(--ink); }
+  .field-row .v.editable { cursor: text; }
+  .field-row .v[contenteditable=true]:focus { outline: 2px solid var(--gold); outline-offset: 2px; border-radius: 4px; }
+
+  .timeline { list-style: none; padding: 0; margin: 0; }
+  .timeline li {
+    padding: 10px 0; border-bottom: 1px solid #f1efe9; font-size: 13.5px;
+  }
+  .timeline li:last-child { border-bottom: none; }
+  .timeline .when { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; }
+  .timeline .convo-type {
+    display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.8px; padding: 2px 7px; border-radius: 999px; margin-right: 6px;
+    background: var(--gold-fade); color: var(--gold-deep);
+  }
+  .timeline .convo-type.email { background: #ddeefd; color: #1d4ed8; }
+  .timeline .convo-type.call { background: #fae8e8; color: #b91c1c; }
+  .timeline .convo-type.session { background: #d1fae5; color: #065f46; }
+  .timeline .convo-type.meeting { background: #fff4d6; color: #92400e; }
+  .timeline .summary { font-weight: 600; color: var(--ink); margin-top: 2px; }
+  .timeline .details { color: var(--muted); margin-top: 3px; white-space: pre-wrap; }
+  .timeline .del { float: right; }
+
+  .need-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+  .need-row input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--gold); }
+  .need-row .label { flex: 1; font-size: 13.5px; color: var(--ink); }
+  .need-row.met .label { text-decoration: line-through; color: var(--muted); }
+
+  .inline-add {
+    display: flex; gap: 6px; margin-top: 10px;
+  }
+  .inline-add input, .inline-add select, .inline-add textarea {
+    flex: 1; min-height: 36px; padding: 8px 10px; font: inherit; font-size: 13.5px;
+    border: 1px solid var(--chrome-mute); border-radius: 7px; background: var(--chrome);
+  }
+  .inline-add textarea { min-height: 60px; resize: vertical; flex-basis: 100%; }
+  .inline-add button { padding: 0 14px; min-height: 36px; border: 0; border-radius: 7px; background: var(--gold); color: #fff; font-weight: 700; font-size: 12.5px; cursor: pointer; }
+  .inline-add button:hover { background: var(--gold-deep); }
+  .inline-add .row { display: flex; gap: 6px; width: 100%; }
+  .inline-add .stacked { flex-direction: column; }
+
   @media (max-width: 700px) {
     .page { padding: 14px 14px 60px; }
     .page-head h1 { font-size: 22px; }
@@ -145,7 +223,9 @@
   @media print {
     header.topbar, .toolbar, .panel, .icon-btn, .page-head .meta { display: none !important; }
     body { background: #fff; }
-    .list { box-shadow: none; border: 1px solid #ccc; }
+    .list, .card, .detail-head { box-shadow: none; border: 1px solid #ccc; }
+    .detail-head { background: #fff; color: #000; }
+    .detail-head .who h2, .detail-head .who .meta-line, .detail-head .who .meta-line a { color: #000; }
   }
 </style>
 <script src="bcc-api.js" defer></script>
@@ -162,91 +242,125 @@
 </header>
 
 <div class="page">
-  <div class="page-head">
-    <div>
-      <h1>Contacts</h1>
-      <div class="sub" id="subline">Loading…</div>
+  <!-- LIST MODE -->
+  <div id="listMode">
+    <div class="page-head">
+      <div>
+        <h1>Contacts</h1>
+        <div class="sub" id="subline">Loading…</div>
+      </div>
+      <div class="meta" id="syncMeta"></div>
     </div>
-    <div class="meta" id="syncMeta"></div>
+
+    <div class="toolbar">
+      <div class="search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="q" type="search" placeholder="Search by name, email, company, or tag…" autocomplete="off" />
+      </div>
+      <select id="typeFilter" aria-label="Filter by customer type">
+        <option value="">All types</option>
+      </select>
+      <select id="stageFilter" aria-label="Filter by stage">
+        <option value="">All stages</option>
+        <option value="lead">Lead</option>
+        <option value="qualified">Qualified</option>
+        <option value="customer">Customer</option>
+        <option value="inactive">Inactive</option>
+      </select>
+      <select id="regionFilter" aria-label="Filter by region">
+        <option value="">All regions</option>
+      </select>
+      <button class="btn btn-ghost" id="csvBtn" type="button">Import CSV</button>
+      <button class="btn btn-primary" id="newBtn" type="button">+ New contact</button>
+    </div>
+
+    <div class="panel" id="panel">
+      <h3>New contact</h3>
+      <div class="grid">
+        <label>First name<input id="f-first" type="text" required /></label>
+        <label>Last name<input id="f-last" type="text" /></label>
+        <label>Email<input id="f-email" type="email" /></label>
+        <label>Phone<input id="f-phone" type="tel" /></label>
+        <label>Title<input id="f-title" type="text" placeholder="Owner, GM, …" /></label>
+        <label>Company<input id="f-company" type="text" placeholder="Acme HVAC" /></label>
+        <label>Customer type
+          <select id="f-type"></select>
+        </label>
+        <label>Stage
+          <select id="f-stage">
+            <option value="lead">Lead</option>
+            <option value="qualified">Qualified</option>
+            <option value="customer">Customer</option>
+            <option value="inactive">Inactive</option>
+          </select>
+        </label>
+        <label>City<input id="f-city" type="text" /></label>
+        <label>State / region<input id="f-state" type="text" placeholder="MN" /></label>
+        <label class="full">Tags<input id="f-tags" type="text" placeholder="hvac, signed, midwest" /></label>
+        <label class="full">Notes<textarea id="f-notes" rows="2"></textarea></label>
+      </div>
+      <div class="actions">
+        <button class="btn btn-ghost" id="cancelBtn" type="button">Cancel</button>
+        <button class="btn btn-primary" id="saveBtn" type="button">Save contact</button>
+      </div>
+    </div>
+
+    <input type="file" id="csvFile" accept=".csv,text/csv" style="display:none;" />
+
+    <div class="list" id="list" aria-live="polite">
+      <table id="tbl">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Company</th>
+            <th>Type</th>
+            <th>Stage</th>
+            <th>Location</th>
+            <th>Tags</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="empty" id="empty" hidden>
+        <div class="big">No contacts yet.</div>
+        <div>Add your first one with the "+ New contact" button, or import a CSV.</div>
+      </div>
+    </div>
   </div>
 
-  <div class="toolbar">
-    <div class="search">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-      <input id="q" type="search" placeholder="Search by name, email, company, or tag…" autocomplete="off" />
-    </div>
-    <select id="stageFilter" aria-label="Filter by stage">
-      <option value="">All stages</option>
-      <option value="lead">Lead</option>
-      <option value="qualified">Qualified</option>
-      <option value="customer">Customer</option>
-      <option value="inactive">Inactive</option>
-    </select>
-    <select id="regionFilter" aria-label="Filter by region">
-      <option value="">All regions</option>
-    </select>
-    <button class="btn btn-ghost" id="csvBtn" type="button">Import CSV</button>
-    <button class="btn btn-primary" id="newBtn" type="button">+ New contact</button>
-  </div>
-
-  <div class="panel" id="panel">
-    <h3>New contact</h3>
-    <div class="grid">
-      <label>First name<input id="f-first" type="text" required /></label>
-      <label>Last name<input id="f-last" type="text" /></label>
-      <label>Email<input id="f-email" type="email" /></label>
-      <label>Phone<input id="f-phone" type="tel" /></label>
-      <label>Title<input id="f-title" type="text" placeholder="Owner, GM, …" /></label>
-      <label>Company<input id="f-company" type="text" placeholder="Acme HVAC" /></label>
-      <label>City<input id="f-city" type="text" /></label>
-      <label>State / region<input id="f-state" type="text" placeholder="MN" /></label>
-      <label>Stage
-        <select id="f-stage">
-          <option value="lead">Lead</option>
-          <option value="qualified">Qualified</option>
-          <option value="customer">Customer</option>
-          <option value="inactive">Inactive</option>
-        </select>
-      </label>
-      <label>Tags<input id="f-tags" type="text" placeholder="hvac, signed, midwest" /></label>
-      <label class="full">Notes<textarea id="f-notes" rows="2"></textarea></label>
-    </div>
-    <div class="actions">
-      <button class="btn btn-ghost" id="cancelBtn" type="button">Cancel</button>
-      <button class="btn btn-primary" id="saveBtn" type="button">Save contact</button>
-    </div>
-  </div>
-
-  <input type="file" id="csvFile" accept=".csv,text/csv" style="display:none;" />
-
-  <div class="list" id="list" aria-live="polite">
-    <table id="tbl">
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Company</th>
-          <th>Location</th>
-          <th>Stage</th>
-          <th>Tags</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody id="rows"></tbody>
-    </table>
-    <div class="empty" id="empty" hidden>
-      <div class="big">No contacts yet.</div>
-      <div>Add your first one with the "+ New contact" button, or import a CSV.</div>
-    </div>
-  </div>
+  <!-- DETAIL MODE (rendered when URL has ?id=) -->
+  <div id="detailMode" hidden></div>
 </div>
 
 <script>
 (function () {
-  /* Storage model:
-   * Each contact is one localStorage key: bcc-contact-<cuid>. The Storage
-   * setItem hook in bcc-api.js debounces 1.2s + PUTs to /api/data, so
-   * Cosmos picks it up automatically. No bespoke save endpoint needed. */
-  var KEY_PREFIX = 'bcc-contact-';
+  /* ===== Storage model =====
+   * bcc-contact-<cuid>       — one per contact
+   * bcc-convo-<cuid>         — per logged interaction (call/email/session/meeting/note)
+   * bcc-customer-types-v1    — admin config singleton: list of {id,label,color}
+   */
+  var CONTACT_PREFIX = 'bcc-contact-';
+  var CONVO_PREFIX   = 'bcc-convo-';
+  var TYPES_KEY      = 'bcc-customer-types-v1';
+
+  // Default customer-type list used until an admin saves a custom one.
+  // Mirrors what a coaching firm for blue-collar trades commonly serves.
+  var DEFAULT_TYPES = {
+    id: TYPES_KEY,
+    tenantId: 'blue-collar-coach',
+    docType: 'customer-types',
+    types: [
+      { id: 'hvac',       label: 'HVAC',            color: '#a8884a' },
+      { id: 'plumbing',   label: 'Plumbing',        color: '#1d4ed8' },
+      { id: 'electrical', label: 'Electrical',      color: '#dc2626' },
+      { id: 'roofing',    label: 'Roofing',         color: '#059669' },
+      { id: 'general',    label: 'General Trades',  color: '#7c3aed' },
+      { id: 'other',      label: 'Other',           color: '#8a877e' }
+    ],
+    updatedAt: new Date().toISOString()
+  };
+
   var REGION_BY_STATE = {
     AK:'West',AZ:'West',CA:'West',CO:'West',HI:'West',ID:'West',MT:'West',NV:'West',NM:'West',OR:'West',UT:'West',WA:'West',WY:'West',
     IA:'Midwest',IL:'Midwest',IN:'Midwest',KS:'Midwest',MI:'Midwest',MN:'Midwest',MO:'Midwest',ND:'Midwest',NE:'Midwest',OH:'Midwest',SD:'Midwest',WI:'Midwest',
@@ -254,55 +368,136 @@
     CT:'Northeast',MA:'Northeast',ME:'Northeast',NH:'Northeast',NJ:'Northeast',NY:'Northeast',PA:'Northeast',RI:'Northeast',VT:'Northeast'
   };
 
-  function uid()   { return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 9); }
-  function nowIso(){ return new Date().toISOString(); }
+  function uid()    { return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 9); }
+  function nowIso() { return new Date().toISOString(); }
   function regionOf(s) { if (!s) return ''; var t = String(s).trim().toUpperCase().slice(0, 2); return REGION_BY_STATE[t] || ''; }
-  function esc(s)  { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
+  function esc(s)   { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
+  function fmtWhen(iso) {
+    if (!iso) return '';
+    var d = new Date(iso); if (isNaN(d)) return '';
+    var now = new Date();
+    var sameDay = d.toDateString() === now.toDateString();
+    var sameYear = d.getFullYear() === now.getFullYear();
+    if (sameDay) return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    if (sameYear) return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    return d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+
+  function loadTypes() {
+    try {
+      var raw = localStorage.getItem(TYPES_KEY);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.types) && parsed.types.length) return parsed.types;
+      }
+    } catch (e) {}
+    return DEFAULT_TYPES.types;
+  }
+  function typeLabel(id) {
+    var t = loadTypes().find(function (x) { return x.id === id; });
+    return t ? t.label : '';
+  }
+  function typeColor(id) {
+    var t = loadTypes().find(function (x) { return x.id === id; });
+    return t ? t.color : '#8a877e';
+  }
 
   function allContacts() {
     var out = [];
     for (var i = 0; i < localStorage.length; i++) {
       var k = localStorage.key(i);
-      if (!k || k.indexOf(KEY_PREFIX) !== 0) continue;
+      if (!k || k.indexOf(CONTACT_PREFIX) !== 0) continue;
       try { var c = JSON.parse(localStorage.getItem(k)); if (c && c.id) out.push(c); } catch (e) {}
     }
     return out.sort(function (a, b) { return (b.updatedAt || '').localeCompare(a.updatedAt || ''); });
   }
+  function getContact(id) {
+    try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (e) { return null; }
+  }
   function saveContact(c) {
     c.updatedAt = nowIso();
     if (!c.createdAt) c.createdAt = c.updatedAt;
-    if (!c.id) c.id = KEY_PREFIX + uid();
+    if (!c.id) c.id = CONTACT_PREFIX + uid();
     if (!c.tenantId) c.tenantId = 'blue-collar-coach';
     c.docType = 'contact';
+    if (!Array.isArray(c.needs)) c.needs = [];
     localStorage.setItem(c.id, JSON.stringify(c));
     return c;
   }
-  function deleteContact(id) { localStorage.removeItem(id); }
+  function deleteContact(id) {
+    localStorage.removeItem(id);
+    // also remove this contact's convos
+    convosFor(id).forEach(function (cv) { localStorage.removeItem(cv.id); });
+  }
 
-  /* Render */
-  var qInput = document.getElementById('q');
-  var stageFilter = document.getElementById('stageFilter');
-  var regionFilter = document.getElementById('regionFilter');
-  var rowsEl = document.getElementById('rows');
-  var emptyEl = document.getElementById('empty');
-  var sublineEl = document.getElementById('subline');
-  var syncMetaEl = document.getElementById('syncMeta');
+  function convosFor(contactId) {
+    var out = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i);
+      if (!k || k.indexOf(CONVO_PREFIX) !== 0) continue;
+      try {
+        var cv = JSON.parse(localStorage.getItem(k));
+        if (cv && cv.contactId === contactId) out.push(cv);
+      } catch (e) {}
+    }
+    return out.sort(function (a, b) { return (b.at || '').localeCompare(a.at || ''); });
+  }
+  function saveConvo(cv) {
+    cv.updatedAt = nowIso();
+    if (!cv.createdAt) cv.createdAt = cv.updatedAt;
+    if (!cv.at) cv.at = cv.updatedAt;
+    if (!cv.id) cv.id = CONVO_PREFIX + uid();
+    if (!cv.tenantId) cv.tenantId = 'blue-collar-coach';
+    cv.docType = 'convo';
+    localStorage.setItem(cv.id, JSON.stringify(cv));
+  }
+  function deleteConvo(id) { localStorage.removeItem(id); }
 
-  function render() {
+  /* ===== Mode routing ===== */
+  function getParam(k) {
+    return new URLSearchParams(location.search).get(k);
+  }
+  function show(id) {
+    document.getElementById('listMode').hidden = (id !== 'listMode');
+    document.getElementById('detailMode').hidden = (id !== 'detailMode');
+  }
+
+  /* ===== List render ===== */
+  var qInput, stageFilter, regionFilter, typeFilter, rowsEl, emptyEl, sublineEl, syncMetaEl;
+
+  function populateTypeDropdowns() {
+    var types = loadTypes();
+    if (typeFilter) {
+      var cur = typeFilter.value;
+      typeFilter.innerHTML = '<option value="">All types</option>' +
+        types.map(function (t) { return '<option value="' + esc(t.id) + '">' + esc(t.label) + '</option>'; }).join('');
+      typeFilter.value = cur;
+    }
+    var formType = document.getElementById('f-type');
+    if (formType) {
+      var cur2 = formType.value;
+      formType.innerHTML = types.map(function (t) { return '<option value="' + esc(t.id) + '">' + esc(t.label) + '</option>'; }).join('');
+      if (cur2) formType.value = cur2;
+    }
+  }
+
+  function renderList() {
     var all = allContacts();
     var q = (qInput.value || '').trim().toLowerCase();
     var stage = stageFilter.value;
     var region = regionFilter.value;
+    var type = typeFilter.value;
 
     var matched = all.filter(function (c) {
       if (stage && c.stage !== stage) return false;
+      if (type && (c.customerType || '') !== type) return false;
       if (region && regionOf(c.state) !== region) return false;
       if (!q) return true;
-      var hay = [c.firstName, c.lastName, c.email, c.phone, c.company, c.city, c.state, (c.tags||[]).join(' ')].filter(Boolean).join(' ').toLowerCase();
+      var hay = [c.firstName, c.lastName, c.email, c.phone, c.company, c.city, c.state, (c.tags||[]).join(' '), typeLabel(c.customerType)].filter(Boolean).join(' ').toLowerCase();
       return hay.indexOf(q) >= 0;
     });
 
-    sublineEl.textContent = matched.length + ' of ' + all.length + ' contact' + (all.length === 1 ? '' : 's') + (q || stage || region ? ' shown' : '');
+    sublineEl.textContent = matched.length + ' of ' + all.length + ' contact' + (all.length === 1 ? '' : 's') + (q || stage || region || type ? ' shown' : '');
 
     rowsEl.innerHTML = '';
     if (matched.length === 0) {
@@ -318,6 +513,9 @@
       var name = ((c.firstName || '') + ' ' + (c.lastName || '')).trim() || '(no name)';
       var loc = [c.city, c.state].filter(Boolean).join(', ');
       var tags = (c.tags || []).map(function (t) { return esc(t); }).join(', ');
+      var typeChip = c.customerType
+        ? '<span class="ctype" style="background:' + typeColor(c.customerType) + '22;color:' + typeColor(c.customerType) + ';">' + esc(typeLabel(c.customerType)) + '</span>'
+        : '<span class="muted">—</span>';
       html +=
         '<tr data-id="' + esc(c.id) + '">' +
           '<td data-label="Name">' +
@@ -326,8 +524,9 @@
             (c.phone ? '<div class="muted">' + esc(c.phone) + '</div>' : '') +
           '</td>' +
           '<td data-label="Company">' + esc(c.company || '—') + '</td>' +
-          '<td data-label="Location">' + (loc ? esc(loc) : '<span class="muted">—</span>') + '</td>' +
+          '<td data-label="Type">' + typeChip + '</td>' +
           '<td data-label="Stage"><span class="stage ' + esc(c.stage || 'lead') + '">' + esc(c.stage || 'lead') + '</span></td>' +
+          '<td data-label="Location">' + (loc ? esc(loc) : '<span class="muted">—</span>') + '</td>' +
           '<td data-label="Tags">' + (tags ? esc(tags) : '<span class="muted">—</span>') + '</td>' +
           '<td class="actions">' +
             '<button class="icon-btn danger" data-act="delete" title="Delete">&#10005;</button>' +
@@ -344,83 +543,336 @@
     regionFilter.value = current;
   }
 
-  /* Events */
-  qInput.addEventListener('input', render);
-  stageFilter.addEventListener('change', render);
-  regionFilter.addEventListener('change', render);
-
-  var panel = document.getElementById('panel');
-  document.getElementById('newBtn').addEventListener('click', function () {
-    panel.classList.add('open');
-    document.getElementById('f-first').focus();
-    document.getElementById('f-first').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  });
-  document.getElementById('cancelBtn').addEventListener('click', function () {
-    panel.classList.remove('open'); resetForm();
-  });
-  function resetForm() {
-    ['f-first','f-last','f-email','f-phone','f-title','f-company','f-city','f-state','f-tags','f-notes'].forEach(function (id) { document.getElementById(id).value = ''; });
-    document.getElementById('f-stage').value = 'lead';
-  }
-  document.getElementById('saveBtn').addEventListener('click', function () {
-    var first = document.getElementById('f-first').value.trim();
-    if (!first) {
-      (window.bccNotify || alert)('First name is required.', 'warn');
-      document.getElementById('f-first').focus();
+  /* ===== Detail render ===== */
+  function renderDetail(id) {
+    var c = getContact(id);
+    var el = document.getElementById('detailMode');
+    if (!c) {
+      el.innerHTML = '<div class="card"><h4>Contact not found</h4><p>It may have been deleted, or the link is stale. <a href="crm.html">Back to all contacts</a>.</p></div>';
       return;
     }
-    var c = {
-      firstName: first,
-      lastName:  document.getElementById('f-last').value.trim(),
-      email:     document.getElementById('f-email').value.trim(),
-      phone:     document.getElementById('f-phone').value.trim(),
-      title:     document.getElementById('f-title').value.trim(),
-      company:   document.getElementById('f-company').value.trim(),
-      city:      document.getElementById('f-city').value.trim(),
-      state:     document.getElementById('f-state').value.trim(),
-      stage:     document.getElementById('f-stage').value || 'lead',
-      tags:      document.getElementById('f-tags').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean),
-      notes:     document.getElementById('f-notes').value.trim(),
-      ownerId:   (window.bccUser && window.bccUser.userDetails) || ''
-    };
-    saveContact(c);
-    if (window.bccAudit) window.bccAudit('contact-create', { key: c.id, path: '/crm.html' });
-    if (window.bccNotifySaved) window.bccNotifySaved('Contact saved.');
-    else (window.bccNotify || alert)('Saved.', 'success');
-    panel.classList.remove('open');
-    resetForm();
-    render();
-  });
+    var name = ((c.firstName || '') + ' ' + (c.lastName || '')).trim() || '(no name)';
+    var typeLab = typeLabel(c.customerType);
+    var typeC   = typeColor(c.customerType);
+    var convos = convosFor(c.id);
+    var needs = c.needs || [];
 
-  rowsEl.addEventListener('click', function (e) {
-    var btn = e.target.closest('button[data-act]');
-    if (!btn) return;
-    var tr = btn.closest('tr'); if (!tr) return;
-    var id = tr.dataset.id;
-    if (btn.dataset.act === 'delete') {
-      if (!confirm('Delete this contact? This removes them from the cloud sync too.')) return;
-      deleteContact(id);
-      if (window.bccAudit) window.bccAudit('contact-delete', { key: id, path: '/crm.html' });
-      render();
+    var chips = '<span class="stage ' + esc(c.stage || 'lead') + '">' + esc(c.stage || 'lead') + '</span>';
+    if (typeLab) chips += ' <span class="ctype" style="background:' + typeC + '22;color:' + typeC + ';">' + esc(typeLab) + '</span>';
+    (c.tags || []).forEach(function (t) {
+      chips += ' <span class="ctype" style="background:rgba(255,255,255,0.10);color:rgba(255,255,255,0.85);">' + esc(t) + '</span>';
+    });
+
+    var meta = '';
+    if (c.title || c.company) {
+      meta = esc([c.title, c.company].filter(Boolean).join(' · '));
     }
-  });
+    var contactLinks = [];
+    if (c.email) contactLinks.push('<a href="mailto:' + esc(c.email) + '">' + esc(c.email) + '</a>');
+    if (c.phone) contactLinks.push('<a href="tel:' + esc(c.phone.replace(/\D/g,'')) + '">' + esc(c.phone) + '</a>');
+    var contactLine = contactLinks.join(' &middot; ');
 
-  document.getElementById('csvBtn').addEventListener('click', function () {
-    document.getElementById('csvFile').click();
-  });
-  document.getElementById('csvFile').addEventListener('change', function (e) {
-    var f = e.target.files && e.target.files[0]; if (!f) return;
-    (window.bccNotify || alert)('CSV import lands in the next commit. File noted: ' + f.name, 'warn');
-    e.target.value = '';
-  });
+    var locLine = [c.city, c.state, c.country].filter(Boolean).join(', ');
 
-  /* Bootstrap — bcc-api.js fires bcc-data-ready after it mirrors Cosmos
-   * into localStorage. Re-render then so cloud contacts show up. */
-  function init() {
-    if (syncMetaEl) syncMetaEl.textContent = 'Synced via bcc-api.js';
-    render();
+    var types = loadTypes();
+    var typeOpts = types.map(function (t) {
+      return '<option value="' + esc(t.id) + '"' + (t.id === c.customerType ? ' selected' : '') + '>' + esc(t.label) + '</option>';
+    }).join('');
+    var stageOpts = ['lead','qualified','customer','inactive'].map(function (s) {
+      return '<option value="' + s + '"' + (s === (c.stage || 'lead') ? ' selected' : '') + '>' + s.charAt(0).toUpperCase() + s.slice(1) + '</option>';
+    }).join('');
+
+    var needsHtml = needs.length === 0
+      ? '<p class="muted" style="font-size:13px;">No needs tracked yet. Add one below.</p>'
+      : needs.map(function (n) {
+          return '<div class="need-row ' + (n.status === 'met' ? 'met' : '') + '">' +
+            '<input type="checkbox" data-need="' + esc(n.id) + '"' + (n.status === 'met' ? ' checked' : '') + ' />' +
+            '<span class="label">' + esc(n.label) + '</span>' +
+            '<button class="icon-btn danger" data-need-del="' + esc(n.id) + '" title="Remove">&times;</button>' +
+          '</div>';
+        }).join('');
+
+    var convosHtml = convos.length === 0
+      ? '<p class="muted" style="font-size:13px;">No conversations logged yet. Use the form below.</p>'
+      : '<ul class="timeline">' + convos.map(function (cv) {
+          return '<li>' +
+            '<span class="when">' + esc(fmtWhen(cv.at)) + '</span>' +
+            ' <button class="icon-btn danger del" data-convo-del="' + esc(cv.id) + '" title="Delete">&times;</button>' +
+            '<div class="summary"><span class="convo-type ' + esc(cv.type || 'note') + '">' + esc(cv.type || 'note') + '</span>' + esc(cv.summary || '') + '</div>' +
+            (cv.details ? '<div class="details">' + esc(cv.details) + '</div>' : '') +
+          '</li>';
+        }).join('') + '</ul>';
+
+    el.innerHTML =
+      '<div class="detail-head">' +
+        '<div class="who">' +
+          '<a class="back" href="crm.html">&larr; All contacts</a>' +
+          '<h2 style="margin-top:6px;">' + esc(name) + '</h2>' +
+          (meta ? '<div class="meta-line">' + meta + '</div>' : '') +
+          (contactLine ? '<div class="meta-line">' + contactLine + '</div>' : '') +
+          (locLine ? '<div class="meta-line">' + esc(locLine) + '</div>' : '') +
+          '<div class="chips">' + chips + '</div>' +
+        '</div>' +
+        '<div class="top-actions">' +
+          '<button class="btn btn-ghost" id="printBtn" type="button">Print</button>' +
+          '<button class="btn btn-danger" id="delBtn" type="button">Delete</button>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="detail-grid">' +
+        '<div>' +
+          // ---- Profile (editable) ----
+          '<div class="card">' +
+            '<h4>Profile <button class="add" id="saveProfileBtn">Save changes</button></h4>' +
+            '<div class="field-row"><div class="k">First name</div><div class="v editable" contenteditable="true" data-prop="firstName">' + esc(c.firstName || '') + '</div></div>' +
+            '<div class="field-row"><div class="k">Last name</div><div class="v editable" contenteditable="true" data-prop="lastName">' + esc(c.lastName || '') + '</div></div>' +
+            '<div class="field-row"><div class="k">Email</div><div class="v editable" contenteditable="true" data-prop="email">' + esc(c.email || '') + '</div></div>' +
+            '<div class="field-row"><div class="k">Phone</div><div class="v editable" contenteditable="true" data-prop="phone">' + esc(c.phone || '') + '</div></div>' +
+            '<div class="field-row"><div class="k">Title</div><div class="v editable" contenteditable="true" data-prop="title">' + esc(c.title || '') + '</div></div>' +
+            '<div class="field-row"><div class="k">Company</div><div class="v editable" contenteditable="true" data-prop="company">' + esc(c.company || '') + '</div></div>' +
+            '<div class="field-row"><div class="k">City</div><div class="v editable" contenteditable="true" data-prop="city">' + esc(c.city || '') + '</div></div>' +
+            '<div class="field-row"><div class="k">State</div><div class="v editable" contenteditable="true" data-prop="state">' + esc(c.state || '') + '</div></div>' +
+            '<div class="field-row"><div class="k">Stage</div><div class="v"><select id="d-stage">' + stageOpts + '</select></div></div>' +
+            '<div class="field-row"><div class="k">Customer type</div><div class="v"><select id="d-type">' + typeOpts + '</select></div></div>' +
+            '<div class="field-row"><div class="k">Tags</div><div class="v editable" contenteditable="true" data-prop="tagsLine">' + esc((c.tags || []).join(', ')) + '</div></div>' +
+            '<div class="field-row"><div class="k">Notes</div><div class="v editable" contenteditable="true" data-prop="notes" style="white-space:pre-wrap;">' + esc(c.notes || '') + '</div></div>' +
+          '</div>' +
+
+          // ---- Needs ----
+          '<div class="card">' +
+            '<h4>Needs <span class="count">' + needs.filter(function(n){return n.status!=='met';}).length + ' open</span></h4>' +
+            '<div id="needsList">' + needsHtml + '</div>' +
+            '<div class="inline-add" style="margin-top:10px;">' +
+              '<input id="needInput" type="text" placeholder="What does this customer need? (e.g. Quarterly KPI review)" />' +
+              '<button id="needAdd" type="button">Add</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div>' +
+          // ---- Conversations / interactions timeline ----
+          '<div class="card">' +
+            '<h4>Conversations <span class="count">' + convos.length + ' total</span></h4>' +
+            '<div id="convoList">' + convosHtml + '</div>' +
+            '<div class="inline-add stacked" style="margin-top:14px;">' +
+              '<div class="row">' +
+                '<select id="convoType" style="flex:0 0 130px;">' +
+                  '<option value="note">Note</option>' +
+                  '<option value="call">Call</option>' +
+                  '<option value="email">Email</option>' +
+                  '<option value="session">Session</option>' +
+                  '<option value="meeting">Meeting</option>' +
+                '</select>' +
+                '<input id="convoSummary" type="text" placeholder="One-line summary…" />' +
+                '<button id="convoAdd" type="button">Log</button>' +
+              '</div>' +
+              '<textarea id="convoDetails" rows="2" placeholder="Optional details (only saved if there\'s text)…"></textarea>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    // wire detail-mode events
+    document.getElementById('printBtn').onclick = function () { window.print(); };
+    document.getElementById('delBtn').onclick = function () {
+      if (!confirm('Delete this contact and all its conversations? This cannot be undone.')) return;
+      deleteContact(c.id);
+      if (window.bccAudit) window.bccAudit('contact-delete', { key: c.id, path: '/crm.html' });
+      location.href = 'crm.html';
+    };
+
+    document.getElementById('saveProfileBtn').onclick = function () {
+      var props = ['firstName','lastName','email','phone','title','company','city','state','notes'];
+      var updated = Object.assign({}, c);
+      props.forEach(function (p) {
+        var el = document.querySelector('[data-prop="' + p + '"]');
+        if (el) updated[p] = el.innerText.trim();
+      });
+      var tagsLine = document.querySelector('[data-prop="tagsLine"]');
+      if (tagsLine) updated.tags = tagsLine.innerText.split(',').map(function (t) { return t.trim(); }).filter(Boolean);
+      updated.stage = document.getElementById('d-stage').value;
+      updated.customerType = document.getElementById('d-type').value;
+      saveContact(updated);
+      if (window.bccAudit) window.bccAudit('contact-update', { key: updated.id, path: '/crm.html' });
+      if (window.bccNotifySaved) window.bccNotifySaved('Contact updated.');
+      else (window.bccNotify || alert)('Saved.', 'success');
+      renderDetail(updated.id);
+    };
+
+    document.getElementById('d-stage').onchange = function () {
+      var u = getContact(c.id); u.stage = this.value; saveContact(u);
+    };
+    document.getElementById('d-type').onchange = function () {
+      var u = getContact(c.id); u.customerType = this.value; saveContact(u);
+    };
+
+    document.getElementById('needAdd').onclick = function () {
+      var inp = document.getElementById('needInput');
+      var label = inp.value.trim(); if (!label) return;
+      var u = getContact(c.id);
+      u.needs = u.needs || [];
+      u.needs.push({ id: 'n' + uid(), label: label, status: 'open', addedAt: nowIso() });
+      saveContact(u);
+      if (window.bccAudit) window.bccAudit('need-add', { key: u.id, path: '/crm.html', meta: { label: label } });
+      inp.value = '';
+      renderDetail(u.id);
+    };
+    document.getElementById('needInput').onkeydown = function (e) { if (e.key === 'Enter') document.getElementById('needAdd').click(); };
+
+    document.querySelectorAll('[data-need]').forEach(function (cb) {
+      cb.onchange = function () {
+        var u = getContact(c.id);
+        var nid = cb.getAttribute('data-need');
+        u.needs = (u.needs || []).map(function (n) { return n.id === nid ? Object.assign({}, n, { status: cb.checked ? 'met' : 'open' }) : n; });
+        saveContact(u);
+      };
+    });
+    document.querySelectorAll('[data-need-del]').forEach(function (btn) {
+      btn.onclick = function () {
+        if (!confirm('Remove this need?')) return;
+        var u = getContact(c.id);
+        var nid = btn.getAttribute('data-need-del');
+        u.needs = (u.needs || []).filter(function (n) { return n.id !== nid; });
+        saveContact(u);
+        renderDetail(u.id);
+      };
+    });
+
+    document.getElementById('convoAdd').onclick = function () {
+      var summary = document.getElementById('convoSummary').value.trim();
+      if (!summary) { (window.bccNotify || alert)('Add a one-line summary first.', 'warn'); return; }
+      var cv = {
+        contactId: c.id,
+        type: document.getElementById('convoType').value,
+        summary: summary,
+        details: document.getElementById('convoDetails').value.trim(),
+        at: nowIso(),
+        createdBy: (window.bccUser && window.bccUser.userDetails) || ''
+      };
+      saveConvo(cv);
+      if (window.bccAudit) window.bccAudit('convo-add', { key: cv.id, path: '/crm.html', meta: { type: cv.type, summary: summary } });
+      document.getElementById('convoSummary').value = '';
+      document.getElementById('convoDetails').value = '';
+      renderDetail(c.id);
+    };
+    document.querySelectorAll('[data-convo-del]').forEach(function (btn) {
+      btn.onclick = function (e) {
+        e.stopPropagation();
+        if (!confirm('Delete this conversation entry?')) return;
+        deleteConvo(btn.getAttribute('data-convo-del'));
+        renderDetail(c.id);
+      };
+    });
   }
-  window.addEventListener('bcc-data-ready', render);
+
+  /* ===== Events (list mode) ===== */
+  function wireList() {
+    qInput = document.getElementById('q');
+    stageFilter = document.getElementById('stageFilter');
+    regionFilter = document.getElementById('regionFilter');
+    typeFilter = document.getElementById('typeFilter');
+    rowsEl = document.getElementById('rows');
+    emptyEl = document.getElementById('empty');
+    sublineEl = document.getElementById('subline');
+    syncMetaEl = document.getElementById('syncMeta');
+
+    qInput.addEventListener('input', renderList);
+    stageFilter.addEventListener('change', renderList);
+    regionFilter.addEventListener('change', renderList);
+    typeFilter.addEventListener('change', renderList);
+
+    var panel = document.getElementById('panel');
+    document.getElementById('newBtn').addEventListener('click', function () {
+      panel.classList.add('open');
+      document.getElementById('f-first').focus();
+    });
+    document.getElementById('cancelBtn').addEventListener('click', function () {
+      panel.classList.remove('open'); resetForm();
+    });
+    function resetForm() {
+      ['f-first','f-last','f-email','f-phone','f-title','f-company','f-city','f-state','f-tags','f-notes'].forEach(function (id) { document.getElementById(id).value = ''; });
+      document.getElementById('f-stage').value = 'lead';
+      var types = loadTypes(); if (types[0]) document.getElementById('f-type').value = types[0].id;
+    }
+    document.getElementById('saveBtn').addEventListener('click', function () {
+      var first = document.getElementById('f-first').value.trim();
+      if (!first) {
+        (window.bccNotify || alert)('First name is required.', 'warn');
+        document.getElementById('f-first').focus();
+        return;
+      }
+      var c = {
+        firstName: first,
+        lastName:  document.getElementById('f-last').value.trim(),
+        email:     document.getElementById('f-email').value.trim(),
+        phone:     document.getElementById('f-phone').value.trim(),
+        title:     document.getElementById('f-title').value.trim(),
+        company:   document.getElementById('f-company').value.trim(),
+        city:      document.getElementById('f-city').value.trim(),
+        state:     document.getElementById('f-state').value.trim(),
+        customerType: document.getElementById('f-type').value || '',
+        stage:     document.getElementById('f-stage').value || 'lead',
+        tags:      document.getElementById('f-tags').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean),
+        notes:     document.getElementById('f-notes').value.trim(),
+        needs:     [],
+        ownerId:   (window.bccUser && window.bccUser.userDetails) || ''
+      };
+      saveContact(c);
+      if (window.bccAudit) window.bccAudit('contact-create', { key: c.id, path: '/crm.html' });
+      if (window.bccNotifySaved) window.bccNotifySaved('Contact saved.');
+      else (window.bccNotify || alert)('Saved.', 'success');
+      panel.classList.remove('open');
+      resetForm();
+      renderList();
+    });
+
+    rowsEl.addEventListener('click', function (e) {
+      var btn = e.target.closest('button[data-act]');
+      var tr = e.target.closest('tr[data-id]');
+      if (!tr) return;
+      var id = tr.dataset.id;
+      if (btn && btn.dataset.act === 'delete') {
+        e.stopPropagation();
+        if (!confirm('Delete this contact? This removes them from the cloud sync too.')) return;
+        deleteContact(id);
+        if (window.bccAudit) window.bccAudit('contact-delete', { key: id, path: '/crm.html' });
+        renderList();
+        return;
+      }
+      // Row click → go to detail view
+      location.href = 'crm.html?id=' + encodeURIComponent(id);
+    });
+
+    document.getElementById('csvBtn').addEventListener('click', function () {
+      document.getElementById('csvFile').click();
+    });
+    document.getElementById('csvFile').addEventListener('change', function (e) {
+      var f = e.target.files && e.target.files[0]; if (!f) return;
+      (window.bccNotify || alert)('CSV import lands in a follow-up commit. File noted: ' + f.name, 'warn');
+      e.target.value = '';
+    });
+  }
+
+  /* ===== Bootstrap ===== */
+  function init() {
+    var id = getParam('id');
+    populateTypeDropdowns();
+    if (id) {
+      show('detailMode');
+      renderDetail(id);
+    } else {
+      show('listMode');
+      wireList();
+      renderList();
+    }
+    if (syncMetaEl) syncMetaEl.textContent = 'Synced via bcc-api.js';
+  }
+
+  window.addEventListener('bcc-data-ready', function () {
+    populateTypeDropdowns();
+    var id = getParam('id');
+    if (id) renderDetail(id); else if (rowsEl) renderList();
+  });
   window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
   setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
 })();
