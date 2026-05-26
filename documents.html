@@ -1,55 +1,397 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Documents · BCC Connect</title>
-  <link rel="manifest" href="/manifest.json" />
-  <meta name="theme-color" content="#1a1a1a" />
-  <link rel="icon" href="/bcc-logo.png" />
-  <script defer src="/bcc-api.js"></script>
-  <style>
-    :root { color-scheme: light; }
-    * { box-sizing: border-box; }
-    body { margin: 0; font: 14px/1.45 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; color: #1a1a1a; background: #f6f6f4; }
-    header.topbar { display: flex; align-items: center; gap: 12px; padding: 12px 18px; background: #1a1a1a; color: #f6f6f4; }
-    header.topbar img { height: 28px; }
-    header.topbar h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: 0.2px; }
-    header.topbar .grow { flex: 1; }
-    main { max-width: 880px; margin: 0 auto; padding: 32px 18px; }
-    .module-stub {
-      background: #fff; border: 1px solid #e2e1dd; border-radius: 10px;
-      padding: 28px; box-shadow: 0 1px 3px rgba(0,0,0,.04);
-    }
-    .module-stub h2 { margin: 0 0 8px; font-size: 22px; }
-    .module-stub p { margin: 6px 0; color: #4b4b46; }
-    .module-stub .tag {
-      display: inline-block; padding: 3px 10px; border-radius: 999px;
-      background: #a8884a; color: #fff; font-size: 11px; font-weight: 700;
-      letter-spacing: 0.6px; text-transform: uppercase;
-    }
-    .module-stub ul { margin: 14px 0 0; padding-left: 22px; color: #1a1a1a; }
-    .module-stub li { padding: 3px 0; }
-    a { color: #a8884a; }
-  </style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#1a1a1a" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Documents · BCC Connect</title>
+<link rel="icon" type="image/png" href="bcc-logo.png" />
+<link rel="manifest" href="manifest.json" />
+<style>
+  :root {
+    --ink:#1a1a1a; --ink-soft:#2b2b2b; --ink-line:#2e2c27;
+    --gold:#a8884a; --gold-warm:#c2a05c; --gold-deep:#876d3a;
+    --gold-fade:rgba(168,136,74,0.12);
+    --chrome:#f6f6f4; --chrome-mute:#e2e1dd; --muted:#8a877e;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:'Inter', system-ui, sans-serif; color:var(--ink); background:var(--chrome); }
+  header.topbar {
+    display:flex; align-items:center; gap:14px; padding:12px 22px; color:var(--chrome);
+    background:linear-gradient(90deg, #141414, #1f1f1f);
+    border-bottom:1px solid var(--ink-line); position:sticky; top:0; z-index:50;
+  }
+  header.topbar a.home { display:flex; align-items:center; gap:12px; text-decoration:none; color:var(--chrome); }
+  header.topbar img { height:30px; }
+  header.topbar .wordmark { font-family:'Cinzel', serif; font-size:14px; font-weight:700; letter-spacing:1.5px; }
+  header.topbar .wordmark .light { color:var(--gold); }
+  header.topbar .module {
+    font-size:11px; font-weight:700; letter-spacing:2.5px; text-transform:uppercase; color:var(--gold-warm);
+    border-left:1px solid rgba(255,255,255,0.18); padding-left:14px; margin-left:4px;
+  }
+
+  .page { max-width:1100px; margin:0 auto; padding:22px 22px 70px; }
+  .page-head { display:flex; align-items:flex-end; justify-content:space-between; gap:14px; margin-bottom:18px; flex-wrap:wrap; }
+  .page-head h1 { font-family:'Cinzel', serif; font-size:26px; margin:0; }
+  .page-head .sub { color:var(--muted); font-size:13px; margin-top:4px; }
+
+  /* Upload area */
+  .uploader {
+    background:#fff; border:2px dashed var(--chrome-mute); border-radius:12px;
+    padding:22px; margin-bottom:14px; text-align:center; transition:border-color 0.15s, background 0.15s;
+  }
+  .uploader.dragover { border-color:var(--gold); background:var(--gold-fade); }
+  .uploader h3 { font-family:'Cinzel', serif; font-size:18px; margin:0 0 4px; }
+  .uploader p { color:var(--muted); font-size:13px; margin:0 0 12px; }
+  .uploader .row { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; align-items:center; }
+  .uploader input[type=text], .uploader input[type=file] {
+    border:1px solid var(--chrome-mute); border-radius:8px;
+    padding:9px 11px; font:inherit; font-size:13.5px; min-height:38px;
+  }
+  .uploader input[type=text] { min-width:160px; }
+  .uploader button {
+    min-height:38px; padding:0 16px; border-radius:8px; border:0;
+    font:inherit; font-weight:700; font-size:13px; cursor:pointer;
+    background:var(--gold); color:#fff;
+  }
+  .uploader button:hover { background:var(--gold-deep); }
+  .uploader button:disabled { background:var(--muted); cursor:not-allowed; }
+
+  .toolbar {
+    display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+    background:#fff; padding:12px; border:1px solid var(--chrome-mute);
+    border-radius:12px; margin-bottom:14px;
+  }
+  .toolbar .search { flex:1; min-width:200px; display:flex; align-items:center; gap:8px;
+    background:var(--chrome); border:1px solid var(--chrome-mute); border-radius:8px;
+    padding:8px 12px; min-height:38px; }
+  .toolbar .search input { flex:1; border:none; outline:none; background:transparent; font:inherit; font-size:14px; min-width:0; }
+  .toolbar select { background:var(--chrome); border:1px solid var(--chrome-mute); border-radius:8px; padding:8px 10px; font:inherit; font-size:13px; min-height:38px; min-width:130px; }
+
+  .list { background:#fff; border:1px solid var(--chrome-mute); border-radius:12px; overflow:hidden; }
+  table { width:100%; border-collapse:collapse; }
+  thead th { text-align:left; font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:1px; padding:10px 12px; border-bottom:1px solid var(--chrome-mute); background:var(--chrome); }
+  tbody tr { border-bottom:1px solid var(--chrome-mute); }
+  tbody tr:last-child { border-bottom:none; }
+  tbody tr:hover { background:var(--gold-fade); }
+  tbody td { padding:12px 14px; vertical-align:middle; font-size:13.5px; }
+  tbody td .name { font-weight:700; color:var(--ink); display:flex; align-items:center; gap:8px; }
+  tbody td .name .icon {
+    width:30px; height:30px; flex-shrink:0; background:var(--gold-fade);
+    color:var(--gold); border-radius:6px; display:inline-flex; align-items:center; justify-content:center;
+    font-size:15px; font-weight:700;
+  }
+  tbody td .muted { color:var(--muted); font-size:12px; }
+  tbody td.actions { text-align:right; white-space:nowrap; }
+  .icon-btn { background:none; border:0; cursor:pointer; color:var(--muted); padding:6px 10px; border-radius:6px; font-size:14px; }
+  .icon-btn:hover { background:var(--chrome-mute); color:var(--ink); }
+  .icon-btn.danger:hover { background:#fee2e2; color:#b91c1c; }
+
+  .empty { padding:48px 20px; text-align:center; color:var(--muted); }
+  .empty .big { font-family:'Cinzel', serif; font-size:20px; color:var(--ink); margin-bottom:6px; }
+
+  .pill { display:inline-block; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:1px; padding:3px 9px; border-radius:999px; background:var(--gold-fade); color:var(--gold-deep); }
+
+  .note-banner {
+    background:#fff4d6; border:1px solid #f7d27a; border-radius:10px; padding:12px 14px;
+    color:#92400e; font-size:13px; margin-bottom:14px; line-height:1.5;
+  }
+  .note-banner strong { font-weight:700; }
+
+  @media (max-width:700px) {
+    .page { padding:14px 14px 60px; }
+    .page-head h1 { font-size:22px; }
+    table, thead, tbody, tr, td { display:block; }
+    thead { display:none; }
+    tbody tr { border:1px solid var(--chrome-mute); border-radius:10px; padding:10px; margin-bottom:10px; background:#fff; }
+    tbody td { padding:4px 0; border:0; font-size:14px; }
+    tbody td:before { content:attr(data-label); display:block; font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:1px; font-weight:700; margin-bottom:2px; }
+  }
+</style>
+<script src="bcc-api.js" defer></script>
 </head>
 <body>
-  <header class="topbar">
-    <img src="/bcc-logo.png" alt="BCC" />
-    <h1>Documents</h1>
-    <span class="grow"></span>
-  </header>
-  <main>
-    <div class="module-stub">
-      <span class="tag">Coming next</span>
-      <h2>Documents</h2>
-      <p>Contracts, SOPs, customer files. Stored in Azure Blob with short-lived signed download URLs.</p>
-      <p>This page is a placeholder so the nav drawer doesn't 404. Real content
-      lands in a subsequent commit per the build plan.</p>
-      <ul>
-        <li><a href="/index.html">Back to Home</a></li>
-      </ul>
+<header class="topbar">
+  <a class="home" href="index.html">
+    <img src="bcc-logo.png" alt="Blue Collar Coach" />
+    <span class="wordmark">BLUE COLLAR <span class="light">COACH</span></span>
+  </a>
+  <span class="module">Documents</span>
+  <span style="flex:1;"></span>
+</header>
+
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1>Documents</h1>
+      <div class="sub" id="subline">Loading…</div>
     </div>
-  </main>
+  </div>
+
+  <div class="note-banner" id="blobNote" hidden>
+    <strong>Heads up:</strong> the Azure Blob upload endpoint isn't wired into the Functions backend yet (lands in the next commit). For now you can see the document index and add metadata; actual file upload arrives shortly.
+  </div>
+
+  <div class="uploader" id="uploader">
+    <h3>Add a document</h3>
+    <p>Drop a file here, or click to pick one. Max 25&nbsp;MB. Files go to your Azure Blob container; metadata stays in the cloud.</p>
+    <div class="row">
+      <input type="file" id="fileInput" />
+      <input type="text" id="folderInput" placeholder="/contracts" value="/" />
+      <input type="text" id="tagsInput" placeholder="tags (hvac, signed)" />
+      <button id="uploadBtn" type="button">Upload</button>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <div class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;opacity:0.6;"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="q" type="search" placeholder="Search by name, folder, or tag…" autocomplete="off" />
+    </div>
+    <select id="folderFilter" aria-label="Filter by folder">
+      <option value="">All folders</option>
+    </select>
+  </div>
+
+  <div class="list" id="list" aria-live="polite">
+    <table id="tbl">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Folder</th>
+          <th>Tags</th>
+          <th>Size</th>
+          <th>Uploaded</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden>
+      <div class="big">No documents yet.</div>
+      <div>Upload your first file above.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var DOC_PREFIX = 'bcc-document-';
+
+  function uid()   { return 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2,9); }
+  function nowIso(){ return new Date().toISOString(); }
+  function esc(s)  { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
+  function formatBytes(n) {
+    if (!n && n !== 0) return '—';
+    if (n < 1024) return n + ' B';
+    if (n < 1024*1024) return (n / 1024).toFixed(0) + ' KB';
+    return (n / (1024*1024)).toFixed(1) + ' MB';
+  }
+  function fmtWhen(iso) {
+    if (!iso) return '—';
+    var d = new Date(iso); if (isNaN(d)) return '—';
+    return d.toLocaleDateString([], { month:'short', day:'numeric', year:'numeric' });
+  }
+  function iconFor(mime, name) {
+    name = (name || '').toLowerCase();
+    if (/\.(png|jpg|jpeg|gif|webp|svg)$/.test(name)) return '🖼';
+    if (/\.(pdf)$/.test(name))          return '📕';
+    if (/\.(docx?|odt|rtf)$/.test(name)) return '📄';
+    if (/\.(xlsx?|csv|ods)$/.test(name)) return '📊';
+    if (/\.(pptx?|key)$/.test(name))    return '📑';
+    if (/\.(zip|7z|rar|tar|gz)$/.test(name)) return '🗜';
+    if (/\.(mp4|mov|webm|avi)$/.test(name)) return '🎬';
+    if (/\.(mp3|wav|m4a|ogg)$/.test(name))  return '🎵';
+    return '📎';
+  }
+
+  function allDocs() {
+    var out = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i); if (!k || k.indexOf(DOC_PREFIX) !== 0) continue;
+      try { var d = JSON.parse(localStorage.getItem(k)); if (d && d.id) out.push(d); } catch (e) {}
+    }
+    return out.sort(function (a, b) { return (b.createdAt || '').localeCompare(a.createdAt || ''); });
+  }
+  function saveDoc(d) {
+    d.updatedAt = nowIso();
+    if (!d.createdAt) d.createdAt = d.updatedAt;
+    if (!d.id) d.id = DOC_PREFIX + uid();
+    if (!d.tenantId) d.tenantId = 'blue-collar-coach';
+    d.docType = 'document';
+    localStorage.setItem(d.id, JSON.stringify(d));
+    return d;
+  }
+  function deleteDoc(d) { localStorage.removeItem(d.id); }
+
+  /* ===== Render ===== */
+  var qInput, folderFilter, rowsEl, emptyEl, sublineEl;
+
+  function renderList() {
+    var all = allDocs();
+    var q = (qInput.value || '').trim().toLowerCase();
+    var folder = folderFilter.value;
+
+    var matched = all.filter(function (d) {
+      if (folder && d.folder !== folder) return false;
+      if (!q) return true;
+      var hay = [d.name, d.folder, d.tags, d.uploaderUpn].filter(Boolean).join(' ').toLowerCase();
+      return hay.indexOf(q) >= 0;
+    });
+
+    sublineEl.textContent = matched.length + ' of ' + all.length + ' document' + (all.length === 1 ? '' : 's') + (q || folder ? ' shown' : '');
+
+    rowsEl.innerHTML = '';
+    if (matched.length === 0) {
+      emptyEl.hidden = false;
+      emptyEl.querySelector('.big').textContent = all.length === 0 ? 'No documents yet.' : 'No matches.';
+      return;
+    }
+    emptyEl.hidden = true;
+
+    var html = '';
+    matched.forEach(function (d) {
+      var icon = iconFor(d.mimeType, d.name);
+      var size = formatBytes(d.sizeBytes);
+      var actions = '';
+      if (d.storageKey) {
+        actions += '<button class="icon-btn" data-act="download" title="Download">&#x21E9;</button>';
+      } else {
+        actions += '<span class="pill" title="No file attached yet">metadata</span>';
+      }
+      actions += '<button class="icon-btn danger" data-act="delete" title="Delete">&times;</button>';
+      html +=
+        '<tr data-id="' + esc(d.id) + '">' +
+          '<td data-label="Name">' +
+            '<div class="name"><span class="icon">' + icon + '</span><span>' + esc(d.name || '(no name)') + '</span></div>' +
+            (d.uploaderUpn ? '<div class="muted">by ' + esc(d.uploaderUpn) + '</div>' : '') +
+          '</td>' +
+          '<td data-label="Folder">' + esc(d.folder || '/') + '</td>' +
+          '<td data-label="Tags">' + (d.tags ? esc(d.tags) : '<span class="muted">—</span>') + '</td>' +
+          '<td data-label="Size">' + size + '</td>' +
+          '<td data-label="Uploaded">' + fmtWhen(d.createdAt) + '</td>' +
+          '<td class="actions">' + actions + '</td>' +
+        '</tr>';
+    });
+    rowsEl.innerHTML = html;
+
+    // populate folder filter
+    var folders = {};
+    all.forEach(function (d) { if (d.folder) folders[d.folder] = true; });
+    var cur = folderFilter.value;
+    folderFilter.innerHTML = '<option value="">All folders</option>' +
+      Object.keys(folders).sort().map(function (f) { return '<option value="' + esc(f) + '">' + esc(f) + '</option>'; }).join('');
+    folderFilter.value = cur;
+  }
+
+  /* ===== Upload ===== */
+  function tryUpload() {
+    var fileInput = document.getElementById('fileInput');
+    var f = fileInput.files && fileInput.files[0];
+    if (!f) { (window.bccNotify || alert)('Pick a file first.', 'warn'); return; }
+    if (f.size > 25 * 1024 * 1024) { (window.bccNotify || alert)('File over 25 MB.', 'warn'); return; }
+
+    var folder = document.getElementById('folderInput').value.trim() || '/';
+    var tags = document.getElementById('tagsInput').value.trim();
+
+    // Try the backend; gracefully fall back to metadata-only if the endpoint isn't wired yet.
+    var meta = saveDoc({
+      name: f.name,
+      folder: folder,
+      tags: tags,
+      sizeBytes: f.size,
+      mimeType: f.type || 'application/octet-stream',
+      uploaderUpn: (window.bccUser && window.bccUser.userDetails) || '',
+      storageKey: null
+    });
+    if (window.bccAudit) window.bccAudit('document-metadata-add', { key: meta.id, path: '/documents.html', meta: { name: f.name, folder: folder } });
+
+    var fd = new FormData();
+    fd.append('file', f);
+    fd.append('folder', folder);
+    fd.append('tags', tags);
+    fd.append('docId', meta.id);
+
+    document.getElementById('uploadBtn').disabled = true;
+    document.getElementById('uploadBtn').textContent = 'Uploading…';
+
+    fetch('/api/documents', { method: 'POST', body: fd, credentials: 'include' })
+      .then(function (r) {
+        if (!r.ok) throw new Error('Upload endpoint not wired yet (HTTP ' + r.status + ')');
+        return r.json();
+      })
+      .then(function (resp) {
+        // Server returns the persisted storage key + signed download URL.
+        meta.storageKey = resp.storageKey || null;
+        saveDoc(meta);
+        if (window.bccNotifySaved) window.bccNotifySaved('Uploaded.');
+        renderList();
+      })
+      .catch(function (e) {
+        document.getElementById('blobNote').hidden = false;
+        if (window.bccNotify) window.bccNotify('File metadata saved; binary upload pending (' + e.message + ').', 'warn');
+        renderList();
+      })
+      .finally(function () {
+        document.getElementById('uploadBtn').disabled = false;
+        document.getElementById('uploadBtn').textContent = 'Upload';
+        fileInput.value = '';
+        document.getElementById('tagsInput').value = '';
+      });
+  }
+  document.getElementById('uploadBtn').addEventListener('click', tryUpload);
+
+  // Drag-and-drop on the uploader card
+  var up = document.getElementById('uploader');
+  ['dragover','dragenter'].forEach(function (ev) {
+    up.addEventListener(ev, function (e) { e.preventDefault(); up.classList.add('dragover'); });
+  });
+  ['dragleave','dragend','drop'].forEach(function (ev) {
+    up.addEventListener(ev, function (e) { up.classList.remove('dragover'); });
+  });
+  up.addEventListener('drop', function (e) {
+    e.preventDefault();
+    var f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (!f) return;
+    var dt = new DataTransfer(); dt.items.add(f);
+    document.getElementById('fileInput').files = dt.files;
+    tryUpload();
+  });
+
+  /* ===== Events ===== */
+  function wire() {
+    qInput = document.getElementById('q');
+    folderFilter = document.getElementById('folderFilter');
+    rowsEl = document.getElementById('rows');
+    emptyEl = document.getElementById('empty');
+    sublineEl = document.getElementById('subline');
+    qInput.addEventListener('input', renderList);
+    folderFilter.addEventListener('change', renderList);
+    rowsEl.addEventListener('click', function (e) {
+      var btn = e.target.closest('button[data-act]'); if (!btn) return;
+      var tr = btn.closest('tr'); if (!tr) return;
+      var doc = allDocs().find(function (d) { return d.id === tr.dataset.id; });
+      if (!doc) return;
+      if (btn.dataset.act === 'delete') {
+        if (!confirm('Delete this document?\n\n"' + doc.name + '"\n\nThe metadata is removed; if the file was uploaded, the Azure Blob entry is also deleted when the API supports it.')) return;
+        deleteDoc(doc);
+        if (window.bccAudit) window.bccAudit('document-delete', { key: doc.id, path: '/documents.html' });
+        // Best-effort backend delete (tolerates not-wired-yet)
+        fetch('/api/documents/' + encodeURIComponent(doc.id), { method: 'DELETE', credentials: 'include' }).catch(function () {});
+        renderList();
+      } else if (btn.dataset.act === 'download') {
+        location.href = '/api/documents/' + encodeURIComponent(doc.id) + '/download';
+      }
+    });
+  }
+
+  /* ===== Init ===== */
+  function init() { wire(); renderList(); }
+  window.addEventListener('bcc-data-ready', renderList);
+  window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
+  setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
+})();
+</script>
 </body>
 </html>
