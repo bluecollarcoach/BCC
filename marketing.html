@@ -1,55 +1,443 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Marketing · BCC Connect</title>
-  <link rel="manifest" href="/manifest.json" />
-  <meta name="theme-color" content="#1a1a1a" />
-  <link rel="icon" href="/bcc-logo.png" />
-  <script defer src="/bcc-api.js"></script>
-  <style>
-    :root { color-scheme: light; }
-    * { box-sizing: border-box; }
-    body { margin: 0; font: 14px/1.45 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; color: #1a1a1a; background: #f6f6f4; }
-    header.topbar { display: flex; align-items: center; gap: 12px; padding: 12px 18px; background: #1a1a1a; color: #f6f6f4; }
-    header.topbar img { height: 28px; }
-    header.topbar h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: 0.2px; }
-    header.topbar .grow { flex: 1; }
-    main { max-width: 880px; margin: 0 auto; padding: 32px 18px; }
-    .module-stub {
-      background: #fff; border: 1px solid #e2e1dd; border-radius: 10px;
-      padding: 28px; box-shadow: 0 1px 3px rgba(0,0,0,.04);
-    }
-    .module-stub h2 { margin: 0 0 8px; font-size: 22px; }
-    .module-stub p { margin: 6px 0; color: #4b4b46; }
-    .module-stub .tag {
-      display: inline-block; padding: 3px 10px; border-radius: 999px;
-      background: #a8884a; color: #fff; font-size: 11px; font-weight: 700;
-      letter-spacing: 0.6px; text-transform: uppercase;
-    }
-    .module-stub ul { margin: 14px 0 0; padding-left: 22px; color: #1a1a1a; }
-    .module-stub li { padding: 3px 0; }
-    a { color: #a8884a; }
-  </style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#1a1a1a" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Marketing · BCC Connect</title>
+<link rel="icon" type="image/png" href="bcc-logo.png" />
+<link rel="manifest" href="manifest.json" />
+<style>
+  :root {
+    --ink:#1a1a1a; --ink-soft:#2b2b2b; --ink-line:#2e2c27;
+    --gold:#a8884a; --gold-warm:#c2a05c; --gold-deep:#876d3a;
+    --gold-fade:rgba(168,136,74,0.12);
+    --chrome:#f6f6f4; --chrome-mute:#e2e1dd; --muted:#8a877e;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:'Inter', system-ui, sans-serif; color:var(--ink); background:var(--chrome); }
+  header.topbar {
+    display:flex; align-items:center; gap:14px; padding:12px 22px; color:var(--chrome);
+    background:linear-gradient(90deg, #141414, #1f1f1f);
+    border-bottom:1px solid var(--ink-line); position:sticky; top:0; z-index:50;
+  }
+  header.topbar a.home { display:flex; align-items:center; gap:12px; text-decoration:none; color:var(--chrome); }
+  header.topbar img { height:30px; }
+  header.topbar .wordmark { font-family:'Cinzel', serif; font-size:14px; font-weight:700; letter-spacing:1.5px; }
+  header.topbar .wordmark .light { color:var(--gold); }
+  header.topbar .module {
+    font-size:11px; font-weight:700; letter-spacing:2.5px; text-transform:uppercase; color:var(--gold-warm);
+    border-left:1px solid rgba(255,255,255,0.18); padding-left:14px; margin-left:4px;
+  }
+  .page { max-width:1200px; margin:0 auto; padding:22px 22px 70px; }
+  .page-head { display:flex; align-items:flex-end; justify-content:space-between; gap:14px; margin-bottom:18px; flex-wrap:wrap; }
+  .page-head h1 { font-family:'Cinzel', serif; font-size:26px; margin:0; }
+  .page-head .sub { color:var(--muted); font-size:13px; margin-top:4px; }
+
+  /* Channel status row */
+  .channels {
+    display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:10px;
+    margin-bottom:14px;
+  }
+  .channel-card {
+    background:#fff; border:1px solid var(--chrome-mute); border-radius:11px;
+    padding:14px; text-align:center;
+  }
+  .channel-card .icon { font-size:24px; margin-bottom:6px; }
+  .channel-card .name { font-family:'Cinzel', serif; font-size:14px; font-weight:700; margin-bottom:4px; }
+  .channel-card .status { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; }
+  .channel-card .status .dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:4px; vertical-align:middle; }
+  .channel-card.connected .status { color:#065f46; }
+  .channel-card.connected .status .dot { background:#059669; }
+  .channel-card.error .status { color:#6a1c1c; }
+  .channel-card.error .status .dot { background:#6a1c1c; }
+  .channel-card.disconnected .status { color:var(--muted); }
+  .channel-card.disconnected .status .dot { background:#8a877e; }
+  .channel-card a { color:var(--gold-deep); text-decoration:none; font-size:11px; font-weight:700; }
+  .channel-card a:hover { color:var(--gold); }
+
+  .toolbar {
+    display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+    background:#fff; padding:12px; border:1px solid var(--chrome-mute);
+    border-radius:12px; margin-bottom:14px;
+  }
+  .toolbar .search { flex:1; min-width:200px; display:flex; align-items:center; gap:8px;
+    background:var(--chrome); border:1px solid var(--chrome-mute); border-radius:8px;
+    padding:8px 12px; min-height:38px; }
+  .toolbar .search input { flex:1; border:none; outline:none; background:transparent; font:inherit; font-size:14px; min-width:0; }
+  .toolbar select { background:var(--chrome); border:1px solid var(--chrome-mute); border-radius:8px; padding:8px 10px; font:inherit; font-size:13px; min-height:38px; min-width:130px; }
+  .btn { min-height:38px; border:0; border-radius:8px; padding:0 14px; font:inherit; font-weight:700; font-size:13px; cursor:pointer; }
+  .btn-primary { background:var(--gold); color:#fff; }
+  .btn-primary:hover { background:var(--gold-deep); }
+  .btn-ghost { background:transparent; color:var(--ink); border:1px solid var(--chrome-mute); }
+  .btn-ghost:hover { background:var(--chrome-mute); }
+  .btn-danger { background:transparent; color:#6a1c1c; border:1px solid #e6c8c8; }
+  .btn-danger:hover { background:#f3e0e0; }
+
+  .list { background:#fff; border:1px solid var(--chrome-mute); border-radius:12px; overflow:hidden; }
+  table { width:100%; border-collapse:collapse; }
+  thead th { text-align:left; font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:1px; padding:10px 12px; border-bottom:1px solid var(--chrome-mute); background:var(--chrome); }
+  tbody tr { border-bottom:1px solid var(--chrome-mute); cursor:pointer; }
+  tbody tr:last-child { border-bottom:none; }
+  tbody tr:hover { background:var(--gold-fade); }
+  tbody td { padding:12px; vertical-align:middle; font-size:13.5px; }
+  .ch-chip { display:inline-block; padding:3px 9px; border-radius:999px; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:1px; }
+  .ch-google-ads { background:#fef3c7; color:#92400e; }
+  .ch-meta       { background:#dbeafe; color:#1d4ed8; }
+  .ch-linkedin   { background:#cffafe; color:#0e7490; }
+  .ch-mailchimp  { background:#ffe4e6; color:#9f1239; }
+  .ch-wordpress  { background:#e0f2fe; color:#075985; }
+  .ch-godaddy    { background:var(--gold-fade); color:var(--gold-deep); }
+  .ch-other      { background:#f1f1ef; color:var(--muted); }
+  .st-chip { display:inline-block; padding:3px 9px; border-radius:999px; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:1px; }
+  .st-draft     { background:#f1f1ef; color:var(--muted); }
+  .st-active    { background:#d1fae5; color:#065f46; }
+  .st-paused    { background:#fff4d6; color:#92400e; }
+  .st-completed { background:#ddeefd; color:#1d4ed8; }
+  .num { font-variant-numeric:tabular-nums; }
+  .icon-btn { background:none; border:0; cursor:pointer; color:var(--muted); padding:6px 10px; border-radius:6px; font-size:14px; }
+  .icon-btn:hover { background:var(--chrome-mute); color:var(--ink); }
+  .icon-btn.danger:hover { background:#f3e0e0; color:#6a1c1c; }
+  .empty { padding:48px 20px; text-align:center; color:var(--muted); }
+  .empty .big { font-family:'Cinzel', serif; font-size:20px; color:var(--ink); margin-bottom:6px; }
+
+  /* Edit modal */
+  .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:200; display:none; align-items:center; justify-content:center; padding:18px; }
+  .modal-bg.open { display:flex; }
+  .modal { background:#fff; border-radius:14px; padding:22px; max-width:640px; width:100%; max-height:90vh; overflow-y:auto; }
+  .modal h3 { font-family:'Cinzel', serif; font-size:18px; margin:0 0 14px; }
+  .modal label { display:flex; flex-direction:column; gap:4px; font-size:12px; font-weight:600; color:var(--muted); }
+  .modal input, .modal select, .modal textarea {
+    border:1px solid var(--chrome-mute); border-radius:8px; padding:9px 11px; font:inherit; font-size:14px;
+    min-height:38px; color:var(--ink); background:#fff; width:100%;
+  }
+  .modal textarea { min-height:60px; resize:vertical; }
+  .modal .grid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
+  .modal .full { grid-column:1 / -1; }
+  .modal .actions { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; flex-wrap:wrap; }
+
+  @media (max-width:700px) {
+    .page { padding:14px 14px 60px; }
+    .page-head h1 { font-size:22px; }
+    table, thead, tbody, tr, td { display:block; }
+    thead { display:none; }
+    tbody tr { background:#fff; border:1px solid var(--chrome-mute); border-radius:10px; padding:10px; margin-bottom:10px; }
+    tbody td { padding:4px 0; border:0; font-size:14px; }
+    tbody td:before { content:attr(data-label); display:block; font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:1px; font-weight:700; margin-bottom:2px; }
+    .modal .grid { grid-template-columns:1fr; }
+  }
+</style>
+<script src="bcc-api.js" defer></script>
 </head>
 <body>
-  <header class="topbar">
-    <img src="/bcc-logo.png" alt="BCC" />
-    <h1>Marketing</h1>
-    <span class="grow"></span>
-  </header>
-  <main>
-    <div class="module-stub">
-      <span class="tag">Coming next</span>
-      <h2>Marketing</h2>
-      <p>Google Ads, Meta, LinkedIn, MailChimp, GoDaddy/WordPress â all connectors configured in Admin â Integrations.</p>
-      <p>This page is a placeholder so the nav drawer doesn't 404. Real content
-      lands in a subsequent commit per the build plan.</p>
-      <ul>
-        <li><a href="/index.html">Back to Home</a></li>
-      </ul>
+<header class="topbar">
+  <a class="home" href="index.html">
+    <img src="bcc-logo.png" alt="Blue Collar Coach" />
+    <span class="wordmark">BLUE COLLAR <span class="light">COACH</span></span>
+  </a>
+  <span class="module">Marketing</span>
+  <span style="flex:1;"></span>
+</header>
+
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1>Marketing</h1>
+      <div class="sub" id="subline">Campaigns across Google Ads, Meta, LinkedIn, Mailchimp, and WordPress. Status drawn from <a href="admin.html#integrations" style="color:var(--gold-deep);text-decoration:none;font-weight:700;">Admin → Integrations</a>.</div>
     </div>
-  </main>
+    <button class="btn btn-primary" id="newBtn" type="button">+ New campaign</button>
+  </div>
+
+  <!-- Channel status row -->
+  <div class="channels" id="channelStrip"></div>
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <div class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;opacity:0.6;"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="q" type="search" placeholder="Search by name, channel, or note…" autocomplete="off" />
+    </div>
+    <select id="channelFilter" aria-label="Filter by channel">
+      <option value="">All channels</option>
+      <option value="google-ads">Google Ads</option>
+      <option value="meta">Meta</option>
+      <option value="linkedin">LinkedIn</option>
+      <option value="mailchimp">Mailchimp</option>
+      <option value="wordpress">WordPress</option>
+      <option value="godaddy">GoDaddy</option>
+      <option value="other">Other</option>
+    </select>
+    <select id="statusFilter" aria-label="Filter by status">
+      <option value="">All statuses</option>
+      <option value="draft">Draft</option>
+      <option value="active">Active</option>
+      <option value="paused">Paused</option>
+      <option value="completed">Completed</option>
+    </select>
+  </div>
+
+  <div class="list" id="list">
+    <table>
+      <thead>
+        <tr>
+          <th>Campaign</th>
+          <th>Channel</th>
+          <th>Status</th>
+          <th>Window</th>
+          <th>Spend</th>
+          <th>Leads</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden>
+      <div class="big">No campaigns yet.</div>
+      <div>Click "+ New campaign" to track your first one. Integrations stay paused until configured in Admin.</div>
+    </div>
+  </div>
+</div>
+
+<!-- New/edit modal -->
+<div class="modal-bg" id="modalBg">
+  <div class="modal">
+    <h3 id="modalTitle">New campaign</h3>
+    <input type="hidden" id="m-id" />
+    <div class="grid">
+      <label class="full">Name<input type="text" id="m-name" placeholder="Q3 LinkedIn — Owner Network" /></label>
+      <label>Channel
+        <select id="m-channel">
+          <option value="google-ads">Google Ads</option>
+          <option value="meta">Meta (Facebook + Instagram)</option>
+          <option value="linkedin">LinkedIn</option>
+          <option value="mailchimp">Mailchimp</option>
+          <option value="wordpress">WordPress</option>
+          <option value="godaddy">GoDaddy</option>
+          <option value="other">Other</option>
+        </select>
+      </label>
+      <label>Status
+        <select id="m-status">
+          <option value="draft">Draft</option>
+          <option value="active">Active</option>
+          <option value="paused">Paused</option>
+          <option value="completed">Completed</option>
+        </select>
+      </label>
+      <label>Budget (USD)<input type="number" id="m-budget" min="0" step="50" placeholder="2000" /></label>
+      <label>Spend to date (USD)<input type="number" id="m-spent" min="0" step="50" placeholder="0" /></label>
+      <label>Start<input type="date" id="m-start" /></label>
+      <label>End<input type="date" id="m-end" /></label>
+      <label>Impressions<input type="number" id="m-imp" min="0" step="1" placeholder="0" /></label>
+      <label>Clicks<input type="number" id="m-clicks" min="0" step="1" placeholder="0" /></label>
+      <label>Leads<input type="number" id="m-leads" min="0" step="1" placeholder="0" /></label>
+      <label class="full">Notes<textarea id="m-notes" rows="2" placeholder="What's the offer, audience, hook?"></textarea></label>
+    </div>
+    <div class="actions">
+      <button class="btn btn-ghost" id="m-cancel" type="button">Cancel</button>
+      <button class="btn btn-danger" id="m-delete" type="button" style="display:none;">Delete</button>
+      <button class="btn btn-primary" id="m-save" type="button">Save campaign</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var CAMP_PREFIX = 'bcc-campaign-';
+  var INT_PREFIX  = 'bcc-integration-';
+
+  function uid()    { return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2,9); }
+  function nowIso() { return new Date().toISOString(); }
+  function esc(s)   { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
+  function dollars(c) { var n = Math.round((c || 0) / 100); return '$' + n.toLocaleString(); }
+
+  var CHANNEL_LABEL = {
+    'google-ads': 'Google Ads', meta: 'Meta', linkedin: 'LinkedIn',
+    mailchimp: 'Mailchimp', wordpress: 'WordPress', godaddy: 'GoDaddy', other: 'Other'
+  };
+  var CHANNEL_ICON = {
+    'google-ads': '🅖', meta: 'ⓕ', linkedin: 'in', mailchimp: '✉', wordpress: 'W', godaddy: '🌐', other: '◯'
+  };
+
+  /* ===== Channel status strip (reads from bcc-integration-* docs) ===== */
+  function loadIntegration(channel) {
+    try { var raw = localStorage.getItem(INT_PREFIX + channel); if (raw) return JSON.parse(raw); } catch (e) {}
+    return { status: 'disconnected' };
+  }
+  function renderChannelStrip() {
+    var strip = document.getElementById('channelStrip');
+    var channels = ['google-ads','meta','linkedin','mailchimp','wordpress','godaddy'];
+    strip.innerHTML = channels.map(function (ch) {
+      var rec = loadIntegration(ch);
+      var status = rec.status || 'disconnected';
+      var label = status === 'connected' ? 'Connected' : status === 'error' ? 'Error' : 'Not connected';
+      return '<div class="channel-card ' + status + '">' +
+        '<div class="icon">' + CHANNEL_ICON[ch] + '</div>' +
+        '<div class="name">' + esc(CHANNEL_LABEL[ch] || ch) + '</div>' +
+        '<div class="status"><span class="dot"></span>' + label + '</div>' +
+        (status === 'connected' ? '' : '<div style="margin-top:6px;"><a href="admin.html">Configure →</a></div>') +
+      '</div>';
+    }).join('');
+  }
+
+  /* ===== Campaigns CRUD ===== */
+  function allCampaigns() {
+    var out = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i); if (!k || k.indexOf(CAMP_PREFIX) !== 0) continue;
+      try { var c = JSON.parse(localStorage.getItem(k)); if (c && c.id) out.push(c); } catch (e) {}
+    }
+    return out.sort(function (a, b) { return (b.updatedAt || '').localeCompare(a.updatedAt || ''); });
+  }
+  function getCampaign(id) { try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (e) { return null; } }
+  function saveCampaign(c) {
+    c.updatedAt = nowIso();
+    if (!c.createdAt) c.createdAt = c.updatedAt;
+    if (!c.id) c.id = CAMP_PREFIX + uid();
+    if (!c.tenantId) c.tenantId = 'blue-collar-coach';
+    c.docType = 'campaign';
+    localStorage.setItem(c.id, JSON.stringify(c));
+    return c;
+  }
+  function deleteCampaign(id) { localStorage.removeItem(id); }
+
+  /* ===== List render ===== */
+  var qInput, channelFilter, statusFilter, rowsEl, emptyEl, subline;
+
+  function renderList() {
+    var all = allCampaigns();
+    var q = (qInput.value || '').trim().toLowerCase();
+    var channel = channelFilter.value;
+    var status = statusFilter.value;
+    var matched = all.filter(function (c) {
+      if (channel && c.channel !== channel) return false;
+      if (status && c.status !== status) return false;
+      if (!q) return true;
+      var hay = [c.name, c.channel, c.notes].filter(Boolean).join(' ').toLowerCase();
+      return hay.indexOf(q) >= 0;
+    });
+    subline.textContent = matched.length + ' of ' + all.length + ' campaign' + (all.length === 1 ? '' : 's') + (q || channel || status ? ' shown' : '');
+
+    if (matched.length === 0) {
+      rowsEl.innerHTML = '';
+      emptyEl.hidden = false;
+      emptyEl.querySelector('.big').textContent = all.length === 0 ? 'No campaigns yet.' : 'No matches.';
+      return;
+    }
+    emptyEl.hidden = true;
+    rowsEl.innerHTML = matched.map(function (c) {
+      var win = [c.startAt, c.endAt].filter(Boolean).map(function (d) {
+        return new Date(d).toLocaleDateString([], { month:'short', day:'numeric' });
+      }).join(' → ');
+      var spend = (c.budgetCents || 0) > 0
+        ? dollars(c.spentCents || 0) + ' / ' + dollars(c.budgetCents || 0)
+        : dollars(c.spentCents || 0);
+      var leads = (c.metrics && c.metrics.leads != null) ? c.metrics.leads : (c.leads || 0);
+      var ch = c.channel || 'other';
+      return '<tr data-id="' + esc(c.id) + '">' +
+        '<td data-label="Campaign"><div style="font-weight:700;">' + esc(c.name || '(unnamed)') + '</div>' + (c.notes ? '<div style="color:var(--muted);font-size:12px;margin-top:2px;">' + esc(c.notes.slice(0, 80)) + (c.notes.length > 80 ? '…' : '') + '</div>' : '') + '</td>' +
+        '<td data-label="Channel"><span class="ch-chip ch-' + esc(ch) + '">' + esc(CHANNEL_LABEL[ch] || ch) + '</span></td>' +
+        '<td data-label="Status"><span class="st-chip st-' + esc(c.status || 'draft') + '">' + esc(c.status || 'draft') + '</span></td>' +
+        '<td data-label="Window" style="color:var(--muted);font-size:12.5px;">' + esc(win || '—') + '</td>' +
+        '<td data-label="Spend" class="num">' + esc(spend) + '</td>' +
+        '<td data-label="Leads" class="num">' + leads + '</td>' +
+        '<td><button class="icon-btn danger" data-act="delete" title="Delete">&times;</button></td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  /* ===== Modal ===== */
+  function openModal(id) {
+    document.getElementById('m-id').value = id || '';
+    var c = id ? getCampaign(id) : null;
+    document.getElementById('modalTitle').textContent = id ? 'Edit campaign' : 'New campaign';
+    document.getElementById('m-delete').style.display = id ? '' : 'none';
+    document.getElementById('m-name').value     = (c && c.name) || '';
+    document.getElementById('m-channel').value  = (c && c.channel) || 'google-ads';
+    document.getElementById('m-status').value   = (c && c.status) || 'draft';
+    document.getElementById('m-budget').value   = c && c.budgetCents ? (c.budgetCents / 100) : '';
+    document.getElementById('m-spent').value    = c && c.spentCents ? (c.spentCents / 100) : '';
+    document.getElementById('m-start').value    = (c && c.startAt) ? c.startAt.slice(0,10) : '';
+    document.getElementById('m-end').value      = (c && c.endAt) ? c.endAt.slice(0,10) : '';
+    document.getElementById('m-imp').value      = (c && c.metrics && c.metrics.impressions) || '';
+    document.getElementById('m-clicks').value   = (c && c.metrics && c.metrics.clicks) || '';
+    document.getElementById('m-leads').value    = (c && c.metrics && c.metrics.leads) || '';
+    document.getElementById('m-notes').value    = (c && c.notes) || '';
+    document.getElementById('modalBg').classList.add('open');
+    setTimeout(function () { document.getElementById('m-name').focus(); }, 50);
+  }
+  function closeModal() { document.getElementById('modalBg').classList.remove('open'); }
+
+  document.getElementById('newBtn').addEventListener('click', function () { openModal(null); });
+  document.getElementById('m-cancel').addEventListener('click', closeModal);
+  document.getElementById('modalBg').addEventListener('click', function (e) {
+    if (e.target.id === 'modalBg') closeModal();
+  });
+  document.getElementById('m-save').addEventListener('click', function () {
+    var id = document.getElementById('m-id').value;
+    var c = id ? (getCampaign(id) || {}) : {};
+    c.name      = document.getElementById('m-name').value.trim() || '(unnamed)';
+    c.channel   = document.getElementById('m-channel').value;
+    c.status    = document.getElementById('m-status').value;
+    c.budgetCents = Math.round(parseFloat(document.getElementById('m-budget').value || '0') * 100) || 0;
+    c.spentCents  = Math.round(parseFloat(document.getElementById('m-spent').value || '0') * 100) || 0;
+    c.startAt   = document.getElementById('m-start').value || null;
+    c.endAt     = document.getElementById('m-end').value || null;
+    c.metrics   = {
+      impressions: parseInt(document.getElementById('m-imp').value || '0', 10) || 0,
+      clicks:      parseInt(document.getElementById('m-clicks').value || '0', 10) || 0,
+      leads:       parseInt(document.getElementById('m-leads').value || '0', 10) || 0
+    };
+    c.notes     = document.getElementById('m-notes').value.trim();
+    saveCampaign(c);
+    if (window.bccAudit) window.bccAudit(id ? 'campaign-update' : 'campaign-create', { key: c.id, path: '/marketing.html', meta: { channel: c.channel, status: c.status } });
+    if (window.bccNotifySaved) window.bccNotifySaved('Campaign saved.');
+    closeModal();
+    renderList();
+  });
+  document.getElementById('m-delete').addEventListener('click', function () {
+    var id = document.getElementById('m-id').value; if (!id) return;
+    if (!confirm('Delete this campaign?')) return;
+    deleteCampaign(id);
+    if (window.bccAudit) window.bccAudit('campaign-delete', { key: id, path: '/marketing.html' });
+    closeModal();
+    renderList();
+  });
+
+  /* ===== Events ===== */
+  function wire() {
+    qInput = document.getElementById('q');
+    channelFilter = document.getElementById('channelFilter');
+    statusFilter = document.getElementById('statusFilter');
+    rowsEl = document.getElementById('rows');
+    emptyEl = document.getElementById('empty');
+    subline = document.getElementById('subline');
+    qInput.addEventListener('input', renderList);
+    channelFilter.addEventListener('change', renderList);
+    statusFilter.addEventListener('change', renderList);
+    rowsEl.addEventListener('click', function (e) {
+      var btn = e.target.closest('button[data-act]');
+      var tr = e.target.closest('tr[data-id]');
+      if (!tr) return;
+      if (btn && btn.dataset.act === 'delete') {
+        e.stopPropagation();
+        if (!confirm('Delete this campaign?')) return;
+        deleteCampaign(tr.dataset.id);
+        if (window.bccAudit) window.bccAudit('campaign-delete', { key: tr.dataset.id, path: '/marketing.html' });
+        renderList();
+        return;
+      }
+      openModal(tr.dataset.id);
+    });
+  }
+
+  /* ===== Init ===== */
+  function init() { wire(); renderChannelStrip(); renderList(); }
+  window.addEventListener('bcc-data-ready', function () { renderChannelStrip(); renderList(); });
+  window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
+  setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
+})();
+</script>
 </body>
 </html>
