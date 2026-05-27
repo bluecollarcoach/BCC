@@ -949,6 +949,154 @@ app.http('integrations-test', {
   })
 });
 
+/**
+ * POST /api/integrations/{channel}/notify
+ *
+ * Fire an outbound notification through a webhook-style channel (Slack or
+ * Teams today). Body: { text } — the message to send. Server-side reads
+ * the webhook URL from bcc-integration-<channel>.fields.webhookUrl so
+ * the user's saved credentials are the source of truth.
+ */
+app.http('integrations-notify', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'integrations/{channel}/notify',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const channel = String(request.params.channel || '').toLowerCase();
+    if (channel !== 'slack' && channel !== 'teams') return badRequest('only slack and teams supported');
+
+    try {
+      const fields = await getIntegrationFields(channel);
+      if (!fields.webhookUrl) return badRequest('webhookUrl not set in Admin → Integrations');
+      const body = await request.json().catch(() => ({}));
+      const text = String(body.text || 'BCC Connect: test message').slice(0, 2000);
+
+      // Slack + Teams accept slightly different payload shapes; both
+      // accept the simple { text } form for incoming-webhook style endpoints.
+      const payload = channel === 'teams'
+        ? { '@type': 'MessageCard', '@context': 'http://schema.org/extensions', text: text, themeColor: 'a8884a' }
+        : { text: text };
+
+      const r = await fetch(fields.webhookUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).catch(e => null);
+
+      if (!r || !r.ok) {
+        return { jsonBody: { ok: false, error: 'webhook rejected (' + (r && r.status) + ')' } };
+      }
+      return { jsonBody: { ok: true } };
+    } catch (err) {
+      context.error('integrations-notify error', err);
+      return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } };
+    }
+  })
+});
+
+/**
+ * POST /api/integrations/qbo/sync
+ *
+ * Pulls last-12-months P&L from QuickBooks and upserts one
+ * bcc-financial-period-<yyyy-mm> doc per month. Uses the OAuth refresh
+ * token stored in bcc-integration-qbo.fields to mint a short-lived access
+ * token, then calls QBO Reports API.
+ *
+ * Returns { periods: [{period, revenueCents, expensesCents}, ...] } so
+ * the client (bookkeeping.html) can mirror the periods into localStorage.
+ *
+ * Until the user completes the OAuth flow (separate /api/integrations/qbo/connect
+ * endpoint, deferred), this returns a structured "not connected" payload
+ * the bookkeeping page already handles gracefully.
+ */
+app.http('integrations-qbo-sync', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'integrations/qbo/sync',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    try {
+      const fields = await getIntegrationFields('qbo');
+      const env = fields.environment === 'production' ? 'production' : 'sandbox';
+      if (!fields.refreshToken || !fields.clientId || !fields.clientSecret || !fields.realmId) {
+        return { status: 400, jsonBody: { ok: false, error: 'QBO not fully connected yet — complete the OAuth flow (clientId, clientSecret, refreshToken, realmId all required).' } };
+      }
+
+      // 1) refresh token → access token
+      const tokenUrl = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
+      const tokBody = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: fields.refreshToken }).toString();
+      const basic = Buffer.from(fields.clientId + ':' + fields.clientSecret).toString('base64');
+      const tokR = await fetch(tokenUrl, { method: 'POST', headers: { 'Authorization': 'Basic ' + basic, 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' }, body: tokBody });
+      if (!tokR.ok) return { status: 502, jsonBody: { ok: false, error: 'QBO token refresh failed (' + tokR.status + ')' } };
+      const tok = await tokR.json();
+      const accessToken = tok.access_token;
+      // Persist the rotated refresh token if Intuit gave us a new one
+      if (tok.refresh_token && tok.refresh_token !== fields.refreshToken) {
+        try {
+          const c = container();
+          const intDoc = await c.item('bcc-integration-qbo', BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+          if (intDoc) { intDoc.fields.refreshToken = tok.refresh_token; intDoc.updatedAt = new Date().toISOString(); await c.items.upsert(intDoc); }
+        } catch (_) {}
+      }
+
+      // 2) for each of the last 12 calendar months, call ProfitAndLoss
+      const base = env === 'production' ? 'https://quickbooks.api.intuit.com' : 'https://sandbox-quickbooks.api.intuit.com';
+      const periods = [];
+      const now = new Date();
+      for (let i = 0; i < 12; i++) {
+        const target = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const startStr = target.toISOString().slice(0, 10);
+        const end = new Date(target.getFullYear(), target.getMonth() + 1, 0); // last day of that month
+        const endStr = end.toISOString().slice(0, 10);
+        const url = base + '/v3/company/' + encodeURIComponent(fields.realmId) +
+          '/reports/ProfitAndLoss?start_date=' + startStr + '&end_date=' + endStr + '&accounting_method=Accrual&minorversion=70';
+        const r = await fetch(url, { headers: { 'Authorization': 'Bearer ' + accessToken, 'Accept': 'application/json' } });
+        if (!r.ok) continue;
+        const j = await r.json().catch(() => null);
+        // QBO P&L is nested rows; sum top-level Income + Expense
+        let income = 0, expense = 0;
+        try {
+          const rows = (j && j.Rows && j.Rows.Row) || [];
+          for (const row of rows) {
+            const group = row.group || row.type || '';
+            const summary = row.Summary && row.Summary.ColData && row.Summary.ColData[1] ? parseFloat(row.Summary.ColData[1].value || '0') : 0;
+            if (/income/i.test(group)) income += summary;
+            else if (/expense/i.test(group) || /cogs/i.test(group)) expense += summary;
+          }
+        } catch (_) {}
+        const periodKey = startStr.slice(0, 7);
+        periods.push({
+          id: 'bcc-financial-period-' + periodKey,
+          tenantId: BCC_TENANT_ID,
+          docType: 'financial-period',
+          period: periodKey,
+          revenueCents: Math.round(income * 100),
+          expensesCents: Math.round(expense * 100),
+          netCents: Math.round((income - expense) * 100),
+          source: 'qbo',
+          syncedAt: new Date().toISOString()
+        });
+      }
+
+      // 3) persist into Cosmos so other clients see it too
+      try {
+        const c = container();
+        for (const per of periods) await c.items.upsert(per);
+      } catch (e) { context.warn && context.warn('persist periods failed', e && e.message); }
+
+      return { jsonBody: { ok: true, periods: periods } };
+    } catch (err) {
+      context.error('qbo-sync error', err);
+      return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } };
+    }
+  })
+});
+
 /* ============ Azure Blob — document storage ============
  * Files don't fit in Cosmos (10 MB doc cap; not what it's designed for).
  * Per the data-shapes.md sketch: file goes to Blob, metadata stays in

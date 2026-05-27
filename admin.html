@@ -759,6 +759,10 @@
         '<div class="int-foot">' +
           '<span class="int-last">Last saved: ' + esc(lastSync) + '</span>' +
           '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+            ((conn.channel === 'slack' || conn.channel === 'teams')
+              ? '<button class="btn btn-ghost" data-int-act="notify" type="button">Send test message</button>' : '') +
+            ((conn.channel === 'qbo')
+              ? '<button class="btn btn-ghost" data-int-act="sync" type="button">Sync now</button>' : '') +
             '<button class="btn btn-ghost" data-int-act="test" type="button">Test connection</button>' +
             '<button class="btn btn-danger" data-int-act="clear" type="button">Clear</button>' +
             '<button class="btn btn-primary" data-int-act="save" type="button">Save</button>' +
@@ -833,6 +837,43 @@
               renderIntegrations();
             })
             .finally(function () { /* renderIntegrations re-creates the button */ });
+          return;
+        }
+        if (act === 'notify') {
+          var text = prompt('Message to send (will post to ' + channel + '):', 'BCC Connect test message at ' + new Date().toLocaleTimeString());
+          if (text == null) return;
+          b.disabled = true; b.textContent = 'Sending…';
+          fetch('/api/integrations/' + encodeURIComponent(channel) + '/notify', {
+            method: 'POST', credentials: 'include',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ text: text })
+          })
+            .then(function (r) { return r.json().catch(function () { return { ok:false, error:'bad response' }; }); })
+            .then(function (resp) {
+              if (window.bccNotify) window.bccNotify(resp.ok ? 'Message delivered.' : ('Failed: ' + (resp.error || 'unknown')), resp.ok ? 'success' : 'error');
+              if (window.bccAudit) window.bccAudit('integration-save', { key: INT_PREFIX + channel, path: '/admin.html', meta: { action: 'notify', ok: resp.ok } });
+            })
+            .catch(function (e) {
+              if (window.bccNotify) window.bccNotify('Notify endpoint failed: ' + e.message, 'error');
+            })
+            .finally(function () { b.disabled = false; b.textContent = 'Send test message'; });
+          return;
+        }
+        if (act === 'sync') {
+          b.disabled = true; b.textContent = 'Syncing…';
+          fetch('/api/integrations/' + encodeURIComponent(channel) + '/sync', { method: 'POST', credentials: 'include' })
+            .then(function (r) { return r.json().catch(function () { return { ok:false, error:'bad response' }; }); })
+            .then(function (resp) {
+              if (resp.ok) {
+                // Mirror returned periods into localStorage so Bookkeeping picks them up immediately
+                (resp.periods || []).forEach(function (per) { localStorage.setItem(per.id, JSON.stringify(per)); });
+                if (window.bccNotify) window.bccNotify('Synced ' + ((resp.periods || []).length) + ' period(s).', 'success');
+              } else {
+                if (window.bccNotify) window.bccNotify('Sync failed: ' + (resp.error || 'unknown'), 'error');
+              }
+            })
+            .catch(function (e) { if (window.bccNotify) window.bccNotify('Sync endpoint failed: ' + e.message, 'error'); })
+            .finally(function () { b.disabled = false; b.textContent = 'Sync now'; });
         }
       });
     });
