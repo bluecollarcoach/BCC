@@ -5,18 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="theme-color" content="#2b2b2b" />
 <meta name="robots" content="noindex, nofollow" />
-<title>Crew Chat &middot; BCC Connect</title>
+<title>Team Chat &middot; BCC Connect</title>
 <link rel="icon" type="image/png" href="bcc-logo.png" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 <style>
   :root {
     --p-navy:#2b2b2b; --p-navy-dark:#1a1a1a; --p-navy-light:#374151;
     --p-orange:#a8884a; --p-orange-soft:#7a4848;
     --p-cyan:#1d4ed8; --p-cream:#f3f4f6;
     --p-slate:#1a1a1a; --p-gray:#6b685f; --p-light:#f6f6f4;
-    --p-border:#e2e1dd; --p-green:#10b981; --p-red:#7a4848; --p-amber:#f59e0b;
+    --p-border:#e2e1dd; --p-green:#10b981; --p-red:#6a1c1c; --p-amber:#f59e0b;
   }
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { height:100%; }
@@ -31,9 +31,15 @@
     color:#fff; padding:10px 16px; display:flex; align-items:center; gap:14px;
     box-shadow:0 2px 12px rgba(0,0,0,0.18);
   }
-  header.topbar a.home { display:flex; align-items:center; gap:10px; text-decoration:none; color:#fff; }
-  header.topbar img { height:30px; background:#fff; padding:3px 8px; border-radius:6px; }
-  header.topbar .module { font-size:13px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--p-orange-soft); }
+  header.topbar a.home { display:flex; align-items:center; gap:12px; text-decoration:none; color:#fff; }
+  header.topbar img { height:30px; }
+  header.topbar .wordmark { font-family:'Cinzel', serif; font-size:14px; font-weight:700; letter-spacing:1.5px; color:#f6f6f4; }
+  header.topbar .wordmark .light { color:var(--p-orange); }
+  header.topbar .module {
+    font-size:11px; font-weight:700; letter-spacing:2.5px; text-transform:uppercase;
+    color:var(--p-orange);
+    border-left:1px solid rgba(255,255,255,0.18); padding-left:14px; margin-left:4px;
+  }
   header.topbar .spacer { flex:1; }
   header.topbar .nav-link { color:rgba(255,255,255,0.7); text-decoration:none; font-size:13px; font-weight:600; padding:6px 10px; border-radius:6px; }
   header.topbar .nav-link:hover { background:rgba(255,255,255,0.08); color:#fff; }
@@ -185,8 +191,9 @@
   <button class="menu-btn" id="menuBtn">&#9776;</button>
   <a class="home" href="index.html">
     <img src="bcc-logo.png" alt="Blue Collar Coach" />
-    <span class="module">Chat</span>
+    <span class="wordmark">BLUE COLLAR <span class="light">COACH</span></span>
   </a>
+  <span class="module">Team Chat</span>
   <span class="spacer"></span>
 </header>
 
@@ -214,18 +221,17 @@ window.addEventListener('bcc-users-ready', function () {
 });
 
 function defaultChans() {
-  // Channel structure is stable for BCC; lead annotations were
-  // intentionally removed so a channel description never names a specific
-  // employee. Each channel's lead is set by admin via crew assignment.
+  // BCC default channel set — service-line based, not crew based.
+  // Admins can add / remove / rename in-place.
   return [
-    { id:'general',     name:'general',     desc:'Company-wide announcements' },
-    { id:'office',      name:'office',      desc:'Office / PM team' },
-    { id:'crew-alpha',  name:'crew-alpha',  desc:'Crew Alpha' },
-    { id:'crew-bravo',  name:'crew-bravo',  desc:'Crew Bravo' },
-    { id:'crew-charlie',name:'crew-charlie',desc:'Crew Charlie' },
-    { id:'hydrovac-1',  name:'hydrovac-1',  desc:'Hydrovac 1 crew' },
-    { id:'hydrovac-2',  name:'hydrovac-2',  desc:'Hydrovac 2 crew' },
-    { id:'maintenance', name:'maintenance', desc:'Mechanics / equipment' }
+    { id:'general',      name:'general',      desc:'Company-wide announcements' },
+    { id:'coaching',     name:'coaching',     desc:'Coaching team' },
+    { id:'bookkeeping',  name:'bookkeeping',  desc:'Bookkeeping clients + ops' },
+    { id:'consulting',   name:'consulting',   desc:'Consulting engagements' },
+    { id:'marketing',    name:'marketing',    desc:'Marketing campaigns + creative' },
+    { id:'training',     name:'training',     desc:'Training programs + cohorts' },
+    { id:'technology',   name:'technology',   desc:'Tech projects + infrastructure' },
+    { id:'ops',          name:'ops',          desc:'Internal operations' }
   ];
 }
 
