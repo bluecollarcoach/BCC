@@ -163,6 +163,21 @@ function getClientIp(req) {
       || '';
 }
 
+/* SWA "Managed Functions" run on a separate *.azurewebsites.net host. If we
+ * derive OAuth redirect URIs from request.url.origin, we get the INTERNAL
+ * function host — which isn't what we registered with Entra / Intuit / etc.
+ * The public host is preserved in x-forwarded-host (set by SWA's edge).
+ * Falls back to the request URL only when no forwarded host is present (dev).
+ */
+function publicOrigin(req) {
+  const proto = req.headers.get('x-forwarded-proto') || 'https';
+  const host  = req.headers.get('x-forwarded-host')
+             || req.headers.get('x-original-host')
+             || req.headers.get('host');
+  if (host) return proto + '://' + host;
+  return new URL(req.url).origin;
+}
+
 /* ============ Access log ============
  * One Cosmos doc per /api/* HTTP request, separate docType from 'audit'
  * (which is for client-side semantic events). The Falcon-style activity
@@ -546,6 +561,53 @@ app.http('audit', {
       context.error('audit handler error', err);
       return { status: 500, jsonBody: { error: 'server error', detail: String(err && err.message || err) } };
     }
+  })
+});
+
+/* ============ /api/whoami — debug for the redirect-URI + Graph permission saga
+ * Returns the public origin we'd use for OAuth redirect URIs, the forwarded
+ * headers, and whether the Graph token call works. Visit this in a browser
+ * while signed in to see exactly what the Function sees.
+ */
+app.http('whoami', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    const out = {
+      signedIn: !!p,
+      userDetails: p ? p.userDetails : null,
+      userRoles: p ? p.userRoles : null,
+      publicOrigin: publicOrigin(request),
+      requestUrlOrigin: new URL(request.url).origin,
+      headers: {
+        host: request.headers.get('host'),
+        xForwardedHost:  request.headers.get('x-forwarded-host'),
+        xOriginalHost:   request.headers.get('x-original-host'),
+        xForwardedProto: request.headers.get('x-forwarded-proto'),
+        xMsOriginalUrl:  request.headers.get('x-ms-original-url')
+      },
+      env: {
+        AZURE_TENANT_ID:    !!process.env.AZURE_TENANT_ID,
+        AZURE_CLIENT_ID:    !!process.env.AZURE_CLIENT_ID,
+        AZURE_CLIENT_SECRET: !!process.env.AZURE_CLIENT_SECRET,
+        ALLOWED_DOMAINS:    ALLOWED_DOMAINS
+      },
+      graphToken: { ok: false, error: null },
+      graphUsersCall: { ok: false, count: null, error: null }
+    };
+    // Probe the Graph token endpoint
+    try { await getGraphToken(); out.graphToken.ok = true; }
+    catch (e) { out.graphToken.error = String(e.message || e); }
+    // Probe the actual user list (this is what /api/users uses)
+    try {
+      const u = await fetchActiveUsers();
+      out.graphUsersCall.ok = true;
+      out.graphUsersCall.count = u.length;
+    } catch (e) {
+      out.graphUsersCall.error = String(e.message || e);
+    }
+    return { jsonBody: out };
   })
 });
 
@@ -1219,7 +1281,7 @@ app.http('msgraph-connect', {
     if (!domainAllowed(p)) return domainBlocked();
     const clientId = process.env.AZURE_CLIENT_ID;
     const tenantId = process.env.AZURE_TENANT_ID;
-    const origin = new URL(request.url).origin;
+    const origin = publicOrigin(request);
     const redirectUri = origin + '/api/integrations/msgraph/callback';
     // state = base64-encoded upn so the callback knows who to attach the token to
     const state = Buffer.from(JSON.stringify({ upn: p.userDetails || p.userId, t: Date.now() })).toString('base64url');
@@ -1251,7 +1313,7 @@ app.http('msgraph-callback', {
       let stateObj = {};
       try { stateObj = JSON.parse(Buffer.from(state, 'base64url').toString('utf8')); } catch (_) {}
       const upn = stateObj.upn || (principal(request) && principal(request).userDetails) || '';
-      const redirectUri = url.origin + '/api/integrations/msgraph/callback';
+      const redirectUri = publicOrigin(request) + '/api/integrations/msgraph/callback';
       const tok = await exchangeGraphCode(code, redirectUri);
       if (!tok.refresh_token) throw new Error('Microsoft did not return a refresh_token (did the app reg request offline_access?)');
       await saveMsGraphTokensFor(upn, tok.refresh_token, '');
@@ -1502,7 +1564,7 @@ app.http('qbo-connect', {
       if (!fields.clientId) {
         return { status: 400, jsonBody: { error: 'Set QBO clientId + clientSecret in Admin first, then click Connect.' } };
       }
-      const origin = new URL(request.url).origin;
+      const origin = publicOrigin(request);
       const redirectUri = origin + '/api/integrations/qbo/callback';
       const env = fields.environment === 'production' ? 'production' : 'sandbox';
       const state = Buffer.from(JSON.stringify({ upn: p.userDetails || p.userId, env, t: Date.now() })).toString('base64url');
@@ -1535,7 +1597,7 @@ app.http('qbo-callback', {
     try {
       const fields = await getIntegrationFields('qbo');
       if (!fields.clientId || !fields.clientSecret) throw new Error('QBO clientId/clientSecret missing on the integration doc');
-      const redirectUri = url.origin + '/api/integrations/qbo/callback';
+      const redirectUri = publicOrigin(request) + '/api/integrations/qbo/callback';
       const basic = Buffer.from(fields.clientId + ':' + fields.clientSecret).toString('base64');
       const body = new URLSearchParams({
         grant_type: 'authorization_code',
@@ -1628,7 +1690,7 @@ app.http('googleads-connect', {
     if (r.missing) {
       return { status: 400, jsonBody: { error: 'Set Google Ads clientId + clientSecret in Admin → Integrations first.', missing: r.missing } };
     }
-    const origin = new URL(request.url).origin;
+    const origin = publicOrigin(request);
     const redirectUri = origin + '/api/integrations/google-ads/callback';
     const state = Buffer.from(JSON.stringify({ upn: p.userDetails || p.userId, t: Date.now() })).toString('base64url');
     const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams({
@@ -1656,7 +1718,7 @@ app.http('googleads-callback', {
     if (!code) return { status: 400, jsonBody: { error: 'missing code' } };
     try {
       const fields = await getIntegrationFields('google-ads');
-      const redirectUri = url.origin + '/api/integrations/google-ads/callback';
+      const redirectUri = publicOrigin(request) + '/api/integrations/google-ads/callback';
       const body = new URLSearchParams({
         code,
         client_id: fields.clientId,
@@ -1692,7 +1754,7 @@ app.http('linkedin-connect', {
     if (r.missing) {
       return { status: 400, jsonBody: { error: 'Set LinkedIn clientId + clientSecret in Admin → Integrations first.', missing: r.missing } };
     }
-    const origin = new URL(request.url).origin;
+    const origin = publicOrigin(request);
     const redirectUri = origin + '/api/integrations/linkedin/callback';
     const state = Buffer.from(JSON.stringify({ upn: p.userDetails || p.userId, t: Date.now() })).toString('base64url');
     // r_ads + r_ads_reporting require Marketing Developer Platform access.
@@ -1721,7 +1783,7 @@ app.http('linkedin-callback', {
     if (!code) return { status: 400, jsonBody: { error: 'missing code' } };
     try {
       const fields = await getIntegrationFields('linkedin');
-      const redirectUri = url.origin + '/api/integrations/linkedin/callback';
+      const redirectUri = publicOrigin(request) + '/api/integrations/linkedin/callback';
       const body = new URLSearchParams({
         grant_type: 'authorization_code',
         code,
@@ -1763,7 +1825,7 @@ app.http('meta-connect', {
     if (r.missing) {
       return { status: 400, jsonBody: { error: 'Set Meta clientId + clientSecret in Admin → Integrations first.', missing: r.missing } };
     }
-    const origin = new URL(request.url).origin;
+    const origin = publicOrigin(request);
     const redirectUri = origin + '/api/integrations/meta/callback';
     const state = Buffer.from(JSON.stringify({ upn: p.userDetails || p.userId, t: Date.now() })).toString('base64url');
     const scope = (r.fields.scope || 'ads_read,business_management,read_insights,pages_read_engagement').trim();
@@ -1790,7 +1852,7 @@ app.http('meta-callback', {
     if (!code) return { status: 400, jsonBody: { error: 'missing code' } };
     try {
       const fields = await getIntegrationFields('meta');
-      const redirectUri = url.origin + '/api/integrations/meta/callback';
+      const redirectUri = publicOrigin(request) + '/api/integrations/meta/callback';
       // 1) Exchange code for short-lived access token
       const tr1 = await fetch('https://graph.facebook.com/v18.0/oauth/access_token?' + new URLSearchParams({
         client_id: fields.clientId,
@@ -1834,7 +1896,7 @@ app.http('mailchimp-connect', {
     if (r.missing) {
       return { status: 400, jsonBody: { error: 'Set Mailchimp clientId + clientSecret in Admin → Integrations first.', missing: r.missing } };
     }
-    const origin = new URL(request.url).origin;
+    const origin = publicOrigin(request);
     const redirectUri = origin + '/api/integrations/mailchimp/callback';
     const state = Buffer.from(JSON.stringify({ upn: p.userDetails || p.userId, t: Date.now() })).toString('base64url');
     const authUrl = 'https://login.mailchimp.com/oauth2/authorize?' + new URLSearchParams({
@@ -1859,7 +1921,7 @@ app.http('mailchimp-callback', {
     if (!code) return { status: 400, jsonBody: { error: 'missing code' } };
     try {
       const fields = await getIntegrationFields('mailchimp');
-      const redirectUri = url.origin + '/api/integrations/mailchimp/callback';
+      const redirectUri = publicOrigin(request) + '/api/integrations/mailchimp/callback';
       const body = new URLSearchParams({
         grant_type: 'authorization_code',
         client_id: fields.clientId,
