@@ -992,16 +992,16 @@
             ((conn.channel === 'slack' || conn.channel === 'teams')
               ? '<button class="btn btn-ghost" data-int-act="notify" type="button">Send test message</button>' : '') +
             ((conn.channel === 'qbo')
-              ? '<a class="btn btn-ghost" href="/api/integrations/qbo/connect">Connect QBO</a>' +
+              ? '<button class="btn btn-primary" data-int-act="connect" data-connect-label="QBO" type="button">Connect QBO</button>' +
                 '<button class="btn btn-ghost" data-int-act="sync" type="button">Sync now</button>' : '') +
             ((conn.channel === 'google-ads')
-              ? '<a class="btn btn-primary" href="/api/integrations/google-ads/connect">Connect Google Ads</a>' : '') +
+              ? '<button class="btn btn-primary" data-int-act="connect" data-connect-label="Google Ads" type="button">Connect Google Ads</button>' : '') +
             ((conn.channel === 'linkedin')
-              ? '<a class="btn btn-primary" href="/api/integrations/linkedin/connect">Connect LinkedIn</a>' : '') +
+              ? '<button class="btn btn-primary" data-int-act="connect" data-connect-label="LinkedIn" type="button">Connect LinkedIn</button>' : '') +
             ((conn.channel === 'meta')
-              ? '<a class="btn btn-primary" href="/api/integrations/meta/connect">Connect Meta</a>' : '') +
+              ? '<button class="btn btn-primary" data-int-act="connect" data-connect-label="Meta" type="button">Connect Meta</button>' : '') +
             ((conn.channel === 'mailchimp')
-              ? '<a class="btn btn-primary" href="/api/integrations/mailchimp/connect">Connect Mailchimp</a>' : '') +
+              ? '<button class="btn btn-primary" data-int-act="connect" data-connect-label="Mailchimp" type="button">Connect Mailchimp</button>' : '') +
             (conn.channel !== 'msgraph' ? '<button class="btn btn-ghost" data-int-act="test" type="button">Test connection</button>' : '') +
             '<button class="btn btn-danger" data-int-act="clear" type="button">Clear</button>' +
             (conn.channel !== 'msgraph' ? '<button class="btn btn-primary" data-int-act="save" type="button">Save</button>' : '') +
@@ -1047,6 +1047,41 @@
           localStorage.removeItem(k);
           if (window.bccAudit) window.bccAudit('integration-clear', { key: k, path: '/admin.html', meta: { channel: channel } });
           renderIntegrations();
+          return;
+        }
+        if (act === 'connect') {
+          // 1) Snapshot current form fields into the integration doc so the
+          //    /connect endpoint reads fresh clientId/clientSecret on the server
+          //    side (the OAuth start handler calls getIntegrationFields()).
+          var rec = loadIntegration(channel); rec.fields = rec.fields || {};
+          card.querySelectorAll('[data-int-key]').forEach(function (inp) {
+            rec.fields[inp.getAttribute('data-int-key')] = (inp.value || '').trim();
+          });
+          // 2) Preflight: clientId + clientSecret are mandatory for all five
+          //    OAuth providers. Catch this client-side with a useful message
+          //    rather than letting the server return a generic 400.
+          if (!rec.fields.clientId || !rec.fields.clientSecret) {
+            var label = b.getAttribute('data-connect-label') || channel;
+            var notify = window.bccNotify || function (m) { alert(m); };
+            notify('Paste Client ID and Client Secret for ' + label + ', then click Connect.', 'error');
+            return;
+          }
+          saveIntegration(rec);
+          // 3) Force-flush the local debounced sync so the Cosmos doc has the
+          //    new credentials BEFORE the server's /connect handler reads it.
+          //    Without this, the redirect can hit Cosmos before the PUT lands.
+          var origText = b.textContent;
+          b.disabled = true; b.textContent = 'Connecting…';
+          var afterSync = function () {
+            // Hand off to the OAuth start endpoint. Server reads from Cosmos
+            // and 302s the browser to the provider's authorize URL.
+            location.href = '/api/integrations/' + encodeURIComponent(channel) + '/connect';
+          };
+          var p = window.bccSyncNow ? window.bccSyncNow() : Promise.resolve();
+          Promise.resolve(p).then(afterSync, afterSync);
+          // Safety: if bccSyncNow never resolves for some reason, navigate
+          // anyway after 2 seconds. The Cosmos write should land long before.
+          setTimeout(afterSync, 2000);
           return;
         }
         if (act === 'test') {
