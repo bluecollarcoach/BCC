@@ -621,6 +621,15 @@
   var INT_PREFIX = 'bcc-integration-';
   var CONNECTORS = [
     {
+      channel: 'msgraph',
+      name: 'Microsoft Graph (Outlook calendar + mail)',
+      blurb: 'Per-user OAuth that lets sessions you create in BCC mirror to your Outlook calendar automatically. Click Connect to authorize with your Microsoft 365 account; no credentials to paste.',
+      perUser: true,
+      fields: [
+        { key: 'connectedFor', label: 'Connected as', type: 'text', secret: false, readOnly: true, hint: 'The UPN whose Outlook is currently linked. Click Connect again to re-authorize or switch accounts.' }
+      ]
+    },
+    {
       channel: 'qbo',
       name: 'QuickBooks Online',
       blurb: 'Bookkeeping sync. Create an app at developer.intuit.com → grab Client ID + Client Secret. Set Environment to "sandbox" while testing.',
@@ -804,13 +813,15 @@
         '<div class="int-foot">' +
           '<span class="int-last">Last saved: ' + esc(lastSync) + '</span>' +
           '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+            ((conn.channel === 'msgraph')
+              ? '<a class="btn btn-primary" href="/api/integrations/msgraph/connect">Connect Outlook</a>' : '') +
             ((conn.channel === 'slack' || conn.channel === 'teams')
               ? '<button class="btn btn-ghost" data-int-act="notify" type="button">Send test message</button>' : '') +
             ((conn.channel === 'qbo')
               ? '<button class="btn btn-ghost" data-int-act="sync" type="button">Sync now</button>' : '') +
-            '<button class="btn btn-ghost" data-int-act="test" type="button">Test connection</button>' +
+            (conn.channel !== 'msgraph' ? '<button class="btn btn-ghost" data-int-act="test" type="button">Test connection</button>' : '') +
             '<button class="btn btn-danger" data-int-act="clear" type="button">Clear</button>' +
-            '<button class="btn btn-primary" data-int-act="save" type="button">Save</button>' +
+            (conn.channel !== 'msgraph' ? '<button class="btn btn-primary" data-int-act="save" type="button">Save</button>' : '') +
           '</div>' +
         '</div>' +
       '</div>';
@@ -934,6 +945,32 @@
     renderSecurity();
     renderDataPanel();
     renderColorPicker(document.getElementById('newTypeColor'), '#a8884a');
+
+    // Handle ?msgraph=connected|error landing from the OAuth callback
+    var qs = new URLSearchParams(location.search);
+    var ms = qs.get('msgraph');
+    if (ms) {
+      // Pop the Integrations tab so the user sees the connector
+      document.querySelectorAll('.tabs button').forEach(function (b) { b.classList.toggle('active', b.dataset.tab === 'integrations'); });
+      document.querySelectorAll('.panel-section').forEach(function (s) { s.classList.remove('active'); });
+      document.getElementById('panel-integrations').classList.add('active');
+      if (ms === 'connected') {
+        // Pin the connected UPN locally so the "Connected as" field shows it
+        var rec = loadIntegration('msgraph');
+        rec.status = 'connected';
+        rec.fields = rec.fields || {};
+        rec.fields.connectedFor = (window.bccUser && window.bccUser.userDetails) || '';
+        saveIntegration(rec);
+        renderIntegrations();
+        if (window.bccNotifySaved) window.bccNotifySaved('Outlook connected. Sessions will mirror to your calendar.');
+        else if (window.bccNotify) window.bccNotify('Outlook connected.', 'success');
+      } else {
+        var detail = qs.get('detail');
+        if (window.bccNotify) window.bccNotify('Outlook connect failed: ' + (detail || ms), 'error');
+      }
+      // Strip the query string from the address bar
+      history.replaceState({}, '', location.pathname + (location.hash || ''));
+    }
   }
   window.addEventListener('bcc-data-ready', function () { renderUsers(); renderTypes(); renderIntegrations(); renderCompany(); renderSecurity(); renderDataPanel(); });
   window.addEventListener('bcc-users-ready', renderUsers);

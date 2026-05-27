@@ -372,6 +372,30 @@
     if (e.target.id === 'modalBg') closeModal();
   });
 
+  function isGraphConnected() {
+    try {
+      var rec = JSON.parse(localStorage.getItem('bcc-integration-msgraph') || 'null');
+      return !!(rec && rec.status === 'connected');
+    } catch (e) { return false; }
+  }
+  function mirrorSessionToGraph(s) {
+    if (!isGraphConnected()) return Promise.resolve(null);
+    var payload = {
+      graphEventId: s.msGraphId || null,
+      subject: s.title,
+      start: s.startAt,
+      end: s.endAt,
+      location: s.location || '',
+      body: [s.prepNotes ? 'Prep:\n' + s.prepNotes : '', s.postNotes ? '\n\nNotes:\n' + s.postNotes : ''].join(''),
+      sessionId: s.id
+    };
+    return fetch('/api/integrations/msgraph/upsert-event', {
+      method: 'POST', credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function (r) { return r.json().catch(function () { return { ok:false, error:'bad response' }; }); });
+  }
+
   document.getElementById('m-save').addEventListener('click', function () {
     var id = document.getElementById('m-id').value;
     var s = id ? (getSession(id) || {}) : {};
@@ -389,6 +413,22 @@
     if (window.bccAudit) window.bccAudit(id ? 'session-update' : 'session-create', { key: s.id, path: '/sessions.html' });
     if (window.bccNotifySaved) window.bccNotifySaved('Session saved.');
     else (window.bccNotify || alert)('Saved.', 'success');
+
+    // Best-effort mirror to Outlook calendar (only if Graph is connected
+    // for this user). Fire-and-forget so a slow Graph call doesn't block
+    // the local save UX.
+    mirrorSessionToGraph(s).then(function (resp) {
+      if (!resp) return; // not connected
+      if (resp.ok && resp.graphEventId && resp.graphEventId !== s.msGraphId) {
+        s.msGraphId = resp.graphEventId;
+        s.source = 'msgraph';
+        saveSession(s);
+        renderWeek();
+      } else if (!resp.ok) {
+        if (window.bccNotify) window.bccNotify('Outlook mirror failed: ' + (resp.error || 'unknown'), 'warn');
+      }
+    }).catch(function () { /* silent — local save already happened */ });
+
     closeModal();
     renderWeek();
   });
@@ -396,6 +436,15 @@
     var id = document.getElementById('m-id').value;
     if (!id) return;
     if (!confirm('Delete this session?')) return;
+    var s = getSession(id);
+    // Mirror the delete to Outlook if we have a Graph event id
+    if (s && s.msGraphId && isGraphConnected()) {
+      fetch('/api/integrations/msgraph/delete-event', {
+        method: 'POST', credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ graphEventId: s.msGraphId })
+      }).catch(function () {});
+    }
     deleteSession(id);
     if (window.bccAudit) window.bccAudit('session-delete', { key: id, path: '/sessions.html' });
     closeModal();

@@ -1097,6 +1097,236 @@ app.http('integrations-qbo-sync', {
   })
 });
 
+/* ============ Microsoft Graph — calendar sync ============
+ *
+ * Per-user OAuth (delegated). Each user clicks "Connect Outlook" once;
+ * we capture their refresh token and store it on the user's record in
+ * bcc-admin-config-v1.users[<them>].msGraphRefreshToken. Subsequent
+ * session create/update/delete fires a Graph mirror that creates a
+ * matching event in their Outlook calendar.
+ *
+ * Endpoints:
+ *   GET  /api/integrations/msgraph/connect          start OAuth (302 to Microsoft)
+ *   GET  /api/integrations/msgraph/callback         OAuth return (302 back to /admin.html)
+ *   POST /api/integrations/msgraph/upsert-event     create/update event on Outlook
+ *   POST /api/integrations/msgraph/delete-event     delete event on Outlook
+ *
+ * Scopes requested (matches the Entra app's delegated permissions):
+ *   openid profile email offline_access User.Read Calendars.ReadWrite Mail.Send
+ */
+
+const GRAPH_SCOPES = 'openid profile email offline_access User.Read Calendars.ReadWrite Mail.Send';
+
+function msGraphTenantAuthUrl(tenantId) {
+  // Default to /common so personal + work accounts both resolve; the
+  // openIdIssuer in staticwebapp.config.json pins the SWA sign-in to
+  // the tenant, but the Graph OAuth can be /common safely.
+  return 'https://login.microsoftonline.com/' + (tenantId || 'common');
+}
+
+async function loadMsGraphTokensFor(upn) {
+  const cfg = await getAdminCfg();
+  if (!cfg || !Array.isArray(cfg.users)) return null;
+  const lc = String(upn || '').toLowerCase();
+  const u = cfg.users.find(x => (x.upn || '').toLowerCase() === lc);
+  if (!u || !u.msGraphRefreshToken) return null;
+  return { refreshToken: u.msGraphRefreshToken };
+}
+
+async function saveMsGraphTokensFor(upn, refreshToken, displayName) {
+  const c = container();
+  const id = 'bcc-admin-config-v1';
+  let cfg = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+  if (!cfg) cfg = { id, tenantId: BCC_TENANT_ID, docType: 'admin-config', users: [], updatedAt: new Date().toISOString() };
+  if (!Array.isArray(cfg.users)) cfg.users = [];
+  const lc = String(upn || '').toLowerCase();
+  let u = cfg.users.find(x => (x.upn || '').toLowerCase() === lc);
+  if (!u) {
+    u = { upn, displayName: displayName || upn, role: 'member', status: 'active' };
+    cfg.users.push(u);
+  }
+  u.msGraphRefreshToken = refreshToken;
+  u.msGraphConnectedAt = new Date().toISOString();
+  cfg.updatedAt = new Date().toISOString();
+  await c.items.upsert(cfg);
+  invalidateAdminCfgCache();
+}
+
+async function exchangeGraphCode(code, redirectUri) {
+  const clientId = process.env.AZURE_CLIENT_ID;
+  const clientSecret = process.env.AZURE_CLIENT_SECRET;
+  const tenantId = process.env.AZURE_TENANT_ID;
+  if (!clientId || !clientSecret) throw new Error('AZURE_CLIENT_ID / AZURE_CLIENT_SECRET not set');
+  const url = msGraphTenantAuthUrl(tenantId) + '/oauth2/v2.0/token';
+  const body = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    grant_type: 'authorization_code',
+    code: code,
+    redirect_uri: redirectUri,
+    scope: GRAPH_SCOPES
+  }).toString();
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+  if (!r.ok) throw new Error('code-exchange failed (' + r.status + '): ' + (await r.text()).slice(0, 200));
+  return r.json();
+}
+
+async function refreshGraphAccessToken(refreshToken) {
+  const clientId = process.env.AZURE_CLIENT_ID;
+  const clientSecret = process.env.AZURE_CLIENT_SECRET;
+  const tenantId = process.env.AZURE_TENANT_ID;
+  const url = msGraphTenantAuthUrl(tenantId) + '/oauth2/v2.0/token';
+  const body = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+    scope: GRAPH_SCOPES
+  }).toString();
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+  if (!r.ok) throw new Error('refresh failed (' + r.status + ')');
+  return r.json();
+}
+
+app.http('msgraph-connect', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'integrations/msgraph/connect',
+  handler: withAccessLog(async (request) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const clientId = process.env.AZURE_CLIENT_ID;
+    const tenantId = process.env.AZURE_TENANT_ID;
+    const origin = new URL(request.url).origin;
+    const redirectUri = origin + '/api/integrations/msgraph/callback';
+    // state = base64-encoded upn so the callback knows who to attach the token to
+    const state = Buffer.from(JSON.stringify({ upn: p.userDetails || p.userId, t: Date.now() })).toString('base64url');
+    const authUrl = msGraphTenantAuthUrl(tenantId) + '/oauth2/v2.0/authorize?' + new URLSearchParams({
+      client_id: clientId,
+      response_type: 'code',
+      redirect_uri: redirectUri,
+      response_mode: 'query',
+      scope: GRAPH_SCOPES,
+      state: state,
+      prompt: 'select_account'
+    }).toString();
+    return { status: 302, headers: { Location: authUrl } };
+  })
+});
+
+app.http('msgraph-callback', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'integrations/msgraph/callback',
+  handler: withAccessLog(async (request, context) => {
+    const url = new URL(request.url);
+    const code = url.searchParams.get('code');
+    const state = url.searchParams.get('state');
+    const err = url.searchParams.get('error');
+    if (err) return { status: 302, headers: { Location: '/admin.html?msgraph=' + encodeURIComponent(err) } };
+    if (!code || !state) return { status: 400, jsonBody: { error: 'missing code or state' } };
+    try {
+      let stateObj = {};
+      try { stateObj = JSON.parse(Buffer.from(state, 'base64url').toString('utf8')); } catch (_) {}
+      const upn = stateObj.upn || (principal(request) && principal(request).userDetails) || '';
+      const redirectUri = url.origin + '/api/integrations/msgraph/callback';
+      const tok = await exchangeGraphCode(code, redirectUri);
+      if (!tok.refresh_token) throw new Error('Microsoft did not return a refresh_token (did the app reg request offline_access?)');
+      await saveMsGraphTokensFor(upn, tok.refresh_token, '');
+      return { status: 302, headers: { Location: '/admin.html?msgraph=connected#integrations' } };
+    } catch (e) {
+      context.error('msgraph callback failed', e);
+      return { status: 302, headers: { Location: '/admin.html?msgraph=error&detail=' + encodeURIComponent(e.message) } };
+    }
+  })
+});
+
+/**
+ * POST /api/integrations/msgraph/upsert-event
+ *   body: { graphEventId?, subject, start, end, location, body, sessionId }
+ *   Creates a new event in the caller's Outlook calendar if graphEventId
+ *   is empty, otherwise PATCHes the existing one. Returns { ok, graphEventId }.
+ */
+app.http('msgraph-upsert-event', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'integrations/msgraph/upsert-event',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    try {
+      const body = await request.json().catch(() => ({}));
+      const tokens = await loadMsGraphTokensFor(p.userDetails || p.userId);
+      if (!tokens) return { status: 400, jsonBody: { ok: false, error: 'Outlook not connected. Click Connect in Admin → Integrations → Microsoft Graph.' } };
+      const tok = await refreshGraphAccessToken(tokens.refreshToken);
+      const access = tok.access_token;
+      // Persist any rotated refresh token
+      if (tok.refresh_token && tok.refresh_token !== tokens.refreshToken) {
+        await saveMsGraphTokensFor(p.userDetails || p.userId, tok.refresh_token, '');
+      }
+
+      const eventPayload = {
+        subject: body.subject || '(untitled session)',
+        body: { contentType: 'text', content: body.body || '' },
+        start: { dateTime: body.start, timeZone: 'UTC' },
+        end:   { dateTime: body.end   || body.start, timeZone: 'UTC' },
+        location: body.location ? { displayName: body.location } : undefined,
+        // tag the event so we can de-dupe / find it again
+        singleValueExtendedProperties: body.sessionId ? [
+          { id: 'String {00020329-0000-0000-C000-000000000046} Name BCC_SessionId', value: String(body.sessionId) }
+        ] : undefined
+      };
+      const graphBase = 'https://graph.microsoft.com/v1.0/me/events';
+      let r;
+      if (body.graphEventId) {
+        r = await fetch(graphBase + '/' + encodeURIComponent(body.graphEventId), {
+          method: 'PATCH', headers: { Authorization: 'Bearer ' + access, 'Content-Type': 'application/json' },
+          body: JSON.stringify(eventPayload)
+        });
+      } else {
+        r = await fetch(graphBase, {
+          method: 'POST', headers: { Authorization: 'Bearer ' + access, 'Content-Type': 'application/json' },
+          body: JSON.stringify(eventPayload)
+        });
+      }
+      if (!r.ok) return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')', detail: (await r.text()).slice(0, 200) } };
+      const ev = await r.json();
+      return { jsonBody: { ok: true, graphEventId: ev.id } };
+    } catch (e) {
+      context.error('msgraph upsert-event error', e);
+      return { status: 500, jsonBody: { ok: false, error: String(e.message || e) } };
+    }
+  })
+});
+
+app.http('msgraph-delete-event', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'integrations/msgraph/delete-event',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    try {
+      const body = await request.json().catch(() => ({}));
+      if (!body.graphEventId) return badRequest('graphEventId required');
+      const tokens = await loadMsGraphTokensFor(p.userDetails || p.userId);
+      if (!tokens) return { status: 400, jsonBody: { ok: false, error: 'Outlook not connected' } };
+      const tok = await refreshGraphAccessToken(tokens.refreshToken);
+      const r = await fetch('https://graph.microsoft.com/v1.0/me/events/' + encodeURIComponent(body.graphEventId), {
+        method: 'DELETE', headers: { Authorization: 'Bearer ' + tok.access_token }
+      });
+      if (!r.ok && r.status !== 404) return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')' } };
+      return { jsonBody: { ok: true } };
+    } catch (e) {
+      context.error('msgraph delete-event error', e);
+      return { status: 500, jsonBody: { ok: false, error: String(e.message || e) } };
+    }
+  })
+});
+
 /* ============ Azure Blob — document storage ============
  * Files don't fit in Cosmos (10 MB doc cap; not what it's designed for).
  * Per the data-shapes.md sketch: file goes to Blob, metadata stays in
