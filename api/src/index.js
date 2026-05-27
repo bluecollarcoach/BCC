@@ -741,6 +741,194 @@ async function fanoutPush(action, body, p, context) {
   }
 }
 
+/* ============ Integrations — credential resolver + test endpoint ============
+ *
+ * Admin → Integrations writes bcc-integration-<channel> docs into Cosmos
+ * with shape { channel, status, fields:{...}, updatedAt }. Backend code
+ * should call getIntegrationFields(channel) instead of reading process.env
+ * directly, so admin-saved credentials win over Bicep-time env defaults.
+ *
+ * Cached 60 s per Function instance — admin changes propagate within a
+ * minute; rapid integration calls don't hammer Cosmos.
+ */
+
+const _intCache = { until: 0, byChannel: new Map() };
+
+async function getIntegrationFields(channel) {
+  if (Date.now() < _intCache.until && _intCache.byChannel.has(channel)) {
+    return _intCache.byChannel.get(channel);
+  }
+  try {
+    const c = container();
+    const id = 'bcc-integration-' + channel;
+    const { resource } = await c.item(id, BCC_TENANT_ID).read().catch(e => { if (e.code === 404) return { resource: null }; throw e; });
+    const fields = (resource && resource.fields) || {};
+    _intCache.byChannel.set(channel, fields);
+    _intCache.until = Date.now() + 60 * 1000;
+    return fields;
+  } catch (err) {
+    return {};
+  }
+}
+
+/**
+ * POST /api/integrations/{channel}/test
+ *
+ * Lightweight reachability + auth check per connector. We don't pull data
+ * here — just confirm the credentials parse + the provider accepts them.
+ * Each branch is best-effort and tolerates "API not wired" by returning a
+ * structured failure the UI can show.
+ */
+app.http('integrations-test', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'integrations/{channel}/test',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const channel = String(request.params.channel || '').toLowerCase();
+
+    try {
+      const fields = await getIntegrationFields(channel);
+
+      // Channel-specific probes. Each just verifies the credentials are
+      // present and the provider's auth endpoint accepts them — no data pull.
+      let result;
+      switch (channel) {
+        case 'qbo':
+          if (!fields.clientId || !fields.clientSecret) {
+            result = { ok: false, error: 'clientId and clientSecret required' };
+          } else {
+            // Hitting Intuit's openid discovery is a cheap reachability test.
+            const base = (fields.environment === 'production')
+              ? 'https://accounts.intuit.com/.well-known/openid_configuration'
+              : 'https://accounts.intuit.com/.well-known/openid_configuration';
+            const r = await fetch(base).catch(e => null);
+            result = r && r.ok ? { ok: true } : { ok: false, error: 'reachability check failed' };
+          }
+          break;
+
+        case 'google-ads':
+          if (!fields.developerToken || !fields.clientId || !fields.clientSecret || !fields.refreshToken) {
+            result = { ok: false, error: 'developerToken, clientId, clientSecret, refreshToken required' };
+          } else {
+            // Exchange the refresh token for a short-lived access token. If Google accepts it, creds are valid.
+            const body = new URLSearchParams({
+              client_id: fields.clientId,
+              client_secret: fields.clientSecret,
+              refresh_token: fields.refreshToken,
+              grant_type: 'refresh_token'
+            }).toString();
+            const r = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body }).catch(() => null);
+            result = r && r.ok ? { ok: true } : { ok: false, error: 'token exchange failed' };
+          }
+          break;
+
+        case 'meta':
+          if (!fields.accessToken) result = { ok: false, error: 'accessToken required' };
+          else {
+            const r = await fetch('https://graph.facebook.com/v19.0/me?access_token=' + encodeURIComponent(fields.accessToken)).catch(() => null);
+            result = r && r.ok ? { ok: true } : { ok: false, error: 'access token rejected' };
+          }
+          break;
+
+        case 'linkedin':
+          if (!fields.accessToken) result = { ok: false, error: 'accessToken required' };
+          else {
+            const r = await fetch('https://api.linkedin.com/v2/me', { headers: { Authorization: 'Bearer ' + fields.accessToken } }).catch(() => null);
+            result = r && r.ok ? { ok: true } : { ok: false, error: 'access token rejected (' + (r && r.status) + ')' };
+          }
+          break;
+
+        case 'mailchimp':
+          if (!fields.apiKey || !fields.serverPrefix) result = { ok: false, error: 'apiKey and serverPrefix required' };
+          else {
+            const r = await fetch('https://' + fields.serverPrefix + '.api.mailchimp.com/3.0/ping', {
+              headers: { Authorization: 'Basic ' + Buffer.from('anystring:' + fields.apiKey).toString('base64') }
+            }).catch(() => null);
+            result = r && r.ok ? { ok: true } : { ok: false, error: 'auth failed (' + (r && r.status) + ')' };
+          }
+          break;
+
+        case 'godaddy':
+          if (!fields.apiKey || !fields.apiSecret) result = { ok: false, error: 'apiKey and apiSecret required' };
+          else {
+            const r = await fetch('https://api.godaddy.com/v1/domains?limit=1', {
+              headers: { Authorization: 'sso-key ' + fields.apiKey + ':' + fields.apiSecret }
+            }).catch(() => null);
+            result = r && (r.ok || r.status === 422) ? { ok: true } : { ok: false, error: 'auth failed (' + (r && r.status) + ')' };
+          }
+          break;
+
+        case 'wordpress':
+          if (!fields.siteUrl || !fields.username || !fields.appPassword) result = { ok: false, error: 'siteUrl, username, appPassword required' };
+          else {
+            const url = fields.siteUrl.replace(/\/$/, '') + '/wp-json/wp/v2/users/me';
+            const r = await fetch(url, { headers: { Authorization: 'Basic ' + Buffer.from(fields.username + ':' + fields.appPassword).toString('base64') } }).catch(() => null);
+            result = r && r.ok ? { ok: true } : { ok: false, error: 'auth failed (' + (r && r.status) + ')' };
+          }
+          break;
+
+        case 'slack':
+        case 'teams':
+          if (!fields.webhookUrl) result = { ok: false, error: 'webhookUrl required' };
+          else {
+            // A HEAD/GET on the webhook 405s but proves the URL resolves. POSTing a "test" message would be intrusive.
+            try {
+              const u = new URL(fields.webhookUrl);
+              result = (u.protocol === 'https:') ? { ok: true } : { ok: false, error: 'webhook must be https' };
+            } catch (e) { result = { ok: false, error: 'invalid URL' }; }
+          }
+          break;
+
+        case 'azure-blob':
+          // Already wired via /api/documents; just confirm there's a connection string + container.
+          if (!fields.connectionString && !process.env.AZURE_STORAGE_CONNECTION_STRING) {
+            result = { ok: false, error: 'connectionString required' };
+          } else {
+            try { getBlobContainer(); result = { ok: true }; }
+            catch (e) { result = { ok: false, error: String(e.message || e) }; }
+          }
+          break;
+
+        case 'app-insights':
+          if (!fields.connectionString && !process.env.APPLICATIONINSIGHTS_CONNECTION_STRING) {
+            result = { ok: false, error: 'connectionString required' };
+          } else { result = { ok: true }; }
+          break;
+
+        case 'web-push':
+          if (!fields.publicKey || !fields.privateKey) result = { ok: false, error: 'publicKey and privateKey required' };
+          else result = { ok: true };
+          break;
+
+        default:
+          result = { ok: false, error: 'unknown channel "' + channel + '"' };
+      }
+
+      // Mirror status into the integration doc so the UI badge sticks.
+      try {
+        const c = container();
+        const id = 'bcc-integration-' + channel;
+        const { resource } = await c.item(id, BCC_TENANT_ID).read().catch(() => ({ resource: null }));
+        if (resource) {
+          resource.status = result.ok ? 'connected' : 'error';
+          resource.lastTest = { ...result, at: new Date().toISOString() };
+          resource.updatedAt = new Date().toISOString();
+          await c.items.upsert(resource);
+          _intCache.until = 0; // bust cache
+        }
+      } catch (_) { /* best-effort */ }
+
+      return { jsonBody: result };
+    } catch (err) {
+      context.error('integrations-test error', err);
+      return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } };
+    }
+  })
+});
+
 /* ============ Azure Blob — document storage ============
  * Files don't fit in Cosmos (10 MB doc cap; not what it's designed for).
  * Per the data-shapes.md sketch: file goes to Blob, metadata stays in

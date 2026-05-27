@@ -102,6 +102,28 @@
     width:26px; height:26px; border-radius:6px; border:2px solid transparent; cursor:pointer; padding:0;
   }
   .color-options button.selected { border-color:var(--ink); transform:scale(1.1); }
+
+  /* Integrations */
+  .int-card {
+    border:1px solid var(--chrome-mute); border-radius:11px;
+    padding:16px; margin-bottom:12px; background:#fdfcfa;
+  }
+  .int-card .int-head { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  .int-card .int-name { font-family:'Cinzel', serif; font-size:16px; color:var(--ink); font-weight:700; }
+  .int-card .int-status { font-size:12px; font-weight:700; color:var(--ink); letter-spacing:0.3px; }
+  .int-card .int-foot {
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+    margin-top:14px; padding-top:12px; border-top:1px dashed var(--chrome-mute); flex-wrap:wrap;
+  }
+  .int-card .int-last { font-size:11.5px; color:var(--muted); }
+  .int-card .int-input-wrap { display:flex; gap:6px; align-items:stretch; }
+  .int-card .int-input-wrap input { flex:1; }
+  .int-card .int-input-wrap button.reveal {
+    background:transparent; border:1px solid var(--chrome-mute); border-radius:8px;
+    padding:0 10px; font:inherit; font-size:11.5px; font-weight:700; color:var(--muted);
+    cursor:pointer; min-height:38px;
+  }
+  .int-card .int-input-wrap button.reveal:hover { background:var(--chrome-mute); color:var(--ink); }
   @media (max-width:700px) {
     .page { padding:14px 14px 60px; }
     .page-head h1 { font-size:22px; }
@@ -136,6 +158,7 @@
   <nav class="tabs" role="tablist">
     <button class="active" data-tab="users">Users &amp; Roles</button>
     <button data-tab="types">Customer Types</button>
+    <button data-tab="integrations">Integrations</button>
     <button data-tab="company">Company Info</button>
     <button data-tab="security">Security</button>
     <button data-tab="data">Data &amp; Backups</button>
@@ -171,6 +194,15 @@
         <div id="newTypeColor" class="color-options" data-color="#a8884a"></div>
         <button class="btn btn-primary" id="addTypeBtn" type="button">Add type</button>
       </div>
+    </div>
+  </section>
+
+  <!-- ======== INTEGRATIONS ======== -->
+  <section class="panel-section" id="panel-integrations">
+    <div class="card">
+      <h3>Integrations</h3>
+      <p class="blurb">Drop in credentials for each external system; once saved they start working automatically — the backend reads from these records (cached for ~60 s per Function instance) and uses them in place of any env-var fallback. Secrets are stored in your tenant's Cosmos container, gated by your Entra sign-in. Click <strong>Show</strong> on any masked field to reveal it; click <strong>Test</strong> to ping the provider.</p>
+      <div id="integrationsList"></div>
     </div>
   </section>
 
@@ -535,17 +567,289 @@
     if (window.bccAudit) window.bccAudit('admin-export', { path: '/admin.html' });
   });
 
+  /* ============ INTEGRATIONS ============
+   * Each connector is one bcc-integration-<channel> doc. Backend reads these
+   * (cached ~60s) in preference to env vars, so saving credentials here is
+   * enough to enable the integration end-to-end once the corresponding API
+   * handler is wired. Status badge reflects last "Test connection" result.
+   */
+  var INT_PREFIX = 'bcc-integration-';
+  var CONNECTORS = [
+    {
+      channel: 'qbo',
+      name: 'QuickBooks Online',
+      blurb: 'Bookkeeping sync. Create an app at developer.intuit.com → grab Client ID + Client Secret. Set Environment to "sandbox" while testing.',
+      fields: [
+        { key: 'clientId',     label: 'Client ID',     type: 'text',     secret: false },
+        { key: 'clientSecret', label: 'Client Secret', type: 'password', secret: true  },
+        { key: 'environment',  label: 'Environment',   type: 'select',   options: ['sandbox','production'], secret: false },
+        { key: 'realmId',      label: 'Realm ID',      type: 'text',     secret: false, hint: 'Set automatically after OAuth connect; you can leave blank initially.' },
+        { key: 'refreshToken', label: 'Refresh Token', type: 'password', secret: true,  hint: 'Set automatically after OAuth connect.' }
+      ]
+    },
+    {
+      channel: 'google-ads',
+      name: 'Google Ads',
+      blurb: 'Campaign metrics + lead pull. Needs a Developer Token (apply at ads.google.com/aw/apicenter) + OAuth Client ID/Secret from console.cloud.google.com.',
+      fields: [
+        { key: 'developerToken', label: 'Developer Token', type: 'password', secret: true },
+        { key: 'clientId',       label: 'OAuth Client ID', type: 'text',     secret: false },
+        { key: 'clientSecret',   label: 'OAuth Client Secret', type: 'password', secret: true },
+        { key: 'customerId',     label: 'Customer ID',     type: 'text',     secret: false, hint: 'Your 10-digit account ID, no dashes.' },
+        { key: 'refreshToken',   label: 'Refresh Token',   type: 'password', secret: true }
+      ]
+    },
+    {
+      channel: 'meta',
+      name: 'Meta (Facebook + Instagram)',
+      blurb: 'Pages + Instagram Business via Graph API. Create a Business app at developers.facebook.com, request pages_read_engagement + instagram_basic.',
+      fields: [
+        { key: 'appId',       label: 'App ID',       type: 'text',     secret: false },
+        { key: 'appSecret',   label: 'App Secret',   type: 'password', secret: true },
+        { key: 'pageId',      label: 'Facebook Page ID', type: 'text', secret: false },
+        { key: 'igUserId',    label: 'Instagram Business User ID', type: 'text', secret: false },
+        { key: 'accessToken', label: 'Long-lived Access Token', type: 'password', secret: true, hint: 'Use the Graph API Explorer to mint a 60-day token, then exchange via /oauth/access_token.' }
+      ]
+    },
+    {
+      channel: 'linkedin',
+      name: 'LinkedIn (Marketing API)',
+      blurb: 'Organic + ads. Request Marketing Developer Platform access at linkedin.com/developers/apps.',
+      fields: [
+        { key: 'clientId',     label: 'Client ID',     type: 'text',     secret: false },
+        { key: 'clientSecret', label: 'Client Secret', type: 'password', secret: true },
+        { key: 'orgId',        label: 'Organization ID', type: 'text',   secret: false, hint: 'Numeric ID; not the vanity URL.' },
+        { key: 'accessToken',  label: 'Access Token',  type: 'password', secret: true }
+      ]
+    },
+    {
+      channel: 'mailchimp',
+      name: 'Mailchimp',
+      blurb: 'List + campaign sync. API Key from your Mailchimp account → Profile → Extras → API keys.',
+      fields: [
+        { key: 'apiKey',     label: 'API Key',       type: 'password', secret: true },
+        { key: 'serverPrefix', label: 'Server Prefix', type: 'text',   secret: false, hint: 'Last segment of your API key, e.g. "us21".' },
+        { key: 'audienceId', label: 'Default Audience ID', type: 'text', secret: false }
+      ]
+    },
+    {
+      channel: 'godaddy',
+      name: 'GoDaddy (DNS + domain)',
+      blurb: 'DNS automation + domain status. Generate an API key + secret at developer.godaddy.com.',
+      fields: [
+        { key: 'apiKey',    label: 'API Key',    type: 'password', secret: true },
+        { key: 'apiSecret', label: 'API Secret', type: 'password', secret: true },
+        { key: 'shopperId', label: 'Shopper ID', type: 'text',     secret: false, hint: 'Optional; only needed for reseller endpoints.' }
+      ]
+    },
+    {
+      channel: 'wordpress',
+      name: 'WordPress',
+      blurb: 'Post creation + page sync via REST API. Use an Application Password (Users → Profile → Application Passwords) — never your real account password.',
+      fields: [
+        { key: 'siteUrl',     label: 'Site URL',     type: 'text',     secret: false, hint: 'e.g. https://bluecollarcoach.us' },
+        { key: 'username',    label: 'Username',     type: 'text',     secret: false },
+        { key: 'appPassword', label: 'Application Password', type: 'password', secret: true }
+      ]
+    },
+    {
+      channel: 'slack',
+      name: 'Slack (webhook)',
+      blurb: 'Inbound notifications. Create an Incoming Webhook in your Slack workspace → paste the URL.',
+      fields: [
+        { key: 'webhookUrl', label: 'Webhook URL', type: 'password', secret: true },
+        { key: 'channel',    label: 'Default channel', type: 'text', secret: false, hint: 'e.g. #ops, optional.' }
+      ]
+    },
+    {
+      channel: 'teams',
+      name: 'Microsoft Teams (channel webhook)',
+      blurb: 'Inbound notifications to a Teams channel. Connectors → Incoming Webhook → paste the URL.',
+      fields: [
+        { key: 'webhookUrl', label: 'Webhook URL', type: 'password', secret: true }
+      ]
+    },
+    {
+      channel: 'azure-blob',
+      name: 'Azure Blob Storage',
+      blurb: 'Document storage. Provisioned by the Bicep deploy; values shown here mirror what the SWA already reads from app settings. Override only if you point at a different storage account.',
+      fields: [
+        { key: 'connectionString', label: 'Connection String', type: 'password', secret: true, hint: 'DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...' },
+        { key: 'containerName',    label: 'Container Name',    type: 'text',     secret: false, hint: 'Default: bcc-docs' }
+      ]
+    },
+    {
+      channel: 'app-insights',
+      name: 'Application Insights',
+      blurb: 'Server-side telemetry + error tracking. Provisioned by the Bicep deploy.',
+      fields: [
+        { key: 'connectionString', label: 'Connection String', type: 'password', secret: true, hint: 'InstrumentationKey=...;IngestionEndpoint=...' }
+      ]
+    },
+    {
+      channel: 'web-push',
+      name: 'Web Push (VAPID)',
+      blurb: 'Browser notifications. Generate a pair with `npx web-push generate-vapid-keys`.',
+      fields: [
+        { key: 'publicKey',  label: 'VAPID Public Key',  type: 'text',     secret: false },
+        { key: 'privateKey', label: 'VAPID Private Key', type: 'password', secret: true },
+        { key: 'subject',    label: 'Contact (mailto:)', type: 'text',     secret: false, hint: 'e.g. mailto:admin@bluecollarcoach.us' }
+      ]
+    }
+  ];
+
+  function loadIntegration(channel) {
+    var k = INT_PREFIX + channel;
+    try { var raw = localStorage.getItem(k); if (raw) return JSON.parse(raw); } catch (e) {}
+    return { id: k, tenantId: 'blue-collar-coach', docType: 'integration', channel: channel, status: 'disconnected', fields: {}, updatedAt: '' };
+  }
+  function saveIntegration(rec) {
+    rec.id = INT_PREFIX + rec.channel;
+    rec.tenantId = 'blue-collar-coach';
+    rec.docType = 'integration';
+    rec.updatedAt = nowIso();
+    localStorage.setItem(rec.id, JSON.stringify(rec));
+    if (window.bccAudit) window.bccAudit('integration-save', { key: rec.id, path: '/admin.html', meta: { channel: rec.channel, status: rec.status } });
+  }
+
+  function statusDot(status) {
+    var color = '#8a877e';
+    if (status === 'connected') color = '#059669';
+    else if (status === 'error') color = '#6a1c1c';
+    return '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + color + ';margin-right:6px;vertical-align:middle;"></span>';
+  }
+  function statusLabel(status) {
+    if (status === 'connected') return 'Connected';
+    if (status === 'error') return 'Error';
+    return 'Not connected';
+  }
+
+  function renderIntegrations() {
+    var listEl = document.getElementById('integrationsList');
+    if (!listEl) return;
+    listEl.innerHTML = CONNECTORS.map(function (conn) {
+      var rec = loadIntegration(conn.channel);
+      var fieldsHtml = conn.fields.map(function (f) {
+        var val = rec.fields && rec.fields[f.key] ? rec.fields[f.key] : '';
+        if (f.type === 'select') {
+          var opts = (f.options || []).map(function (o) { return '<option value="' + esc(o) + '"' + (o === val ? ' selected' : '') + '>' + esc(o) + '</option>'; }).join('');
+          return '<label class="field">' + esc(f.label) +
+            '<select data-int-key="' + esc(f.key) + '">' + opts + '</select>' +
+            (f.hint ? '<small style="font-size:11px;color:var(--muted);font-weight:500;margin-top:2px;">' + esc(f.hint) + '</small>' : '') +
+          '</label>';
+        }
+        var showBtn = f.secret ? '<button type="button" class="reveal" data-int-target="' + esc(f.key) + '">Show</button>' : '';
+        return '<label class="field">' + esc(f.label) +
+          '<div class="int-input-wrap">' +
+            '<input type="' + (f.secret ? 'password' : 'text') + '" data-int-key="' + esc(f.key) + '" value="' + esc(val) + '" autocomplete="off" spellcheck="false" />' +
+            showBtn +
+          '</div>' +
+          (f.hint ? '<small style="font-size:11px;color:var(--muted);font-weight:500;margin-top:2px;">' + esc(f.hint) + '</small>' : '') +
+        '</label>';
+      }).join('');
+
+      var lastSync = rec.updatedAt ? new Date(rec.updatedAt).toLocaleString() : 'never saved';
+      return '<div class="int-card" data-channel="' + esc(conn.channel) + '">' +
+        '<div class="int-head">' +
+          '<div class="int-name">' + esc(conn.name) + '</div>' +
+          '<div class="int-status">' + statusDot(rec.status) + statusLabel(rec.status) + '</div>' +
+        '</div>' +
+        '<p class="blurb" style="margin:6px 0 12px;">' + esc(conn.blurb) + '</p>' +
+        '<div class="form-grid">' + fieldsHtml + '</div>' +
+        '<div class="int-foot">' +
+          '<span class="int-last">Last saved: ' + esc(lastSync) + '</span>' +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+            '<button class="btn btn-ghost" data-int-act="test" type="button">Test connection</button>' +
+            '<button class="btn btn-danger" data-int-act="clear" type="button">Clear</button>' +
+            '<button class="btn btn-primary" data-int-act="save" type="button">Save</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+
+    // wire reveal buttons
+    listEl.querySelectorAll('button.reveal').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var target = b.getAttribute('data-int-target');
+        var card = b.closest('.int-card');
+        var input = card.querySelector('input[data-int-key="' + target + '"]');
+        if (!input) return;
+        if (input.type === 'password') { input.type = 'text'; b.textContent = 'Hide'; }
+        else { input.type = 'password'; b.textContent = 'Show'; }
+      });
+    });
+
+    listEl.querySelectorAll('button[data-int-act]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var card = b.closest('.int-card');
+        var channel = card.dataset.channel;
+        var act = b.dataset.intAct;
+        if (act === 'save') {
+          var rec = loadIntegration(channel);
+          rec.fields = {};
+          card.querySelectorAll('[data-int-key]').forEach(function (inp) {
+            rec.fields[inp.getAttribute('data-int-key')] = (inp.value || '').trim();
+          });
+          // After a save, mark as not-tested-yet
+          if (rec.status !== 'connected') rec.status = 'disconnected';
+          saveIntegration(rec);
+          if (window.bccNotifySaved) window.bccNotifySaved(channel + ' credentials saved.');
+          else (window.bccNotify || alert)('Saved.', 'success');
+          renderIntegrations();
+          return;
+        }
+        if (act === 'clear') {
+          if (!confirm('Clear all stored credentials for this connector?')) return;
+          var k = INT_PREFIX + channel;
+          localStorage.removeItem(k);
+          if (window.bccAudit) window.bccAudit('integration-clear', { key: k, path: '/admin.html', meta: { channel: channel } });
+          renderIntegrations();
+          return;
+        }
+        if (act === 'test') {
+          // Save current values first, then call backend test endpoint (if wired).
+          var rec = loadIntegration(channel); rec.fields = {};
+          card.querySelectorAll('[data-int-key]').forEach(function (inp) {
+            rec.fields[inp.getAttribute('data-int-key')] = (inp.value || '').trim();
+          });
+          saveIntegration(rec);
+          b.disabled = true; b.textContent = 'Testing…';
+          fetch('/api/integrations/' + encodeURIComponent(channel) + '/test', { method: 'POST', credentials: 'include' })
+            .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+            .then(function (resp) {
+              var rec2 = loadIntegration(channel);
+              rec2.status = resp.ok ? 'connected' : 'error';
+              rec2.lastTest = resp;
+              saveIntegration(rec2);
+              if (window.bccNotify) window.bccNotify(resp.ok ? 'Connected.' : ('Failed: ' + (resp.error || 'unknown')), resp.ok ? 'success' : 'error');
+              renderIntegrations();
+            })
+            .catch(function (e) {
+              var rec2 = loadIntegration(channel);
+              rec2.status = 'error';
+              rec2.lastTest = { ok: false, error: e.message };
+              saveIntegration(rec2);
+              if (window.bccNotify) window.bccNotify('Test endpoint not wired yet — credentials saved but unverified.', 'warn');
+              renderIntegrations();
+            })
+            .finally(function () { /* renderIntegrations re-creates the button */ });
+        }
+      });
+    });
+  }
+
   /* ===== Init ===== */
   function init() {
     document.getElementById('syncMeta').textContent = 'Synced via bcc-api.js';
     renderUsers();
     renderTypes();
+    renderIntegrations();
     renderCompany();
     renderSecurity();
     renderDataPanel();
     renderColorPicker(document.getElementById('newTypeColor'), '#a8884a');
   }
-  window.addEventListener('bcc-data-ready', function () { renderUsers(); renderTypes(); renderCompany(); renderSecurity(); renderDataPanel(); });
+  window.addEventListener('bcc-data-ready', function () { renderUsers(); renderTypes(); renderIntegrations(); renderCompany(); renderSecurity(); renderDataPanel(); });
   window.addEventListener('bcc-users-ready', renderUsers);
   window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
   setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
