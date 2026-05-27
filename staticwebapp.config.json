@@ -22,6 +22,8 @@
     { "route": "/login",       "rewrite": "/.auth/login/aad" },
     { "route": "/logout",      "redirect": "/.auth/logout" },
 
+    { "route": "/.auth/complete", "redirect": "/" },
+
     { "route": "/403.html",      "allowedRoles": ["anonymous", "authenticated"] },
     { "route": "/manifest.json", "allowedRoles": ["anonymous", "authenticated"] },
     { "route": "/sw.js",         "allowedRoles": ["anonymous", "authenticated"] },

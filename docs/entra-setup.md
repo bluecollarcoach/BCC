@@ -90,8 +90,15 @@ Under **Front-channel logout URL** (optional but cleaner):
 
 - `https://connect.bluecollarcoach.us/.auth/logout/aad/callback`
 
-Under **Implicit grant and hybrid flows**: leave both unchecked. SWA uses
-the modern code flow.
+Under **Implicit grant and hybrid flows**:
+- ✅ **ID tokens (used for implicit and hybrid flows)** — **REQUIRED**.
+  SWA's azureActiveDirectory provider uses the OIDC hybrid flow
+  (`response_type=code+id_token`). Without this box checked, Microsoft
+  refuses to issue the id_token, SWA's `/.auth/login/aad/callback`
+  silently 302s back to `/login`, and you get an infinite "approve MFA →
+  back to email" loop.
+- ⬜ Access tokens — leave unchecked. Not needed for SWA sign-in (Graph
+  API calls use the client-credentials flow via `AZURE_CLIENT_SECRET`).
 
 Under **Advanced settings → Allow public client flows**: leave **No**.
 
