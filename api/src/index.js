@@ -259,9 +259,11 @@ app.http('data', {
         else return badRequest('expected { key, data } or { items: [...] }');
 
         let touchesAdminKey = false;
+        let touchesIntegration = false;
         for (const it of items) {
           if (!isPcKey(it.key)) return badRequest('invalid key: ' + it.key);
           if (ADMIN_KEYS.has(it.key)) touchesAdminKey = true;
+          if (it.key.startsWith('bcc-integration-')) touchesIntegration = true;
         }
         if (touchesAdminKey && !(await isAppAdmin(p))) {
           return forbidden('only administrators may write admin config');
@@ -281,6 +283,11 @@ app.http('data', {
         // admin check sees the new user/role list immediately (otherwise an
         // admin demotion could take up to 15 s to take effect).
         if (touchesAdminKey) invalidateAdminCfgCache();
+        // Same idea for integration credential writes — the OAuth /connect
+        // endpoints read getIntegrationFields() immediately on the next
+        // request, and we don't want that to return cached empty fields
+        // after a UI Save → Connect flow.
+        if (touchesIntegration) { _intCache.until = 0; _intCache.byChannel.clear(); }
         return { status: 204 };
       }
 
@@ -789,7 +796,14 @@ async function getIntegrationFields(channel) {
     const c = container();
     const id = 'bcc-integration-' + channel;
     const { resource } = await c.item(id, BCC_TENANT_ID).read().catch(e => { if (e.code === 404) return { resource: null }; throw e; });
-    const fields = (resource && resource.fields) || {};
+    // Two write paths produce two doc shapes:
+    //   1) UI save via /api/data PUT  -> { id, tenantId, data: { fields, status, ... }, updatedAt, updatedBy }
+    //   2) OAuth callback upserts     -> { id, tenantId, docType, channel, fields, status, ... }
+    // Read both so the Connect flow doesn't return empty fields after a UI save.
+    const fields = (resource && (
+      resource.fields ||
+      (resource.data && resource.data.fields)
+    )) || {};
     _intCache.byChannel.set(channel, fields);
     _intCache.until = Date.now() + 60 * 1000;
     return fields;
