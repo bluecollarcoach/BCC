@@ -1,7 +1,7 @@
 {
   "name": "BCC Connect",
   "short_name": "BCC",
-  "description": "Operations platform for Blue Collar Coach — CRM, coaching sessions, jobs board, chat, training, documents, and admin in one place.",
+  "description": "Internal operations workspace for the Blue Collar Coach team 2014 coaching, bookkeeping, consulting, marketing, training, and technology in one place.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

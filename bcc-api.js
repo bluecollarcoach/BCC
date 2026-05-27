@@ -99,7 +99,7 @@
     style.textContent =
       '#bcc-progress{position:fixed;top:0;left:0;height:3px;background:#a8884a;' +
       'width:0;z-index:9999;transition:width 220ms ease-out, opacity 240ms ease-out;' +
-      'box-shadow:0 0 8px rgba(200,16,46,0.55);pointer-events:none;}' +
+      'box-shadow:0 0 8px rgba(168,136,74,0.55);pointer-events:none;}' +
       '#bcc-progress.done{opacity:0;}';
     document.head && document.head.appendChild(style);
 
@@ -570,7 +570,7 @@
       '.bcc-toast.show{transform:translateY(0);opacity:1;}' +
       '.bcc-toast .ic{font-size:18px;line-height:1;flex-shrink:0;}' +
       '.bcc-toast.success{background:#15803d;}' +
-      '.bcc-toast.error{background:#b91c1c;}' +
+      '.bcc-toast.error{background:#6a1c1c;}' +
       '.bcc-toast.warn{background:#a16207;}' +
       '.bcc-toast .x{background:transparent;border:none;color:rgba(255,255,255,0.8);font-size:16px;line-height:1;cursor:pointer;padding:0;margin-left:auto;}' +
       '.bcc-toast .x:hover{color:#fff;}' +
@@ -605,7 +605,7 @@
       '.bcc-auth-chip .bcc-dot{width:8px;height:8px;border-radius:50%;background:#10b981;flex-shrink:0;}' +
       '.bcc-auth-chip.anon .bcc-dot{background:#6b685f;}' +
       '.bcc-auth-chip.syncing .bcc-dot{background:#f59e0b;animation:bccPulse 1s infinite;}' +
-      '.bcc-auth-chip.error .bcc-dot{background:#ef4444;}' +
+      '.bcc-auth-chip.error .bcc-dot{background:#7a4848;}' +
       '@keyframes bccPulse{0%{opacity:0.4;}50%{opacity:1;}100%{opacity:0.4;}}' +
       '.bcc-auth-chip .bcc-name{color:#fff;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
       '.bcc-auth-chip a{color:rgba(255,255,255,0.72);text-decoration:none;font-size:12px;white-space:nowrap;}' +
@@ -652,15 +652,15 @@
       '.bcc-modal-card h3{color:#2b2b2b;font-size:20px;margin-bottom:4px;font-weight:800;}' +
       '.bcc-modal-card .bcc-modal-sub{color:#6b685f;font-size:12.5px;margin-bottom:16px;}' +
       '.bcc-modal-card label{display:block;font-size:11px;font-weight:700;color:#6b685f;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:5px;margin-top:10px;}' +
-      '.bcc-modal-card .bcc-req{color:#ef4444;}' +
+      '.bcc-modal-card .bcc-req{color:#7a4848;}' +
       '.bcc-modal-card input,.bcc-modal-card select,.bcc-modal-card textarea{width:100%;padding:10px 12px;border:1px solid #e2e1dd;border-radius:8px;font-family:inherit;font-size:14px;background:#fff;color:#1a1a1a;}' +
-      '.bcc-modal-card input:focus,.bcc-modal-card select:focus,.bcc-modal-card textarea:focus{outline:none;border-color:#a8884a;box-shadow:0 0 0 3px rgba(200,16,46,0.12);}' +
+      '.bcc-modal-card input:focus,.bcc-modal-card select:focus,.bcc-modal-card textarea:focus{outline:none;border-color:#a8884a;box-shadow:0 0 0 3px rgba(168,136,74,0.12);}' +
       '.bcc-modal-card textarea{resize:vertical;min-height:60px;}' +
       '.bcc-modal-card .bcc-row-2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}' +
       '@media (max-width:520px){.bcc-modal-card .bcc-row-2{grid-template-columns:1fr;}}' +
       '.bcc-modal-actions{display:flex;gap:8px;margin-top:18px;justify-content:flex-end;}' +
       '.bcc-modal-actions button{padding:10px 18px;border-radius:8px;border:none;cursor:pointer;font-weight:700;font-size:13.5px;font-family:inherit;}' +
-      '.bcc-btn-primary{background:#a8884a;color:#fff;box-shadow:0 2px 8px rgba(200,16,46,0.30);}' +
+      '.bcc-btn-primary{background:#a8884a;color:#fff;box-shadow:0 2px 8px rgba(168,136,74,0.30);}' +
       '.bcc-btn-primary:hover{background:#876d3a;}' +
       '.bcc-btn-ghost{background:#f6f6f4;color:#1a1a1a;border:1px solid #e2e1dd;}' +
       '.bcc-btn-ghost:hover{background:#e2e1dd;}' +
@@ -1399,7 +1399,7 @@
         'position:fixed', 'left:12px', 'right:12px', 'bottom:12px',
         'z-index:9998',
         'background:#1f2937', 'color:#f8fafc',
-        'border:1px solid #ef4444',
+        'border:1px solid #7a4848',
         'border-radius:10px',
         'padding:12px 14px',
         'display:flex', 'gap:10px', 'align-items:center', 'flex-wrap:wrap',
@@ -1409,7 +1409,7 @@
       ].join(';');
       bar.innerHTML =
         '<span style="flex:1;min-width:180px">Get notified when a T&amp;M sheet or trucking slip is submitted?</span>' +
-        '<button type="button" data-act="enable" style="background:#ef4444;color:#fff;border:0;padding:8px 14px;border-radius:8px;font-weight:600;cursor:pointer">Turn on</button>' +
+        '<button type="button" data-act="enable" style="background:#7a4848;color:#fff;border:0;padding:8px 14px;border-radius:8px;font-weight:600;cursor:pointer">Turn on</button>' +
         '<button type="button" data-act="dismiss" style="background:transparent;color:#cbd5e1;border:1px solid #475569;padding:8px 12px;border-radius:8px;cursor:pointer">Not now</button>';
 
       function teardown() { if (bar.parentNode) bar.parentNode.removeChild(bar); }

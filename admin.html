@@ -78,11 +78,11 @@
   .btn-primary:hover { background:var(--gold-deep); }
   .btn-ghost { background:transparent; color:var(--ink); border:1px solid var(--chrome-mute); }
   .btn-ghost:hover { background:var(--chrome-mute); }
-  .btn-danger { background:transparent; color:#b91c1c; border:1px solid #fecaca; }
-  .btn-danger:hover { background:#fee2e2; }
+  .btn-danger { background:transparent; color:#6a1c1c; border:1px solid #e6c8c8; }
+  .btn-danger:hover { background:#f3e0e0; }
   .icon-btn { background:none; border:0; cursor:pointer; color:var(--muted); padding:6px 10px; border-radius:6px; font-size:14px; }
   .icon-btn:hover { background:var(--chrome-mute); color:var(--ink); }
-  .icon-btn.danger:hover { background:#fee2e2; color:#b91c1c; }
+  .icon-btn.danger:hover { background:#f3e0e0; color:#6a1c1c; }
   .form-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
   @media (max-width:700px) { .form-grid { grid-template-columns:1fr; } }
   label.field { display:flex; flex-direction:column; gap:4px; font-size:12px; font-weight:600; color:var(--muted); }
@@ -90,7 +90,7 @@
   .badge.admin { background:rgba(168,136,74,0.18); color:var(--gold-deep); }
   .badge.member { background:#f1f1ef; color:var(--muted); }
   .badge.owner { background:#fff4d6; color:#92400e; }
-  .badge.inactive { background:#fee2e2; color:#b91c1c; }
+  .badge.inactive { background:#f3e0e0; color:#6a1c1c; }
   .swatch { display:inline-block; width:14px; height:14px; border-radius:4px; margin-right:6px; vertical-align:middle; border:1px solid rgba(0,0,0,0.10); }
   .panel-section { display:none; }
   .panel-section.active { display:block; }
@@ -167,7 +167,7 @@
         <tbody id="typesRows"></tbody>
       </table>
       <div class="add-row">
-        <input type="text" id="newTypeLabel" placeholder="New type (e.g. Septic, Concrete)" />
+        <input type="text" id="newTypeLabel" placeholder="New type (e.g. Bookkeeping retainer, Group cohort)" />
         <div id="newTypeColor" class="color-options" data-color="#a8884a"></div>
         <button class="btn btn-primary" id="addTypeBtn" type="button">Add type</button>
       </div>
@@ -212,7 +212,7 @@
       <p class="blurb">Tenant-level Entra auth already prevents anyone outside Blue Collar Coach from signing in. If you ever invite guest accounts from another domain, add their email domain here.</p>
       <div class="form-grid">
         <label class="field" style="grid-column:1 / -1;">Allowed email domains (comma-separated)
-          <input type="text" id="allowedDomains" placeholder="bluecollarcoach.us, contractor.com" />
+          <input type="text" id="allowedDomains" placeholder="bluecollarcoach.us, partner-firm.com" />
         </label>
       </div>
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:14px;">
@@ -244,7 +244,7 @@
 (function () {
   var CFG_KEY   = 'bcc-admin-config-v1';
   var TYPES_KEY = 'bcc-customer-types-v1';
-  var COLOR_PALETTE = ['#a8884a','#1d4ed8','#dc2626','#059669','#7c3aed','#d97706','#0891b2','#8a877e','#92400e','#be185d'];
+  var COLOR_PALETTE = ['#a8884a','#1d4ed8','#7a2226','#059669','#7c3aed','#d97706','#0891b2','#8a877e','#92400e','#be185d'];
 
   function nowIso(){ return new Date().toISOString(); }
   function esc(s) { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
@@ -265,7 +265,7 @@
         email: '',
         website: 'https://bluecollarcoach.us',
         address: '',
-        tagline: 'Coaching for blue-collar business owners'
+        tagline: 'Coaching, bookkeeping, consulting, marketing, training tagline: 'Coaching for blue-collar business owners' technology'
       },
       updatedAt: nowIso()
     };
@@ -281,13 +281,14 @@
     try { var raw = localStorage.getItem(TYPES_KEY); if (raw) return JSON.parse(raw); } catch (e) {}
     return {
       id: TYPES_KEY, tenantId: 'blue-collar-coach', docType: 'customer-types',
-      types: [
-        { id: 'hvac', label: 'HVAC', color: '#a8884a' },
-        { id: 'plumbing', label: 'Plumbing', color: '#1d4ed8' },
-        { id: 'electrical', label: 'Electrical', color: '#dc2626' },
-        { id: 'roofing', label: 'Roofing', color: '#059669' },
-        { id: 'general', label: 'General Trades', color: '#7c3aed' },
-        { id: 'other', label: 'Other', color: '#8a877e' }
+            types: [
+        { id: 'coaching',    label: 'Coaching',    color: '#a8884a' },
+        { id: 'bookkeeping', label: 'Bookkeeping', color: '#1d4ed8' },
+        { id: 'consulting',  label: 'Consulting',  color: '#059669' },
+        { id: 'marketing',   label: 'Marketing',   color: '#7c3aed' },
+        { id: 'training',    label: 'Training',    color: '#d97706' },
+        { id: 'technology',  label: 'Technology',  color: '#0891b2' },
+        { id: 'other',       label: 'Other',       color: '#8a877e' }
       ],
       updatedAt: nowIso()
     };

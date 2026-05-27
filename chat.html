@@ -13,10 +13,10 @@
 <style>
   :root {
     --p-navy:#2b2b2b; --p-navy-dark:#1a1a1a; --p-navy-light:#374151;
-    --p-orange:#a8884a; --p-orange-soft:#ef4444;
+    --p-orange:#a8884a; --p-orange-soft:#7a4848;
     --p-cyan:#1d4ed8; --p-cream:#f3f4f6;
     --p-slate:#1a1a1a; --p-gray:#6b685f; --p-light:#f6f6f4;
-    --p-border:#e2e1dd; --p-green:#10b981; --p-red:#ef4444; --p-amber:#f59e0b;
+    --p-border:#e2e1dd; --p-green:#10b981; --p-red:#7a4848; --p-amber:#f59e0b;
   }
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { height:100%; }
@@ -122,20 +122,20 @@
   .msg:hover { background:#fafbfc; }
   .msg .del {
     position:absolute; top:0; right:4px;
-    background:rgba(200,16,46,0.08); color:var(--p-red);
+    background:rgba(168,136,74,0.08); color:var(--p-red);
     border:none; border-radius:6px; width:28px; height:28px;
     cursor:pointer; font-size:14px; line-height:1;
     opacity:0; transition:opacity 0.12s, background 0.12s;
   }
   .msg:hover .del { opacity:1; }
-  .msg .del:hover { background:rgba(200,16,46,0.18); }
+  .msg .del:hover { background:rgba(168,136,74,0.18); }
   @media (hover:none) { .msg .del { opacity:1; } }
   .thread-head .clear-btn {
     background:transparent; border:1px solid var(--p-border);
     color:var(--p-red); padding:6px 12px; border-radius:7px;
     cursor:pointer; font-weight:700; font-size:12px;
   }
-  .thread-head .clear-btn:hover { background:rgba(200,16,46,0.08); border-color:var(--p-red); }
+  .thread-head .clear-btn:hover { background:rgba(168,136,74,0.08); border-color:var(--p-red); }
 
   .composer {
     border-top:1px solid var(--p-border); background:#fff;
@@ -158,7 +158,7 @@
   .composer button.send {
     background:var(--p-orange); color:#fff; border:none;
     width:42px; height:42px; border-radius:50%; cursor:pointer; font-size:16px;
-    box-shadow:0 2px 8px rgba(200,16,46,0.4);
+    box-shadow:0 2px 8px rgba(168,136,74,0.4);
   }
   .composer button.send:hover { background:#876d3a; }
   .composer .preview {

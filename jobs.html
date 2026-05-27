@@ -13,10 +13,10 @@
 <style>
   :root {
     --p-navy:#2b2b2b; --p-navy-dark:#1a1a1a; --p-navy-light:#374151;
-    --p-orange:#a8884a; --p-orange-soft:#ef4444;
+    --p-orange:#a8884a; --p-orange-soft:#7a4848;
     --p-cyan:#1d4ed8; --p-cream:#f3f4f6;
     --p-slate:#1a1a1a; --p-gray:#6b685f; --p-light:#f6f6f4;
-    --p-border:#e2e1dd; --p-green:#10b981; --p-red:#ef4444; --p-amber:#f59e0b;
+    --p-border:#e2e1dd; --p-green:#10b981; --p-red:#7a4848; --p-amber:#f59e0b;
   }
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { height:100%; }
@@ -52,7 +52,7 @@
     font-family:inherit; font-size:13px;
   }
   .btn { padding:8px 14px; border-radius:8px; border:none; cursor:pointer; font-weight:700; font-size:13px; }
-  .btn-primary { background:var(--p-orange); color:#fff; box-shadow:0 2px 8px rgba(200,16,46,0.3); }
+  .btn-primary { background:var(--p-orange); color:#fff; box-shadow:0 2px 8px rgba(168,136,74,0.3); }
   .btn-primary:hover { background:#876d3a; }
   .btn-ghost { background:var(--p-light); color:var(--p-slate); border:1px solid var(--p-border); }
   .btn-ghost:hover { background:#e2e1dd; }
@@ -109,7 +109,7 @@
     padding:10px; display:flex; flex-direction:column; gap:8px;
     overflow-y:auto; flex:1; min-height:80px;
   }
-  .col-list.over { background:rgba(200,16,46,0.06); border-radius:0 0 12px 12px; }
+  .col-list.over { background:rgba(168,136,74,0.06); border-radius:0 0 12px 12px; }
 
   .card {
     background:#fff; border-radius:10px; padding:0 0 11px 0; cursor:grab;
@@ -145,7 +145,7 @@
     padding:2px 7px; border-radius:5px; font-size:10.5px; font-weight:700; letter-spacing:0.3px;
     display:inline-flex; align-items:center; gap:4px;
   }
-  .card .chip.urgent { background:#fee2e2; color:#5c4520; }
+  .card .chip.urgent { background:#f3e0e0; color:#5c4520; }
   .card .chip.email { background:#fef3c7; color:#92400e; }
   .card .chip.contact { background:#dbeafe; color:#1e40af; }
   .card .chip.checklist { background:var(--p-light); color:var(--p-slate); }
@@ -296,7 +296,7 @@
     border-radius:6px; display:flex; align-items:center; justify-content:center;
     font-size:11px; font-weight:800; flex-shrink:0;
   }
-  .file-row .ic-file.pdf { background:#fee2e2; color:#5c4520; }
+  .file-row .ic-file.pdf { background:#f3e0e0; color:#5c4520; }
   .file-row .ic-file.img { background:#fce7f3; color:#9d174d; }
   .file-row .info { flex:1; min-width:0; }
   .file-row .info .nm {

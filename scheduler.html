@@ -13,10 +13,10 @@
 <style>
   :root {
     --p-navy:#2b2b2b; --p-navy-dark:#1a1a1a; --p-navy-light:#374151;
-    --p-orange:#a8884a; --p-orange-soft:#ef4444;
+    --p-orange:#a8884a; --p-orange-soft:#7a4848;
     --p-cyan:#1d4ed8; --p-cream:#f3f4f6;
     --p-slate:#1a1a1a; --p-gray:#6b685f; --p-light:#f6f6f4;
-    --p-border:#e2e1dd; --p-green:#10b981; --p-red:#ef4444; --p-amber:#f59e0b;
+    --p-border:#e2e1dd; --p-green:#10b981; --p-red:#7a4848; --p-amber:#f59e0b;
   }
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { height:100%; }
@@ -63,7 +63,7 @@
   .btn-primary {
     background:var(--p-orange); color:#fff; border:none; padding:9px 16px;
     border-radius:8px; cursor:pointer; font-weight:700; font-size:13px;
-    box-shadow:0 2px 8px rgba(200,16,46,0.3); transition:all 0.15s;
+    box-shadow:0 2px 8px rgba(168,136,74,0.3); transition:all 0.15s;
   }
   .btn-primary:hover { background:#876d3a; transform:translateY(-1px); }
   .btn-ghost {
@@ -87,7 +87,7 @@
   }
   .pool .hint { font-size:11px; color:var(--p-gray); margin-bottom:10px; line-height:1.5; }
   .pool-list { display:flex; flex-direction:column; gap:8px; min-height:80px; }
-  .pool-list.over { background:rgba(200,16,46,0.05); border-radius:8px; }
+  .pool-list.over { background:rgba(168,136,74,0.05); border-radius:8px; }
 
   /* ---------- View toggle (Week / Month) ---------- */
   .view-toggle {
@@ -263,7 +263,7 @@
     min-height:120px; padding:6px; display:flex; flex-direction:column; gap:6px;
     transition:background 0.12s, border-color 0.12s;
   }
-  .cell.over { background:rgba(200,16,46,0.08); border-color:var(--p-orange); border-style:solid; }
+  .cell.over { background:rgba(168,136,74,0.08); border-color:var(--p-orange); border-style:solid; }
   .cell.weekend { background:#f8fafc; }
   .cell .empty {
     color:var(--p-gray); font-size:11px; text-align:center; padding:20px 0;
@@ -287,7 +287,7 @@
   .job.drop-above::before, .job.drop-below::after {
     content:''; position:absolute; left:-2px; right:-2px; height:3px;
     background:var(--p-orange); border-radius:2px; pointer-events:none;
-    box-shadow:0 0 6px rgba(200,16,46,0.55);
+    box-shadow:0 0 6px rgba(168,136,74,0.55);
   }
   .job.drop-above::before { top:-3px; }
   .job.drop-below::after  { bottom:-3px; }
@@ -297,7 +297,7 @@
   .day-job.drop-above::before, .day-job.drop-below::after {
     content:''; position:absolute; left:0; right:0; height:3px;
     background:var(--p-orange); border-radius:2px; pointer-events:none;
-    box-shadow:0 0 6px rgba(200,16,46,0.55);
+    box-shadow:0 0 6px rgba(168,136,74,0.55);
   }
   .day-job.drop-above::before { top:-4px; }
   .day-job.drop-below::after  { bottom:-4px; }
@@ -317,7 +317,7 @@
   .job.t-excavation .name { color:#b45309; }
   .job.t-watersewer { border-left-color:var(--p-navy); }
   .job.t-firehydrant { border-left-color:var(--p-red); }
-  .job.t-firehydrant .name { color:#b91c1c; }
+  .job.t-firehydrant .name { color:#6a1c1c; }
   .job.t-demo { border-left-color:var(--p-slate); }
   .job.t-emergency { border-left-color:var(--p-red); background:#faf4e8; }
   .job.t-emergency .name { color:var(--p-red); }
@@ -347,7 +347,7 @@
     font-family:inherit; font-size:13px; color:var(--p-slate); background:#fff;
   }
   .detail input:focus, .detail select:focus, .detail textarea:focus {
-    outline:none; border-color:var(--p-orange); box-shadow:0 0 0 3px rgba(200,16,46,0.12);
+    outline:none; border-color:var(--p-orange); box-shadow:0 0 0 3px rgba(168,136,74,0.12);
   }
   .detail textarea { resize:vertical; min-height:70px; }
   .detail .members {
