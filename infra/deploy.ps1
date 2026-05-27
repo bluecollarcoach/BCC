@@ -12,14 +12,14 @@
 param(
   [Parameter(Mandatory=$true)] [string]$Subscription,
   [Parameter(Mandatory=$true)] [string]$ResourceGroup,
-  [string]$Location = 'centralus',
+  [string]$Location = 'westus2',
   [Parameter(Mandatory=$true)] [string]$RepoUrl,
   [Parameter(Mandatory=$true)] [string]$RepoToken,
   [Parameter(Mandatory=$true)] [string]$EntraTenantId,
   [Parameter(Mandatory=$true)] [string]$EntraClientId,
   [Parameter(Mandatory=$true)] [string]$EntraClientSecret,
   [string]$Branch = 'main',
-  [string]$PcTenantId = 'precision-utilities',
+  [string]$BccTenantId = 'blue-collar-coach',
   [bool]$EnableCosmosFreeTier = $true
 )
 
@@ -40,7 +40,7 @@ az deployment group create `
   --resource-group $ResourceGroup `
   --template-file (Join-Path $scriptDir 'main.bicep') `
   --parameters `
-    appName=precision-connect `
+    appName=bcc-connect `
     swaLocation=$Location `
     enableCosmosFreeTier=$EnableCosmosFreeTier `
     repositoryUrl=$RepoUrl `
@@ -49,7 +49,7 @@ az deployment group create `
     entraTenantId=$EntraTenantId `
     entraClientId=$EntraClientId `
     entraClientSecret=$EntraClientSecret `
-    pcTenantId=$PcTenantId `
+    bccTenantId=$BccTenantId `
   --output table
 
 Write-Host ""
