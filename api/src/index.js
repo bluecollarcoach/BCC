@@ -409,28 +409,36 @@ const ALLOWED_AUDIT_ACTIONS = new Set([
   'page-view',
   // Generic data sync (back-stop; specific actions below preferred)
   'data-write', 'data-delete',
-  // Admin settings
-  'admin-save', 'admin-discard',
-  // Activity-log gate
-  'activity-unlock', 'activity-unlock-failed',
-  // Customer-facing
-  'rate-authorize',
-  // Field submissions — give us actionable rows in the log instead of
-  // generic "data-write" for every kind of submission.
-  'tm-submit', 'tm-edit', 'tm-delete',
-  'daily-submit', 'daily-edit', 'daily-delete',
-  'pretrip-submit', 'pretrip-edit',
-  'equipment-submit', 'equipment-edit',
-  'trucking-submit', 'trucking-edit', 'trucking-delete',
-  'trucking-lock', 'trucking-unlock',
-  'clockin', 'clockout',
-  // Maintenance inbox
-  'maint-create', 'maint-update', 'maint-close',
-  // Job board / scheduler
-  'job-create', 'job-update', 'job-assign', 'job-status', 'job-delete',
+  // Admin settings + integration credentials
+  'admin-config-save', 'admin-discard', 'admin-export',
+  'customer-types-save',
+  'integration-save', 'integration-clear',
+  // Auth / activity-log gate
+  'signin-denied', 'activity-unlock', 'activity-unlock-failed',
+  // CRM
+  'contact-create', 'contact-update', 'contact-delete',
+  'convo-add', 'convo-delete', 'need-add',
+  'company-create', 'company-update', 'company-delete',
+  'deal-create', 'deal-update', 'deal-delete',
+  // Sessions
+  'session-create', 'session-update', 'session-delete',
+  // Engagements / pipeline
+  'engagement-create', 'engagement-update', 'engagement-stage', 'engagement-delete',
+  // Documents
+  'document-metadata-add', 'document-upload', 'document-delete', 'document-download',
+  // Rates / signatures
+  'rate-sheet-save', 'rate-signature',
+  // My Day / time
+  'clock-in', 'clock-out', 'daily-log-save',
   // Chat
   'chat-send', 'chat-delete', 'chat-clear-channel',
-  // Issues
+  // Marketing / campaigns
+  'campaign-create', 'campaign-update', 'campaign-delete',
+  // Training / events / KB
+  'course-create', 'course-update', 'enrollment-update',
+  'event-create', 'event-update', 'event-delete',
+  'kb-article-create', 'kb-article-update', 'kb-article-delete',
+  // Issues / inbox
   'issue-report'
 ]);
 
@@ -642,7 +650,14 @@ app.http('push-subscribe', {
 
 /* ============ Fan-out helpers (called from /api/audit POST) ============ */
 
-const NOTIFY_ACTIONS = new Set(['tm-submit', 'trucking-lock']);
+// Actions that fan out via Web Push to anyone who opted in via
+// admin-config.users[*].notifyOnSubmit. Extend as new "we want a
+// notification when X" use cases emerge.
+const NOTIFY_ACTIONS = new Set([
+  'rate-signature',      // a customer signed a rate sheet
+  'session-create',      // a new coaching session was booked
+  'engagement-stage'     // a deal moved stage in the pipeline
+]);
 
 async function loadNotifyRecipients() {
   const cfg = await getAdminCfg();
@@ -673,28 +688,33 @@ function buildPushPayload(action, body, p) {
   const sender = who.split('@')[0];
   const meta = (body && body.meta) || {};
   const key = body && body.key ? String(body.key) : '';
-  if (action === 'tm-submit') {
-    const customer = meta.customer || meta.company || '';
-    const total = meta.total != null ? ' · $' + Number(meta.total).toLocaleString() : '';
-    const title = 'New T&M sheet — ' + sender;
-    const bodyText = (customer ? customer + total : ('Submitted' + total)).slice(0, 140);
+  if (action === 'rate-signature') {
+    const signedBy = meta.signedBy || '';
+    const title = 'New signature captured';
+    const bodyText = (signedBy ? signedBy + ' signed the rate sheet' : 'Customer signed the rate sheet').slice(0, 140);
     return {
-      title,
-      body: bodyText,
-      url: '/tm.html' + (key ? ('?id=' + encodeURIComponent(key)) : ''),
-      tag: 'tm-' + (key || Date.now())
+      title, body: bodyText,
+      url: '/rates.html' + (key ? ('?id=' + encodeURIComponent(key)) : ''),
+      tag: 'rate-sig-' + (key || Date.now())
     };
   }
-  if (action === 'trucking-lock') {
-    const customer = meta.customer || meta.company || '';
-    const loads = meta.loads != null ? ' · ' + meta.loads + ' loads' : '';
-    const title = 'Trucking slip submitted — ' + sender;
-    const bodyText = (customer ? customer + loads : ('Submitted' + loads)).slice(0, 140);
+  if (action === 'session-create') {
+    const title = 'New coaching session booked';
+    const bodyText = (sender ? 'Booked by ' + sender : 'A session was booked').slice(0, 140);
     return {
-      title,
-      body: bodyText,
-      url: '/trucking.html' + (key ? ('?id=' + encodeURIComponent(key)) : ''),
-      tag: 'trk-' + (key || Date.now())
+      title, body: bodyText,
+      url: '/sessions.html' + (key ? ('?id=' + encodeURIComponent(key)) : ''),
+      tag: 'sess-' + (key || Date.now())
+    };
+  }
+  if (action === 'engagement-stage') {
+    const stage = meta.stage || '';
+    const title = 'Engagement moved' + (stage ? ' → ' + stage : '');
+    const bodyText = ('Updated by ' + sender).slice(0, 140);
+    return {
+      title, body: bodyText,
+      url: '/jobs.html' + (key ? ('?id=' + encodeURIComponent(key)) : ''),
+      tag: 'eng-' + (key || Date.now())
     };
   }
   return null;
