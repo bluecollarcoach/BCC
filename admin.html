@@ -818,7 +818,8 @@
             ((conn.channel === 'slack' || conn.channel === 'teams')
               ? '<button class="btn btn-ghost" data-int-act="notify" type="button">Send test message</button>' : '') +
             ((conn.channel === 'qbo')
-              ? '<button class="btn btn-ghost" data-int-act="sync" type="button">Sync now</button>' : '') +
+              ? '<a class="btn btn-ghost" href="/api/integrations/qbo/connect">Connect QBO</a>' +
+                '<button class="btn btn-ghost" data-int-act="sync" type="button">Sync now</button>' : '') +
             (conn.channel !== 'msgraph' ? '<button class="btn btn-ghost" data-int-act="test" type="button">Test connection</button>' : '') +
             '<button class="btn btn-danger" data-int-act="clear" type="button">Clear</button>' +
             (conn.channel !== 'msgraph' ? '<button class="btn btn-primary" data-int-act="save" type="button">Save</button>' : '') +
@@ -946,8 +947,29 @@
     renderDataPanel();
     renderColorPicker(document.getElementById('newTypeColor'), '#a8884a');
 
-    // Handle ?msgraph=connected|error landing from the OAuth callback
+    // Handle ?qbo=connected|error landing from the QBO OAuth callback
     var qs = new URLSearchParams(location.search);
+    var qbo = qs.get('qbo');
+    if (qbo) {
+      document.querySelectorAll('.tabs button').forEach(function (b) { b.classList.toggle('active', b.dataset.tab === 'integrations'); });
+      document.querySelectorAll('.panel-section').forEach(function (s) { s.classList.remove('active'); });
+      document.getElementById('panel-integrations').classList.add('active');
+      if (qbo === 'connected') {
+        // Server already wrote tokens to Cosmos; mirror the status locally so the UI flips green
+        var qboRec = loadIntegration('qbo');
+        qboRec.status = 'connected';
+        saveIntegration(qboRec);
+        renderIntegrations();
+        if (window.bccNotifySaved) window.bccNotifySaved('QuickBooks connected. Sync now to pull P&L.');
+        else if (window.bccNotify) window.bccNotify('QuickBooks connected.', 'success');
+      } else {
+        var d = qs.get('detail');
+        if (window.bccNotify) window.bccNotify('QBO connect failed: ' + (d || qbo), 'error');
+      }
+      history.replaceState({}, '', location.pathname + (location.hash || ''));
+    }
+
+    // Handle ?msgraph=connected|error landing from the OAuth callback
     var ms = qs.get('msgraph');
     if (ms) {
       // Pop the Integrations tab so the user sees the connector

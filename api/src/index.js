@@ -1327,6 +1327,104 @@ app.http('msgraph-delete-event', {
   })
 });
 
+/* ============ QuickBooks Online — OAuth + auto-capture ============
+ *
+ * Intuit OAuth 2.0. User clicks Connect QBO in Admin → Integrations →
+ * we redirect to appcenter.intuit.com → on return we capture the
+ * realmId (company id) + refresh token directly into
+ * bcc-integration-qbo.fields, so the existing /api/integrations/qbo/sync
+ * endpoint can pull P&L without anyone pasting tokens by hand.
+ *
+ * Requires QBO clientId + clientSecret to be set on
+ * bcc-integration-qbo.fields BEFORE the connect click. The Intuit redirect
+ * URI must be whitelisted in your QBO app's settings:
+ *   https://<swa-host>/api/integrations/qbo/callback
+ */
+
+app.http('qbo-connect', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'integrations/qbo/connect',
+  handler: withAccessLog(async (request) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    try {
+      const fields = await getIntegrationFields('qbo');
+      if (!fields.clientId) {
+        return { status: 400, jsonBody: { error: 'Set QBO clientId + clientSecret in Admin first, then click Connect.' } };
+      }
+      const origin = new URL(request.url).origin;
+      const redirectUri = origin + '/api/integrations/qbo/callback';
+      const env = fields.environment === 'production' ? 'production' : 'sandbox';
+      const state = Buffer.from(JSON.stringify({ upn: p.userDetails || p.userId, env, t: Date.now() })).toString('base64url');
+      const authUrl = 'https://appcenter.intuit.com/connect/oauth2?' + new URLSearchParams({
+        client_id: fields.clientId,
+        response_type: 'code',
+        scope: 'com.intuit.quickbooks.accounting',
+        redirect_uri: redirectUri,
+        state: state
+      }).toString();
+      return { status: 302, headers: { Location: authUrl } };
+    } catch (e) {
+      return { status: 500, jsonBody: { error: String(e.message || e) } };
+    }
+  })
+});
+
+app.http('qbo-callback', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'integrations/qbo/callback',
+  handler: withAccessLog(async (request, context) => {
+    const url = new URL(request.url);
+    const code = url.searchParams.get('code');
+    const realmId = url.searchParams.get('realmId');
+    const state = url.searchParams.get('state');
+    const err = url.searchParams.get('error');
+    if (err) return { status: 302, headers: { Location: '/admin.html?qbo=' + encodeURIComponent(err) + '#integrations' } };
+    if (!code || !realmId) return { status: 400, jsonBody: { error: 'missing code or realmId' } };
+    try {
+      const fields = await getIntegrationFields('qbo');
+      if (!fields.clientId || !fields.clientSecret) throw new Error('QBO clientId/clientSecret missing on the integration doc');
+      const redirectUri = url.origin + '/api/integrations/qbo/callback';
+      const basic = Buffer.from(fields.clientId + ':' + fields.clientSecret).toString('base64');
+      const body = new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: redirectUri
+      }).toString();
+      const r = await fetch('https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer', {
+        method: 'POST',
+        headers: { 'Authorization': 'Basic ' + basic, 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+        body
+      });
+      if (!r.ok) throw new Error('Intuit token exchange failed (' + r.status + ')');
+      const tok = await r.json();
+
+      // Persist refresh token + realmId back onto bcc-integration-qbo
+      const c = container();
+      const id = 'bcc-integration-qbo';
+      const doc = await c.item(id, BCC_TENANT_ID).read().then(rr => rr.resource).catch(() => null);
+      const rec = doc || { id, tenantId: BCC_TENANT_ID, docType: 'integration', channel: 'qbo', fields: {} };
+      rec.fields = rec.fields || {};
+      rec.fields.refreshToken = tok.refresh_token;
+      rec.fields.realmId = realmId;
+      rec.status = 'connected';
+      rec.lastTest = { ok: true, at: new Date().toISOString() };
+      rec.updatedAt = new Date().toISOString();
+      await c.items.upsert(rec);
+      // Bust the integration cache so /sync sees the new tokens immediately
+      _intCache.until = 0; _intCache.byChannel.clear();
+
+      return { status: 302, headers: { Location: '/admin.html?qbo=connected#integrations' } };
+    } catch (e) {
+      context.error('qbo callback failed', e);
+      return { status: 302, headers: { Location: '/admin.html?qbo=error&detail=' + encodeURIComponent(e.message) + '#integrations' } };
+    }
+  })
+});
+
 /* ============ Azure Blob — document storage ============
  * Files don't fit in Cosmos (10 MB doc cap; not what it's designed for).
  * Per the data-shapes.md sketch: file goes to Blob, metadata stays in
