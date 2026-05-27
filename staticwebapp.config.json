@@ -6,13 +6,6 @@
           "openIdIssuer": "https://login.microsoftonline.com/81acb8ef-0b0b-4299-882c-ff07373e8cc7/v2.0",
           "clientIdSettingName": "AZURE_CLIENT_ID",
           "clientSecretSettingName": "AZURE_CLIENT_SECRET"
-        },
-        "userDetailsClaim": "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn",
-        "login": {
-          "loginParameters": [
-            "scope=openid profile email",
-            "domain_hint=bluecollarcoach.us"
-          ]
         }
       }
     }
