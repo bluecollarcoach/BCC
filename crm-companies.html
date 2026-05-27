@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#1a1a1a" />
+<meta name="robots" content="noindex, nofollow" />
+<title>CRM — Companies · BCC Connect</title>
+<link rel="icon" type="image/png" href="bcc-logo.png" />
+<link rel="manifest" href="manifest.json" />
+<style>
+  :root {
+    --ink:#1a1a1a; --ink-soft:#2b2b2b; --ink-line:#2e2c27;
+    --gold:#c5a55a; --gold-warm:#d4b67a; --gold-deep:#a8884a;
+    --gold-fade:rgba(197,165,90,0.12);
+    --chrome:#f6f6f4; --chrome-mute:#e6e5e1; --muted:#6b7077;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: 'Inter', system-ui, sans-serif;
+    color: var(--ink); background: var(--chrome); -webkit-font-smoothing: antialiased;
+  }
+
+  header.topbar {
+    display: flex; align-items: center; gap: 14px;
+    padding: 12px 22px; color: var(--chrome);
+    background: linear-gradient(90deg, #141414 0%, #1f1f1f 100%);
+    border-bottom: 1px solid var(--ink-line);
+    position: sticky; top: 0; z-index: 50;
+  }
+  header.topbar a.home { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--chrome); }
+  header.topbar img { height: 30px; }
+  header.topbar .wordmark { font-family: 'Source Serif 4', Georgia, serif; font-size: 14px; font-weight: 700; letter-spacing: 1.5px; }
+  header.topbar .wordmark .light { color: var(--gold); }
+  header.topbar .module {
+    font-size: 11px; font-weight: 700; letter-spacing: 2.5px;
+    text-transform: uppercase; color: var(--gold-warm);
+    border-left: 1px solid rgba(255,255,255,0.18); padding-left: 14px; margin-left: 4px;
+  }
+
+  .page { max-width: 1200px; margin: 0 auto; padding: 22px 22px 70px; }
+  .crm-tabs {
+    display: flex; gap: 4px; flex-wrap: wrap;
+    background: #fff; border: 1px solid var(--chrome-mute); border-radius: 12px;
+    padding: 6px; margin-bottom: 14px;
+  }
+  .crm-tabs a {
+    flex: 1; min-width: 120px; min-height: 38px;
+    background: transparent; border: 0; border-radius: 8px;
+    font: inherit; font-size: 13px; font-weight: 700; color: var(--muted);
+    cursor: pointer; padding: 9px 12px; letter-spacing: 0.2px;
+    text-decoration: none; text-align: center;
+  }
+  .crm-tabs a:hover { background: var(--chrome); color: var(--ink); }
+  .crm-tabs a.active { background: var(--ink); color: var(--gold-warm); }
+
+  .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+  .page-head h1 { font-family: 'Source Serif 4', Georgia, serif; font-size: 26px; font-weight: 700; letter-spacing: 0.4px; margin: 0; color: var(--ink); }
+  .page-head .sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .page-head .meta { font-size: 12px; color: var(--muted); }
+
+  .toolbar {
+    display: flex; align-items: center; gap: 8px;
+    background: #fff; padding: 12px; border: 1px solid var(--chrome-mute);
+    border-radius: 12px; margin-bottom: 14px; flex-wrap: wrap;
+  }
+  .toolbar .search { flex: 1; min-width: 200px; display: flex; align-items: center; gap: 8px;
+    background: var(--chrome); border: 1px solid var(--chrome-mute); border-radius: 8px;
+    padding: 8px 12px; min-height: 38px; }
+  .toolbar .search input { flex: 1; border: none; outline: none; background: transparent; font: inherit; font-size: 14px; min-width: 0; }
+  .toolbar .search svg { width: 16px; height: 16px; opacity: 0.6; flex-shrink: 0; }
+  .toolbar select { background: var(--chrome); border: 1px solid var(--chrome-mute); border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 13px; min-height: 38px; min-width: 130px; }
+  .toolbar .btn { min-height: 38px; border: 0; border-radius: 8px; padding: 0 14px; font: inherit; font-weight: 700; font-size: 13px; cursor: pointer; letter-spacing: 0.2px; }
+  .btn-primary { background: var(--gold); color: #fff; }
+  .btn-primary:hover { background: var(--gold-deep); }
+  .btn-ghost { background: transparent; color: var(--ink); border: 1px solid var(--chrome-mute); }
+  .btn-ghost:hover { background: var(--chrome-mute); }
+  .btn-danger { background: transparent; color: #6a1c1c; border: 1px solid #e6c8c8; }
+  .btn-danger:hover { background: #f3e0e0; }
+
+  .list { background: #fff; border: 1px solid var(--chrome-mute); border-radius: 12px; overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th { text-align: left; font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 1.2px; padding: 12px 14px; border-bottom: 1px solid var(--chrome-mute); background: var(--chrome); }
+  tbody tr { border-bottom: 1px solid var(--chrome-mute); cursor: pointer; }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: var(--gold-fade); }
+  tbody td { padding: 12px 14px; vertical-align: middle; font-size: 13.5px; }
+  tbody td .name { font-weight: 700; color: var(--ink); }
+  tbody td .domain { color: var(--gold-deep); font-size: 12.5px; }
+  tbody td .muted { color: var(--muted); font-size: 12.5px; }
+  tbody td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tbody td.actions { text-align: right; white-space: nowrap; }
+  .icon-btn { background: none; border: none; cursor: pointer; color: var(--muted); padding: 6px 10px; border-radius: 6px; font-size: 14px; transition: background 0.12s, color 0.12s; }
+  .icon-btn:hover { background: var(--chrome-mute); color: var(--ink); }
+  .icon-btn.danger:hover { background: #f3e0e0; color: #6a1c1c; }
+
+  .empty { padding: 64px 20px; text-align: center; color: var(--muted); }
+  .empty .big { font-family: 'Source Serif 4', Georgia, serif; font-size: 20px; color: var(--ink); margin-bottom: 6px; }
+
+  /* Panel (new/edit form) */
+  .panel { display: none; background: #fff; border: 1px solid var(--chrome-mute); border-radius: 12px; margin-bottom: 14px; padding: 18px; }
+  .panel.open { display: block; }
+  .panel h3 { margin: 0 0 12px; font-family: 'Source Serif 4', Georgia, serif; font-size: 17px; color: var(--ink); }
+  .panel .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .panel label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  .panel input, .panel select, .panel textarea {
+    border: 1px solid var(--chrome-mute); border-radius: 8px;
+    padding: 9px 11px; font: inherit; font-size: 14px; color: var(--ink); background: #fff; min-height: 38px;
+  }
+  .panel input:focus, .panel select:focus, .panel textarea:focus { outline: 2px solid var(--gold); outline-offset: -1px; border-color: var(--gold); }
+  .panel textarea { min-height: 60px; resize: vertical; }
+  .panel .full { grid-column: 1 / -1; }
+  .panel .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+
+  /* Detail view */
+  .detail-head {
+    background: linear-gradient(160deg, #1f1f1f 0%, #1a1a1a 100%);
+    color: var(--chrome); border-radius: 14px; padding: 22px 24px;
+    border: 1px solid var(--ink-line); margin-bottom: 16px;
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  }
+  .detail-head .who h2 { font-family: 'Source Serif 4', Georgia, serif; font-size: 24px; margin: 0 0 4px; color: #fff; }
+  .detail-head .who .meta-line { font-size: 13px; color: rgba(255,255,255,0.65); }
+  .detail-head .who .meta-line a { color: var(--gold-warm); text-decoration: none; }
+  .detail-head .who .meta-line a:hover { text-decoration: underline; }
+  .detail-head .back { font-size: 13px; color: var(--gold-warm); text-decoration: none; }
+  .detail-head .back:hover { color: #fff; }
+  .detail-head .top-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+  .detail-grid { display: grid; grid-template-columns: 1fr 1.4fr; gap: 16px; }
+  @media (max-width: 880px) { .detail-grid { grid-template-columns: 1fr; } }
+
+  .card { background: #fff; border: 1px solid var(--chrome-mute); border-radius: 12px; padding: 18px; margin-bottom: 14px; }
+  .card h4 {
+    margin: 0 0 10px; font-family: 'Source Serif 4', Georgia, serif; font-size: 15px; color: var(--ink);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .card h4 .count { font-family: 'Inter', sans-serif; font-size: 11px; color: var(--muted); font-weight: 600; }
+  .card h4 .add { font-family: 'Inter', sans-serif; font-size: 12px; color: var(--gold); cursor: pointer; font-weight: 700; background: none; border: 0; padding: 0; }
+  .card h4 .add:hover { color: var(--gold-deep); }
+  .field-row { display: grid; grid-template-columns: 110px 1fr; gap: 8px; padding: 6px 0; font-size: 13.5px; border-bottom: 1px dashed #f1efe9; }
+  .field-row:last-child { border-bottom: none; }
+  .field-row .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.8px; font-weight: 700; padding-top: 4px; }
+  .field-row .v { color: var(--ink); }
+  .field-row .v.editable { cursor: text; }
+  .field-row .v[contenteditable=true]:focus { outline: 2px solid var(--gold); outline-offset: 2px; border-radius: 4px; }
+
+  .linked-list { list-style: none; margin: 0; padding: 0; }
+  .linked-list li {
+    padding: 10px 0; border-bottom: 1px solid #f1efe9; font-size: 13.5px;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  }
+  .linked-list li:last-child { border-bottom: none; }
+  .linked-list li a { color: var(--ink); text-decoration: none; font-weight: 600; }
+  .linked-list li a:hover { color: var(--gold-deep); }
+  .linked-list .sub { color: var(--muted); font-size: 12px; font-weight: 500; margin-top: 2px; }
+  .linked-list .pill {
+    display: inline-block; font-size: 10.5px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 1px;
+    padding: 3px 9px; border-radius: 999px;
+    background: var(--gold-fade); color: var(--gold-deep);
+  }
+
+  @media (max-width: 700px) {
+    .page { padding: 14px 14px 60px; }
+    .page-head h1 { font-size: 22px; }
+    table, thead, tbody, tr, td { display: block; }
+    thead { display: none; }
+    tbody tr { background: #fff; border: 1px solid var(--chrome-mute); border-radius: 10px; padding: 12px; margin-bottom: 10px; }
+    tbody td { padding: 4px 0; border: none; font-size: 14px; }
+    tbody td:before { content: attr(data-label); display: block; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 2px; }
+    tbody td.actions { text-align: left; padding-top: 8px; }
+    tbody td.num { text-align: left; }
+    .list { background: transparent; border: 0; }
+    .panel .grid { grid-template-columns: 1fr; }
+  }
+
+  @media print {
+    header.topbar, .crm-tabs, .toolbar, .panel, .icon-btn, .page-head .meta { display: none !important; }
+    body { background: #fff; }
+    .list, .card, .detail-head { box-shadow: none; border: 1px solid #ccc; }
+    .detail-head { background: #fff; color: #000; }
+    .detail-head .who h2, .detail-head .who .meta-line, .detail-head .who .meta-line a { color: #000; }
+  }
+</style>
+<script src="bcc-api.js" defer></script>
+</head>
+<body>
+
+<header class="topbar">
+  <a class="home" href="index.html">
+    <img src="bcc-logo.png" alt="Blue Collar Coach" />
+    <span class="wordmark">BLUE COLLAR <span class="light">COACH</span></span>
+  </a>
+  <span class="module">CRM · Companies</span>
+  <span style="flex:1;"></span>
+</header>
+
+<div class="page">
+  <nav class="crm-tabs">
+    <a href="crm.html">Contacts</a>
+    <a href="crm-companies.html" class="active">Companies</a>
+    <a href="jobs.html">Engagements</a>
+  </nav>
+
+  <!-- LIST MODE -->
+  <div id="listMode">
+    <div class="page-head">
+      <div>
+        <h1>Companies</h1>
+        <div class="sub" id="subline">Loading…</div>
+      </div>
+      <div class="meta" id="syncMeta"></div>
+    </div>
+
+    <div class="toolbar">
+      <div class="search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="q" type="search" placeholder="Search by name, domain, industry, or note…" autocomplete="off" />
+      </div>
+      <select id="industryFilter" aria-label="Filter by industry">
+        <option value="">All industries</option>
+      </select>
+      <select id="sizeFilter" aria-label="Filter by size">
+        <option value="">All sizes</option>
+        <option value="1-5">1-5</option>
+        <option value="5-20">5-20</option>
+        <option value="20-50">20-50</option>
+        <option value="50+">50+</option>
+      </select>
+      <button class="btn btn-primary" id="newBtn" type="button">+ New company</button>
+    </div>
+
+    <div class="panel" id="panel">
+      <h3>New company</h3>
+      <div class="grid">
+        <label class="full">Name<input id="f-name" type="text" required placeholder="Acme Co." /></label>
+        <label>Domain<input id="f-domain" type="text" placeholder="acmeco.com" /></label>
+        <label>Industry
+          <select id="f-industry">
+            <option value="">— Pick one —</option>
+            <option value="HVAC">HVAC</option>
+            <option value="Plumbing">Plumbing</option>
+            <option value="Electrical">Electrical</option>
+            <option value="Roofing">Roofing</option>
+            <option value="Construction">Construction</option>
+            <option value="Landscaping">Landscaping</option>
+            <option value="Cleaning">Cleaning</option>
+            <option value="Auto">Auto</option>
+            <option value="Restaurant">Restaurant</option>
+            <option value="Retail">Retail</option>
+            <option value="Professional Services">Professional Services</option>
+            <option value="Other">Other</option>
+          </select>
+        </label>
+        <label>Size
+          <select id="f-size">
+            <option value="">— Pick one —</option>
+            <option value="1-5">1-5</option>
+            <option value="5-20">5-20</option>
+            <option value="20-50">20-50</option>
+            <option value="50+">50+</option>
+          </select>
+        </label>
+        <label>Phone<input id="f-phone" type="tel" /></label>
+        <label>Website<input id="f-website" type="text" placeholder="https://…" /></label>
+        <label>City<input id="f-city" type="text" /></label>
+        <label>State<input id="f-state" type="text" placeholder="MN" /></label>
+        <label class="full">Notes<textarea id="f-notes" rows="2"></textarea></label>
+      </div>
+      <div class="actions">
+        <button class="btn btn-ghost" id="cancelBtn" type="button">Cancel</button>
+        <button class="btn btn-primary" id="saveBtn" type="button">Save company</button>
+      </div>
+    </div>
+
+    <div class="list" id="list" aria-live="polite">
+      <table id="tbl">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Industry</th>
+            <th>Size</th>
+            <th>Location</th>
+            <th class="num">Contacts</th>
+            <th class="num">Engagements</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="empty" id="empty" hidden>
+        <div class="big">No companies yet.</div>
+        <div>Click "+ New company" to add one, or link contacts to companies in <a href="crm.html" style="color:var(--gold-deep); text-decoration:none; font-weight:700;">Contacts</a>.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DETAIL MODE -->
+  <div id="detailMode" hidden></div>
+</div>
+
+<script>
+(function () {
+  /* ===== Storage model ===== */
+  var COMPANY_PREFIX  = 'bcc-company-';
+  var CONTACT_PREFIX  = 'bcc-contact-';
+  var ENG_PREFIX      = 'bcc-engagement-';
+
+  function uid()    { return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 9); }
+  function nowIso() { return new Date().toISOString(); }
+  function esc(s)   { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
+  function dollars(c) { return '$' + Math.round((c || 0) / 100).toLocaleString(); }
+
+  function allCompanies() {
+    var out = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i); if (!k || k.indexOf(COMPANY_PREFIX) !== 0) continue;
+      try { var c = JSON.parse(localStorage.getItem(k)); if (c && c.id) out.push(c); } catch (_) {}
+    }
+    return out.sort(function (a, b) { return (b.updatedAt || '').localeCompare(a.updatedAt || ''); });
+  }
+  function getCompany(id) { try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (_) { return null; } }
+  function saveCompany(c) {
+    c.updatedAt = nowIso();
+    if (!c.createdAt) c.createdAt = c.updatedAt;
+    if (!c.id) c.id = COMPANY_PREFIX + uid();
+    if (!c.tenantId) c.tenantId = 'blue-collar-coach';
+    c.docType = 'company';
+    localStorage.setItem(c.id, JSON.stringify(c));
+    return c;
+  }
+  function deleteCompany(id) { localStorage.removeItem(id); }
+
+  function contactsForCompany(companyId, companyName) {
+    var out = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i); if (!k || k.indexOf(CONTACT_PREFIX) !== 0) continue;
+      try {
+        var c = JSON.parse(localStorage.getItem(k));
+        if (!c) continue;
+        if (c.companyId === companyId) { out.push(c); continue; }
+        // Fall back to free-text company-name match (legacy contacts)
+        if (companyName && c.company && c.company.toLowerCase() === companyName.toLowerCase()) out.push(c);
+      } catch (_) {}
+    }
+    return out;
+  }
+  function engagementsForCompany(companyId) {
+    var out = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i); if (!k || k.indexOf(ENG_PREFIX) !== 0) continue;
+      try {
+        var e = JSON.parse(localStorage.getItem(k));
+        if (e && e.companyId === companyId) out.push(e);
+      } catch (_) {}
+    }
+    return out;
+  }
+
+  /* ===== Mode routing ===== */
+  function getParam(k) { return new URLSearchParams(location.search).get(k); }
+  function show(id) {
+    document.getElementById('listMode').hidden = (id !== 'listMode');
+    document.getElementById('detailMode').hidden = (id !== 'detailMode');
+  }
+
+  /* ===== List render ===== */
+  var qInput, industryFilter, sizeFilter, rowsEl, emptyEl, sublineEl, syncMetaEl;
+
+  function renderList() {
+    var all = allCompanies();
+    var q = (qInput.value || '').trim().toLowerCase();
+    var industry = industryFilter.value;
+    var size = sizeFilter.value;
+
+    var matched = all.filter(function (c) {
+      if (industry && c.industry !== industry) return false;
+      if (size && c.size !== size) return false;
+      if (!q) return true;
+      var hay = [c.name, c.domain, c.industry, c.city, c.state, c.notes].filter(Boolean).join(' ').toLowerCase();
+      return hay.indexOf(q) >= 0;
+    });
+
+    sublineEl.textContent = matched.length + ' of ' + all.length + ' compan' + (all.length === 1 ? 'y' : 'ies') + (q || industry || size ? ' shown' : '');
+
+    rowsEl.innerHTML = '';
+    if (matched.length === 0) {
+      emptyEl.hidden = false;
+      var big = emptyEl.querySelector('.big');
+      if (big) big.textContent = all.length === 0 ? 'No companies yet.' : 'No matches.';
+      return;
+    }
+    emptyEl.hidden = true;
+
+    var html = '';
+    matched.forEach(function (c) {
+      var loc = [c.city, c.state].filter(Boolean).join(', ');
+      var contactCount = contactsForCompany(c.id, c.name).length;
+      var engCount = engagementsForCompany(c.id).length;
+      html +=
+        '<tr data-id="' + esc(c.id) + '">' +
+          '<td data-label="Name">' +
+            '<div class="name">' + esc(c.name || '(unnamed)') + '</div>' +
+            (c.domain ? '<div class="domain">' + esc(c.domain) + '</div>' : '') +
+          '</td>' +
+          '<td data-label="Industry">' + esc(c.industry || '—') + '</td>' +
+          '<td data-label="Size">' + esc(c.size || '—') + '</td>' +
+          '<td data-label="Location">' + (loc ? esc(loc) : '<span class="muted">—</span>') + '</td>' +
+          '<td class="num" data-label="Contacts">' + contactCount + '</td>' +
+          '<td class="num" data-label="Engagements">' + engCount + '</td>' +
+          '<td class="actions"><button class="icon-btn danger" data-act="delete" title="Delete">&#10005;</button></td>' +
+        '</tr>';
+    });
+    rowsEl.innerHTML = html;
+
+    // Populate industry filter from data
+    var industries = {};
+    all.forEach(function (c) { if (c.industry) industries[c.industry] = true; });
+    var cur = industryFilter.value;
+    industryFilter.innerHTML = '<option value="">All industries</option>' +
+      Object.keys(industries).sort().map(function (i) { return '<option value="' + esc(i) + '">' + esc(i) + '</option>'; }).join('');
+    industryFilter.value = cur;
+  }
+
+  /* ===== Detail render ===== */
+  function renderDetail(id) {
+    var c = getCompany(id);
+    var el = document.getElementById('detailMode');
+    if (!c) {
+      el.innerHTML = '<div class="card"><h4>Company not found</h4><p>It may have been deleted, or the link is stale. <a href="crm-companies.html">Back to all companies</a>.</p></div>';
+      return;
+    }
+    var contacts = contactsForCompany(c.id, c.name);
+    var engagements = engagementsForCompany(c.id);
+    var meta = [c.industry, c.size].filter(Boolean).join(' · ');
+    var contactLinks = [];
+    if (c.phone)   contactLinks.push('<a href="tel:' + esc(c.phone.replace(/\D/g,'')) + '">' + esc(c.phone) + '</a>');
+    if (c.website) contactLinks.push('<a href="' + esc(c.website) + '" target="_blank" rel="noreferrer">' + esc(c.website.replace(/^https?:\/\//, '')) + '</a>');
+    if (c.domain && !c.website) contactLinks.push(esc(c.domain));
+    var contactLine = contactLinks.join(' &middot; ');
+    var locLine = [c.city, c.state].filter(Boolean).join(', ');
+
+    var sizeOpts = ['1-5','5-20','20-50','50+'].map(function (s) {
+      return '<option value="' + s + '"' + (s === c.size ? ' selected' : '') + '>' + s + '</option>';
+    }).join('');
+    var industryOpts = ['HVAC','Plumbing','Electrical','Roofing','Construction','Landscaping','Cleaning','Auto','Restaurant','Retail','Professional Services','Other'].map(function (i) {
+      return '<option value="' + i + '"' + (i === c.industry ? ' selected' : '') + '>' + i + '</option>';
+    }).join('');
+
+    var contactsHtml = contacts.length === 0
+      ? '<p class="muted" style="font-size:13px;">No contacts linked to this company yet. Add a contact in <a href="crm.html" style="color:var(--gold-deep); text-decoration:none; font-weight:700;">Contacts</a> and set its Company to "' + esc(c.name) + '".</p>'
+      : '<ul class="linked-list">' + contacts.map(function (ct) {
+          var name = ((ct.firstName || '') + ' ' + (ct.lastName || '')).trim() || ct.email || '(no name)';
+          var sub = [ct.title, ct.email, ct.phone].filter(Boolean).join(' · ');
+          return '<li><div><a href="crm.html?id=' + esc(ct.id) + '">' + esc(name) + '</a>' + (sub ? '<div class="sub">' + esc(sub) + '</div>' : '') + '</div>' +
+            (ct.stage ? '<span class="pill">' + esc(ct.stage) + '</span>' : '') +
+          '</li>';
+        }).join('') + '</ul>';
+
+    var engagementsHtml = engagements.length === 0
+      ? '<p class="muted" style="font-size:13px;">No engagements with this company yet. Create one in <a href="jobs.html" style="color:var(--gold-deep); text-decoration:none; font-weight:700;">Engagements</a> and pick this company.</p>'
+      : '<ul class="linked-list">' + engagements.map(function (e) {
+          var sub = [e.serviceType, e.valueCents ? dollars(e.valueCents) : ''].filter(Boolean).join(' · ');
+          return '<li><div><a href="jobs.html">' + esc(e.title || '(untitled)') + '</a>' + (sub ? '<div class="sub">' + esc(sub) + '</div>' : '') + '</div>' +
+            '<span class="pill">' + esc(e.stage || 'new') + '</span>' +
+          '</li>';
+        }).join('') + '</ul>';
+
+    el.innerHTML =
+      '<div class="detail-head">' +
+        '<div class="who">' +
+          '<a class="back" href="crm-companies.html">&larr; All companies</a>' +
+          '<h2 style="margin-top:6px;">' + esc(c.name || '(unnamed)') + '</h2>' +
+          (meta ? '<div class="meta-line">' + esc(meta) + '</div>' : '') +
+          (contactLine ? '<div class="meta-line">' + contactLine + '</div>' : '') +
+          (locLine ? '<div class="meta-line">' + esc(locLine) + '</div>' : '') +
+        '</div>' +
+        '<div class="top-actions">' +
+          '<button class="btn btn-ghost" id="printBtn" type="button">Print</button>' +
+          '<button class="btn btn-danger" id="delBtn" type="button">Delete</button>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="detail-grid">' +
+        '<div>' +
+          '<div class="card">' +
+            '<h4>Profile <button class="add" id="saveProfileBtn">Save changes</button></h4>' +
+            '<div class="field-row"><div class="k">Name</div><div class="v editable" contenteditable="true" data-prop="name">' + esc(c.name || '') + '</div></div>' +
+            '<div class="field-row"><div class="k">Domain</div><div class="v editable" contenteditable="true" data-prop="domain">' + esc(c.domain || '') + '</div></div>' +
+            '<div class="field-row"><div class="k">Industry</div><div class="v"><select id="d-industry"><option value="">—</option>' + industryOpts + '</select></div></div>' +
+            '<div class="field-row"><div class="k">Size</div><div class="v"><select id="d-size"><option value="">—</option>' + sizeOpts + '</select></div></div>' +
+            '<div class="field-row"><div class="k">Phone</div><div class="v editable" contenteditable="true" data-prop="phone">' + esc(c.phone || '') + '</div></div>' +
+            '<div class="field-row"><div class="k">Website</div><div class="v editable" contenteditable="true" data-prop="website">' + esc(c.website || '') + '</div></div>' +
+            '<div class="field-row"><div class="k">City</div><div class="v editable" contenteditable="true" data-prop="city">' + esc(c.city || '') + '</div></div>' +
+            '<div class="field-row"><div class="k">State</div><div class="v editable" contenteditable="true" data-prop="state">' + esc(c.state || '') + '</div></div>' +
+            '<div class="field-row"><div class="k">Notes</div><div class="v editable" contenteditable="true" data-prop="notes" style="white-space:pre-wrap;">' + esc(c.notes || '') + '</div></div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div>' +
+          '<div class="card">' +
+            '<h4>Contacts <span class="count">' + contacts.length + ' total</span></h4>' +
+            contactsHtml +
+          '</div>' +
+          '<div class="card">' +
+            '<h4>Engagements <span class="count">' + engagements.length + ' total</span></h4>' +
+            engagementsHtml +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    document.getElementById('printBtn').onclick = function () { window.print(); };
+    document.getElementById('delBtn').onclick = function () {
+      if (!confirm('Delete this company? Linked contacts/engagements keep their data but lose the link.')) return;
+      // Unlink contacts that reference this companyId
+      contacts.forEach(function (ct) {
+        if (ct.companyId === c.id) { ct.companyId = null; localStorage.setItem(ct.id, JSON.stringify(ct)); }
+      });
+      deleteCompany(c.id);
+      if (window.bccAudit) window.bccAudit('company-delete', { key: c.id, path: '/crm-companies.html' });
+      location.href = 'crm-companies.html';
+    };
+    document.getElementById('saveProfileBtn').onclick = function () {
+      var updated = Object.assign({}, c);
+      ['name','domain','phone','website','city','state','notes'].forEach(function (p) {
+        var el = document.querySelector('[data-prop="' + p + '"]');
+        if (el) updated[p] = el.innerText.trim();
+      });
+      updated.industry = document.getElementById('d-industry').value;
+      updated.size = document.getElementById('d-size').value;
+      saveCompany(updated);
+      if (window.bccAudit) window.bccAudit('company-update', { key: updated.id, path: '/crm-companies.html' });
+      if (window.bccNotifySaved) window.bccNotifySaved('Company updated.');
+      else (window.bccNotify || alert)('Saved.', 'success');
+      renderDetail(updated.id);
+    };
+    document.getElementById('d-industry').onchange = function () { var u = getCompany(c.id); u.industry = this.value; saveCompany(u); };
+    document.getElementById('d-size').onchange = function () { var u = getCompany(c.id); u.size = this.value; saveCompany(u); };
+  }
+
+  /* ===== List events ===== */
+  function wireList() {
+    qInput = document.getElementById('q');
+    industryFilter = document.getElementById('industryFilter');
+    sizeFilter = document.getElementById('sizeFilter');
+    rowsEl = document.getElementById('rows');
+    emptyEl = document.getElementById('empty');
+    sublineEl = document.getElementById('subline');
+    syncMetaEl = document.getElementById('syncMeta');
+
+    qInput.addEventListener('input', renderList);
+    industryFilter.addEventListener('change', renderList);
+    sizeFilter.addEventListener('change', renderList);
+
+    var panel = document.getElementById('panel');
+    document.getElementById('newBtn').addEventListener('click', function () {
+      panel.classList.add('open');
+      document.getElementById('f-name').focus();
+    });
+    document.getElementById('cancelBtn').addEventListener('click', function () {
+      panel.classList.remove('open'); resetForm();
+    });
+    function resetForm() {
+      ['f-name','f-domain','f-industry','f-size','f-phone','f-website','f-city','f-state','f-notes'].forEach(function (id) { document.getElementById(id).value = ''; });
+    }
+    document.getElementById('saveBtn').addEventListener('click', function () {
+      var name = document.getElementById('f-name').value.trim();
+      if (!name) {
+        (window.bccNotify || alert)('Name is required.', 'warn');
+        document.getElementById('f-name').focus();
+        return;
+      }
+      var c = {
+        name: name,
+        domain:   document.getElementById('f-domain').value.trim(),
+        industry: document.getElementById('f-industry').value,
+        size:     document.getElementById('f-size').value,
+        phone:    document.getElementById('f-phone').value.trim(),
+        website:  document.getElementById('f-website').value.trim(),
+        city:     document.getElementById('f-city').value.trim(),
+        state:    document.getElementById('f-state').value.trim(),
+        notes:    document.getElementById('f-notes').value.trim()
+      };
+      saveCompany(c);
+      if (window.bccAudit) window.bccAudit('company-create', { key: c.id, path: '/crm-companies.html' });
+      if (window.bccNotifySaved) window.bccNotifySaved('Company saved.');
+      panel.classList.remove('open');
+      resetForm();
+      renderList();
+    });
+
+    rowsEl.addEventListener('click', function (e) {
+      var btn = e.target.closest('button[data-act]');
+      var tr = e.target.closest('tr[data-id]');
+      if (!tr) return;
+      var id = tr.dataset.id;
+      if (btn && btn.dataset.act === 'delete') {
+        e.stopPropagation();
+        if (!confirm('Delete this company?')) return;
+        deleteCompany(id);
+        if (window.bccAudit) window.bccAudit('company-delete', { key: id, path: '/crm-companies.html' });
+        renderList();
+        return;
+      }
+      location.href = 'crm-companies.html?id=' + encodeURIComponent(id);
+    });
+  }
+
+  /* ===== Bootstrap ===== */
+  function init() {
+    var id = getParam('id');
+    if (id && id.indexOf(COMPANY_PREFIX) === 0) {
+      show('detailMode');
+      renderDetail(id);
+    } else {
+      show('listMode');
+      wireList();
+      renderList();
+    }
+    if (syncMetaEl) syncMetaEl.textContent = 'Synced via bcc-api.js';
+  }
+  window.addEventListener('bcc-data-ready', function () {
+    var id = getParam('id');
+    if (id) renderDetail(id); else if (rowsEl) renderList();
+  });
+  window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
+  setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
+})();
+</script>
+
+</body>
+</html>

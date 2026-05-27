@@ -49,6 +49,20 @@
   }
 
   .page { max-width: 1200px; margin: 0 auto; padding: 22px 22px 70px; }
+  .crm-tabs {
+    display: flex; gap: 4px; flex-wrap: wrap;
+    background: #fff; border: 1px solid var(--chrome-mute); border-radius: 12px;
+    padding: 6px; margin-bottom: 14px;
+  }
+  .crm-tabs a {
+    flex: 1; min-width: 120px; min-height: 38px;
+    background: transparent; border: 0; border-radius: 8px;
+    font: inherit; font-size: 13px; font-weight: 700; color: var(--muted);
+    cursor: pointer; padding: 9px 12px; letter-spacing: 0.2px;
+    text-decoration: none; text-align: center;
+  }
+  .crm-tabs a:hover { background: var(--chrome); color: var(--ink); }
+  .crm-tabs a.active { background: var(--ink); color: var(--gold-warm); }
   .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
   .page-head h1 {
     font-family: 'Source Serif 4', Georgia, serif; font-size: 26px; font-weight: 700;
@@ -242,6 +256,11 @@
 </header>
 
 <div class="page">
+  <nav class="crm-tabs">
+    <a href="crm.html" class="active">Contacts</a>
+    <a href="crm-companies.html">Companies</a>
+    <a href="jobs.html">Engagements</a>
+  </nav>
   <!-- LIST MODE -->
   <div id="listMode">
     <div class="page-head">
@@ -341,6 +360,23 @@
    * bcc-customer-types-v1    — admin config singleton: list of {id,label,color}
    */
   var CONTACT_PREFIX = 'bcc-contact-';
+  var COMPANY_PREFIX = 'bcc-company-';
+  function allCompaniesLite() {
+    var out = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i); if (!k || k.indexOf(COMPANY_PREFIX) !== 0) continue;
+      try { var c = JSON.parse(localStorage.getItem(k)); if (c && c.id) out.push({ id: c.id, name: c.name || '(unnamed)', industry: c.industry || '' }); } catch (_) {}
+    }
+    return out.sort(function (a, b) { return a.name.localeCompare(b.name); });
+  }
+  function buildCompanyOptions(selectedId) {
+    var companies = allCompaniesLite();
+    var opts = '<option value="">— None —</option>';
+    companies.forEach(function (co) {
+      opts += '<option value="' + esc(co.id) + '"' + (co.id === selectedId ? ' selected' : '') + '>' + esc(co.name) + (co.industry ? ' · ' + esc(co.industry) : '') + '</option>';
+    });
+    return opts;
+  }
   var CONVO_PREFIX   = 'bcc-convo-';
   var TYPES_KEY      = 'bcc-customer-types-v1';
 
@@ -631,6 +667,12 @@
             '<div class="field-row"><div class="k">Phone</div><div class="v editable" contenteditable="true" data-prop="phone">' + esc(c.phone || '') + '</div></div>' +
             '<div class="field-row"><div class="k">Title</div><div class="v editable" contenteditable="true" data-prop="title">' + esc(c.title || '') + '</div></div>' +
             '<div class="field-row"><div class="k">Company</div><div class="v editable" contenteditable="true" data-prop="company">' + esc(c.company || '') + '</div></div>' +
+            '<div class="field-row"><div class="k">Linked company</div><div class="v">' +
+              '<select id="d-companyId" style="border:1px solid var(--chrome-mute);border-radius:6px;padding:6px 10px;font:inherit;font-size:13px;background:#fff;min-height:32px;width:100%;max-width:280px;">' +
+                buildCompanyOptions(c.companyId) +
+              '</select>' +
+              (c.companyId ? ' <a href="crm-companies.html?id=' + esc(c.companyId) + '" style="margin-left:8px;font-size:12px;color:var(--gold-deep);text-decoration:none;font-weight:700;">View →</a>' : '') +
+            '</div></div>' +
             '<div class="field-row"><div class="k">City</div><div class="v editable" contenteditable="true" data-prop="city">' + esc(c.city || '') + '</div></div>' +
             '<div class="field-row"><div class="k">State</div><div class="v editable" contenteditable="true" data-prop="state">' + esc(c.state || '') + '</div></div>' +
             '<div class="field-row"><div class="k">Stage</div><div class="v"><select id="d-stage">' + stageOpts + '</select></div></div>' +
@@ -693,6 +735,8 @@
       if (tagsLine) updated.tags = tagsLine.innerText.split(',').map(function (t) { return t.trim(); }).filter(Boolean);
       updated.stage = document.getElementById('d-stage').value;
       updated.customerType = document.getElementById('d-type').value;
+      var dCompany = document.getElementById('d-companyId');
+      if (dCompany) updated.companyId = dCompany.value || null;
       saveContact(updated);
       if (window.bccAudit) window.bccAudit('contact-update', { key: updated.id, path: '/crm.html' });
       if (window.bccNotifySaved) window.bccNotifySaved('Contact updated.');
@@ -705,6 +749,19 @@
     };
     document.getElementById('d-type').onchange = function () {
       var u = getContact(c.id); u.customerType = this.value; saveContact(u);
+    };
+    var dCompanyEl = document.getElementById('d-companyId');
+    if (dCompanyEl) dCompanyEl.onchange = function () {
+      var u = getContact(c.id); u.companyId = this.value || null;
+      // Convenience: if a company is linked and the free-text company field
+      // is empty, mirror the company name into it so list views still read.
+      if (u.companyId && !u.company) {
+        var co = null;
+        try { co = JSON.parse(localStorage.getItem(u.companyId) || 'null'); } catch (e) {}
+        if (co && co.name) u.company = co.name;
+      }
+      saveContact(u);
+      renderDetail(u.id);
     };
 
     document.getElementById('needAdd').onclick = function () {

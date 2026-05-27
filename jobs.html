@@ -31,6 +31,20 @@
     border-left:1px solid rgba(255,255,255,0.18); padding-left:14px; margin-left:4px;
   }
   .page { max-width:1400px; margin:0 auto; padding:18px 18px 70px; }
+  .crm-tabs {
+    display:flex; gap:4px; flex-wrap:wrap;
+    background:#fff; border:1px solid var(--chrome-mute); border-radius:12px;
+    padding:6px; margin-bottom:14px;
+  }
+  .crm-tabs a {
+    flex:1; min-width:120px; min-height:38px;
+    background:transparent; border:0; border-radius:8px;
+    font:inherit; font-size:13px; font-weight:700; color:var(--muted);
+    cursor:pointer; padding:9px 12px; letter-spacing:0.2px;
+    text-decoration:none; text-align:center;
+  }
+  .crm-tabs a:hover { background:var(--chrome); color:var(--ink); }
+  .crm-tabs a.active { background:var(--ink); color:var(--gold-warm); }
   .page-head { display:flex; align-items:flex-end; justify-content:space-between; gap:14px; margin-bottom:14px; flex-wrap:wrap; }
   .page-head h1 { font-family:'Source Serif 4', Georgia, serif; font-size:26px; margin:0; }
   .page-head .sub { color:var(--muted); font-size:13px; margin-top:4px; }
@@ -111,6 +125,11 @@
 </header>
 
 <div class="page">
+  <nav class="crm-tabs">
+    <a href="crm.html">Contacts</a>
+    <a href="crm-companies.html">Companies</a>
+    <a href="jobs.html" class="active">Engagements</a>
+  </nav>
   <div class="page-head">
     <div>
       <h1>Engagements</h1>
@@ -144,6 +163,9 @@
       </label>
       <label>Linked contact
         <select id="m-contact"><option value="">— None —</option></select>
+      </label>
+      <label>Linked company
+        <select id="m-company"><option value="">— None —</option></select>
       </label>
       <label>Service type
         <select id="m-type"></select>
@@ -302,6 +324,24 @@
         return '<option value="' + esc(c.id) + '"' + (c.id === selected ? ' selected' : '') + '>' + esc(contactName(c)) + (c.company ? ' (' + esc(c.company) + ')' : '') + '</option>';
       }).join('');
   }
+  function allCompanies() {
+    var out = [];
+    var COMPANY_PREFIX = 'bcc-company-';
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i); if (!k || k.indexOf(COMPANY_PREFIX) !== 0) continue;
+      try { var c = JSON.parse(localStorage.getItem(k)); if (c && c.id) out.push(c); } catch (_) {}
+    }
+    return out.sort(function (a, b) { return (a.name || '').localeCompare(b.name || ''); });
+  }
+  function populateCompanyDropdown(selected) {
+    var sel = document.getElementById('m-company');
+    if (!sel) return;
+    var companies = allCompanies();
+    sel.innerHTML = '<option value="">— None —</option>' +
+      companies.map(function (c) {
+        return '<option value="' + esc(c.id) + '"' + (c.id === selected ? ' selected' : '') + '>' + esc(c.name) + (c.industry ? ' · ' + esc(c.industry) : '') + '</option>';
+      }).join('');
+  }
   function populateTypeDropdown(selected) {
     var sel = document.getElementById('m-type');
     var types = loadServiceTypes();
@@ -332,6 +372,7 @@
     document.getElementById('m-renew').value = (e && e.renewAt) ? e.renewAt.slice(0,10) : '';
     document.getElementById('m-notes').value = (e && e.notes) || '';
     populateContactDropdown((e && e.contactId) || '');
+    populateCompanyDropdown((e && e.companyId) || '');
     populateTypeDropdown((e && e.serviceType) || 'coaching');
     populateOwnerDropdown((e && e.ownerUpn) || '');
     document.getElementById('modalBg').classList.add('open');
@@ -350,6 +391,7 @@
     rec.stage       = document.getElementById('m-stage').value;
     rec.ownerUpn    = document.getElementById('m-owner').value || (window.bccUser && window.bccUser.userDetails) || '';
     rec.contactId   = document.getElementById('m-contact').value || null;
+    rec.companyId   = document.getElementById('m-company').value || null;
     rec.serviceType = document.getElementById('m-type').value;
     rec.valueCents  = Math.round(parseFloat(document.getElementById('m-value').value || '0') * 100) || 0;
     rec.startAt     = document.getElementById('m-start').value || null;
