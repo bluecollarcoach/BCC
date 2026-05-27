@@ -247,7 +247,7 @@
 
 <div class="hero">
   <span class="tag">Internal workspace</span>
-  <h1>Helping businesses <span class="accent">succeed</span>. With the <span class="accent">best team</span>.</h1>
+  <h1>Businesses trust us with the parts they <span class="accent">can&rsquo;t afford to get wrong</span>.</h1>
   <div class="greeting" id="heroGreeting" hidden></div>
 </div>
 
@@ -353,6 +353,20 @@
   }
   window.addEventListener('bcc-auth-ready', personalizeHero);
   window.addEventListener('bcc-users-ready', personalizeHero);
+
+  // Hide tiles for apps the user can't access. bcc-api.js exposes
+  // bccCanAccess(appKey) once admin-config-v1 is loaded. We map each tile's
+  // href to its app key and drop the tile if the user has 'none'.
+  function gateTiles() {
+    if (!window.bccCanAccess || !window.BCC_PAGE_TO_APP) return;
+    document.querySelectorAll('.primary .tile, .secondary .stile').forEach(function (a) {
+      var href = (a.getAttribute('href') || '').toLowerCase();
+      var key = window.BCC_PAGE_TO_APP[href] || null;
+      if (!key) return;
+      if (!window.bccCanAccess(key)) a.style.display = 'none';
+    });
+  }
+  window.addEventListener('bcc-auth-ready', gateTiles);
 </script>
 
 </body>

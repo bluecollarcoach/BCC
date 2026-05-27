@@ -415,7 +415,17 @@ Two doc types co-exist here, both queried together by `activity.html`:
       "displayName": "Lyle",
       "role":        "admin",        // owner | admin | member
       "status":      "active",       // active | inactive
-      "landingPage": "myday.html"    // optional; if set, sign-in lands here instead of /index.html
+      "landingPage": "myday.html",   // optional; if set, sign-in lands here instead of /index.html
+      "appPermissions": {            // optional per-app override on top of role
+        // Keys: home, myday, sessions, crm, jobs, scheduler, marketing,
+        //       bookkeeping, documents, rates, chat, training, events, kb, admin
+        // Values: 'admin' | 'edit' | 'view' | 'none'
+        // Only entries that DIFFER from the role default are stored to keep
+        // the doc small (admin default = 'admin' everywhere; member default
+        // = 'edit' everywhere except admin which is 'none').
+        "bookkeeping": "none",
+        "rates":       "view"
+      }
     }
   ],
   "auditPassword": "bcc-audit-2026",     // gates activity.html; rotate via admin UI

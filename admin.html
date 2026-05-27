@@ -179,6 +179,41 @@
     </div>
   </section>
 
+  <!-- Per-app permissions modal (lives outside the panel so it overlays everything) -->
+  <div id="permsModal" style="display:none;position:fixed;inset:0;z-index:200;background:rgba(20,20,20,0.62);padding:30px 18px;overflow:auto;">
+    <div style="max-width:680px;margin:0 auto;background:#fff;border-radius:14px;border:1px solid var(--chrome-mute);box-shadow:0 24px 64px rgba(0,0,0,0.35);">
+      <div style="padding:18px 22px;border-bottom:1px solid var(--chrome-mute);display:flex;align-items:center;gap:14px;">
+        <div style="flex:1;">
+          <div style="font-family:'Source Serif 4',Georgia,serif;font-size:18px;font-weight:700;color:var(--ink);" id="permsTitle">Per-app permissions</div>
+          <div style="font-size:12.5px;color:var(--muted);margin-top:2px;" id="permsSubtitle"></div>
+        </div>
+        <button class="icon-btn" id="permsClose" title="Close" type="button">&times;</button>
+      </div>
+      <div style="padding:14px 22px 6px;font-size:12.5px;color:var(--muted);line-height:1.55;">
+        Per-app role on top of the global Admin/Member badge. Levels:<br/>
+        <strong>Admin</strong> &middot; full control + delete &nbsp; <strong>Edit</strong> &middot; create &amp; update &nbsp; <strong>View</strong> &middot; read-only &nbsp; <strong>None</strong> &middot; page hidden.
+      </div>
+      <div style="padding:6px 14px 18px;">
+        <table style="width:100%;">
+          <thead>
+            <tr style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);">
+              <th style="text-align:left;padding:8px 8px;">Application</th>
+              <th style="text-align:right;padding:8px 8px;">Role</th>
+            </tr>
+          </thead>
+          <tbody id="permsRows"></tbody>
+        </table>
+      </div>
+      <div style="padding:14px 22px;border-top:1px solid var(--chrome-mute);display:flex;justify-content:space-between;gap:10px;align-items:center;">
+        <button class="btn btn-ghost" id="permsResetBtn" type="button">Reset to defaults</button>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-ghost" id="permsCancel" type="button">Cancel</button>
+          <button class="btn btn-primary" id="permsSave" type="button">Save permissions</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <section class="panel-section" id="panel-types">
     <div class="card">
       <h3>Customer types
@@ -413,7 +448,8 @@
           '</select>' +
         '</td>' +
         '<td data-label="Status">' + statusBadge + '</td>' +
-        '<td data-label="Actions" style="text-align:right;">' +
+        '<td data-label="Actions" style="text-align:right;white-space:nowrap;">' +
+          '<button class="icon-btn" data-act="perms" title="Per-app permissions" style="font-size:14px;">&#9881;</button>' +
           (u.role === 'admin'
             ? '<button class="icon-btn" data-act="demote" title="Demote to member">&#8595;</button>'
             : '<button class="icon-btn" data-act="promote" title="Promote to admin">&#8593;</button>') +
@@ -441,6 +477,10 @@
       btn.addEventListener('click', function () {
         var tr = btn.closest('tr'); if (!tr) return;
         var act = btn.dataset.act;
+        if (act === 'perms') {
+          openPermissionsModal(tr.dataset.upn);
+          return;
+        }
         persistAction(tr, function (rec) {
           if (act === 'promote') rec.role = 'admin';
           if (act === 'demote')  rec.role = 'member';
@@ -463,6 +503,127 @@
   document.getElementById('refreshUsersBtn').addEventListener('click', function () {
     if (window.bccRecomputePeople) window.bccRecomputePeople();
     renderUsers();
+  });
+
+  /* ===== PER-APP PERMISSIONS MODAL ===== */
+  // Apps & their human labels. Order matches the home tile grid + hamburger nav.
+  var APP_LIST = [
+    { k:'home',        label:'Home',           desc:'Landing page & tile grid' },
+    { k:'myday',       label:'My Day',         desc:'Today’s sessions & clock-in' },
+    { k:'sessions',    label:'Sessions',       desc:'Coaching calendar' },
+    { k:'crm',         label:'CRM',            desc:'Contacts, companies, deals' },
+    { k:'jobs',        label:'Engagements',    desc:'Pipeline & engagements board' },
+    { k:'scheduler',   label:'Scheduler',      desc:'Week & month calendar' },
+    { k:'marketing',   label:'Marketing',      desc:'Google / LinkedIn / Meta' },
+    { k:'bookkeeping', label:'Bookkeeping',    desc:'QuickBooks Online' },
+    { k:'documents',   label:'Documents',      desc:'Contracts & SOPs' },
+    { k:'rates',       label:'Rate Sheet',     desc:'Packages & pricing' },
+    { k:'chat',        label:'Team Chat',      desc:'Internal channels' },
+    { k:'training',    label:'Training',       desc:'Courses & playbooks' },
+    { k:'events',      label:'Events',         desc:'Workshops & meetups' },
+    { k:'kb',          label:'Knowledge Base', desc:'Coaching playbooks' },
+    { k:'admin',       label:'Admin',          desc:'Users, settings, audit log' }
+  ];
+  var PERM_LEVELS = [
+    { v:'admin', label:'Admin' },
+    { v:'edit',  label:'Edit' },
+    { v:'view',  label:'View' },
+    { v:'none',  label:'None' }
+  ];
+  // Returns the *default* permission for an app given a user's global role
+  // (no per-app override stored). Mirrors the fallback logic in bcc-api.js.
+  function defaultPermFor(role, appKey) {
+    if (role === 'admin') return 'admin';
+    if (appKey === 'admin') return 'none';
+    return 'edit';
+  }
+  var _permsOpenUpn = null; // upn of the user whose modal is open
+
+  function openPermissionsModal(upn) {
+    if (!upn) return;
+    _permsOpenUpn = upn;
+    var cfg = loadCfg();
+    var rec = (cfg.users || []).find(function (x) { return (x.upn || '').toLowerCase() === upn.toLowerCase(); });
+    var role = (rec && rec.role) || 'member';
+    var existing = (rec && rec.appPermissions) || {};
+    var displayName = (window.bccDisplayName ? window.bccDisplayName(upn) : '') || upn;
+
+    document.getElementById('permsTitle').textContent = 'Permissions for ' + displayName;
+    document.getElementById('permsSubtitle').textContent = upn + ' · Global role: ' + (role === 'admin' ? 'Admin' : 'Member');
+
+    var rowsHtml = APP_LIST.map(function (app) {
+      var cur = existing[app.k] || defaultPermFor(role, app.k);
+      var sel = PERM_LEVELS.map(function (p) {
+        return '<option value="' + p.v + '"' + (p.v === cur ? ' selected' : '') + '>' + p.label + '</option>';
+      }).join('');
+      return '<tr data-app="' + esc(app.k) + '">' +
+        '<td style="padding:9px 8px;border-bottom:1px solid var(--chrome-mute);">' +
+          '<div style="font-weight:600;color:var(--ink);font-size:13.5px;">' + esc(app.label) + '</div>' +
+          '<div style="color:var(--muted);font-size:11.5px;">' + esc(app.desc) + '</div>' +
+        '</td>' +
+        '<td style="padding:9px 8px;border-bottom:1px solid var(--chrome-mute);text-align:right;">' +
+          '<select data-perm style="min-width:110px;min-height:30px;padding:4px 8px;font-size:12.5px;border-radius:6px;border:1px solid var(--chrome-mute);background:#fff;">' + sel + '</select>' +
+        '</td>' +
+      '</tr>';
+    }).join('');
+    document.getElementById('permsRows').innerHTML = rowsHtml;
+    document.getElementById('permsModal').style.display = 'block';
+  }
+
+  function closePermsModal() {
+    document.getElementById('permsModal').style.display = 'none';
+    _permsOpenUpn = null;
+  }
+
+  document.getElementById('permsClose').addEventListener('click', closePermsModal);
+  document.getElementById('permsCancel').addEventListener('click', closePermsModal);
+  document.getElementById('permsModal').addEventListener('click', function (e) {
+    if (e.target.id === 'permsModal') closePermsModal();
+  });
+
+  document.getElementById('permsResetBtn').addEventListener('click', function () {
+    if (!_permsOpenUpn) return;
+    if (!confirm('Reset every app to the default role for this user? (Admin = full access on everything; Member = edit on everything except Admin.)')) return;
+    var cfg = loadCfg(); cfg.users = cfg.users || [];
+    var rec = cfg.users.find(function (x) { return (x.upn || '').toLowerCase() === _permsOpenUpn.toLowerCase(); });
+    if (rec) {
+      delete rec.appPermissions;
+      saveCfg(cfg);
+    }
+    openPermissionsModal(_permsOpenUpn); // re-render with defaults
+    if (window.bccNotifySaved) window.bccNotifySaved('Permissions reset to default.');
+    else if (window.bccNotify) window.bccNotify('Reset to defaults.', 'success');
+  });
+
+  document.getElementById('permsSave').addEventListener('click', function () {
+    if (!_permsOpenUpn) return;
+    var cfg = loadCfg(); cfg.users = cfg.users || [];
+    var rec = cfg.users.find(function (x) { return (x.upn || '').toLowerCase() === _permsOpenUpn.toLowerCase(); });
+    if (!rec) {
+      rec = { upn: _permsOpenUpn, displayName: _permsOpenUpn, role: 'member', status: 'active' };
+      cfg.users.push(rec);
+    }
+    var perms = {};
+    document.querySelectorAll('#permsRows tr').forEach(function (tr) {
+      var app = tr.dataset.app;
+      var sel = tr.querySelector('select[data-perm]');
+      var v = sel && sel.value;
+      if (app && v) perms[app] = v;
+    });
+    // Only store overrides that differ from the role-default to keep the
+    // doc small. (Optional optimization; storing all is still fine.)
+    var role = rec.role || 'member';
+    var minimal = {};
+    Object.keys(perms).forEach(function (k) {
+      if (perms[k] !== defaultPermFor(role, k)) minimal[k] = perms[k];
+    });
+    if (Object.keys(minimal).length === 0) delete rec.appPermissions;
+    else rec.appPermissions = minimal;
+    saveCfg(cfg);
+    if (window.bccAudit) window.bccAudit('permissions-update', { key: rec.upn, path: '/admin.html', meta: minimal });
+    if (window.bccNotifySaved) window.bccNotifySaved('Permissions updated for ' + (window.bccDisplayName ? window.bccDisplayName(_permsOpenUpn) : _permsOpenUpn) + '.');
+    else if (window.bccNotify) window.bccNotify('Permissions saved.', 'success');
+    closePermsModal();
   });
 
   /* ===== TYPES ===== */

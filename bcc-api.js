@@ -380,6 +380,116 @@
     return name.trim().split(/\s+/)[0] || name;
   };
 
+  /* ---------- Per-app role / permission helpers ----------
+   * Each app (page) has a role per user, on top of the global admin/member
+   * role. Levels: 'admin' > 'edit' > 'view' > 'none'. Stored on
+   *   bcc-admin-config-v1.users[i].appPermissions = { crm: 'edit', ... }
+   *
+   * Defaults when appPermissions is absent on a user record:
+   *   global role 'admin' -> 'admin' for every app
+   *   global role 'member' (or anything else) -> 'edit' for every app
+   * The admin page is an exception: it always requires effective 'admin'
+   * unless the user.role is 'admin' (admins implicitly admin every app).
+   *
+   * To gate a page, call window.bccEnforcePagePermission(appKey, minLevel)
+   * during page init. Returns the user's level. If the user lacks the level,
+   * shows an access-denied overlay and freezes the page.
+   */
+  window.BCC_APP_KEYS = [
+    'home','myday','sessions','crm','jobs','scheduler','marketing',
+    'bookkeeping','documents','rates','chat','training','events','kb','admin'
+  ];
+  // Filename (with .html) -> app key. Used to map location.pathname to a key.
+  window.BCC_PAGE_TO_APP = {
+    '':              'home',
+    'index.html':    'home',
+    'myday.html':    'myday',
+    'sessions.html': 'sessions',
+    'crm.html':      'crm',
+    'crm-companies.html': 'crm',
+    'jobs.html':     'jobs',
+    'scheduler.html':'scheduler',
+    'marketing.html':'marketing',
+    'bookkeeping.html':'bookkeeping',
+    'documents.html':'documents',
+    'rates.html':    'rates',
+    'chat.html':     'chat',
+    'training.html': 'training',
+    'events.html':   'events',
+    'kb.html':       'kb',
+    'admin.html':    'admin',
+    'activity.html': 'admin',   // activity log is admin-tier
+    'guide.html':    'home'     // help page available to anyone with home
+  };
+  var LEVEL_RANK = { none: 0, view: 1, edit: 2, admin: 3 };
+  function _adminCfg() {
+    try { return JSON.parse(localStorage.getItem('bcc-admin-config-v1') || 'null'); } catch (e) { return null; }
+  }
+  function _findUserRec(upn) {
+    var cfg = _adminCfg();
+    if (!cfg || !cfg.users) return null;
+    var lc = String(upn || '').toLowerCase();
+    for (var i = 0; i < cfg.users.length; i++) {
+      var u = cfg.users[i];
+      if ((u.upn || '').toLowerCase() === lc) return u;
+    }
+    return null;
+  }
+  window.bccGetAppPermission = function (appKey, upn) {
+    if (!appKey) return 'none';
+    var who = upn || (window.bccUser && window.bccUser.userDetails) || '';
+    if (!who) return 'none'; // anonymous -> no app permission
+    var cfg = _adminCfg();
+    var rec = _findUserRec(who);
+    // Inactive users are blocked everywhere
+    if (rec && rec.status === 'inactive') return 'none';
+    // Per-app override wins if explicitly set
+    var perm = rec && rec.appPermissions && rec.appPermissions[appKey];
+    if (perm && LEVEL_RANK[perm] != null) return perm;
+    // Fall back to global role
+    var isAdmin = rec && rec.role === 'admin';
+    if (isAdmin) return 'admin';
+    if (appKey === 'admin') {
+      // Bootstrap rule: if no admin config exists yet, OR there are zero
+      // active admins, ANY signed-in tenant user can enter admin to set
+      // themselves up. Matches the server-side bootstrap in /api/data.
+      var hasActiveAdmin = cfg && Array.isArray(cfg.users) &&
+        cfg.users.some(function (u) { return u.role === 'admin' && u.status !== 'inactive'; });
+      if (!hasActiveAdmin) return 'admin';
+      return 'none';
+    }
+    return 'edit';
+  };
+  window.bccCanAccess = function (appKey, upn) {
+    return LEVEL_RANK[window.bccGetAppPermission(appKey, upn)] >= LEVEL_RANK.view;
+  };
+  window.bccCanEdit = function (appKey, upn) {
+    return LEVEL_RANK[window.bccGetAppPermission(appKey, upn)] >= LEVEL_RANK.edit;
+  };
+  window.bccCurrentAppKey = function () {
+    var here = (location.pathname.split('/').pop() || 'index.html').toLowerCase();
+    return window.BCC_PAGE_TO_APP[here] || 'home';
+  };
+  window.bccEnforcePagePermission = function (appKey, minLevel) {
+    appKey = appKey || window.bccCurrentAppKey();
+    minLevel = minLevel || 'view';
+    var level = window.bccGetAppPermission(appKey);
+    if (LEVEL_RANK[level] >= LEVEL_RANK[minLevel]) return level;
+    // Blocked. Render a polite overlay; don't ever silently render the page.
+    var overlay = document.createElement('div');
+    overlay.id = 'bcc-access-denied';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(20,20,20,0.94);color:#f6f6f4;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px;font-family:Inter,system-ui,sans-serif;';
+    var label = ({home:'Home',myday:'My Day',sessions:'Sessions',crm:'CRM',jobs:'Engagements',scheduler:'Scheduler',marketing:'Marketing',bookkeeping:'Bookkeeping',documents:'Documents',rates:'Rate Sheet',chat:'Team Chat',training:'Training',events:'Events',kb:'Knowledge Base',admin:'Admin'})[appKey] || appKey;
+    overlay.innerHTML =
+      '<div style="font-family:\'Source Serif 4\',Georgia,serif;font-size:26px;font-weight:700;letter-spacing:0.4px;margin-bottom:10px;">Access restricted</div>' +
+      '<div style="color:rgba(255,255,255,0.7);max-width:420px;line-height:1.5;font-size:14px;">Your account doesn\'t have permission to open <strong>' + label + '</strong>. Ask an admin in Admin &rsaquo; Users &amp; Roles to grant access.</div>' +
+      '<a href="/index.html" style="margin-top:22px;color:#d4b67a;text-decoration:none;border:1px solid rgba(168,136,74,0.4);border-radius:8px;padding:9px 18px;font-weight:600;font-size:13px;">Back to home</a>';
+    document.body.appendChild(overlay);
+    // Prevent further scripts from operating on the page (best-effort).
+    document.documentElement.style.overflow = 'hidden';
+    return level;
+  };
+
   /* ---------- bootstrap ---------- */
   // Hard-coded company domain allowlist. Anyone signed in via Entra whose UPN/email
   // doesn't end with one of these gets signed out — even if Microsoft admit them
@@ -537,6 +647,19 @@
         }
       }
     } catch (e) { /* never block bootstrap on the redirect */ }
+
+    // Auto-enforce per-app permissions. Pages can call bccEnforcePagePermission
+    // again with a stricter minLevel if needed (e.g. admin.html requires 'admin').
+    // Skipped when not signed in -- the SWA auth chain still gates the page.
+    if (signedIn) {
+      try {
+        var here = (location.pathname.split('/').pop() || 'index.html').toLowerCase();
+        var appKey = window.BCC_PAGE_TO_APP[here] || 'home';
+        // Admin & activity pages require 'admin' to enter
+        var minLevel = (appKey === 'admin') ? 'admin' : 'view';
+        window.bccEnforcePagePermission(appKey, minLevel);
+      } catch (e) { console.warn('[bcc-api] page permission check failed', e); }
+    }
 
     window.dispatchEvent(new Event('bcc-auth-ready'));
     if (window.bccPeople) window.dispatchEvent(new Event('bcc-users-ready'));
@@ -820,12 +943,20 @@
       var html = '<div class="bcc-mm-user"><div>' + whoLine + '</div>' +
                  '<button class="bcc-mm-close" aria-label="Close menu">&times;</button></div>';
 
-      // Grouped link list — same on every page
+      // Grouped link list — same on every page, but filtered by per-app
+      // permission. If the signed-in user has 'none' on a page, the link is
+      // hidden entirely so they don't see destinations they can't open.
       var here = (location.pathname.split('/').pop() || 'index.html').toLowerCase();
       NAV_GROUPS.forEach(function (grp) {
+        var visibleItems = grp.items.filter(function (it) {
+          var key = window.BCC_PAGE_TO_APP[it.href.toLowerCase()] || 'home';
+          if (!signedIn) return true;
+          return window.bccCanAccess(key);
+        });
+        if (visibleItems.length === 0) return; // skip empty groups
         html += '<div class="bcc-mm-group">';
         html += '<div class="bcc-mm-grouplabel">' + escapeHtml(grp.label) + '</div>';
-        grp.items.forEach(function (it) {
+        visibleItems.forEach(function (it) {
           var current = (it.href.toLowerCase() === here) ? ' bcc-mm-current' : '';
           html += '<a class="bcc-mm-link' + current + '" href="' + it.href + '">' +
                     '<span class="bcc-mm-ic">' + it.icon + '</span>' +

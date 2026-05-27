@@ -41,6 +41,13 @@ const COSMOS_CONTAINER = process.env.COSMOS_CONTAINER || 'data';
 const BCC_TENANT_ID    = process.env.BCC_TENANT_ID || 'blue-collar-coach';
 const ADMIN_KEYS      = new Set(['bcc-admin-config-v1']); // writable only by users with 'administrator' role
 
+// Email-domain allowlist used by /api/users when filtering the Graph tenant
+// directory down to BCC employees (drops guests / external members so they
+// never reach an internal dropdown). Override with env BCC_ALLOWED_DOMAINS
+// (comma-separated, no leading @).
+const ALLOWED_DOMAINS = (process.env.BCC_ALLOWED_DOMAINS || 'bluecollarcoach.us,bluecollarcoach.onmicrosoft.com')
+  .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+
 let _container = null;
 function container() {
   if (!_container) {
