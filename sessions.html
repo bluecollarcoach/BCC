@@ -138,6 +138,7 @@
     </div>
     <span class="label" id="weekLabel"></span>
     <button class="btn btn-primary" id="newBtn" type="button">+ New session</button>
+    <button class="btn btn-ghost" id="pullBtn" type="button" title="Pull events from your Outlook calendar">Pull from Outlook</button>
     <button class="btn btn-ghost" id="printBtn" type="button">Print week</button>
   </div>
 
@@ -315,6 +316,65 @@
     renderWeek();
   });
   document.getElementById('printBtn').addEventListener('click', function () { window.print(); });
+
+  /* ===== Pull from Outlook (Graph) ===== */
+  document.getElementById('pullBtn').addEventListener('click', function () {
+    if (!isGraphConnected()) {
+      (window.bccNotify || alert)('Connect Outlook first (Admin → Integrations).', 'warn');
+      return;
+    }
+    var btn = this; btn.disabled = true; btn.textContent = 'Pulling…';
+    // Default range = the current week +/- a couple weeks, so the pull
+    // populates whatever the user is looking at without dragging in
+    // a year of history every time.
+    var rs = new Date(currentWeekStart); rs.setDate(rs.getDate() - 7);
+    var re = new Date(currentWeekStart); re.setDate(re.getDate() + 28);
+    fetch('/api/integrations/msgraph/pull-events', {
+      method: 'POST', credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ rangeStart: rs.toISOString(), rangeEnd: re.toISOString() })
+    })
+      .then(function (r) { return r.json().catch(function () { return { ok:false, error:'bad response' }; }); })
+      .then(function (resp) {
+        if (!resp.ok) { (window.bccNotify || alert)('Pull failed: ' + (resp.error || 'unknown'), 'error'); return; }
+        // Index existing sessions by msGraphId for idempotent merge
+        var byGraphId = {};
+        allSessions().forEach(function (s) { if (s.msGraphId) byGraphId[s.msGraphId] = s; });
+        var created = 0, updated = 0;
+        (resp.events || []).forEach(function (ev) {
+          if (byGraphId[ev.msGraphId]) {
+            // Update existing record's mutable fields (don't wipe local notes)
+            var existing = byGraphId[ev.msGraphId];
+            existing.title    = ev.title;
+            existing.startAt  = ev.startAt;
+            existing.endAt    = ev.endAt;
+            existing.location = ev.location;
+            existing.source   = 'msgraph';
+            saveSession(existing);
+            updated++;
+          } else {
+            saveSession({
+              title: ev.title,
+              startAt: ev.startAt,
+              endAt: ev.endAt,
+              location: ev.location,
+              prepNotes: ev.prepNotes || '',
+              status: 'scheduled',
+              msGraphId: ev.msGraphId,
+              source: 'msgraph'
+            });
+            created++;
+          }
+        });
+        if (window.bccNotifySaved) window.bccNotifySaved('Pulled ' + (resp.events || []).length + ' event(s): ' + created + ' new, ' + updated + ' updated.');
+        if (window.bccAudit) window.bccAudit('session-update', { path: '/sessions.html', meta: { action: 'pull-from-outlook', created: created, updated: updated } });
+        renderWeek();
+      })
+      .catch(function (e) {
+        (window.bccNotify || alert)('Pull failed: ' + e.message, 'error');
+      })
+      .finally(function () { btn.disabled = false; btn.textContent = 'Pull from Outlook'; });
+  });
 
   /* ===== Modal ===== */
   function populateContactDropdown(selectedId) {

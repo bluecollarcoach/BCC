@@ -1327,6 +1327,80 @@ app.http('msgraph-delete-event', {
   })
 });
 
+/**
+ * POST /api/integrations/msgraph/pull-events
+ *   body: { rangeStart?: ISO, rangeEnd?: ISO }
+ *   Defaults to "today through next 28 days" if no range supplied.
+ *
+ * Pulls calendar events from the caller's Outlook in that window and
+ * returns them as bcc-session-shaped objects. The client (sessions.html)
+ * decides whether to mirror them into localStorage — we de-dupe by
+ * graphEventId so re-pulling is idempotent.
+ *
+ * Read-only against Graph; never writes back. The push half lives in
+ * /upsert-event above.
+ */
+app.http('msgraph-pull-events', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'integrations/msgraph/pull-events',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    try {
+      const body = await request.json().catch(() => ({}));
+      const tokens = await loadMsGraphTokensFor(p.userDetails || p.userId);
+      if (!tokens) return { status: 400, jsonBody: { ok: false, error: 'Outlook not connected.' } };
+      const tok = await refreshGraphAccessToken(tokens.refreshToken);
+      if (tok.refresh_token && tok.refresh_token !== tokens.refreshToken) {
+        await saveMsGraphTokensFor(p.userDetails || p.userId, tok.refresh_token, '');
+      }
+
+      const now = new Date();
+      const rangeStart = body.rangeStart || new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+      const rangeEnd   = body.rangeEnd   || new Date(now.getTime() + 28 * 24 * 60 * 60 * 1000).toISOString();
+
+      // calendarView returns expanded recurring instances, which is what we want.
+      const url = 'https://graph.microsoft.com/v1.0/me/calendarView?' + new URLSearchParams({
+        startDateTime: rangeStart,
+        endDateTime: rangeEnd,
+        $select: 'id,subject,start,end,location,bodyPreview,isAllDay,showAs,categories',
+        $top: '250',
+        $orderby: 'start/dateTime'
+      }).toString();
+      const r = await fetch(url, { headers: { Authorization: 'Bearer ' + tok.access_token, Prefer: 'outlook.timezone="UTC"' } });
+      if (!r.ok) return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')' } };
+      const data = await r.json();
+      const events = Array.isArray(data.value) ? data.value : [];
+
+      // Shape into bcc-session candidates. The client will:
+      //  - skip those whose msGraphId is already present (idempotent merge)
+      //  - skip those whose start is in the past beyond the user's lookback
+      //  - create new bcc-session-* docs for the rest.
+      const out = events.map(function (e) {
+        return {
+          msGraphId: e.id,
+          title: e.subject || '(untitled event)',
+          startAt: e.start && e.start.dateTime ? new Date(e.start.dateTime + 'Z').toISOString() : null,
+          endAt:   e.end   && e.end.dateTime   ? new Date(e.end.dateTime + 'Z').toISOString() : null,
+          location: (e.location && e.location.displayName) || '',
+          prepNotes: e.bodyPreview || '',
+          allDay: !!e.isAllDay,
+          showAs: e.showAs,
+          categories: e.categories || [],
+          source: 'msgraph'
+        };
+      }).filter(function (s) { return s.startAt; });
+
+      return { jsonBody: { ok: true, events: out, range: { start: rangeStart, end: rangeEnd } } };
+    } catch (e) {
+      context.error('msgraph pull-events error', e);
+      return { status: 500, jsonBody: { ok: false, error: String(e.message || e) } };
+    }
+  })
+});
+
 /* ============ QuickBooks Online — OAuth + auto-capture ============
  *
  * Intuit OAuth 2.0. User clicks Connect QBO in Admin → Integrations →
