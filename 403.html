@@ -73,6 +73,25 @@
   var reason = p.get('reason');
   var who    = p.get('who');
 
+  // SWA's /.auth/complete is a system route we can't override via
+  // staticwebapp.config.json (system paths bypass user route rules).
+  // When the OIDC dance has no "original URL" to bounce to, SWA lands
+  // here, our responseOverrides.403 rewrites to /403.html, and the
+  // user sees "Access denied" -- even though they're actually signed in.
+  // Detect that case and immediately bounce to home.
+  if (location.pathname === '/.auth/complete') {
+    fetch('/.auth/me', { credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (j && j.clientPrincipal) {
+          // We ARE signed in -- this is just the post-auth landing
+          // with no original URL. Send the user home.
+          location.replace('/');
+        }
+      })
+      .catch(function () { /* fall through to showing the 403 page */ });
+  }
+
   if (reason === 'domain') {
     document.getElementById('lead').innerHTML =
       'BCC Connect is restricted to <strong>@bluecollarcoach.us</strong> accounts. ' +
