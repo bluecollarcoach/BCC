@@ -450,13 +450,14 @@
     var isAdmin = rec && rec.role === 'admin';
     if (isAdmin) return 'admin';
     if (appKey === 'admin') {
-      // Bootstrap rule: if no admin config exists yet, OR there are zero
-      // active admins, ANY signed-in tenant user can enter admin to set
-      // themselves up. Matches the server-side bootstrap in /api/data.
-      var hasActiveAdmin = cfg && Array.isArray(cfg.users) &&
-        cfg.users.some(function (u) { return u.role === 'admin' && u.status !== 'inactive'; });
-      if (!hasActiveAdmin) return 'admin';
-      return 'none';
+      // Strict gate: only admins reach the admin page. Delegates to
+      // bccIsAdmin() which honors the same recovery paths the server
+      // uses (BCC_OWNER_UPNS env list, SWA 'administrator' role,
+      // server's /api/profile verdict). The narrow bootstrap inside
+      // bccIsAdmin() only triggers on a truly empty admin-config doc
+      // (first deploy) -- once anyone exists in cfg.users, admin role
+      // is required.
+      return (window.bccIsAdmin && window.bccIsAdmin()) ? 'admin' : 'none';
     }
     return 'edit';
   };
