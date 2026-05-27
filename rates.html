@@ -440,7 +440,7 @@
       '<p>Sharing the coaching package options we discussed. Reply with the one that fits and I\'ll send a contract:</p>',
       '<table style="width:100%;border-collapse:collapse;margin:14px 0;">' + rows + '</table>',
       '<p style="font-size:12px;color:#6b7077;">Effective ' + esc(sheet.effectiveFrom || todayDate()) + '. Prices in USD; auto-renew at the cadence shown unless canceled in writing 14 days before renewal.</p>',
-      '<p>Best,<br>' + esc(((window.bccUser && window.bccUser.userDetails) || '').split('@')[0] || 'Blue Collar Coach') + '</p>',
+      '<p>Best,<br>' + esc(((window.bccUser && window.bccUser.userDetails) && window.bccDisplayName ? window.bccDisplayName(window.bccUser.userDetails) : '') || ((window.bccUser && window.bccUser.userDetails) || '').split('@')[0] || 'Blue Collar Coach') + '</p>',
       '<p style="font-size:11.5px;color:#9a9a96;margin-top:24px;">Sent via BCC Connect &middot; <a href="' + esc(url) + '" style="color:#a8884a;text-decoration:none;">' + esc(url) + '</a></p>',
       '</div>'
     ].join('');

@@ -247,7 +247,7 @@
 
 <div class="hero">
   <span class="tag">Internal workspace</span>
-  <h1>Coach <span class="accent">smarter</span>. Run the firm <span class="accent">tighter</span>.</h1>
+  <h1>Helping businesses <span class="accent">succeed</span>. With the <span class="accent">best team</span>.</h1>
   <div class="greeting" id="heroGreeting" hidden></div>
 </div>
 
@@ -339,14 +339,10 @@
   function personalizeHero() {
     var who = (window.bccUser && window.bccUser.userDetails) || '';
     if (!who) return;
-    var label = who;
-    var full = (window.bccPeopleFull || []);
-    var me = full.find(function (u) {
-      var w = who.toLowerCase();
-      return (u.upn||'').toLowerCase() === w || (u.mail||'').toLowerCase() === w;
-    });
-    if (me && me.displayName) label = me.displayName;
-    var first = String(label).trim().split(/\s+/)[0];
+    // bccFirstName resolves UPN -> display name via window.bccPeopleFull, and
+    // prettifies the email local-part if the user isn't in the list yet.
+    var first = (window.bccFirstName ? window.bccFirstName(who) : '') || '';
+    if (!first) return;
     var hour = new Date().getHours();
     var greet = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
     var el = document.getElementById('heroGreeting');

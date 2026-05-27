@@ -353,10 +353,12 @@
     var sel = document.getElementById('m-owner');
     var people = (window.bccPeopleFull || []);
     var me = (window.bccUser && window.bccUser.userDetails) || '';
-    sel.innerHTML = '<option value="">— Me (' + esc(me || 'signed-in user') + ') —</option>' +
+    var meLabel = (window.bccDisplayName && me) ? (window.bccDisplayName(me) || me) : (me || 'signed-in user');
+    sel.innerHTML = '<option value="">— Me (' + esc(meLabel) + ') —</option>' +
       people.map(function (p) {
         var upn = p.upn || p.mail || '';
-        return '<option value="' + esc(upn) + '"' + (upn === selected ? ' selected' : '') + '>' + esc(p.displayName || upn) + '</option>';
+        var label = p.displayName || (window.bccDisplayName ? window.bccDisplayName(upn) : upn) || upn;
+        return '<option value="' + esc(upn) + '"' + (upn === selected ? ' selected' : '') + '>' + esc(label) + '</option>';
       }).join('');
   }
 

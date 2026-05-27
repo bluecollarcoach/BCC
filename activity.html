@@ -356,6 +356,13 @@
         }
         who = r.userDetails || r.user || '(unknown)';
       }
+      // Show "Lewis Koljonen" instead of the raw UPN when we can resolve it.
+      // bccDisplayName falls back to a prettified email local-part when the
+      // user isn't in window.bccPeopleFull yet.
+      if (who && who !== '(anonymous)' && who !== '(unknown)' && window.bccDisplayName) {
+        var pretty = window.bccDisplayName(who);
+        if (pretty) who = pretty;
+      }
 
       html +=
         '<div class="event t-' + info.cat + '">' +

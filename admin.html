@@ -358,7 +358,11 @@
     });
     var me = (window.bccUser && window.bccUser.userDetails) || '';
     if (me && !byUpn[me.toLowerCase()]) {
-      byUpn[me.toLowerCase()] = { upn: me, displayName: me, role: 'admin', status: 'active', source: 'self' };
+      // Resolve to a real name when possible (window.bccPeopleFull lookup,
+      // or prettified email local-part as a fallback) so the table never
+      // shows the raw UPN as someone's "name."
+      var meName = (window.bccDisplayName ? window.bccDisplayName(me) : '') || me;
+      byUpn[me.toLowerCase()] = { upn: me, displayName: meName, role: 'admin', status: 'active', source: 'self' };
     }
     var rows = Object.values(byUpn).sort(function (a, b) {
       if (a.role !== b.role) return a.role === 'admin' ? -1 : 1;

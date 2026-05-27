@@ -188,12 +188,10 @@
   function meUpn() { return ((window.bccUser && window.bccUser.userDetails) || '').toLowerCase(); }
   function myFirstName() {
     var who = (window.bccUser && window.bccUser.userDetails) || '';
-    var label = who;
-    var full = (window.bccPeopleFull || []).find(function (p) {
-      return (p.upn || '').toLowerCase() === who.toLowerCase() || (p.mail || '').toLowerCase() === who.toLowerCase();
-    });
-    if (full && full.displayName) label = full.displayName;
-    return String(label).trim().split(/\s+/)[0] || 'there';
+    // bccFirstName handles people-list lookup + prettifies the email local-part
+    // when the user isn't in bccPeopleFull yet ("lyle@..." -> "Lyle").
+    var n = (window.bccFirstName ? window.bccFirstName(who) : '');
+    return n || 'there';
   }
 
   function allSessions() {

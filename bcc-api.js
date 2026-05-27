@@ -338,6 +338,21 @@
    *   window.bccFirstName('lewis@bluecollarcoach.us')   → 'Lewis'
    *   window.bccDisplayName('')                             → ''
    */
+  // Title-case a single word: "lyle" -> "Lyle", "MCDONALD" -> "Mcdonald".
+  function bccTitleWord(w) {
+    if (!w) return '';
+    return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+  }
+  // Convert an email/UPN to a human-readable name when we have nothing else.
+  //   "lyle@bluecollarcoach.us"          -> "Lyle"
+  //   "lewis.koljonen@bluecollarcoach.us" -> "Lewis Koljonen"
+  //   "jane_doe@x.com"                   -> "Jane Doe"
+  function bccPrettifyEmail(s) {
+    if (!s || s.indexOf('@') < 0) return s || '';
+    var local = s.split('@')[0].replace(/[._-]+/g, ' ').trim();
+    if (!local) return s;
+    return local.split(/\s+/).map(bccTitleWord).join(' ');
+  }
   window.bccDisplayName = function (identifier) {
     if (!identifier) return '';
     var s = String(identifier).trim();
@@ -347,17 +362,21 @@
     for (var i = 0; i < full.length; i++) {
       var u = full[i];
       if (!u) continue;
-      if ((u.upn || '').toLowerCase() === lc)         return u.displayName || s;
-      if ((u.mail || '').toLowerCase() === lc)        return u.displayName || s;
+      if ((u.upn || '').toLowerCase() === lc)         return u.displayName || bccPrettifyEmail(s) || s;
+      if ((u.mail || '').toLowerCase() === lc)        return u.displayName || bccPrettifyEmail(s) || s;
       if ((u.displayName || '').toLowerCase() === lc) return u.displayName;
     }
+    // No people-list match. If the identifier is an email/UPN, prettify the
+    // local part so we never show "lyle@bluecollarcoach.us" as a "name."
+    if (s.indexOf('@') > 0) return bccPrettifyEmail(s);
     return s;
   };
   window.bccFirstName = function (identifier) {
     var name = window.bccDisplayName(identifier);
     if (!name) return '';
-    // If it's still an email (lookup failed), strip the domain at least.
-    if (name.indexOf('@') > 0) name = name.split('@')[0].replace(/[._-]/g, ' ');
+    // If somehow still an email (shouldn't happen given bccDisplayName above),
+    // strip the domain as a last-ditch fallback.
+    if (name.indexOf('@') > 0) name = bccPrettifyEmail(name);
     return name.trim().split(/\s+/)[0] || name;
   };
 
