@@ -140,6 +140,7 @@
       <div class="sub">Edit packages, share the URL, or print a clean handoff. E-signature support below.</div>
     </div>
     <div class="actions">
+      <button class="btn btn-ghost" id="sendBtn" type="button" title="Email this rate sheet to a contact">Send for review</button>
       <button class="btn btn-ghost" id="printBtn" type="button">Print</button>
       <button class="btn btn-primary" id="saveBtn" type="button">Save changes</button>
     </div>
@@ -414,6 +415,94 @@
         return '<option value="' + esc(c.id) + '">' + esc(name) + (c.company ? ' (' + esc(c.company) + ')' : '') + '</option>';
       }).join('');
   }
+
+  /* ===== Send for review (via Graph mail) ===== */
+  function isGraphConnected() {
+    try {
+      var rec = JSON.parse(localStorage.getItem('bcc-integration-msgraph') || 'null');
+      return !!(rec && rec.status === 'connected');
+    } catch (e) { return false; }
+  }
+  function buildEmailHtml(sheet, cfg) {
+    var co = (cfg && cfg.company) || {};
+    var url = location.origin + '/rates.html';
+    var rows = (sheet.packages || []).map(function (p) {
+      var price = '$' + (Math.round((p.priceCents || 0) / 100)).toLocaleString();
+      return '<tr><td style="padding:8px 0;border-bottom:1px solid #e6e5e1;"><strong>' + esc(p.name) + '</strong>' +
+        (p.blurb ? '<br><span style="color:#6b7077;font-size:13px;">' + esc(p.blurb) + '</span>' : '') + '</td>' +
+        '<td style="padding:8px 0;border-bottom:1px solid #e6e5e1;text-align:right;color:#a8884a;font-weight:700;white-space:nowrap;">' + price + ' <span style="color:#6b7077;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">/ ' + esc(p.cadence || 'one-time') + '</span></td></tr>';
+    }).join('');
+    return [
+      '<div style="font-family:Inter,system-ui,sans-serif;color:#1a1a1a;max-width:640px;">',
+      '<h2 style="font-family:Source Serif 4,Georgia,serif;color:#1a1a1a;border-bottom:2px solid #c5a55a;padding-bottom:8px;">' + esc(co.displayName || 'Blue Collar Coach') + ' &middot; Coaching packages</h2>',
+      co.tagline ? '<p style="color:#6b7077;font-size:14px;">' + esc(co.tagline) + '</p>' : '',
+      '<p>Hi {{name}},</p>',
+      '<p>Sharing the coaching package options we discussed. Reply with the one that fits and I\'ll send a contract:</p>',
+      '<table style="width:100%;border-collapse:collapse;margin:14px 0;">' + rows + '</table>',
+      '<p style="font-size:12px;color:#6b7077;">Effective ' + esc(sheet.effectiveFrom || todayDate()) + '. Prices in USD; auto-renew at the cadence shown unless canceled in writing 14 days before renewal.</p>',
+      '<p>Best,<br>' + esc(((window.bccUser && window.bccUser.userDetails) || '').split('@')[0] || 'Blue Collar Coach') + '</p>',
+      '<p style="font-size:11.5px;color:#9a9a96;margin-top:24px;">Sent via BCC Connect &middot; <a href="' + esc(url) + '" style="color:#a8884a;text-decoration:none;">' + esc(url) + '</a></p>',
+      '</div>'
+    ].join('');
+  }
+
+  document.getElementById('sendBtn').addEventListener('click', function () {
+    if (!isGraphConnected()) {
+      (window.bccNotify || alert)('Connect Outlook in Admin → Integrations first (the email goes from your mailbox).', 'warn');
+      return;
+    }
+    var contacts = loadContacts();
+    if (contacts.length === 0) {
+      (window.bccNotify || alert)('Add a contact in CRM first.', 'warn');
+      return;
+    }
+    // Build a simple inline picker (modal would be nicer; keeping scope tight)
+    var lines = contacts.slice(0, 50).map(function (c, i) {
+      var name = ((c.firstName || '') + ' ' + (c.lastName || '')).trim() || c.email || c.company || '(no name)';
+      return (i + 1) + '. ' + name + (c.email ? ' <' + c.email + '>' : ' (no email)');
+    }).join('\n');
+    var idx = prompt('Send to which contact?\n\n' + lines + '\n\nEnter the number:', '1');
+    if (!idx) return;
+    var contact = contacts[parseInt(idx, 10) - 1];
+    if (!contact) { (window.bccNotify || alert)('Invalid choice.', 'warn'); return; }
+    if (!contact.email) { (window.bccNotify || alert)('That contact has no email on file.', 'warn'); return; }
+    var firstName = (contact.firstName || '').trim() || (contact.email || '').split('@')[0];
+    var sheet = loadSheet();
+    var cfg = loadCfg();
+    var co = (cfg && cfg.company) || {};
+    var subject = (co.displayName || 'Blue Collar Coach') + ' — coaching packages';
+    var html = buildEmailHtml(sheet, cfg).replace('{{name}}', esc(firstName) || 'there');
+
+    var btn = document.getElementById('sendBtn');
+    btn.disabled = true; btn.textContent = 'Sending…';
+    fetch('/api/integrations/msgraph/send-mail', {
+      method: 'POST', credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ to: [contact.email], subject: subject, bodyHtml: html })
+    })
+      .then(function (r) { return r.json().catch(function () { return { ok:false, error:'bad response' }; }); })
+      .then(function (resp) {
+        if (resp.ok) {
+          if (window.bccNotifySaved) window.bccNotifySaved('Rate sheet sent to ' + contact.email);
+          // Log a convo entry on the contact so the CRM detail timeline shows the send
+          var convo = {
+            id: 'bcc-convo-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 9),
+            tenantId: 'blue-collar-coach', docType: 'convo',
+            contactId: contact.id, type: 'email',
+            summary: 'Rate sheet sent — review pending',
+            details: 'Sent ' + (sheet.packages || []).length + ' package(s) for review.',
+            at: nowIso(),
+            createdBy: (window.bccUser && window.bccUser.userDetails) || ''
+          };
+          localStorage.setItem(convo.id, JSON.stringify(convo));
+          if (window.bccAudit) window.bccAudit('convo-add', { key: convo.id, path: '/rates.html', meta: { type: 'email', sentTo: contact.email } });
+        } else {
+          (window.bccNotify || alert)('Send failed: ' + (resp.error || 'unknown'), 'error');
+        }
+      })
+      .catch(function (e) { (window.bccNotify || alert)('Send failed: ' + e.message, 'error'); })
+      .finally(function () { btn.disabled = false; btn.textContent = 'Send for review'; });
+  });
 
   /* ===== Init ===== */
   function init() {

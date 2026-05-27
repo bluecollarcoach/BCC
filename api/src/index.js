@@ -1328,6 +1328,59 @@ app.http('msgraph-delete-event', {
 });
 
 /**
+ * POST /api/integrations/msgraph/send-mail
+ *   body: { to: [emails], subject, bodyHtml, ccUpn?, audit?: { action, key, meta } }
+ *
+ * Sends an email FROM the caller's mailbox via /me/sendMail. Requires
+ * the user has connected Outlook (Mail.Send scope already requested by
+ * msgraph/connect). Used by Rate Sheet → "Send for review" and any other
+ * outbound mail from BCC Connect.
+ */
+app.http('msgraph-send-mail', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'integrations/msgraph/send-mail',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    try {
+      const body = await request.json().catch(() => ({}));
+      const toList = Array.isArray(body.to) ? body.to : (body.to ? [body.to] : []);
+      if (!toList.length) return badRequest('to[] required');
+      const subject = String(body.subject || '(no subject)').slice(0, 250);
+      const html = String(body.bodyHtml || body.body || '');
+
+      const tokens = await loadMsGraphTokensFor(p.userDetails || p.userId);
+      if (!tokens) return { status: 400, jsonBody: { ok: false, error: 'Outlook not connected. Click Connect in Admin → Integrations → Microsoft Graph.' } };
+      const tok = await refreshGraphAccessToken(tokens.refreshToken);
+
+      const payload = {
+        message: {
+          subject: subject,
+          body: { contentType: 'HTML', content: html },
+          toRecipients: toList.filter(Boolean).map(e => ({ emailAddress: { address: String(e) } }))
+        },
+        saveToSentItems: true
+      };
+      const r = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + tok.access_token, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!r.ok && r.status !== 202) {
+        const detail = (await r.text()).slice(0, 300);
+        return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')', detail } };
+      }
+      return { jsonBody: { ok: true } };
+    } catch (e) {
+      context.error('msgraph send-mail error', e);
+      return { status: 500, jsonBody: { ok: false, error: String(e.message || e) } };
+    }
+  })
+});
+
+/**
  * POST /api/integrations/msgraph/pull-events
  *   body: { rangeStart?: ISO, rangeEnd?: ISO }
  *   Defaults to "today through next 28 days" if no range supplied.
