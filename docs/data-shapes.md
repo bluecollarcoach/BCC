@@ -410,7 +410,13 @@ Two doc types co-exist here, both queried together by `activity.html`:
   "tenantId":  "blue-collar-coach",
   "docType":   "admin-config",
   "users":     [
-    { "upn": "lyle@bluecollarcoach.us", "displayName": "Lyle", "role": "admin", "status": "active" }
+    {
+      "upn":         "lyle@bluecollarcoach.us",
+      "displayName": "Lyle",
+      "role":        "admin",        // owner | admin | member
+      "status":      "active",       // active | inactive
+      "landingPage": "myday.html"    // optional; if set, sign-in lands here instead of /index.html
+    }
   ],
   "auditPassword": "bcc-audit-2026",     // gates activity.html; rotate via admin UI
   "company": {

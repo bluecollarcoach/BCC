@@ -171,9 +171,9 @@
       </h3>
       <p class="blurb">Pulled from your Microsoft 365 tenant via Graph. Anyone signed in is auto-listed once <code>bcc-api.js</code> mirrors the tenant. Toggle the admin role to grant access to this page; mark inactive to revoke without removing.</p>
       <table>
-        <thead><tr><th>Name</th><th>UPN / email</th><th>Role</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>UPN / email</th><th>Role</th><th>Landing page</th><th>Status</th><th></th></tr></thead>
         <tbody id="usersRows">
-          <tr><td colspan="5" style="text-align:center;color:var(--muted);padding:24px;">Loading…</td></tr>
+          <tr><td colspan="6" style="text-align:center;color:var(--muted);padding:24px;">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -366,18 +366,48 @@
     });
     var tbody = document.getElementById('usersRows');
     if (rows.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:24px;">No team members visible yet. Wait for Graph to mirror the tenant.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:24px;">No team members visible yet. Wait for Graph to mirror the tenant.</td></tr>';
       return;
     }
+
+    // Pages users can land on after sign-in. Keep this aligned with the
+    // hamburger nav in bcc-api.js + the home grid.
+    var LANDING_PAGES = [
+      { v: 'index.html',       label: 'Home (default)' },
+      { v: 'myday.html',       label: 'My Day' },
+      { v: 'sessions.html',    label: 'Sessions' },
+      { v: 'crm.html',         label: 'CRM' },
+      { v: 'jobs.html',        label: 'Engagements' },
+      { v: 'scheduler.html',   label: 'Scheduler' },
+      { v: 'marketing.html',   label: 'Marketing' },
+      { v: 'bookkeeping.html', label: 'Bookkeeping' },
+      { v: 'documents.html',   label: 'Documents' },
+      { v: 'rates.html',       label: 'Rate Sheet' },
+      { v: 'chat.html',        label: 'Team Chat' },
+      { v: 'training.html',    label: 'Training' },
+      { v: 'events.html',      label: 'Events' },
+      { v: 'kb.html',          label: 'Knowledge Base' },
+      { v: 'admin.html',       label: 'Admin' }
+    ];
+
     tbody.innerHTML = rows.map(function (u) {
       var roleBadge = u.role === 'owner' ? '<span class="badge owner">Owner</span>'
                     : u.role === 'admin' ? '<span class="badge admin">Admin</span>'
                     : '<span class="badge member">Member</span>';
       var statusBadge = u.status === 'inactive' ? '<span class="badge inactive">Inactive</span>' : '<span style="color:var(--muted);font-size:11px;">Active</span>';
+      var landing = u.landingPage || 'index.html';
+      var landingOpts = LANDING_PAGES.map(function (p) {
+        return '<option value="' + esc(p.v) + '"' + (p.v === landing ? ' selected' : '') + '>' + esc(p.label) + '</option>';
+      }).join('');
       return '<tr data-upn="' + esc(u.upn) + '">' +
         '<td data-label="Name">' + esc(u.displayName) + '</td>' +
         '<td data-label="UPN" style="color:var(--muted);font-size:12.5px;">' + esc(u.upn) + '</td>' +
         '<td data-label="Role">' + roleBadge + '</td>' +
+        '<td data-label="Landing page">' +
+          '<select data-act="landing" style="min-width:160px;min-height:32px;padding:4px 8px;font-size:12.5px;border-radius:6px;border:1px solid var(--chrome-mute);background:#fff;">' +
+            landingOpts +
+          '</select>' +
+        '</td>' +
         '<td data-label="Status">' + statusBadge + '</td>' +
         '<td data-label="Actions" style="text-align:right;">' +
           (u.role === 'admin'
@@ -390,24 +420,39 @@
       '</tr>';
     }).join('');
 
+    function persistAction(tr, mutator) {
+      var upn = tr.dataset.upn.toLowerCase();
+      var cfg = loadCfg(); cfg.users = cfg.users || [];
+      var rec = cfg.users.find(function (x) { return (x.upn || '').toLowerCase() === upn; });
+      if (!rec) {
+        var seed = byUpn[upn] || { upn: upn, displayName: upn, role: 'member', status: 'active' };
+        rec = { upn: seed.upn, displayName: seed.displayName, role: seed.role, status: seed.status };
+        cfg.users.push(rec);
+      }
+      mutator(rec);
+      saveCfg(cfg);
+    }
+
     tbody.querySelectorAll('button[data-act]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         var tr = btn.closest('tr'); if (!tr) return;
-        var upn = tr.dataset.upn.toLowerCase();
-        var cfg = loadCfg(); cfg.users = cfg.users || [];
-        var rec = cfg.users.find(function (x) { return (x.upn || '').toLowerCase() === upn; });
-        if (!rec) {
-          var seed = byUpn[upn] || { upn: upn, displayName: upn, role: 'member', status: 'active' };
-          rec = { upn: seed.upn, displayName: seed.displayName, role: seed.role, status: seed.status };
-          cfg.users.push(rec);
-        }
         var act = btn.dataset.act;
-        if (act === 'promote') rec.role = 'admin';
-        if (act === 'demote')  rec.role = 'member';
-        if (act === 'activate')   rec.status = 'active';
-        if (act === 'deactivate') rec.status = 'inactive';
-        saveCfg(cfg);
+        persistAction(tr, function (rec) {
+          if (act === 'promote') rec.role = 'admin';
+          if (act === 'demote')  rec.role = 'member';
+          if (act === 'activate')   rec.status = 'active';
+          if (act === 'deactivate') rec.status = 'inactive';
+        });
         renderUsers();
+      });
+    });
+    tbody.querySelectorAll('select[data-act=landing]').forEach(function (sel) {
+      sel.addEventListener('change', function () {
+        var tr = sel.closest('tr'); if (!tr) return;
+        var value = sel.value;
+        persistAction(tr, function (rec) { rec.landingPage = value; });
+        if (window.bccNotifySaved) window.bccNotifySaved('Landing page updated.');
+        else if (window.bccNotify) window.bccNotify('Saved.', 'success');
       });
     });
   }

@@ -495,6 +495,30 @@
 
     injectAuthChip();
     finishProgress();
+
+    // Per-user landing page redirect: if the signed-in user has a
+    // landingPage configured in admin-config AND we landed on the home
+    // page, send them straight to their preferred page. Only fires once
+    // per tab (sessionStorage flag) so it doesn't fight back-button.
+    try {
+      if (signedIn && !sessionStorage.getItem('bcc-landing-applied')) {
+        sessionStorage.setItem('bcc-landing-applied', '1');
+        var here = (location.pathname || '/').toLowerCase();
+        var onHome = here === '/' || here.endsWith('/index.html');
+        if (onHome) {
+          var cfg = null;
+          try { cfg = JSON.parse(localStorage.getItem('bcc-admin-config-v1') || 'null'); } catch (e) {}
+          var meUpn = ((user && user.userDetails) || '').toLowerCase();
+          var rec = cfg && cfg.users && cfg.users.find(function (x) { return (x.upn || '').toLowerCase() === meUpn; });
+          var dest = rec && rec.landingPage;
+          if (dest && dest !== 'index.html' && dest !== '/' && dest !== here.replace(/^\//, '')) {
+            location.replace('/' + dest.replace(/^\//, ''));
+            return; // stop bootstrap — the next page will run its own
+          }
+        }
+      }
+    } catch (e) { /* never block bootstrap on the redirect */ }
+
     window.dispatchEvent(new Event('bcc-auth-ready'));
     if (window.bccPeople) window.dispatchEvent(new Event('bcc-users-ready'));
 
