@@ -1559,6 +1559,327 @@ app.http('qbo-callback', {
   })
 });
 
+/* ============ Marketing OAuth: Google Ads, LinkedIn, Meta, Mailchimp ============
+ *
+ * Same pattern as QBO above (UI-pasted clientId / clientSecret on the
+ * bcc-integration-<channel> doc, NOT env vars), so a non-developer admin
+ * can point each connector at their own dev app from the UI.
+ *
+ * Each provider has two routes:
+ *   GET /api/integrations/<channel>/connect    -> 302 to provider authorize
+ *   GET /api/integrations/<channel>/callback   -> exchanges code, stores
+ *                                                  refreshToken (or long-
+ *                                                  lived accessToken) on
+ *                                                  the doc, flips status,
+ *                                                  302s back to admin.html
+ *
+ * Setup docs: docs/oauth-setup.md walks through the dev portal for each.
+ */
+
+// Persist a successful OAuth exchange to bcc-integration-<channel>.fields
+async function saveOAuthTokens(channel, patch) {
+  const c = container();
+  const id = 'bcc-integration-' + channel;
+  const doc = await c.item(id, BCC_TENANT_ID).read().then(rr => rr.resource).catch(() => null);
+  const rec = doc || { id, tenantId: BCC_TENANT_ID, docType: 'integration', channel, fields: {} };
+  rec.fields = Object.assign(rec.fields || {}, patch);
+  rec.status = 'connected';
+  rec.lastTest = { ok: true, at: new Date().toISOString() };
+  rec.updatedAt = new Date().toISOString();
+  await c.items.upsert(rec);
+  _intCache.until = 0; _intCache.byChannel.clear();
+}
+
+// Generic builder: if fields are missing, return a friendly 400 instead of
+// redirecting the user to a confusing provider error page.
+async function requireIntegrationFields(channel, required) {
+  const fields = await getIntegrationFields(channel);
+  const missing = required.filter(k => !fields[k]);
+  if (missing.length) {
+    return { missing, fields: null };
+  }
+  return { missing: null, fields };
+}
+
+/* ---- Google Ads ---- */
+app.http('googleads-connect', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'integrations/google-ads/connect',
+  handler: withAccessLog(async (request) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const r = await requireIntegrationFields('google-ads', ['clientId', 'clientSecret']);
+    if (r.missing) {
+      return { status: 400, jsonBody: { error: 'Set Google Ads clientId + clientSecret in Admin → Integrations first.', missing: r.missing } };
+    }
+    const origin = new URL(request.url).origin;
+    const redirectUri = origin + '/api/integrations/google-ads/callback';
+    const state = Buffer.from(JSON.stringify({ upn: p.userDetails || p.userId, t: Date.now() })).toString('base64url');
+    const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams({
+      client_id: r.fields.clientId,
+      response_type: 'code',
+      redirect_uri: redirectUri,
+      scope: 'https://www.googleapis.com/auth/adwords',
+      access_type: 'offline',
+      prompt: 'consent',
+      state: state
+    }).toString();
+    return { status: 302, headers: { Location: authUrl } };
+  })
+});
+
+app.http('googleads-callback', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'integrations/google-ads/callback',
+  handler: withAccessLog(async (request, context) => {
+    const url = new URL(request.url);
+    const code = url.searchParams.get('code');
+    const err = url.searchParams.get('error');
+    if (err) return { status: 302, headers: { Location: '/admin.html?google-ads=' + encodeURIComponent(err) + '#integrations' } };
+    if (!code) return { status: 400, jsonBody: { error: 'missing code' } };
+    try {
+      const fields = await getIntegrationFields('google-ads');
+      const redirectUri = url.origin + '/api/integrations/google-ads/callback';
+      const body = new URLSearchParams({
+        code,
+        client_id: fields.clientId,
+        client_secret: fields.clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code'
+      }).toString();
+      const tr = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body
+      });
+      if (!tr.ok) throw new Error('Google token exchange ' + tr.status + ': ' + (await tr.text()).slice(0, 200));
+      const tok = await tr.json();
+      if (!tok.refresh_token) throw new Error('Google did not return a refresh_token (re-consent with prompt=consent&access_type=offline)');
+      await saveOAuthTokens('google-ads', { refreshToken: tok.refresh_token });
+      return { status: 302, headers: { Location: '/admin.html?google-ads=connected#integrations' } };
+    } catch (e) {
+      context.error('google-ads callback failed', e);
+      return { status: 302, headers: { Location: '/admin.html?google-ads=error&detail=' + encodeURIComponent(e.message) + '#integrations' } };
+    }
+  })
+});
+
+/* ---- LinkedIn ---- */
+app.http('linkedin-connect', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'integrations/linkedin/connect',
+  handler: withAccessLog(async (request) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const r = await requireIntegrationFields('linkedin', ['clientId', 'clientSecret']);
+    if (r.missing) {
+      return { status: 400, jsonBody: { error: 'Set LinkedIn clientId + clientSecret in Admin → Integrations first.', missing: r.missing } };
+    }
+    const origin = new URL(request.url).origin;
+    const redirectUri = origin + '/api/integrations/linkedin/callback';
+    const state = Buffer.from(JSON.stringify({ upn: p.userDetails || p.userId, t: Date.now() })).toString('base64url');
+    // r_ads + r_ads_reporting require Marketing Developer Platform access.
+    // r_basicprofile/email work for any new app without extra approval.
+    const scope = (r.fields.scope || 'r_organization_social r_ads r_ads_reporting r_emailaddress').trim();
+    const authUrl = 'https://www.linkedin.com/oauth/v2/authorization?' + new URLSearchParams({
+      response_type: 'code',
+      client_id: r.fields.clientId,
+      redirect_uri: redirectUri,
+      state: state,
+      scope: scope
+    }).toString();
+    return { status: 302, headers: { Location: authUrl } };
+  })
+});
+
+app.http('linkedin-callback', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'integrations/linkedin/callback',
+  handler: withAccessLog(async (request, context) => {
+    const url = new URL(request.url);
+    const code = url.searchParams.get('code');
+    const err = url.searchParams.get('error');
+    if (err) return { status: 302, headers: { Location: '/admin.html?linkedin=' + encodeURIComponent(err) + '#integrations' } };
+    if (!code) return { status: 400, jsonBody: { error: 'missing code' } };
+    try {
+      const fields = await getIntegrationFields('linkedin');
+      const redirectUri = url.origin + '/api/integrations/linkedin/callback';
+      const body = new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: redirectUri,
+        client_id: fields.clientId,
+        client_secret: fields.clientSecret
+      }).toString();
+      const tr = await fetch('https://www.linkedin.com/oauth/v2/accessToken', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body
+      });
+      if (!tr.ok) throw new Error('LinkedIn token exchange ' + tr.status + ': ' + (await tr.text()).slice(0, 200));
+      const tok = await tr.json();
+      // LinkedIn issues 60-day access tokens. Marketing Developer Platform
+      // apps additionally get refresh_token for token rotation.
+      const patch = {
+        accessToken:  tok.access_token,
+        expiresInSec: tok.expires_in
+      };
+      if (tok.refresh_token) patch.refreshToken = tok.refresh_token;
+      await saveOAuthTokens('linkedin', patch);
+      return { status: 302, headers: { Location: '/admin.html?linkedin=connected#integrations' } };
+    } catch (e) {
+      context.error('linkedin callback failed', e);
+      return { status: 302, headers: { Location: '/admin.html?linkedin=error&detail=' + encodeURIComponent(e.message) + '#integrations' } };
+    }
+  })
+});
+
+/* ---- Meta (Facebook Ads + Instagram) ---- */
+app.http('meta-connect', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'integrations/meta/connect',
+  handler: withAccessLog(async (request) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const r = await requireIntegrationFields('meta', ['clientId', 'clientSecret']);
+    if (r.missing) {
+      return { status: 400, jsonBody: { error: 'Set Meta clientId + clientSecret in Admin → Integrations first.', missing: r.missing } };
+    }
+    const origin = new URL(request.url).origin;
+    const redirectUri = origin + '/api/integrations/meta/callback';
+    const state = Buffer.from(JSON.stringify({ upn: p.userDetails || p.userId, t: Date.now() })).toString('base64url');
+    const scope = (r.fields.scope || 'ads_read,business_management,read_insights,pages_read_engagement').trim();
+    const authUrl = 'https://www.facebook.com/v18.0/dialog/oauth?' + new URLSearchParams({
+      client_id: r.fields.clientId,
+      redirect_uri: redirectUri,
+      state: state,
+      scope: scope,
+      response_type: 'code'
+    }).toString();
+    return { status: 302, headers: { Location: authUrl } };
+  })
+});
+
+app.http('meta-callback', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'integrations/meta/callback',
+  handler: withAccessLog(async (request, context) => {
+    const url = new URL(request.url);
+    const code = url.searchParams.get('code');
+    const err = url.searchParams.get('error');
+    if (err) return { status: 302, headers: { Location: '/admin.html?meta=' + encodeURIComponent(err) + '#integrations' } };
+    if (!code) return { status: 400, jsonBody: { error: 'missing code' } };
+    try {
+      const fields = await getIntegrationFields('meta');
+      const redirectUri = url.origin + '/api/integrations/meta/callback';
+      // 1) Exchange code for short-lived access token
+      const tr1 = await fetch('https://graph.facebook.com/v18.0/oauth/access_token?' + new URLSearchParams({
+        client_id: fields.clientId,
+        client_secret: fields.clientSecret,
+        redirect_uri: redirectUri,
+        code
+      }).toString());
+      if (!tr1.ok) throw new Error('Meta token exchange ' + tr1.status + ': ' + (await tr1.text()).slice(0, 200));
+      const t1 = await tr1.json();
+      // 2) Exchange short-lived for long-lived (60 days)
+      const tr2 = await fetch('https://graph.facebook.com/v18.0/oauth/access_token?' + new URLSearchParams({
+        grant_type: 'fb_exchange_token',
+        client_id: fields.clientId,
+        client_secret: fields.clientSecret,
+        fb_exchange_token: t1.access_token
+      }).toString());
+      if (!tr2.ok) throw new Error('Meta long-lived exchange ' + tr2.status + ': ' + (await tr2.text()).slice(0, 200));
+      const t2 = await tr2.json();
+      await saveOAuthTokens('meta', {
+        accessToken: t2.access_token,
+        expiresInSec: t2.expires_in
+      });
+      return { status: 302, headers: { Location: '/admin.html?meta=connected#integrations' } };
+    } catch (e) {
+      context.error('meta callback failed', e);
+      return { status: 302, headers: { Location: '/admin.html?meta=error&detail=' + encodeURIComponent(e.message) + '#integrations' } };
+    }
+  })
+});
+
+/* ---- Mailchimp ---- */
+app.http('mailchimp-connect', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'integrations/mailchimp/connect',
+  handler: withAccessLog(async (request) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const r = await requireIntegrationFields('mailchimp', ['clientId', 'clientSecret']);
+    if (r.missing) {
+      return { status: 400, jsonBody: { error: 'Set Mailchimp clientId + clientSecret in Admin → Integrations first.', missing: r.missing } };
+    }
+    const origin = new URL(request.url).origin;
+    const redirectUri = origin + '/api/integrations/mailchimp/callback';
+    const state = Buffer.from(JSON.stringify({ upn: p.userDetails || p.userId, t: Date.now() })).toString('base64url');
+    const authUrl = 'https://login.mailchimp.com/oauth2/authorize?' + new URLSearchParams({
+      response_type: 'code',
+      client_id: r.fields.clientId,
+      redirect_uri: redirectUri,
+      state: state
+    }).toString();
+    return { status: 302, headers: { Location: authUrl } };
+  })
+});
+
+app.http('mailchimp-callback', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'integrations/mailchimp/callback',
+  handler: withAccessLog(async (request, context) => {
+    const url = new URL(request.url);
+    const code = url.searchParams.get('code');
+    const err = url.searchParams.get('error');
+    if (err) return { status: 302, headers: { Location: '/admin.html?mailchimp=' + encodeURIComponent(err) + '#integrations' } };
+    if (!code) return { status: 400, jsonBody: { error: 'missing code' } };
+    try {
+      const fields = await getIntegrationFields('mailchimp');
+      const redirectUri = url.origin + '/api/integrations/mailchimp/callback';
+      const body = new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: fields.clientId,
+        client_secret: fields.clientSecret,
+        redirect_uri: redirectUri,
+        code
+      }).toString();
+      const tr = await fetch('https://login.mailchimp.com/oauth2/token', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body
+      });
+      if (!tr.ok) throw new Error('Mailchimp token exchange ' + tr.status + ': ' + (await tr.text()).slice(0, 200));
+      const tok = await tr.json();
+      // Mailchimp tokens are long-lived; metadata gives us the data-center
+      // prefix needed for every subsequent API call (e.g. us21).
+      const mr = await fetch('https://login.mailchimp.com/oauth2/metadata', {
+        headers: { Authorization: 'OAuth ' + tok.access_token }
+      });
+      if (!mr.ok) throw new Error('Mailchimp metadata ' + mr.status);
+      const meta = await mr.json();
+      await saveOAuthTokens('mailchimp', {
+        accessToken:  tok.access_token,
+        dc:           meta.dc,
+        apiEndpoint:  meta.api_endpoint,
+        accountId:    meta.user_id || meta.account_id,
+        accountName:  meta.accountname || meta.login && meta.login.login_name
+      });
+      return { status: 302, headers: { Location: '/admin.html?mailchimp=connected#integrations' } };
+    } catch (e) {
+      context.error('mailchimp callback failed', e);
+      return { status: 302, headers: { Location: '/admin.html?mailchimp=error&detail=' + encodeURIComponent(e.message) + '#integrations' } };
+    }
+  })
+});
+
 /* ============ Azure Blob — document storage ============
  * Files don't fit in Cosmos (10 MB doc cap; not what it's designed for).
  * Per the data-shapes.md sketch: file goes to Blob, metadata stays in

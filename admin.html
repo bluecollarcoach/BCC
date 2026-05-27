@@ -821,34 +821,43 @@
     {
       channel: 'meta',
       name: 'Meta (Facebook + Instagram)',
-      blurb: 'Pages + Instagram Business via Graph API. Create a Business app at developers.facebook.com, request pages_read_engagement + instagram_basic.',
+      blurb: 'Pages, Instagram Business, and Ads insights via Graph API. Create a Business app at developers.facebook.com, request ads_read + business_management + pages_read_engagement, then click Connect.',
       fields: [
-        { key: 'appId',       label: 'App ID',       type: 'text',     secret: false },
-        { key: 'appSecret',   label: 'App Secret',   type: 'password', secret: true },
-        { key: 'pageId',      label: 'Facebook Page ID', type: 'text', secret: false },
-        { key: 'igUserId',    label: 'Instagram Business User ID', type: 'text', secret: false },
-        { key: 'accessToken', label: 'Long-lived Access Token', type: 'password', secret: true, hint: 'Use the Graph API Explorer to mint a 60-day token, then exchange via /oauth/access_token.' }
+        { key: 'clientId',     label: 'App ID',                  type: 'text',     secret: false },
+        { key: 'clientSecret', label: 'App Secret',              type: 'password', secret: true  },
+        { key: 'pageId',       label: 'Facebook Page ID',        type: 'text',     secret: false, hint: 'Optional; needed for page posts.' },
+        { key: 'igUserId',     label: 'Instagram Business ID',   type: 'text',     secret: false, hint: 'Optional; needed for IG insights.' },
+        { key: 'accessToken',  label: 'Long-lived Access Token', type: 'password', secret: true,  hint: 'Set automatically after Connect (60-day token).' },
+        { key: 'expiresInSec', label: 'Token TTL (sec)',         type: 'text',     secret: false, hint: 'Set automatically after Connect.' }
       ]
     },
     {
       channel: 'linkedin',
       name: 'LinkedIn (Marketing API)',
-      blurb: 'Organic + ads. Request Marketing Developer Platform access at linkedin.com/developers/apps.',
+      blurb: 'Organic posts + ads campaigns. Request Marketing Developer Platform access at linkedin.com/developers/apps. Click Connect once Client ID/Secret are pasted.',
       fields: [
         { key: 'clientId',     label: 'Client ID',     type: 'text',     secret: false },
-        { key: 'clientSecret', label: 'Client Secret', type: 'password', secret: true },
-        { key: 'orgId',        label: 'Organization ID', type: 'text',   secret: false, hint: 'Numeric ID; not the vanity URL.' },
-        { key: 'accessToken',  label: 'Access Token',  type: 'password', secret: true }
+        { key: 'clientSecret', label: 'Client Secret', type: 'password', secret: true  },
+        { key: 'orgId',        label: 'Organization ID', type: 'text',  secret: false, hint: 'Numeric ID; not the vanity URL.' },
+        { key: 'scope',        label: 'OAuth scopes',  type: 'text',     secret: false, hint: 'Space-separated; default: r_organization_social r_ads r_ads_reporting r_emailaddress' },
+        { key: 'accessToken',  label: 'Access Token',  type: 'password', secret: true,  hint: 'Set automatically after Connect.' },
+        { key: 'refreshToken', label: 'Refresh Token', type: 'password', secret: true,  hint: 'Set automatically (Marketing Dev Platform apps only).' }
       ]
     },
     {
       channel: 'mailchimp',
       name: 'Mailchimp',
-      blurb: 'List + campaign sync. API Key from your Mailchimp account → Profile → Extras → API keys.',
+      blurb: 'List + campaign sync. Register an OAuth app at mailchimp.com/developer/marketing/guides/access-user-data-oauth-2, paste Client ID + Secret, then Connect.',
       fields: [
-        { key: 'apiKey',     label: 'API Key',       type: 'password', secret: true },
-        { key: 'serverPrefix', label: 'Server Prefix', type: 'text',   secret: false, hint: 'Last segment of your API key, e.g. "us21".' },
-        { key: 'audienceId', label: 'Default Audience ID', type: 'text', secret: false }
+        { key: 'clientId',     label: 'Client ID',     type: 'text',     secret: false },
+        { key: 'clientSecret', label: 'Client Secret', type: 'password', secret: true },
+        { key: 'accessToken',  label: 'Access Token',  type: 'password', secret: true,  hint: 'Set automatically after Connect.' },
+        { key: 'dc',           label: 'Data Center',   type: 'text',     secret: false, hint: 'Set automatically (e.g. us21). Used as the API host prefix.' },
+        { key: 'apiEndpoint',  label: 'API Endpoint',  type: 'text',     secret: false, hint: 'Set automatically after Connect.' },
+        { key: 'audienceId',   label: 'Default Audience ID', type: 'text', secret: false, hint: 'Optional; the list to push contacts into by default.' },
+        // Legacy API-key fallback for users without an OAuth app yet
+        { key: 'apiKey',       label: 'API Key (legacy)', type: 'password', secret: true,  hint: 'Alternative to OAuth: paste a v3 API key from Profile → Extras → API keys.' },
+        { key: 'serverPrefix', label: 'Server Prefix (legacy)', type: 'text', secret: false, hint: 'Last segment of the API key, e.g. "us21" (only used if API Key is set).' }
       ]
     },
     {
@@ -985,6 +994,14 @@
             ((conn.channel === 'qbo')
               ? '<a class="btn btn-ghost" href="/api/integrations/qbo/connect">Connect QBO</a>' +
                 '<button class="btn btn-ghost" data-int-act="sync" type="button">Sync now</button>' : '') +
+            ((conn.channel === 'google-ads')
+              ? '<a class="btn btn-primary" href="/api/integrations/google-ads/connect">Connect Google Ads</a>' : '') +
+            ((conn.channel === 'linkedin')
+              ? '<a class="btn btn-primary" href="/api/integrations/linkedin/connect">Connect LinkedIn</a>' : '') +
+            ((conn.channel === 'meta')
+              ? '<a class="btn btn-primary" href="/api/integrations/meta/connect">Connect Meta</a>' : '') +
+            ((conn.channel === 'mailchimp')
+              ? '<a class="btn btn-primary" href="/api/integrations/mailchimp/connect">Connect Mailchimp</a>' : '') +
             (conn.channel !== 'msgraph' ? '<button class="btn btn-ghost" data-int-act="test" type="button">Test connection</button>' : '') +
             '<button class="btn btn-danger" data-int-act="clear" type="button">Clear</button>' +
             (conn.channel !== 'msgraph' ? '<button class="btn btn-primary" data-int-act="save" type="button">Save</button>' : '') +
@@ -1158,6 +1175,33 @@
       // Strip the query string from the address bar
       history.replaceState({}, '', location.pathname + (location.hash || ''));
     }
+
+    // Handle the marketing connector callbacks: google-ads, linkedin, meta,
+    // mailchimp. Same pattern as qbo/msgraph -- server has already written
+    // the tokens to Cosmos; we just flip the local status + notify.
+    ['google-ads','linkedin','meta','mailchimp'].forEach(function (ch) {
+      var v = qs.get(ch);
+      if (!v) return;
+      document.querySelectorAll('.tabs button').forEach(function (b) { b.classList.toggle('active', b.dataset.tab === 'integrations'); });
+      document.querySelectorAll('.panel-section').forEach(function (s) { s.classList.remove('active'); });
+      document.getElementById('panel-integrations').classList.add('active');
+      var label = ({ 'google-ads':'Google Ads', linkedin:'LinkedIn', meta:'Meta', mailchimp:'Mailchimp' })[ch];
+      if (v === 'connected') {
+        // Server wrote tokens; we just need to refresh the doc from server.
+        // The Cosmos round-trip via /api/data is debounced — re-pull the
+        // integration record on next render. For an instant green dot:
+        var rec = loadIntegration(ch);
+        rec.status = 'connected';
+        saveIntegration(rec);
+        renderIntegrations();
+        if (window.bccNotifySaved) window.bccNotifySaved(label + ' connected.');
+        else if (window.bccNotify) window.bccNotify(label + ' connected.', 'success');
+      } else {
+        var detail = qs.get('detail');
+        if (window.bccNotify) window.bccNotify(label + ' connect failed: ' + (detail || v), 'error');
+      }
+      history.replaceState({}, '', location.pathname + (location.hash || ''));
+    });
   }
   window.addEventListener('bcc-data-ready', function () { renderUsers(); renderTypes(); renderIntegrations(); renderCompany(); renderSecurity(); renderDataPanel(); });
   window.addEventListener('bcc-users-ready', renderUsers);
