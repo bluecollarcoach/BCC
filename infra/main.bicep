@@ -28,6 +28,10 @@ param location string = resourceGroup().location
 @allowed([ 'centralus', 'eastus2', 'westus2', 'westeurope', 'eastasia' ])
 param swaLocation string = 'westus2'
 
+@description('SWA SKU. Standard ($9/mo) is REQUIRED for custom Entra ID auth providers — Free tier silently ignores the staticwebapp.config.json azureActiveDirectory block.')
+@allowed([ 'Free', 'Standard' ])
+param swaSku string = 'Standard'
+
 @description('Enable Cosmos Free Tier (1000 RU/s + 25 GB). Only one free-tier account allowed per subscription.')
 param enableCosmosFreeTier bool = true
 
@@ -138,8 +142,8 @@ resource swa 'Microsoft.Web/staticSites@2023-12-01' = {
   name: swaName
   location: swaLocation
   sku: {
-    name: 'Free'
-    tier: 'Free'
+    name: swaSku
+    tier: swaSku
   }
   properties: {
     repositoryUrl: repositoryUrl
