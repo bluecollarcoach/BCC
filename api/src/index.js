@@ -170,6 +170,12 @@ function getClientIp(req) {
  * Falls back to the request URL only when no forwarded host is present (dev).
  */
 function publicOrigin(req) {
+  // SWA forwards the public URL in x-ms-original-url. Check that FIRST
+  // because the new SWA instance doesn't always populate x-forwarded-host.
+  const original = req.headers.get('x-ms-original-url');
+  if (original) {
+    try { return new URL(original).origin; } catch (_) { /* fall through */ }
+  }
   const proto = req.headers.get('x-forwarded-proto') || 'https';
   const host  = req.headers.get('x-forwarded-host')
              || req.headers.get('x-original-host')
