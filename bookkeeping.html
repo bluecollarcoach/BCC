@@ -1,55 +1,410 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Bookkeeping · BCC Connect</title>
-  <link rel="manifest" href="/manifest.json" />
-  <meta name="theme-color" content="#1a1a1a" />
-  <link rel="icon" href="/bcc-logo.png" />
-  <script defer src="/bcc-api.js"></script>
-  <style>
-    :root { color-scheme: light; }
-    * { box-sizing: border-box; }
-    body { margin: 0; font: 14px/1.45 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; color: #1a1a1a; background: #f6f6f4; }
-    header.topbar { display: flex; align-items: center; gap: 12px; padding: 12px 18px; background: #1a1a1a; color: #f6f6f4; }
-    header.topbar img { height: 28px; }
-    header.topbar h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: 0.2px; }
-    header.topbar .grow { flex: 1; }
-    main { max-width: 880px; margin: 0 auto; padding: 32px 18px; }
-    .module-stub {
-      background: #fff; border: 1px solid #e2e1dd; border-radius: 10px;
-      padding: 28px; box-shadow: 0 1px 3px rgba(0,0,0,.04);
-    }
-    .module-stub h2 { margin: 0 0 8px; font-size: 22px; }
-    .module-stub p { margin: 6px 0; color: #4b4b46; }
-    .module-stub .tag {
-      display: inline-block; padding: 3px 10px; border-radius: 999px;
-      background: #a8884a; color: #fff; font-size: 11px; font-weight: 700;
-      letter-spacing: 0.6px; text-transform: uppercase;
-    }
-    .module-stub ul { margin: 14px 0 0; padding-left: 22px; color: #1a1a1a; }
-    .module-stub li { padding: 3px 0; }
-    a { color: #a8884a; }
-  </style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#1a1a1a" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Bookkeeping · BCC Connect</title>
+<link rel="icon" type="image/png" href="bcc-logo.png" />
+<link rel="manifest" href="manifest.json" />
+<style>
+  :root {
+    --ink:#1a1a1a; --ink-soft:#2b2b2b; --ink-line:#2e2c27;
+    --gold:#a8884a; --gold-warm:#c2a05c; --gold-deep:#876d3a;
+    --gold-fade:rgba(168,136,74,0.12);
+    --chrome:#f6f6f4; --chrome-mute:#e2e1dd; --muted:#8a877e;
+    --green:#065f46; --green-bg:#d1fae5;
+    --burgundy:#6a1c1c; --burgundy-bg:#f3e0e0;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:'Inter', system-ui, sans-serif; color:var(--ink); background:var(--chrome); }
+  header.topbar {
+    display:flex; align-items:center; gap:14px; padding:12px 22px; color:var(--chrome);
+    background:linear-gradient(90deg, #141414, #1f1f1f);
+    border-bottom:1px solid var(--ink-line); position:sticky; top:0; z-index:50;
+  }
+  header.topbar a.home { display:flex; align-items:center; gap:12px; text-decoration:none; color:var(--chrome); }
+  header.topbar img { height:30px; }
+  header.topbar .wordmark { font-family:'Cinzel', serif; font-size:14px; font-weight:700; letter-spacing:1.5px; }
+  header.topbar .wordmark .light { color:var(--gold); }
+  header.topbar .module {
+    font-size:11px; font-weight:700; letter-spacing:2.5px; text-transform:uppercase; color:var(--gold-warm);
+    border-left:1px solid rgba(255,255,255,0.18); padding-left:14px; margin-left:4px;
+  }
+  .page { max-width:1200px; margin:0 auto; padding:22px 22px 70px; }
+  .page-head { display:flex; align-items:flex-end; justify-content:space-between; gap:14px; margin-bottom:18px; flex-wrap:wrap; }
+  .page-head h1 { font-family:'Cinzel', serif; font-size:26px; margin:0; }
+  .page-head .sub { color:var(--muted); font-size:13px; margin-top:4px; }
+  .btn { min-height:38px; border:0; border-radius:8px; padding:0 14px; font:inherit; font-weight:700; font-size:13px; cursor:pointer; }
+  .btn-primary { background:var(--gold); color:#fff; }
+  .btn-primary:hover { background:var(--gold-deep); }
+  .btn-ghost { background:transparent; color:var(--ink); border:1px solid var(--chrome-mute); }
+  .btn-ghost:hover { background:var(--chrome-mute); }
+
+  /* Connector status banner */
+  .status-bar {
+    background:#fff; border:1px solid var(--chrome-mute); border-radius:12px;
+    padding:14px 18px; margin-bottom:14px;
+    display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap;
+  }
+  .status-bar .left { display:flex; align-items:center; gap:14px; }
+  .status-bar .icon { font-size:24px; }
+  .status-bar .name { font-family:'Cinzel', serif; font-size:16px; font-weight:700; }
+  .status-bar .info { font-size:12.5px; color:var(--muted); margin-top:2px; }
+  .status-bar .info .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+  .status-bar.connected .info .dot { background:#059669; }
+  .status-bar.disconnected .info .dot { background:#8a877e; }
+  .status-bar.error .info .dot { background:var(--burgundy); }
+
+  /* KPI tiles */
+  .kpi-grid { display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; margin-bottom:18px; }
+  @media (max-width:900px) { .kpi-grid { grid-template-columns:repeat(2, 1fr); } }
+  @media (max-width:560px) { .kpi-grid { grid-template-columns:1fr; } }
+  .kpi {
+    background:#fff; border:1px solid var(--chrome-mute); border-radius:12px; padding:16px;
+  }
+  .kpi .label { font-size:10.5px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:1.4px; }
+  .kpi .value { font-family:'Cinzel', serif; font-size:24px; font-weight:700; color:var(--ink); margin-top:6px; }
+  .kpi .delta { font-size:11.5px; font-weight:700; margin-top:4px; }
+  .kpi .delta.up   { color:var(--green); }
+  .kpi .delta.down { color:var(--burgundy); }
+  .kpi .delta.flat { color:var(--muted); }
+
+  /* Period selector + reports */
+  .toolbar {
+    display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+    background:#fff; padding:12px; border:1px solid var(--chrome-mute);
+    border-radius:12px; margin-bottom:14px;
+  }
+  .toolbar select { background:var(--chrome); border:1px solid var(--chrome-mute); border-radius:8px; padding:8px 10px; font:inherit; font-size:13px; min-height:38px; min-width:140px; }
+
+  /* Period table */
+  .list { background:#fff; border:1px solid var(--chrome-mute); border-radius:12px; overflow:hidden; }
+  table { width:100%; border-collapse:collapse; }
+  thead th { text-align:left; font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:1px; padding:10px 12px; border-bottom:1px solid var(--chrome-mute); background:var(--chrome); }
+  thead th.num, tbody td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  tbody tr { border-bottom:1px solid var(--chrome-mute); }
+  tbody tr:last-child { border-bottom:none; }
+  tbody td { padding:12px; font-size:13.5px; }
+  tbody tr:hover { background:var(--gold-fade); }
+  .empty { padding:48px 20px; text-align:center; color:var(--muted); }
+  .empty .big { font-family:'Cinzel', serif; font-size:20px; color:var(--ink); margin-bottom:6px; }
+
+  /* Add-period panel */
+  .panel { display:none; background:#fff; border:1px solid var(--chrome-mute); border-radius:12px; padding:18px; margin-bottom:14px; }
+  .panel.open { display:block; }
+  .panel h3 { font-family:'Cinzel', serif; font-size:16px; margin:0 0 12px; }
+  .panel .grid { display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; }
+  @media (max-width:700px) { .panel .grid { grid-template-columns:1fr; } }
+  .panel label { display:flex; flex-direction:column; gap:4px; font-size:12px; font-weight:600; color:var(--muted); }
+  .panel input, .panel select {
+    border:1px solid var(--chrome-mute); border-radius:8px; padding:9px 11px; font:inherit; font-size:14px; min-height:38px;
+    color:var(--ink); background:#fff;
+  }
+  .panel .actions { display:flex; gap:8px; justify-content:flex-end; margin-top:12px; }
+
+  @media (max-width:700px) {
+    .page { padding:14px 14px 60px; }
+    .page-head h1 { font-size:22px; }
+    table, thead, tbody, tr, td { display:block; }
+    thead { display:none; }
+    tbody tr { background:#fff; border:1px solid var(--chrome-mute); border-radius:10px; padding:10px; margin-bottom:10px; }
+    tbody td { padding:4px 0; border:0; font-size:14px; }
+    tbody td:before { content:attr(data-label); display:block; font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:1px; font-weight:700; margin-bottom:2px; }
+    tbody td.num { text-align:left; }
+  }
+  @media print {
+    header.topbar, .toolbar, .status-bar, .panel, .btn { display:none !important; }
+    body { background:#fff; }
+    .kpi, .list { box-shadow:none; border:1px solid #ccc; }
+  }
+</style>
+<script src="bcc-api.js" defer></script>
 </head>
 <body>
-  <header class="topbar">
-    <img src="/bcc-logo.png" alt="BCC" />
-    <h1>Bookkeeping</h1>
-    <span class="grow"></span>
-  </header>
-  <main>
-    <div class="module-stub">
-      <span class="tag">Coming next</span>
-      <h2>Bookkeeping</h2>
-      <p>QuickBooks Online connector with synced financial KPIs, monthly and annual reports.</p>
-      <p>This page is a placeholder so the nav drawer doesn't 404. Real content
-      lands in a subsequent commit per the build plan.</p>
-      <ul>
-        <li><a href="/index.html">Back to Home</a></li>
-      </ul>
+<header class="topbar">
+  <a class="home" href="index.html">
+    <img src="bcc-logo.png" alt="Blue Collar Coach" />
+    <span class="wordmark">BLUE COLLAR <span class="light">COACH</span></span>
+  </a>
+  <span class="module">Bookkeeping</span>
+  <span style="flex:1;"></span>
+</header>
+
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1>Bookkeeping</h1>
+      <div class="sub" id="subline">Monthly P&amp;L snapshot. Numbers come from the QBO connector once it's configured.</div>
     </div>
-  </main>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <button class="btn btn-ghost" id="syncBtn" type="button">Sync from QBO</button>
+      <button class="btn btn-ghost" id="newBtn" type="button">+ Manual entry</button>
+      <button class="btn btn-ghost" id="printBtn" type="button">Print report</button>
+    </div>
+  </div>
+
+  <!-- Connector status -->
+  <div class="status-bar" id="statusBar">
+    <div class="left">
+      <div class="icon">📊</div>
+      <div>
+        <div class="name">QuickBooks Online</div>
+        <div class="info" id="statusLine"><span class="dot"></span><span id="statusText">Loading…</span></div>
+      </div>
+    </div>
+    <a href="admin.html" class="btn btn-ghost" id="configLink">Configure →</a>
+  </div>
+
+  <!-- KPIs -->
+  <div class="kpi-grid">
+    <div class="kpi"><div class="label">Last month revenue</div><div class="value" id="kpiRev">—</div><div class="delta flat" id="kpiRevD">no prior period</div></div>
+    <div class="kpi"><div class="label">Last month expenses</div><div class="value" id="kpiExp">—</div><div class="delta flat" id="kpiExpD">no prior period</div></div>
+    <div class="kpi"><div class="label">Net</div><div class="value" id="kpiNet">—</div><div class="delta flat" id="kpiNetD">—</div></div>
+    <div class="kpi"><div class="label">YTD net</div><div class="value" id="kpiYtd">—</div><div class="delta flat" id="kpiYtdD"></div></div>
+  </div>
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <select id="yearFilter" aria-label="Filter by year"><option value="">All years</option></select>
+    <span style="flex:1;"></span>
+    <span style="font-size:12px; color:var(--muted);" id="periodCount"></span>
+  </div>
+
+  <!-- Add manual period panel -->
+  <div class="panel" id="panel">
+    <h3>Add a manual period</h3>
+    <div class="grid">
+      <label>Period (YYYY-MM)<input type="month" id="p-period" /></label>
+      <label>Revenue (USD)<input type="number" id="p-rev" min="0" step="0.01" /></label>
+      <label>Expenses (USD)<input type="number" id="p-exp" min="0" step="0.01" /></label>
+    </div>
+    <div class="actions">
+      <button class="btn btn-ghost" id="cancelBtn" type="button">Cancel</button>
+      <button class="btn btn-primary" id="saveBtn" type="button">Save</button>
+    </div>
+  </div>
+
+  <!-- Period list -->
+  <div class="list">
+    <table>
+      <thead>
+        <tr>
+          <th>Period</th>
+          <th class="num">Revenue</th>
+          <th class="num">Expenses</th>
+          <th class="num">Net</th>
+          <th>Source</th>
+          <th>Synced</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden>
+      <div class="big">No periods recorded yet.</div>
+      <div>Hit "Sync from QBO" once the integration is connected, or use "+ Manual entry" to add a period by hand.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var PER_PREFIX = 'bcc-financial-period-';
+  var INT_KEY    = 'bcc-integration-qbo';
+
+  function nowIso() { return new Date().toISOString(); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
+  function dollars(cents) {
+    if (cents == null || isNaN(cents)) return '—';
+    var n = Math.round(cents / 100);
+    return (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString();
+  }
+  function pct(now, prev) {
+    if (!prev) return null;
+    return Math.round(((now - prev) / Math.abs(prev)) * 100);
+  }
+
+  function loadIntegration() {
+    try { var raw = localStorage.getItem(INT_KEY); if (raw) return JSON.parse(raw); } catch (e) {}
+    return { status: 'disconnected' };
+  }
+  function renderStatus() {
+    var rec = loadIntegration();
+    var s = rec.status || 'disconnected';
+    var bar = document.getElementById('statusBar');
+    bar.classList.remove('connected','disconnected','error');
+    bar.classList.add(s);
+    document.getElementById('statusText').textContent =
+      s === 'connected' ? 'Connected — pulling P&L on demand' :
+      s === 'error' ? 'Connection error (re-check creds in Admin → Integrations)' :
+      'Not connected — set credentials in Admin → Integrations';
+    document.getElementById('configLink').textContent = s === 'connected' ? 'Edit credentials' : 'Configure →';
+    document.getElementById('syncBtn').disabled = (s !== 'connected');
+  }
+
+  function allPeriods() {
+    var out = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i); if (!k || k.indexOf(PER_PREFIX) !== 0) continue;
+      try { var p = JSON.parse(localStorage.getItem(k)); if (p && p.id) out.push(p); } catch (_) {}
+    }
+    return out.sort(function (a, b) { return (b.period || '').localeCompare(a.period || ''); });
+  }
+  function savePeriod(p) {
+    p.updatedAt = nowIso();
+    if (!p.createdAt) p.createdAt = p.updatedAt;
+    p.id = PER_PREFIX + p.period;
+    p.tenantId = 'blue-collar-coach';
+    p.docType = 'financial-period';
+    localStorage.setItem(p.id, JSON.stringify(p));
+  }
+  function deletePeriod(id) { localStorage.removeItem(id); }
+
+  /* ===== KPIs ===== */
+  function renderKpis() {
+    var all = allPeriods();
+    if (all.length === 0) {
+      ['kpiRev','kpiExp','kpiNet','kpiYtd'].forEach(function (k) { document.getElementById(k).textContent = '—'; });
+      return;
+    }
+    var last = all[0];
+    var prev = all[1] || null;
+    var rev = last.revenueCents || 0;
+    var exp = last.expensesCents || 0;
+    var net = rev - exp;
+    document.getElementById('kpiRev').textContent = dollars(rev);
+    document.getElementById('kpiExp').textContent = dollars(exp);
+    document.getElementById('kpiNet').textContent = dollars(net);
+    function deltaText(el, v) {
+      if (v == null) { el.textContent = 'no prior period'; el.className = 'delta flat'; return; }
+      el.textContent = (v >= 0 ? '↑ ' : '↓ ') + Math.abs(v) + '% vs prior';
+      el.className = 'delta ' + (v > 0 ? 'up' : v < 0 ? 'down' : 'flat');
+    }
+    deltaText(document.getElementById('kpiRevD'), prev ? pct(rev, prev.revenueCents) : null);
+    deltaText(document.getElementById('kpiExpD'), prev ? pct(exp, prev.expensesCents) : null);
+    deltaText(document.getElementById('kpiNetD'), prev ? pct(net, (prev.revenueCents || 0) - (prev.expensesCents || 0)) : null);
+
+    // YTD: sum periods that match the same year as `last`
+    var year = last.period ? last.period.slice(0,4) : '';
+    var ytdRev = 0, ytdExp = 0;
+    all.forEach(function (p) { if (p.period && p.period.indexOf(year) === 0) { ytdRev += (p.revenueCents || 0); ytdExp += (p.expensesCents || 0); } });
+    var ytdNet = ytdRev - ytdExp;
+    document.getElementById('kpiYtd').textContent = dollars(ytdNet);
+    document.getElementById('kpiYtdD').textContent = year + ' · revenue ' + dollars(ytdRev) + ' · expenses ' + dollars(ytdExp);
+    document.getElementById('kpiYtdD').className = 'delta flat';
+  }
+
+  /* ===== Table ===== */
+  var yearFilter, rowsEl, emptyEl;
+  function renderTable() {
+    var all = allPeriods();
+    var year = yearFilter.value;
+    var rows = year ? all.filter(function (p) { return (p.period || '').indexOf(year) === 0; }) : all;
+    document.getElementById('periodCount').textContent = rows.length + ' of ' + all.length + ' period' + (all.length === 1 ? '' : 's');
+
+    // Populate year filter from data
+    var years = {};
+    all.forEach(function (p) { if (p.period) years[p.period.slice(0,4)] = true; });
+    var cur = yearFilter.value;
+    yearFilter.innerHTML = '<option value="">All years</option>' +
+      Object.keys(years).sort().reverse().map(function (y) { return '<option value="' + esc(y) + '">' + esc(y) + '</option>'; }).join('');
+    yearFilter.value = cur;
+
+    if (rows.length === 0) {
+      rowsEl.innerHTML = ''; emptyEl.hidden = false;
+      emptyEl.querySelector('.big').textContent = all.length === 0 ? 'No periods recorded yet.' : 'No periods for that year.';
+      return;
+    }
+    emptyEl.hidden = true;
+    rowsEl.innerHTML = rows.map(function (p) {
+      var net = (p.revenueCents || 0) - (p.expensesCents || 0);
+      var syncedAt = p.syncedAt ? new Date(p.syncedAt).toLocaleDateString([], { month:'short', day:'numeric', year:'numeric' }) : '—';
+      return '<tr data-id="' + esc(p.id) + '">' +
+        '<td data-label="Period">' + esc(p.period || '—') + '</td>' +
+        '<td data-label="Revenue" class="num">' + dollars(p.revenueCents) + '</td>' +
+        '<td data-label="Expenses" class="num">' + dollars(p.expensesCents) + '</td>' +
+        '<td data-label="Net" class="num"><strong style="color:' + (net >= 0 ? 'var(--green)' : 'var(--burgundy)') + ';">' + dollars(net) + '</strong></td>' +
+        '<td data-label="Source"><span style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:' + (p.source === 'qbo' ? 'var(--gold-deep)' : 'var(--muted)') + ';">' + esc(p.source || 'manual') + '</span></td>' +
+        '<td data-label="Synced" style="color:var(--muted);font-size:12.5px;">' + esc(syncedAt) + '</td>' +
+        '<td style="text-align:right;"><button class="btn btn-ghost" data-act="del" type="button" style="font-size:11px;padding:0 10px;min-height:30px;">Delete</button></td>' +
+      '</tr>';
+    }).join('');
+
+    rowsEl.querySelectorAll('button[data-act=del]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var tr = b.closest('tr'); if (!tr) return;
+        if (!confirm('Delete this period?')) return;
+        deletePeriod(tr.dataset.id);
+        if (window.bccAudit) window.bccAudit('financial-period-delete', { key: tr.dataset.id, path: '/bookkeeping.html' });
+        renderAll();
+      });
+    });
+  }
+
+  /* ===== Add panel ===== */
+  document.getElementById('newBtn').addEventListener('click', function () {
+    document.getElementById('panel').classList.add('open');
+    document.getElementById('p-period').focus();
+  });
+  document.getElementById('cancelBtn').addEventListener('click', function () {
+    document.getElementById('panel').classList.remove('open');
+  });
+  document.getElementById('saveBtn').addEventListener('click', function () {
+    var period = document.getElementById('p-period').value;
+    if (!period) { (window.bccNotify || alert)('Period required (YYYY-MM).', 'warn'); return; }
+    var rev = parseFloat(document.getElementById('p-rev').value || '0') || 0;
+    var exp = parseFloat(document.getElementById('p-exp').value || '0') || 0;
+    var p = {
+      period: period,
+      revenueCents: Math.round(rev * 100),
+      expensesCents: Math.round(exp * 100),
+      netCents: Math.round((rev - exp) * 100),
+      source: 'manual',
+      syncedAt: nowIso()
+    };
+    savePeriod(p);
+    if (window.bccAudit) window.bccAudit('financial-period-save', { key: p.id, path: '/bookkeeping.html', meta: { period: period, source: 'manual' } });
+    if (window.bccNotifySaved) window.bccNotifySaved('Period saved.');
+    document.getElementById('panel').classList.remove('open');
+    ['p-period','p-rev','p-exp'].forEach(function (id) { document.getElementById(id).value = ''; });
+    renderAll();
+  });
+
+  /* ===== Sync from QBO (placeholder until backend) ===== */
+  document.getElementById('syncBtn').addEventListener('click', function () {
+    var btn = this; btn.disabled = true; btn.textContent = 'Syncing…';
+    fetch('/api/integrations/qbo/sync', { method: 'POST', credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+      .then(function (resp) {
+        (resp.periods || []).forEach(savePeriod);
+        if (window.bccNotifySaved) window.bccNotifySaved('Synced ' + (resp.periods || []).length + ' period(s).');
+        renderAll();
+      })
+      .catch(function (e) {
+        if (window.bccNotify) window.bccNotify('QBO sync endpoint not wired yet — coming in a follow-up commit.', 'warn');
+      })
+      .finally(function () {
+        btn.disabled = false; btn.textContent = 'Sync from QBO';
+      });
+  });
+
+  document.getElementById('printBtn').addEventListener('click', function () { window.print(); });
+  document.getElementById('yearFilter').addEventListener('change', renderTable);
+
+  /* ===== Init ===== */
+  function renderAll() { renderStatus(); renderKpis(); renderTable(); }
+  function init() {
+    yearFilter = document.getElementById('yearFilter');
+    rowsEl = document.getElementById('rows');
+    emptyEl = document.getElementById('empty');
+    renderAll();
+  }
+  window.addEventListener('bcc-data-ready', renderAll);
+  window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
+  setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
+})();
+</script>
 </body>
 </html>
