@@ -849,9 +849,133 @@
     });
     document.getElementById('csvFile').addEventListener('change', function (e) {
       var f = e.target.files && e.target.files[0]; if (!f) return;
-      (window.bccNotify || alert)('CSV import lands in a follow-up commit. File noted: ' + f.name, 'warn');
+      var reader = new FileReader();
+      reader.onload = function () { importCsv(String(reader.result || '')); };
+      reader.onerror = function () { (window.bccNotify || alert)('Could not read file.', 'error'); };
+      reader.readAsText(f);
       e.target.value = '';
     });
+  }
+
+  /* ===== CSV import =====
+   * RFC-4180-ish parser: handles quoted fields, embedded commas, escaped
+   * quotes via "". Header row maps to known contact fields via alias
+   * lookup; unknown columns are dropped silently. Dedupes by email
+   * (case-insensitive); same email = update existing instead of create.
+   * Existing tags merge with imported tags. Audit row per import.
+   */
+  function parseCsv(text) {
+    var rows = [];
+    var i = 0, cur = '', row = [], inQuote = false;
+    while (i < text.length) {
+      var ch = text[i];
+      if (inQuote) {
+        if (ch === '"') {
+          if (text[i+1] === '"') { cur += '"'; i += 2; continue; }
+          inQuote = false; i++; continue;
+        }
+        cur += ch; i++; continue;
+      }
+      if (ch === '"') { inQuote = true; i++; continue; }
+      if (ch === ',') { row.push(cur); cur = ''; i++; continue; }
+      if (ch === '\r') { i++; continue; }
+      if (ch === '\n') { row.push(cur); rows.push(row); row = []; cur = ''; i++; continue; }
+      cur += ch; i++;
+    }
+    if (cur.length || row.length) { row.push(cur); rows.push(row); }
+    return rows.filter(function (r) { return r.length && r.some(function (c) { return c.trim(); }); });
+  }
+  var HEADER_ALIASES = {
+    firstname: 'firstName', 'first name': 'firstName', first: 'firstName', fname: 'firstName',
+    lastname: 'lastName', 'last name': 'lastName', last: 'lastName', lname: 'lastName', surname: 'lastName',
+    email: 'email', mail: 'email', 'e-mail': 'email',
+    phone: 'phone', mobile: 'phone', tel: 'phone',
+    title: 'title', position: 'title', role: 'title',
+    company: 'company', org: 'company', organization: 'company', business: 'company',
+    city: 'city', town: 'city',
+    state: 'state', province: 'state', region: 'state',
+    type: 'customerType', 'customer type': 'customerType', service: 'customerType', 'service line': 'customerType',
+    stage: 'stage', status: 'stage',
+    tags: 'tags', tag: 'tags', labels: 'tags',
+    notes: 'notes', note: 'notes', comments: 'notes'
+  };
+  function importCsv(text) {
+    var rows = parseCsv(text);
+    if (rows.length < 2) { (window.bccNotify || alert)('CSV has no data rows.', 'warn'); return; }
+    var header = rows[0].map(function (h) { return h.trim().toLowerCase(); });
+    var keyMap = header.map(function (h) { return HEADER_ALIASES[h] || null; });
+    var unknownCols = header.filter(function (_, idx) { return !keyMap[idx]; });
+
+    // Existing contacts indexed by email (lowercase) for dedupe
+    var existing = allContacts();
+    var byEmail = {};
+    existing.forEach(function (c) { if (c.email) byEmail[c.email.toLowerCase()] = c; });
+
+    var types = loadTypes(); var typeIds = types.map(function (t) { return t.id; });
+    var stages = ['lead','qualified','customer','inactive'];
+
+    var created = 0, updated = 0, skipped = 0;
+    for (var r = 1; r < rows.length; r++) {
+      var raw = rows[r];
+      var rec = { tags: [] };
+      for (var c = 0; c < raw.length; c++) {
+        var k = keyMap[c]; if (!k) continue;
+        var v = String(raw[c] || '').trim();
+        if (!v) continue;
+        if (k === 'tags') {
+          v.split(/[;,]/).map(function (t) { return t.trim(); }).filter(Boolean).forEach(function (t) { rec.tags.push(t); });
+        } else {
+          rec[k] = v;
+        }
+      }
+      if (!rec.firstName && !rec.email) { skipped++; continue; }
+      // Normalize customerType / stage to ids the rest of the app expects
+      if (rec.customerType) {
+        var ct = rec.customerType.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
+        if (typeIds.indexOf(ct) >= 0) rec.customerType = ct;
+        else {
+          // try label-match against known labels
+          var match = types.find(function (t) { return t.label.toLowerCase() === rec.customerType.toLowerCase(); });
+          rec.customerType = match ? match.id : 'other';
+        }
+      } else {
+        rec.customerType = 'other';
+      }
+      if (rec.stage) {
+        var st = rec.stage.toLowerCase();
+        if (stages.indexOf(st) >= 0) rec.stage = st;
+        else if (st === 'prospect') rec.stage = 'lead';
+        else if (st === 'won' || st === 'active') rec.stage = 'customer';
+        else if (st === 'lost' || st === 'churned') rec.stage = 'inactive';
+        else rec.stage = 'lead';
+      } else {
+        rec.stage = 'lead';
+      }
+      if (!rec.ownerId) rec.ownerId = (window.bccUser && window.bccUser.userDetails) || '';
+
+      var emailLc = rec.email && rec.email.toLowerCase();
+      if (emailLc && byEmail[emailLc]) {
+        // Update — merge tags, keep existing id/createdAt/needs/convos
+        var existingRec = byEmail[emailLc];
+        rec.id = existingRec.id;
+        rec.createdAt = existingRec.createdAt;
+        rec.needs = existingRec.needs || [];
+        var existingTags = (existingRec.tags || []);
+        rec.tags = Array.from(new Set(existingTags.concat(rec.tags)));
+        saveContact(rec);
+        updated++;
+      } else {
+        saveContact(rec);
+        created++;
+      }
+    }
+
+    var msg = created + ' added, ' + updated + ' updated' + (skipped ? ', ' + skipped + ' skipped' : '');
+    if (unknownCols.length) msg += '. Ignored columns: ' + unknownCols.join(', ');
+    if (window.bccAudit) window.bccAudit('contact-create', { path: '/crm.html', meta: { action: 'csv-import', created: created, updated: updated, skipped: skipped } });
+    if (window.bccNotify) window.bccNotify(msg, 'success');
+    else alert(msg);
+    renderList();
   }
 
   /* ===== Bootstrap ===== */
