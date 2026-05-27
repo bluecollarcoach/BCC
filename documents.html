@@ -136,12 +136,19 @@
   <div class="uploader" id="uploader">
     <h3>Add a document</h3>
     <p>Drop a file here, or click to pick one. Max 25&nbsp;MB. Files go to your Azure Blob container; metadata stays in the cloud.</p>
-    <div class="row">
+    <div class="row" style="flex-wrap:wrap;">
       <input type="file" id="fileInput" />
-      <input type="text" id="folderInput" placeholder="/contracts" value="/" />
-      <input type="text" id="tagsInput" placeholder="tags (hvac, signed)" />
+      <input type="text" id="folderInput" placeholder="/contracts" value="/" style="min-width:120px;" />
+      <input type="text" id="tagsInput" placeholder="tags (hvac, signed)" style="min-width:160px;" />
+      <select id="linkContact" aria-label="Link to contact" style="min-width:180px;min-height:38px;border:1px solid var(--chrome-mute);border-radius:8px;padding:9px 11px;font:inherit;font-size:13.5px;background:#fff;">
+        <option value="">— No linked contact —</option>
+      </select>
+      <select id="linkEngagement" aria-label="Link to engagement" style="min-width:180px;min-height:38px;border:1px solid var(--chrome-mute);border-radius:8px;padding:9px 11px;font:inherit;font-size:13.5px;background:#fff;">
+        <option value="">— No linked engagement —</option>
+      </select>
       <button id="uploadBtn" type="button">Upload</button>
     </div>
+    <div id="prefillNote" style="display:none;font-size:12px;color:var(--gold-deep);margin-top:8px;font-weight:600;"></div>
   </div>
 
   <div class="toolbar">
@@ -152,6 +159,12 @@
     <select id="folderFilter" aria-label="Filter by folder">
       <option value="">All folders</option>
     </select>
+    <select id="contactFilter" aria-label="Filter by linked contact">
+      <option value="">All contacts</option>
+    </select>
+    <select id="engagementFilter" aria-label="Filter by linked engagement">
+      <option value="">All engagements</option>
+    </select>
   </div>
 
   <div class="list" id="list" aria-live="polite">
@@ -160,6 +173,7 @@
         <tr>
           <th>Name</th>
           <th>Folder</th>
+          <th>Linked to</th>
           <th>Tags</th>
           <th>Size</th>
           <th>Uploaded</th>
@@ -178,6 +192,48 @@
 <script>
 (function () {
   var DOC_PREFIX = 'bcc-document-';
+  var CONTACT_PREFIX = 'bcc-contact-';
+  var ENG_PREFIX     = 'bcc-engagement-';
+
+  function allContactsLite() {
+    var out = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i); if (!k || k.indexOf(CONTACT_PREFIX) !== 0) continue;
+      try { var c = JSON.parse(localStorage.getItem(k)); if (c && c.id) out.push({ id: c.id, name: contactName(c), company: c.company || '' }); } catch (_) {}
+    }
+    return out.sort(function (a, b) { return a.name.localeCompare(b.name); });
+  }
+  function allEngagementsLite() {
+    var out = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i); if (!k || k.indexOf(ENG_PREFIX) !== 0) continue;
+      try { var e = JSON.parse(localStorage.getItem(k)); if (e && e.id) out.push({ id: e.id, title: e.title || '(untitled)', stage: e.stage }); } catch (_) {}
+    }
+    return out.sort(function (a, b) { return a.title.localeCompare(b.title); });
+  }
+  function contactById(id) { try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (_) { return null; } }
+  function engagementById(id) { try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (_) { return null; } }
+  function contactName(c) { if (!c) return ''; return ((c.firstName || '') + ' ' + (c.lastName || '')).trim() || c.email || c.company || '(no name)'; }
+  function populateLinkDropdowns(contactSel, engSel, selContact, selEng) {
+    var ce = document.getElementById(contactSel);
+    if (ce) {
+      var keep = ce.value;
+      var contacts = allContactsLite();
+      ce.innerHTML = '<option value="">' + (contactSel === 'contactFilter' ? 'All contacts' : '— No linked contact —') + '</option>' +
+        contacts.map(function (c) {
+          return '<option value="' + esc(c.id) + '"' + (c.id === (selContact || keep) ? ' selected' : '') + '>' + esc(c.name) + (c.company ? ' (' + esc(c.company) + ')' : '') + '</option>';
+        }).join('');
+    }
+    var ee = document.getElementById(engSel);
+    if (ee) {
+      var keep2 = ee.value;
+      var engs = allEngagementsLite();
+      ee.innerHTML = '<option value="">' + (engSel === 'engagementFilter' ? 'All engagements' : '— No linked engagement —') + '</option>' +
+        engs.map(function (e) {
+          return '<option value="' + esc(e.id) + '"' + (e.id === (selEng || keep2) ? ' selected' : '') + '>' + esc(e.title) + (e.stage ? ' · ' + esc(e.stage) : '') + '</option>';
+        }).join('');
+    }
+  }
 
   function uid()   { return 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2,9); }
   function nowIso(){ return new Date().toISOString(); }
@@ -226,15 +282,19 @@
   function deleteDoc(d) { localStorage.removeItem(d.id); }
 
   /* ===== Render ===== */
-  var qInput, folderFilter, rowsEl, emptyEl, sublineEl;
+  var qInput, folderFilter, contactFilter, engagementFilter, rowsEl, emptyEl, sublineEl;
 
   function renderList() {
     var all = allDocs();
     var q = (qInput.value || '').trim().toLowerCase();
     var folder = folderFilter.value;
+    var contactF = contactFilter ? contactFilter.value : '';
+    var engF     = engagementFilter ? engagementFilter.value : '';
 
     var matched = all.filter(function (d) {
       if (folder && d.folder !== folder) return false;
+      if (contactF && d.linkedContactId !== contactF) return false;
+      if (engF && d.linkedEngagementId !== engF) return false;
       if (!q) return true;
       var hay = [d.name, d.folder, d.tags, d.uploaderUpn].filter(Boolean).join(' ').toLowerCase();
       return hay.indexOf(q) >= 0;
@@ -261,6 +321,18 @@
         actions += '<span class="pill" title="No file attached yet">metadata</span>';
       }
       actions += '<button class="icon-btn danger" data-act="delete" title="Delete">&times;</button>';
+      var linkedHtml = '';
+      if (d.linkedContactId) {
+        var ct = contactById(d.linkedContactId);
+        var ctName = ct ? contactName(ct) : '(contact)';
+        linkedHtml += '<a href="crm.html?id=' + esc(d.linkedContactId) + '" style="color:var(--gold-deep);text-decoration:none;font-weight:600;font-size:12.5px;display:block;">👤 ' + esc(ctName) + '</a>';
+      }
+      if (d.linkedEngagementId) {
+        var eng = engagementById(d.linkedEngagementId);
+        var engName = eng ? (eng.title || '(engagement)') : '(engagement)';
+        linkedHtml += '<a href="jobs.html" style="color:var(--gold-deep);text-decoration:none;font-weight:600;font-size:12.5px;display:block;">📋 ' + esc(engName) + '</a>';
+      }
+      if (!linkedHtml) linkedHtml = '<span class="muted">—</span>';
       html +=
         '<tr data-id="' + esc(d.id) + '">' +
           '<td data-label="Name">' +
@@ -268,6 +340,7 @@
             (d.uploaderUpn ? '<div class="muted">by ' + esc(d.uploaderUpn) + '</div>' : '') +
           '</td>' +
           '<td data-label="Folder">' + esc(d.folder || '/') + '</td>' +
+          '<td data-label="Linked to">' + linkedHtml + '</td>' +
           '<td data-label="Tags">' + (d.tags ? esc(d.tags) : '<span class="muted">—</span>') + '</td>' +
           '<td data-label="Size">' + size + '</td>' +
           '<td data-label="Uploaded">' + fmtWhen(d.createdAt) + '</td>' +
@@ -294,6 +367,8 @@
 
     var folder = document.getElementById('folderInput').value.trim() || '/';
     var tags = document.getElementById('tagsInput').value.trim();
+    var linkedContactId    = document.getElementById('linkContact').value || null;
+    var linkedEngagementId = document.getElementById('linkEngagement').value || null;
 
     // Try the backend; gracefully fall back to metadata-only if the endpoint isn't wired yet.
     var meta = saveDoc({
@@ -303,15 +378,19 @@
       sizeBytes: f.size,
       mimeType: f.type || 'application/octet-stream',
       uploaderUpn: (window.bccUser && window.bccUser.userDetails) || '',
+      linkedContactId: linkedContactId,
+      linkedEngagementId: linkedEngagementId,
       storageKey: null
     });
-    if (window.bccAudit) window.bccAudit('document-metadata-add', { key: meta.id, path: '/documents.html', meta: { name: f.name, folder: folder } });
+    if (window.bccAudit) window.bccAudit('document-metadata-add', { key: meta.id, path: '/documents.html', meta: { name: f.name, folder: folder, contactId: linkedContactId, engagementId: linkedEngagementId } });
 
     var fd = new FormData();
     fd.append('file', f);
     fd.append('folder', folder);
     fd.append('tags', tags);
     fd.append('docId', meta.id);
+    if (linkedContactId)    fd.append('linkedContactId', linkedContactId);
+    if (linkedEngagementId) fd.append('linkedEngagementId', linkedEngagementId);
 
     document.getElementById('uploadBtn').disabled = true;
     document.getElementById('uploadBtn').textContent = 'Uploading…';
@@ -363,11 +442,33 @@
   function wire() {
     qInput = document.getElementById('q');
     folderFilter = document.getElementById('folderFilter');
+    contactFilter = document.getElementById('contactFilter');
+    engagementFilter = document.getElementById('engagementFilter');
     rowsEl = document.getElementById('rows');
     emptyEl = document.getElementById('empty');
     sublineEl = document.getElementById('subline');
     qInput.addEventListener('input', renderList);
     folderFilter.addEventListener('change', renderList);
+    if (contactFilter) contactFilter.addEventListener('change', renderList);
+    if (engagementFilter) engagementFilter.addEventListener('change', renderList);
+
+    // Pre-fill the linker dropdowns from ?contact= / ?engagement= query
+    // params (e.g. crm.html links here with the contact pre-selected).
+    var qs = new URLSearchParams(location.search);
+    var preContact = qs.get('contact');
+    var preEng = qs.get('engagement');
+    populateLinkDropdowns('linkContact', 'linkEngagement', preContact, preEng);
+    populateLinkDropdowns('contactFilter', 'engagementFilter');
+    if (preContact || preEng) {
+      var note = document.getElementById('prefillNote');
+      if (note) {
+        var parts = [];
+        if (preContact) parts.push('contact');
+        if (preEng) parts.push('engagement');
+        note.style.display = 'block';
+        note.textContent = '↑ New uploads will be linked to the prefilled ' + parts.join(' and ') + '.';
+      }
+    }
     rowsEl.addEventListener('click', function (e) {
       var btn = e.target.closest('button[data-act]'); if (!btn) return;
       var tr = btn.closest('tr'); if (!tr) return;

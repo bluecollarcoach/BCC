@@ -1526,6 +1526,8 @@ app.http('documents-list-create', {
       const folder = safeFolder(form.get('folder') || '/');
       const tags = String(form.get('tags') || '').trim();
       const docId = String(form.get('docId') || (DOC_DOC_PREFIX + Date.now().toString(36) + Math.random().toString(36).slice(2, 9)));
+      const linkedContactId    = String(form.get('linkedContactId') || '').trim() || null;
+      const linkedEngagementId = String(form.get('linkedEngagementId') || '').trim() || null;
 
       const stamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15);
       const filename = safeFilename(file.name || 'file');
@@ -1554,6 +1556,8 @@ app.http('documents-list-create', {
         mimeType: file.type || 'application/octet-stream',
         storageKey: storageKey,
         uploaderUpn: who,
+        linkedContactId: linkedContactId,
+        linkedEngagementId: linkedEngagementId,
         createdAt: now,
         updatedAt: now
       };
