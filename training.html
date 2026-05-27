@@ -52,6 +52,76 @@
   .course-card .blurb { color:var(--muted); font-size:12.5px; line-height:1.5; min-height:38px; }
   .course-card .stats { display:flex; gap:12px; margin-top:12px; font-size:12px; color:var(--muted); }
   .course-card .stats strong { color:var(--ink); }
+  .course-card .edit-pencil {
+    position:absolute; top:10px; right:10px; opacity:0;
+    background:rgba(0,0,0,0.06); border:0; padding:5px 7px;
+    border-radius:6px; cursor:pointer; font-size:13px;
+    transition:opacity 0.12s, background 0.12s;
+  }
+  .course-card:hover .edit-pencil { opacity:1; }
+  .course-card .edit-pencil:hover { background:rgba(0,0,0,0.12); }
+  .progress-bar {
+    height:6px; background:var(--chrome-mute); border-radius:3px;
+    margin-top:10px; overflow:hidden;
+  }
+  .progress-bar .fill { height:100%; background:linear-gradient(90deg, var(--gold), var(--gold-deep)); transition:width 0.3s; }
+  .progress-pct { font-size:11px; color:var(--gold-deep); font-weight:700; margin-top:4px; }
+
+  /* Learner view */
+  .learner-head {
+    background:linear-gradient(160deg, #1f1f1f 0%, #1a1a1a 100%);
+    color:var(--chrome); border:1px solid var(--ink-line);
+    border-radius:14px; padding:24px 28px; margin-bottom:16px;
+  }
+  .learner-head .back {
+    color:var(--gold-warm); text-decoration:none; font-size:13px;
+    font-weight:600;
+  }
+  .learner-head .back:hover { color:#fff; }
+  .learner-head h1 {
+    font-family:'Source Serif 4', Georgia, serif; font-size:28px;
+    color:#fff; margin:8px 0 6px;
+  }
+  .learner-head .blurb {
+    color:rgba(255,255,255,0.72); font-size:14px; line-height:1.55;
+    margin:0 0 12px; max-width:60ch;
+  }
+  .learner-head .pct-row { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-top:14px; }
+  .learner-head .progress-bar { flex:1; min-width:180px; background:rgba(255,255,255,0.10); }
+  .learner-head .progress-bar .fill { background:linear-gradient(90deg, var(--gold-warm), var(--gold)); }
+  .learner-head .progress-pct { color:var(--gold-warm); }
+  .learner-head .completed-stamp {
+    font-size:12px; font-weight:700; color:#a7e3c3;
+    text-transform:uppercase; letter-spacing:1.2px;
+  }
+
+  .lesson-list { display:flex; flex-direction:column; gap:8px; }
+  .lesson-row-l {
+    background:#fff; border:1px solid var(--chrome-mute); border-radius:10px;
+    padding:14px 16px; display:flex; align-items:center; gap:14px;
+    cursor:pointer; transition:border-color 0.12s, background 0.12s;
+  }
+  .lesson-row-l:hover { border-color:var(--gold); }
+  .lesson-row-l.done { background:#fdfcfa; }
+  .lesson-row-l.done .title { text-decoration:line-through; color:var(--muted); }
+  .lesson-row-l .check {
+    width:24px; height:24px; border:2px solid var(--chrome-mute); border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+    flex-shrink:0; cursor:pointer; transition:background 0.12s, border-color 0.12s;
+  }
+  .lesson-row-l .check::after { content:''; }
+  .lesson-row-l.done .check { background:var(--gold); border-color:var(--gold); }
+  .lesson-row-l.done .check::after {
+    content:'✓'; color:#fff; font-weight:800; font-size:14px;
+  }
+  .lesson-row-l .meta { flex:1; min-width:0; }
+  .lesson-row-l .meta .title { font-weight:700; font-size:14px; color:var(--ink); }
+  .lesson-row-l .meta .dur { font-size:11.5px; color:var(--muted); margin-top:2px; }
+  .lesson-row-l a.watch {
+    color:var(--gold-deep); font-size:12.5px; font-weight:700;
+    text-decoration:none; flex-shrink:0;
+  }
+  .lesson-row-l a.watch:hover { color:var(--gold); text-decoration:underline; }
   .empty { padding:48px 20px; text-align:center; color:var(--muted); background:#fff; border:1px solid var(--chrome-mute); border-radius:12px; }
   .empty .big { font-family:'Source Serif 4', Georgia, serif; font-size:20px; color:var(--ink); margin-bottom:6px; }
 
@@ -97,14 +167,20 @@
 </header>
 
 <div class="page">
-  <div class="page-head">
-    <div>
-      <h1>Training</h1>
-      <div class="sub">Courses and playbooks. Lessons can link to a video URL or hosted asset; enrollment + progress tracking is per-user via Microsoft 365 sign-in.</div>
+  <!-- CATALOG MODE -->
+  <div id="catalogMode">
+    <div class="page-head">
+      <div>
+        <h1>Training</h1>
+        <div class="sub">Courses and playbooks. Click any course to start; your progress is tracked per Microsoft 365 sign-in.</div>
+      </div>
+      <button class="btn btn-primary" id="newBtn" type="button">+ New course</button>
     </div>
-    <button class="btn btn-primary" id="newBtn" type="button">+ New course</button>
+    <div id="grid"></div>
   </div>
-  <div id="grid"></div>
+
+  <!-- LEARNER MODE (rendered when URL has ?id=) -->
+  <div id="learnerMode" hidden></div>
 </div>
 
 <!-- Modal -->
@@ -132,6 +208,47 @@
 <script>
 (function () {
   var COURSE_PREFIX = 'bcc-course-';
+  var ENROLLMENT_PREFIX = 'bcc-enrollment-';
+
+  function meUpn() { return ((window.bccUser && window.bccUser.userDetails) || '').toLowerCase(); }
+  function userSlug(upn) { return String(upn || 'anon').replace(/[^a-z0-9]+/gi,'-').replace(/^-+|-+$/g,'').toLowerCase(); }
+  function enrollmentIdFor(courseId) { return ENROLLMENT_PREFIX + userSlug(meUpn()) + '-' + courseId.replace(COURSE_PREFIX, ''); }
+  function loadEnrollment(courseId) {
+    try { var raw = localStorage.getItem(enrollmentIdFor(courseId)); if (raw) return JSON.parse(raw); } catch (_) {}
+    return null;
+  }
+  function saveEnrollment(courseId, mutator) {
+    var id = enrollmentIdFor(courseId);
+    var e = loadEnrollment(courseId) || {
+      id: id,
+      tenantId: 'blue-collar-coach',
+      docType: 'enrollment',
+      userUpn: meUpn(),
+      courseId: courseId,
+      progress: {},
+      completedAt: null,
+      createdAt: new Date().toISOString()
+    };
+    mutator(e);
+    e.updatedAt = new Date().toISOString();
+    localStorage.setItem(id, JSON.stringify(e));
+    return e;
+  }
+  function progressFor(course) {
+    var e = loadEnrollment(course.id);
+    var total = (course.lessons || []).length;
+    if (!e || total === 0) return { pct: 0, done: 0, total: total, completed: false };
+    var done = Object.keys(e.progress || {}).filter(function (k) {
+      return (course.lessons || []).some(function (l) { return l.id === k; }) && e.progress[k] === 'complete';
+    }).length;
+    return { pct: Math.round((done / total) * 100), done: done, total: total, completed: !!e.completedAt };
+  }
+
+  function getParam(k) { return new URLSearchParams(location.search).get(k); }
+  function showMode(which) {
+    document.getElementById('catalogMode').hidden = (which !== 'catalog');
+    document.getElementById('learnerMode').hidden = (which !== 'learner');
+  }
 
   function uid() { return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2,9); }
   function nowIso() { return new Date().toISOString(); }
@@ -169,17 +286,34 @@
       return;
     }
     document.getElementById('grid').innerHTML = '<div class="course-grid">' + all.map(function (c) {
+      var p = progressFor(c);
+      var progressHtml = '';
+      if (p.total > 0) {
+        progressHtml =
+          '<div class="progress-bar"><div class="fill" style="width:' + p.pct + '%;"></div></div>' +
+          '<div class="progress-pct">' + (p.completed ? '✓ Completed' : (p.done + ' / ' + p.total + ' lessons · ' + p.pct + '%')) + '</div>';
+      }
       return '<div class="course-card" data-id="' + esc(c.id) + '">' +
+        '<button class="edit-pencil" data-act="edit" title="Edit course">&#9998;</button>' +
         '<h3>' + esc(c.title || '(untitled)') + '</h3>' +
         '<div class="blurb">' + esc(c.blurb || '') + '</div>' +
         '<div class="stats">' +
           '<span><strong>' + (c.lessons || []).length + '</strong> lessons</span>' +
           '<span><strong>' + totalMinutes(c.lessons) + '</strong> min</span>' +
         '</div>' +
+        progressHtml +
       '</div>';
     }).join('') + '</div>';
     document.querySelectorAll('.course-card').forEach(function (el) {
-      el.addEventListener('click', function () { openModal(el.dataset.id); });
+      el.addEventListener('click', function (e) {
+        if (e.target.closest('[data-act=edit]')) {
+          e.stopPropagation();
+          openModal(el.dataset.id);
+          return;
+        }
+        // Open the learner view
+        location.href = 'training.html?id=' + encodeURIComponent(el.dataset.id);
+      });
     });
   }
 
@@ -256,8 +390,77 @@
     renderGrid();
   });
 
-  function init() { renderGrid(); }
-  window.addEventListener('bcc-data-ready', renderGrid);
+  function renderLearner(courseId) {
+    var c = getCourse(courseId);
+    var el = document.getElementById('learnerMode');
+    if (!c) {
+      el.innerHTML = '<div class="empty"><div class="big">Course not found.</div><div><a href="training.html" style="color:var(--gold-deep); text-decoration:none; font-weight:700;">Back to catalog</a></div></div>';
+      return;
+    }
+    var p = progressFor(c);
+    var enrollment = loadEnrollment(c.id);
+    var lessons = c.lessons || [];
+
+    var lessonsHtml = lessons.length === 0
+      ? '<p style="color:var(--muted); font-style:italic; padding:20px 4px;">This course has no lessons yet.</p>'
+      : lessons.map(function (l) {
+          var done = !!(enrollment && enrollment.progress && enrollment.progress[l.id] === 'complete');
+          var dur = l.durationMin ? l.durationMin + ' min' : 'duration unknown';
+          var watch = l.videoUrl
+            ? '<a class="watch" href="' + esc(l.videoUrl) + '" target="_blank" rel="noreferrer noopener">Open ↗</a>'
+            : '';
+          return '<div class="lesson-row-l' + (done ? ' done' : '') + '" data-lesson="' + esc(l.id) + '">' +
+            '<div class="check" data-act="toggle"></div>' +
+            '<div class="meta"><div class="title">' + esc(l.title || '(untitled lesson)') + '</div><div class="dur">' + esc(dur) + '</div></div>' +
+            watch +
+          '</div>';
+        }).join('');
+
+    el.innerHTML =
+      '<section class="learner-head">' +
+        '<a class="back" href="training.html">&larr; All courses</a>' +
+        '<h1>' + esc(c.title || '(untitled)') + '</h1>' +
+        (c.blurb ? '<div class="blurb">' + esc(c.blurb) + '</div>' : '') +
+        '<div class="pct-row">' +
+          (p.completed
+            ? '<span class="completed-stamp">✓ Completed ' + (enrollment && enrollment.completedAt ? new Date(enrollment.completedAt).toLocaleDateString() : '') + '</span>'
+            : '<div class="progress-bar"><div class="fill" style="width:' + p.pct + '%;"></div></div>' +
+              '<span class="progress-pct">' + p.done + ' / ' + p.total + ' lessons · ' + p.pct + '%</span>') +
+        '</div>' +
+      '</section>' +
+      '<div class="lesson-list">' + lessonsHtml + '</div>';
+
+    el.querySelectorAll('.lesson-row-l').forEach(function (row) {
+      row.addEventListener('click', function () {
+        var lid = row.dataset.lesson;
+        var nowDone = !row.classList.contains('done');
+        saveEnrollment(c.id, function (e) {
+          e.progress = e.progress || {};
+          if (nowDone) e.progress[lid] = 'complete';
+          else delete e.progress[lid];
+          // Compute completion: all real lesson ids must be 'complete'
+          var allComplete = lessons.length > 0 && lessons.every(function (l) { return e.progress[l.id] === 'complete'; });
+          e.completedAt = allComplete ? (e.completedAt || new Date().toISOString()) : null;
+        });
+        if (window.bccAudit) window.bccAudit('enrollment-update', { key: enrollmentIdFor(c.id), path: '/training.html', meta: { courseId: c.id, lessonId: lid, action: nowDone ? 'complete' : 'reset' } });
+        renderLearner(c.id);
+      });
+    });
+  }
+
+  function route() {
+    var id = getParam('id');
+    if (id) {
+      showMode('learner');
+      renderLearner(id);
+    } else {
+      showMode('catalog');
+      renderGrid();
+    }
+  }
+
+  function init() { route(); }
+  window.addEventListener('bcc-data-ready', route);
   window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
   setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
 })();
