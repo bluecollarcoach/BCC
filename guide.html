@@ -3,878 +3,295 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<meta name="theme-color" content="#2b2b2b" />
+<meta name="theme-color" content="#1a1a1a" />
 <meta name="robots" content="noindex, nofollow" />
-<title>How-To Guide &middot; BCC Connect</title>
+<title>How-To Guide · BCC Connect</title>
 <link rel="icon" type="image/png" href="bcc-logo.png" />
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<link rel="manifest" href="manifest.json" />
 <style>
   :root {
-    --p-navy:#2b2b2b; --p-navy-dark:#1a1a1a; --p-navy-light:#374151;
-    --p-orange:#a8884a; --p-orange-soft:#7a4848;
-    --p-cyan:#1d4ed8; --p-cream:#f3f4f6;
-    --p-slate:#1a1a1a; --p-gray:#6b685f; --p-light:#f6f6f4;
-    --p-border:#e2e1dd; --p-green:#10b981; --p-red:#7a4848; --p-amber:#f59e0b;
+    --ink:#1a1a1a; --ink-line:#2e2c27;
+    --gold:#a8884a; --gold-warm:#c2a05c; --gold-deep:#876d3a; --gold-fade:rgba(168,136,74,0.12);
+    --chrome:#f6f6f4; --chrome-mute:#e2e1dd; --muted:#8a877e;
   }
-  * { margin:0; padding:0; box-sizing:border-box; }
-  html, body { height:100%; }
-  body {
-    font-family:'Inter', system-ui, Segoe UI, Arial, sans-serif;
-    color:#1a1a1a; background:#f8fafc; -webkit-font-smoothing:antialiased;
-    min-height:100vh; display:flex; flex-direction:column;
-    scroll-behavior:smooth;
-  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:'Inter', system-ui, sans-serif; color:var(--ink); background:var(--chrome); }
   header.topbar {
-    background:linear-gradient(90deg, var(--p-navy-dark), var(--p-navy));
-    color:#fff; padding:10px 18px; display:flex; align-items:center; gap:14px;
-    box-shadow:0 2px 12px rgba(0,0,0,0.18); position:sticky; top:0; z-index:50;
+    display:flex; align-items:center; gap:14px; padding:12px 22px; color:var(--chrome);
+    background:linear-gradient(90deg, #141414, #1f1f1f);
+    border-bottom:1px solid var(--ink-line); position:sticky; top:0; z-index:50;
   }
-  header.topbar a.home { display:flex; align-items:center; gap:10px; text-decoration:none; color:#fff; }
-  header.topbar img { height:30px; background:#fff; padding:3px 8px; border-radius:6px; }
-  header.topbar .module { font-size:13px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--p-orange-soft); }
-  header.topbar .spacer { flex:1; }
-  header.topbar .nav-link { color:rgba(255,255,255,0.7); text-decoration:none; font-size:13px; font-weight:600; padding:6px 10px; border-radius:6px; }
-  header.topbar .nav-link:hover { background:rgba(255,255,255,0.08); color:#fff; }
+  header.topbar a.home { display:flex; align-items:center; gap:12px; text-decoration:none; color:var(--chrome); }
+  header.topbar img { height:30px; }
+  header.topbar .wordmark { font-family:'Cinzel', serif; font-size:14px; font-weight:700; letter-spacing:1.5px; }
+  header.topbar .wordmark .light { color:var(--gold); }
+  header.topbar .module {
+    font-size:11px; font-weight:700; letter-spacing:2.5px; text-transform:uppercase; color:var(--gold-warm);
+    border-left:1px solid rgba(255,255,255,0.18); padding-left:14px; margin-left:4px;
+  }
+  .page { max-width:1200px; margin:0 auto; padding:22px 22px 70px; display:grid; grid-template-columns:240px 1fr; gap:22px; }
+  @media (max-width:880px) { .page { grid-template-columns:1fr; } }
 
-  .layout {
-    display:grid; grid-template-columns:260px 1fr; gap:24px;
-    max-width:1180px; width:100%; margin:0 auto;
-    padding:24px 20px 80px; flex:1;
-  }
-  @media (max-width:900px) { .layout { grid-template-columns:1fr; gap:14px; padding:16px; } }
+  /* TOC sidebar */
+  aside.toc { position:sticky; top:78px; align-self:flex-start; background:#fff; border:1px solid var(--chrome-mute); border-radius:12px; padding:14px; max-height:calc(100vh - 100px); overflow-y:auto; }
+  @media (max-width:880px) { aside.toc { position:static; max-height:none; } }
+  aside.toc h3 { font-family:'Cinzel', serif; font-size:13px; margin:0 0 8px; color:var(--ink); text-transform:uppercase; letter-spacing:1px; }
+  aside.toc input { width:100%; border:1px solid var(--chrome-mute); border-radius:8px; padding:8px 10px; font:inherit; font-size:13px; min-height:36px; margin-bottom:10px; }
+  aside.toc input:focus { outline:2px solid var(--gold); outline-offset:-1px; border-color:var(--gold); }
+  aside.toc ol { list-style:none; padding:0; margin:0; }
+  aside.toc li { padding:0; }
+  aside.toc a { display:block; padding:6px 8px; text-decoration:none; color:var(--ink); font-size:13px; border-radius:6px; }
+  aside.toc a:hover { background:var(--gold-fade); color:var(--gold-deep); }
+  aside.toc a.sub { padding-left:18px; color:var(--muted); font-size:12.5px; }
+  aside.toc li.hidden { display:none; }
 
-  .toc {
-    position:sticky; top:74px; align-self:start;
-    background:#fff; border:1px solid var(--p-border); border-radius:12px;
-    padding:16px; max-height:calc(100vh - 100px); overflow-y:auto;
-    box-shadow:0 4px 14px rgba(15,23,42,0.04);
+  /* Main content */
+  main.content { max-width:780px; }
+  .lede {
+    background:linear-gradient(160deg, #1f1f1f 0%, #1a1a1a 100%);
+    color:var(--chrome); border:1px solid var(--ink-line); border-radius:14px;
+    padding:24px 28px; margin-bottom:20px;
   }
-  .toc h2 { font-size:11px; font-weight:800; letter-spacing:1.5px; text-transform:uppercase; color:var(--p-gray); margin-bottom:10px; }
-  .toc-search { position:relative; margin-bottom:10px; }
-  .toc-search input {
-    width:100%; padding:8px 28px 8px 32px; border:1px solid var(--p-border);
-    border-radius:7px; font-family:inherit; font-size:13px; background:#fff;
-    background-image:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="%2364748b"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/></svg>');
-    background-repeat:no-repeat; background-position:9px center; background-size:14px;
-  }
-  .toc-search input:focus { outline:none; border-color:var(--p-orange); box-shadow:0 0 0 3px rgba(168,136,74,0.12); }
-  .toc-search button {
-    position:absolute; right:4px; top:50%; transform:translateY(-50%);
-    background:transparent; border:none; cursor:pointer;
-    color:var(--p-gray); font-size:18px; padding:2px 8px; line-height:1;
-    display:none;
-  }
-  .toc-search.has-query button { display:block; }
-  .toc-search button:hover { color:var(--p-red); }
-  .search-hint {
-    font-size:11px; color:var(--p-gray); padding:0 8px 8px;
-  }
-  .search-hint strong { color:var(--p-orange); }
-  .toc a.toc-no-match { display:none !important; }
-  .content .section-hidden { display:none !important; }
-  .toc a {
-    display:block; padding:6px 8px; margin-bottom:1px;
-    color:var(--p-slate); text-decoration:none; font-size:13px; font-weight:600;
-    border-radius:6px; border-left:3px solid transparent;
-  }
-  .toc a:hover { background:var(--p-light); border-left-color:var(--p-orange-soft); }
-  .toc a.section { color:var(--p-gray); font-size:10px; font-weight:800; letter-spacing:1px; text-transform:uppercase; pointer-events:none; padding-top:12px; padding-bottom:4px; }
-  .toc a.section:first-child { padding-top:0; }
-  @media (max-width:900px) { .toc { position:static; max-height:none; } }
+  .lede h1 { font-family:'Cinzel', serif; font-size:28px; margin:0 0 8px; color:#fff; }
+  .lede p { color:rgba(255,255,255,0.75); font-size:14px; line-height:1.6; margin:0; max-width:680px; }
+  .lede .tag { color:var(--gold-warm); font-size:11px; font-weight:700; letter-spacing:2px; text-transform:uppercase; margin-bottom:8px; display:inline-block; }
 
-  .content {
-    background:#fff; border-radius:12px; border:1px solid var(--p-border);
-    padding:28px 32px; box-shadow:0 4px 14px rgba(15,23,42,0.04);
-    line-height:1.6;
+  .section {
+    background:#fff; border:1px solid var(--chrome-mute); border-radius:12px;
+    padding:24px 28px; margin-bottom:18px;
   }
-  @media (max-width:600px) { .content { padding:20px 18px; } }
+  .section h2 { font-family:'Cinzel', serif; font-size:22px; margin:0 0 4px; }
+  .section .lead { color:var(--muted); font-size:13.5px; margin-bottom:18px; }
+  .section h3 { font-family:'Cinzel', serif; font-size:16px; margin-top:18px; margin-bottom:6px; color:var(--ink); }
+  .section p, .section li { font-size:14px; line-height:1.65; color:var(--ink); }
+  .section ul, .section ol { margin:6px 0 10px 22px; padding:0; }
+  .section li { padding:2px 0; }
+  .section code { background:var(--chrome-mute); padding:1px 5px; border-radius:4px; font-family:ui-monospace, monospace; font-size:13px; }
+  .section a { color:var(--gold-deep); text-decoration:none; font-weight:600; }
+  .section a:hover { color:var(--gold); text-decoration:underline; }
+  .section .callout {
+    background:var(--gold-fade); border-left:3px solid var(--gold);
+    padding:12px 14px; border-radius:0 8px 8px 0; margin:14px 0;
+    font-size:13.5px; color:var(--ink);
+  }
+  .section .callout strong { color:var(--gold-deep); }
+  .section .step-list { counter-reset:step; list-style:none; margin-left:0; padding-left:0; }
+  .section .step-list li {
+    counter-increment:step; padding-left:36px; position:relative; margin-bottom:10px;
+  }
+  .section .step-list li::before {
+    content:counter(step); position:absolute; left:0; top:0;
+    width:26px; height:26px; border-radius:50%; background:var(--gold); color:#fff;
+    display:flex; align-items:center; justify-content:center;
+    font-family:'Cinzel', serif; font-size:13px; font-weight:700;
+  }
+  .section.muted { background:#fdfcfa; }
 
-  .content h1 {
-    font-size:28px; font-weight:800; color:var(--p-navy);
-    letter-spacing:-0.5px; margin-bottom:6px;
-  }
-  .content .lead { font-size:15px; color:var(--p-gray); margin-bottom:28px; max-width:60ch; }
-
-  .content h2 {
-    font-size:20px; font-weight:800; color:var(--p-navy); letter-spacing:-0.3px;
-    margin:38px 0 10px; padding-top:14px; border-top:2px solid var(--p-cream);
-    display:flex; align-items:center; gap:10px;
-    scroll-margin-top:74px;
-  }
-  .content h2 .ic {
-    width:32px; height:32px; background:var(--p-cream); border-radius:8px;
-    display:inline-flex; align-items:center; justify-content:center;
-    color:#876d3a; font-size:16px;
-  }
-  .content h2:first-of-type { border-top:none; padding-top:0; margin-top:18px; }
-
-  .content h3 {
-    font-size:14px; font-weight:800; color:var(--p-navy);
-    letter-spacing:0.5px; text-transform:uppercase;
-    margin:18px 0 6px;
-  }
-
-  .content p { margin-bottom:10px; font-size:14.5px; color:var(--p-slate); }
-  .content ul, .content ol { margin:6px 0 14px 22px; }
-  .content li { font-size:14.5px; color:var(--p-slate); margin-bottom:5px; }
-  .content a {
-    color:#876d3a; font-weight:600; text-decoration:none;
-    border-bottom:1px solid rgba(15,118,110,0.3);
-  }
-  .content a:hover { border-bottom-color:#876d3a; }
-
-  .content .role-line {
-    display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px;
-  }
-  .content .role-pill {
-    background:var(--p-light); color:var(--p-slate); padding:3px 10px;
-    border-radius:6px; font-size:11px; font-weight:700; letter-spacing:0.5px; text-transform:uppercase;
-  }
-  .content .role-pill.field { background:#e0f2fe; color:#075985; }
-  .content .role-pill.office { background:var(--p-cream); color:#876d3a; }
-  .content .role-pill.maint { background:#faf4e8; color:#5c4520; }
-  .content .role-pill.driver { background:#fef3c7; color:#92400e; }
-  .content .role-pill.everyone { background:#ede9fe; color:#5b21b6; }
-
-  .content .open-btn {
-    display:inline-block; background:var(--p-orange); color:#fff;
-    padding:6px 14px; border-radius:7px; font-size:12px; font-weight:700;
-    text-decoration:none; border:none; margin-top:4px;
-  }
-  .content .open-btn:hover { background:#876d3a; border-bottom-color:transparent; color:#fff; }
-
-  .content .tip {
-    background:var(--p-cream); border-left:3px solid var(--p-orange);
-    padding:10px 14px; border-radius:7px; margin:10px 0;
-    font-size:13.5px; color:#134e4a;
-  }
-  .content .tip strong { color:#876d3a; }
-  .content .warn {
-    background:#fef3c7; border-left:3px solid var(--p-amber);
-    padding:10px 14px; border-radius:7px; margin:10px 0;
-    font-size:13.5px; color:#78350f;
-  }
-  .content .warn strong { color:#92400e; }
-
-  .content kbd {
-    background:var(--p-light); border:1px solid var(--p-border);
-    border-bottom-width:2px; border-radius:5px;
-    padding:1px 7px; font-family:ui-monospace, SFMono-Regular, monospace;
-    font-size:12px; color:var(--p-slate);
-  }
-  .content code {
-    background:var(--p-light); padding:1px 6px; border-radius:4px;
-    font-family:ui-monospace, SFMono-Regular, monospace; font-size:13px; color:#876d3a;
-  }
-
-  .content .quick-start {
-    display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px;
-    margin:14px 0 24px;
-  }
-  .quick-start .card {
-    background:var(--p-light); border-left:3px solid var(--p-orange);
-    border-radius:8px; padding:12px 14px;
-  }
-  .quick-start .card .who {
-    font-size:10px; font-weight:800; color:var(--p-orange);
-    letter-spacing:1px; text-transform:uppercase; margin-bottom:4px;
-  }
-  .quick-start .card .what {
-    font-size:13px; color:var(--p-slate); font-weight:600; line-height:1.4;
-  }
-  .quick-start .card .what a { color:var(--p-navy); border-bottom:none; }
-
-  .content table.data-table {
-    border-collapse:collapse; width:100%; margin:10px 0 16px; font-size:13px;
-  }
-  .content table.data-table th, .content table.data-table td {
-    border:1px solid var(--p-border); padding:8px 10px; text-align:left;
-  }
-  .content table.data-table th { background:var(--p-light); font-weight:700; font-size:11px; letter-spacing:0.5px; text-transform:uppercase; color:var(--p-gray); }
-  .content table.data-table code { font-size:12px; }
-
-  .content .footer-note {
-    margin-top:40px; padding-top:20px; border-top:1px solid var(--p-border);
-    font-size:12px; color:var(--p-gray);
-  }
   @media print {
-    .toc, header.topbar { display:none; }
-    .layout { grid-template-columns:1fr; padding:0; }
-    .content { box-shadow:none; border:none; padding:0; }
+    header.topbar, aside.toc { display:none !important; }
+    body { background:#fff; }
+    .page { grid-template-columns:1fr; }
+    .section, .lede { box-shadow:none; border:1px solid #ccc; page-break-inside:avoid; }
   }
 </style>
-  <script src="bcc-api.js" defer></script>
+<script src="bcc-api.js" defer></script>
 </head>
 <body>
-
 <header class="topbar">
   <a class="home" href="index.html">
     <img src="bcc-logo.png" alt="Blue Collar Coach" />
-    <span class="module">Guide</span>
+    <span class="wordmark">BLUE COLLAR <span class="light">COACH</span></span>
   </a>
-  <span class="spacer"></span>
-  <a class="nav-link" href="index.html">Home</a>
-  <a class="nav-link" onclick="window.print(); return false;" href="#">Print</a>
+  <span class="module">How-To Guide</span>
+  <span style="flex:1;"></span>
 </header>
 
-<div class="layout">
-
+<div class="page">
   <aside class="toc">
-    <h2>Contents</h2>
-    <div class="toc-search">
-      <input id="guideSearch" type="search" placeholder="Search the guide..." autocomplete="off" />
-      <button id="guideClear" type="button" title="Clear">&times;</button>
-    </div>
-    <div id="searchHint" class="search-hint" style="display:none;"></div>
-    <a class="section">Start</a>
-    <a href="#overview">Overview</a>
-    <a href="#quickstart">Quick start by role</a>
-
-    <a class="section">Operations</a>
-    <a href="#rates">Emergency Rate Sheet</a>
-    <a href="#scheduler">Scheduler</a>
-    <a href="#field">Today&rsquo;s Plan (Field)</a>
-    <a href="#tm">T&amp;M Sheet</a>
-    <a href="#pretrip">Pre-Trip Inspection</a>
-    <a href="#trucking">Trucking Slip</a>
-    <a href="#hydrant">Fire Hydrant Inspection</a>
-
-    <a class="section">Assets &amp; Supply</a>
-    <a href="#equipment">Equipment Check</a>
-    <a href="#inventory">Inventory</a>
-    <a href="#maintenance">Maintenance Inbox</a>
-
-    <a class="section">Communication &amp; Records</a>
-    <a href="#jobs">Job Board</a>
-    <a href="#chat">Crew Chat</a>
-    <a href="#daily">Daily Log</a>
-
-    <a class="section">Admin</a>
-    <a href="#admin">Admin &amp; Settings</a>
-    <a href="#location">Location tracking</a>
-    <a href="#cloud">Cloud, Auth, SSO</a>
-    <a href="#deploy">Deploying to Azure</a>
-
-    <a class="section">Reference</a>
-    <a href="#flow">How data flows</a>
-    <a href="#storage">Storage &amp; limits</a>
-    <a href="#faq">FAQ</a>
+    <h3>On this page</h3>
+    <input id="tocSearch" type="search" placeholder="Search sections…" />
+    <ol id="tocList"></ol>
   </aside>
 
   <main class="content">
+    <section class="lede">
+      <span class="tag">BCC Connect</span>
+      <h1>How to use this workspace</h1>
+      <p>Short walk-through of every module — what each one does, how the
+      data flows between them, and the one or two non-obvious things to
+      know. Updated as the app grows.</p>
+    </section>
 
-    <h1 id="overview">How to use BCC Connect</h1>
-    <p class="lead">
-      One app for the office, the field, drivers, operators, and maintenance.
-      Everything lives in one place so the day&rsquo;s plan, time, materials, photos, and issues stay in one record per job.
-    </p>
+    <section class="section" id="getting-started">
+      <h2>Getting started</h2>
+      <p class="lead">Five things to do the first time you sign in.</p>
+      <ol class="step-list">
+        <li>Sign in with your <strong>@bluecollarcoach.us</strong> Microsoft 365 account. The whole workspace is gated by your tenant.</li>
+        <li>Open <a href="admin.html">Admin → Users &amp; Roles</a> and promote teammates you want to manage the workspace. The first signed-in admin is bootstrapped automatically.</li>
+        <li>Visit <a href="admin.html">Admin → Customer Types</a> and shape the dropdown that powers CRM and Engagements (default: Coaching, Bookkeeping, Consulting, Marketing, Training, Technology, Other).</li>
+        <li>Drop in connector credentials at <a href="admin.html">Admin → Integrations</a> for any external service you use (QBO, Google Ads, Meta, LinkedIn, Mailchimp, WordPress, GoDaddy, Slack, Teams). Click <strong>Test connection</strong> on each.</li>
+        <li>Set your company info at <a href="admin.html">Admin → Company Info</a> — name, phone, email, address, tagline. This drives the letterhead on the rate sheet and other customer-facing artifacts.</li>
+      </ol>
+      <div class="callout"><strong>Tip:</strong> every action you take is written to the <a href="activity.html">Activity Log</a> (password-gated). Rotate the password from Admin → Security after first deploy.</div>
+    </section>
 
-    <h3>The way it&rsquo;s wired</h3>
-    <p>
-      The <a href="scheduler.html">Scheduler</a> is the source of truth for what every crew is doing each day. The <a href="myday.html#today">My Day</a> view, the <a href="tm.html">T&amp;M</a> sheet, the <a href="myday.html#log">My Day</a>, and the <a href="jobs.html">Job Board</a> all read from the same job list. Issues raised from <a href="inspections.html#pretrip">Inspections</a>, <a href="inspections.html#equipment">Inspections</a>, or the <a href="myday.html#today">field</a> all land in one <a href="maintenance.html">Maintenance Inbox</a>.
-    </p>
+    <section class="section" id="my-day">
+      <h2>My Day</h2>
+      <p class="lead">Your personal landing each morning.</p>
+      <p>Greeting + today's date + a row of KPI chips (sessions today, sessions tomorrow, total contacts). On the right: a <strong>Clock in / Clock out</strong> timer that persists across page reloads. Three cards underneath show today's sessions, tomorrow's sessions, and quick links to the things you start most often.</p>
+      <p>At the bottom is your <strong>daily log</strong>: Wins, Blockers, Tomorrow's plan. Save once a day; the most recent saved time shows next to the heading.</p>
+    </section>
 
-    <h2 id="quickstart"><span class="ic">&#9889;</span>Quick start by role</h2>
+    <section class="section" id="sessions">
+      <h2>Sessions</h2>
+      <p class="lead">Coaching calendar, focused on the week ahead.</p>
+      <p>Seven columns, one per day. Click a session card to edit; click <strong>+ Add</strong> on a day to create one pre-filled to that date. Sessions can link to a CRM contact (dropdown) so the same person shows up across modules.</p>
+      <p>Local-only sessions get a gold left border. Sessions synced to Microsoft 365 (when Graph sync ships) get a blue one.</p>
+      <div class="callout"><strong>Cross-references:</strong> Sessions you add here automatically appear on <a href="myday.html">My Day</a>'s today/tomorrow lists and the <a href="scheduler.html">Scheduler</a> month/year views. Same data, different lens.</div>
+    </section>
 
-    <div class="quick-start">
-      <div class="card">
-        <div class="who">Office / PM</div>
-        <div class="what">Quote emergency work on the <a href="rates.html">Rate Sheet</a>. Plan the week in the <a href="scheduler.html">Scheduler</a>. Triage issues in the <a href="maintenance.html">Maintenance Inbox</a>. Review submitted T&amp;M &amp; daily logs.</div>
-      </div>
-      <div class="card">
-        <div class="who">Crew lead</div>
-        <div class="what">Check <a href="myday.html#today">Today&rsquo;s Plan</a> in the morning. Run the <a href="inspections.html#pretrip">pre-trip</a>. Send a <a href="myday.html#log">daily log</a> at end of day. Submit <a href="tm.html">T&amp;M</a>.</div>
-      </div>
-      <div class="card">
-        <div class="who">Driver</div>
-        <div class="what">Run the <a href="inspections.html#pretrip">Pre-Trip Inspection</a> before pulling out. Any FAIL routes to maintenance automatically.</div>
-      </div>
-      <div class="card">
-        <div class="who">Operator</div>
-        <div class="what">Walk around the unit in <a href="inspections.html#equipment">Equipment Check</a>. Log parts needed; they go to the <a href="inventory.html">supply run</a> list.</div>
-      </div>
-      <div class="card">
-        <div class="who">Maintenance</div>
-        <div class="what">Work the <a href="maintenance.html">inbox</a>. Filter by urgent, assign to a tech, add updates as you fix.</div>
-      </div>
-      <div class="card">
-        <div class="who">Yard / Office</div>
-        <div class="what">Keep <a href="inventory.html">Inventory</a> current. The <em>Supply Run</em> tab auto-fills with low-stock items + parts requests.</div>
-      </div>
-    </div>
+    <section class="section" id="scheduler">
+      <h2>Scheduler</h2>
+      <p class="lead">Month and year overview.</p>
+      <p>Toggle between month grid (clickable days that open a per-day modal with every session + event) and a 12-month year view (each month is a mini calendar; days with events are gold-tinted). Click any mini month to drill in.</p>
+      <p>Read-only view — to add a session, the toolbar's <strong>+ Session</strong> button jumps to <a href="sessions.html">Sessions</a> with the chosen day pre-selected.</p>
+    </section>
 
-    <!-- ============ RATES ============ -->
-    <h2 id="rates"><span class="ic">&#128176;</span>Emergency Rate Sheet</h2>
-    <div class="role-line">
-      <span class="role-pill office">Office &middot; Sales</span>
-      <span class="role-pill everyone">Customer-facing</span>
-    </div>
-    <p>The published 24-hour emergency rate sheet, identical to the Excel document. Use it to quote a customer on an emergency call, capture their signature in the authorization block, and print or save a PDF copy as the contract record.</p>
-    <a class="open-btn" href="rates.html">Open Rate Sheet &rarr;</a>
+    <section class="section" id="crm">
+      <h2>CRM</h2>
+      <p class="lead">Contacts, companies, and the conversation history with each.</p>
+      <h3>List view</h3>
+      <p>Search by name, email, company, or tag. Filter by customer type (admin-driven), stage (lead/qualified/customer/inactive), or region (auto-populated from contact state codes). Click <strong>+ New contact</strong> to add inline; click any row to open the detail view.</p>
+      <h3>Detail view</h3>
+      <p>Three sections side-by-side:</p>
+      <ul>
+        <li><strong>Profile</strong>: every field is inline-editable. Click <strong>Save changes</strong> to persist. Stage and customer type save on change (no button needed).</li>
+        <li><strong>Needs</strong>: a checkable list. Strike through when met. Add inline; delete inline.</li>
+        <li><strong>Conversations</strong>: a timeline of logged interactions (Note / Call / Email / Session / Meeting). Type a one-line summary + optional details; the entry is timestamped and attributed to whoever logged it.</li>
+      </ul>
+      <div class="callout"><strong>Print:</strong> the detail page has a clean print mode — hits Ctrl/Cmd+P to produce a contact handoff sheet for a colleague.</div>
+    </section>
 
-    <h3>What&rsquo;s on the sheet</h3>
-    <ul>
-      <li><strong>Excavators</strong> (hourly with operator): Mini $175, Mid-Size PC-88 $195, Mid-Size PC-138 $205, Cat 316 $215.</li>
-      <li><strong>Loaders &amp; Dozer</strong> (hourly with operator): Track Skid Loader $165, Front End Loader $215, Dozer $215.</li>
-      <li><strong>Compaction</strong> (daily): Jumping Jack $120, Plate Tamper $180, Walk-Behind Drum $235.</li>
-      <li><strong>Attachments</strong> (daily): Hydro Hammer $350, Plate Packer $275.</li>
-      <li><strong>Labor</strong> (per man-hour): Laborer $135 / Overtime premium +$67.50 / Double-time premium +$135.</li>
-      <li><strong>Other</strong>: Mobilization $400/move &middot; Trench Box $340/day &middot; Trucking $150/hr.</li>
-    </ul>
+    <section class="section" id="engagements">
+      <h2>Engagements</h2>
+      <p class="lead">Kanban pipeline of coaching/consulting deals.</p>
+      <p>Six columns: <code>New → Scheduled → Active → Waiting → Invoiced → Done</code>. Drag a card between columns to move stage; each drag fires an audit row so you can see who moved what when.</p>
+      <p>Each card: title, linked contact name, value, renewal/close date. Click to open the modal and edit. Service type is pulled from the Admin → Customer Types list so the same vocabulary works across CRM and Engagements.</p>
+    </section>
 
-    <h3>Authorizing a customer</h3>
-    <ol>
-      <li>Confirm the customer over the phone or on site. Open the rate sheet on the office device or tablet.</li>
-      <li>Scroll to the <strong>Customer Authorization</strong> block. Fill in Company name, contact, email, phone, cell, and job location.</li>
-      <li>Have the customer type their full name in <strong>Authorized customer signature</strong>. Set the date.</li>
-      <li>Tap <strong>Save Authorization</strong>. The record lands on the <em>Authorizations</em> tab.</li>
-      <li>Tap <strong>Print / Save PDF</strong> to send a copy to the customer (browser print menu &mdash; the page is print-styled for letter size).</li>
-    </ol>
-    <div class="warn"><strong>Contract terms</strong> are listed in full on the rate sheet (admin fees, credit-card surcharge, unmarked-utility liability, materials/subcontractor mark-up, Net-30 terms) along with the Minnesota lien notices. They print with the rate sheet on every page.</div>
+    <section class="section" id="rates">
+      <h2>Rate Sheet</h2>
+      <p class="lead">Your coaching packages as a printable artifact + e-signature capture.</p>
+      <p>The page renders a real letterhead with your company info (set on <a href="admin.html">Admin → Company Info</a>). Each package is edited inline — name, price, cadence (monthly / quarterly / annual / one-time), blurb. Add a package with the dashed "+ Add a package" button.</p>
+      <p>The signature block at the bottom lets a customer draw on a canvas (mouse or finger). Save snapshots their name + linked contact + the current package list + the signature PNG into a <code>bcc-rate-signature-*</code> doc with timestamp + user-agent.</p>
+      <div class="callout"><strong>Print:</strong> Ctrl/Cmd+P drops the toolbar/controls and gives you a clean letterhead for handoff. The signature block prints too, so a signed contract is one page.</div>
+    </section>
 
-    <h3>Rates change &mdash; how do I update them?</h3>
-    <p>Rates are coded directly into <code>rates.html</code> as a constant called <code>RATES</code> near the top of the script block, with an <code>EFFECTIVE_DATE</code> line just below. When the office issues a new pricing sheet, edit those values and bump the date.</p>
+    <section class="section" id="documents">
+      <h2>Documents</h2>
+      <p class="lead">Contracts, SOPs, customer files. Backed by Azure Blob.</p>
+      <p>Drag-and-drop a file (or click to pick). Optionally set folder + tags. Up to 25 MB per upload. Files go to a Blob container scoped to your tenant; metadata stays in Cosmos so you can search by name, folder, or tag without downloading everything.</p>
+      <p>Downloads happen via short-lived (15 min) signed URLs — no public link ever leaves the tenant.</p>
+    </section>
 
-    <!-- ============ SCHEDULER ============ -->
-    <h2 id="scheduler"><span class="ic">&#9636;</span>Scheduler</h2>
-    <div class="role-line">
-      <span class="role-pill office">Office</span>
-      <span class="role-pill everyone">Visible to field</span>
-    </div>
-    <p>Visual weekly plan. Five crew/unit rows by five day columns. Jobs sit as cards in cells. The field view pulls from the same data, so as soon as you drop a card, the crew sees their assignment.</p>
-    <a class="open-btn" href="scheduler.html">Open Scheduler &rarr;</a>
+    <section class="section" id="marketing">
+      <h2>Marketing</h2>
+      <p class="lead">Track campaigns across Google Ads, Meta, LinkedIn, Mailchimp, WordPress, GoDaddy.</p>
+      <p>The strip at the top mirrors your <a href="admin.html">Admin → Integrations</a> status per channel. Green dot = creds saved + last test succeeded. Configure first, then come here.</p>
+      <p>Each campaign: name, channel, status (draft/active/paused/completed), budget + spend in USD, start/end dates, impressions/clicks/leads, free-form notes. Search + filter by channel or status.</p>
+    </section>
 
-    <h3>How to schedule a job</h3>
-    <ol>
-      <li>Click <strong>+ New Job</strong> in the top right. The detail panel opens — fill in name, type, customer, location, estimated hours, crew members, equipment, and notes.</li>
-      <li>The new job lands in the <strong>Unscheduled</strong> pool on the left.</li>
-      <li><strong>Drag</strong> the card from the pool into the crew/day cell where it should run.</li>
-      <li>Click an existing card to edit it. Drag back to the pool to un-schedule.</li>
-    </ol>
-    <div class="tip"><strong>On phone / tablet:</strong> long-press a card to select it (it&rsquo;ll outline in teal), then tap the cell where it should go. Tap again to drop into the pool.</div>
+    <section class="section" id="bookkeeping">
+      <h2>Bookkeeping</h2>
+      <p class="lead">Monthly P&amp;L tied to QuickBooks Online.</p>
+      <p>KPI strip at top: last-month revenue, expenses, net, YTD net — each with ↑/↓ delta vs the prior period. Underneath: a per-month table with net color-coded (gold = positive, burgundy = negative).</p>
+      <p><strong>Sync from QBO</strong> is enabled once the QBO connector in <a href="admin.html">Admin → Integrations</a> goes green. Until then, use <strong>+ Manual entry</strong> to record a period by hand.</p>
+    </section>
 
-    <h3>Other controls</h3>
-    <ul>
-      <li><strong>&larr; / &rarr;</strong> step the week. <strong>Today</strong> snaps back to this week.</li>
-      <li><strong>+ Crew</strong> adds a new crew/unit row.</li>
-      <li>Job type colors the left border of every card. Hydrovac is sky-blue, Excavation amber, Water/Sewer slate, Fire Hydrant red, Demo dark, <strong>Emergency red on pink</strong>.</li>
-    </ul>
+    <section class="section" id="training">
+      <h2>Training</h2>
+      <p class="lead">Courses + lessons your team or clients work through.</p>
+      <p>Each course = title + blurb + ordered list of lessons (title, video URL, duration minutes). Click any course card to edit; rows in the lesson editor have inline "+ Add lesson" / × remove.</p>
+      <p>Enrollment + per-lesson progress tracking lives in <code>bcc-enrollment-*</code> docs (one per user × course); the dedicated learner view is on the roadmap.</p>
+    </section>
 
-    <!-- ============ FIELD ============ -->
-    <h2 id="field"><span class="ic">&#128205;</span>Today&rsquo;s Plan</h2>
-    <div class="role-line">
-      <span class="role-pill field">Field</span>
-      <span class="role-pill office">Phone-first</span>
-    </div>
-    <p>The crew opens this on their phone in the morning. They see what they&rsquo;re doing today, where they&rsquo;re going, who they&rsquo;re with, what equipment is on the job, and any notes from the office.</p>
-    <a class="open-btn" href="myday.html#today">Open Field view &rarr;</a>
+    <section class="section" id="events">
+      <h2>Events</h2>
+      <p class="lead">Workshops, meetups, intensives, with attendee bookings.</p>
+      <p>Each event card shows when, title, location, and "N / capacity booked" + Open/Closed badge. Click to open the modal: title, start/end datetime, location, capacity, registration open Y/N, description.</p>
+      <p>Inside the modal, a <strong>Bookings</strong> section lets you pick a contact from the dropdown (anyone in your CRM) or paste a free-form name. Each booking is timestamped; × to remove.</p>
+    </section>
 
-    <h3>How to use it</h3>
-    <ol>
-      <li>Pick your name from the dropdown in the top right (it remembers).</li>
-      <li>The card with today&rsquo;s job shows up. Tap the location to open Google Maps. Tap a crewmate to start a call.</li>
-      <li>Tap <strong>Clock In</strong> when you start, <strong>Clock Out</strong> when you wrap. Tap <strong>Open T&amp;M</strong> to fill out the time-and-materials sheet pre-loaded with this job.</li>
-      <li>Tap <strong>&#9888; Report Issue</strong> to send a note to maintenance from the field (truck, equipment, site, supply).</li>
-    </ol>
-    <div class="tip"><strong>No job assigned?</strong> Shop day — log shop hours via T&amp;M instead. The Report Issue button still works.</div>
+    <section class="section" id="kb">
+      <h2>Knowledge Base</h2>
+      <p class="lead">Internal playbooks in Markdown.</p>
+      <p>Left pane: searchable article list with tag chips. Right pane: reader. Click <strong>+ New article</strong> to draft; click <strong>Edit</strong> on any article to revise.</p>
+      <p>Markdown supported lightly: <code># heading</code>, <code>## sub</code>, <code>**bold**</code>, <code>`code`</code>. Tag filter auto-populates from data.</p>
+    </section>
 
-    <!-- ============ T&M ============ -->
-    <h2 id="tm"><span class="ic">$</span>T&amp;M Sheet</h2>
-    <div class="role-line">
-      <span class="role-pill office">Office</span>
-      <span class="role-pill field">Foreman</span>
-    </div>
-    <p>Replaces the paper / Excel time-and-materials sheet. Three line tables — Labor, Equipment, Materials — auto-totaled with a material markup field, signed and submitted from the field.</p>
-    <a class="open-btn" href="tm.html">Open T&amp;M &rarr;</a>
+    <section class="section" id="admin">
+      <h2>Admin Center</h2>
+      <p class="lead">Six tabs, in order of how often you'll touch them.</p>
+      <h3>Users &amp; Roles</h3>
+      <p>Microsoft 365 tenant members pulled via Graph. Promote teammates to admin / mark inactive. The signed-in user is always auto-listed.</p>
+      <h3>Customer Types</h3>
+      <p>The dropdown source CRM + Engagements read. Add / rename / recolor / delete — saved as a single <code>bcc-customer-types-v1</code> doc.</p>
+      <h3>Integrations</h3>
+      <p>Twelve connector cards. Paste credentials, click <strong>Test connection</strong>. Once a connector is green, the corresponding module (Bookkeeping for QBO, Marketing for ad channels, etc.) wires the saved creds in automatically — no env-var trip required.</p>
+      <h3>Company Info</h3>
+      <p>Legal name, display name, phones, email, website, address, tagline. Drives the letterhead on customer-facing artifacts (rate sheet today; contracts + reports next).</p>
+      <h3>Security</h3>
+      <p>Rotate the activity-log password + edit the domain allow-list. The tenant-level Entra restriction is already enforced; this is just a belt-and-suspenders layer for guest scenarios.</p>
+      <h3>Data &amp; Backups</h3>
+      <p>Storage tally by key prefix + a one-click JSON snapshot export of every <code>bcc-*</code> doc in your browser. Useful before any architectural change.</p>
+    </section>
 
-    <h3>Filling out a sheet</h3>
-    <ol>
-      <li>Pick the <strong>Job</strong> from the dropdown. Customer + notes auto-fill from the scheduler. If you opened T&amp;M via the Field view, the job is already selected.</li>
-      <li>Set date and foreman.</li>
-      <li><strong>Labor:</strong> + Add row per worker. Enter ST and OT hours. Rates default to $95 / $142.50; override per row if needed.</li>
-      <li><strong>Equipment:</strong> + Add row per unit. Defaults pull from the seeded equipment rate list (hydrovac $285/hr, excavator 320 $235/hr, etc.).</li>
-      <li><strong>Materials:</strong> + Add row per line item. Description, qty, unit, unit price. Subtotal calculates per row.</li>
-      <li>Watch the bottom totals update live. Adjust material markup % if the contract calls for something other than 15%.</li>
-      <li><strong>Save draft</strong> if you&rsquo;re mid-shift. <strong>Sign &amp; Submit</strong> sends it to the office.</li>
-    </ol>
-    <p>The <strong>Submitted</strong> tab lists everything that&rsquo;s been turned in. Click <em>Open</em> to reopen any sheet for review or edits.</p>
+    <section class="section muted" id="data-model">
+      <h2>How data flows</h2>
+      <p class="lead">A two-sentence model that explains how every page stays in sync.</p>
+      <p>Every save in any module writes a <code>bcc-&lt;thing&gt;-&lt;id&gt;</code> key to your browser's <code>localStorage</code>. A hook in <code>bcc-api.js</code> sees the write, debounces 1.2 seconds, and PUTs the doc to <code>/api/data</code>, which upserts into Cosmos under your tenant partition. Reads work the other way: on page load, bcc-api.js mirrors every prefixed doc from Cosmos into localStorage, then every page just reads from localStorage. <strong>Offline works.</strong> Saves queue and retry every 5 seconds + immediately when the browser comes back online.</p>
+      <div class="callout">For the schemaless JSON shape of each module's docs, see <code>docs/data-shapes.md</code> in the repo.</div>
+    </section>
 
-    <!-- ============ PRE-TRIP ============ -->
-    <h2 id="pretrip"><span class="ic">&#128666;</span>Pre-Trip Inspection</h2>
-    <div class="role-line">
-      <span class="role-pill driver">Driver</span>
-      <span class="role-pill maint">Auto-routes failures</span>
-    </div>
-    <p>DOT-style pre-trip checklist on the phone. Categories adapt to the vehicle: hydrovacs add tank/boom items, trailered units add coupling/chains.</p>
-    <a class="open-btn" href="inspections.html#pretrip">Open Pre-Trip &rarr;</a>
+    <section class="section" id="audit">
+      <h2>Activity Log</h2>
+      <p class="lead">Who did what, when. Password-gated.</p>
+      <p>Every save / delete / sign-in / integration test fires a structured audit row. The feed filters by category (Admin / CRM / Sessions / Documents / Rates / My Day / Integrations / System) and by user. Sortable by time; clickable to drill in.</p>
+      <p>Default password: <code>bcc-audit-2026</code>. Rotate from <a href="admin.html">Admin → Security</a>.</p>
+    </section>
 
-    <h3>Running a pre-trip</h3>
-    <ol>
-      <li>Pick the <strong>vehicle/unit</strong>, your name, and the current odometer.</li>
-      <li>Walk the unit. Mark each item <strong>PASS</strong>, <strong>FAIL</strong>, or <strong>N/A</strong>.</li>
-      <li>If something fails, a notes field appears under it &mdash; describe what&rsquo;s wrong.</li>
-      <li>The progress bar fills as you complete items. Submit unlocks when every item is checked.</li>
-      <li>Hit <strong>Submit</strong>. Every FAIL automatically posts an <strong>urgent</strong> ticket to the <a href="maintenance.html">Maintenance Inbox</a>.</li>
-    </ol>
-    <div class="warn"><strong>Do not operate</strong> the unit if any condition is unsafe, even if the rest of the inspection passes. Call maintenance.</div>
-
-    <!-- ============ TRUCKING ============ -->
-    <h2 id="trucking"><span class="ic">&#128667;</span>Trucking Slip</h2>
-    <div class="role-line">
-      <span class="role-pill driver">Driver</span>
-      <span class="role-pill office">Office reviews</span>
-    </div>
-    <p>The digital version of the paper trucking ticket (Ticket #22044 style). Driver logs every load with start/stop times, tons or yards, and material, then the office gets a saved record with totals and a signature.</p>
-    <a class="open-btn" href="trucking.html">Open Trucking Slip &rarr;</a>
-
-    <h3>Filling out a ticket</h3>
-    <ol>
-      <li>The ticket number is auto-assigned, counting up from #22045. Edit it if the office wants a specific number.</li>
-      <li>Pick the driver (defaults to who you are), truck number, and job from the scheduler dropdown. Bill-to and dump-site auto-fill from the selected job.</li>
-      <li>Fill in loading-site location and dump-site location.</li>
-      <li>Log <strong>Travel to Job</strong> start &amp; stop times &mdash; interval auto-calculates.</li>
-      <li>For each load, enter <strong>Start</strong>, <strong>Stop</strong>, <strong>Tons / Yds</strong>, and pick a <strong>Material</strong> (Class 5, Class 7, Black Dirt, Sand, Pea Rock, Gravel, Concrete spoils, Asphalt millings, Clay, Mud, Topsoil, or Other). Add more load rows with <strong>+ Add load</strong> if needed.</li>
-      <li>Set <strong>Job Start Time</strong> and <strong>Job Stop Time</strong>. Totals (Loads, Haul Time, Travel, Total Hours) refresh as you type.</li>
-      <li>Type the authorizing signature and <strong>Save Slip</strong>. Use <strong>Print / PDF</strong> to send a copy to the customer or office.</li>
-    </ol>
-    <div class="tip"><strong>Past Tickets</strong> tab lists every saved slip with the ticket #, driver, truck, date, and load count. Click <em>Open</em> on any ticket to reopen, edit, or reprint.</div>
-
-    <!-- ============ HYDRANT ============ -->
-    <h2 id="hydrant"><span class="ic">&#128293;</span>Fire Hydrant Inspection</h2>
-    <div class="role-line">
-      <span class="role-pill field">Inspector</span>
-      <span class="role-pill office">Office reviews</span>
-    </div>
-    <p>Digital version of Precision&rsquo;s paper Fire Hydrant Inspection Form. Same 16 questions in the same order, so the record matches what a fire marshal expects to see.</p>
-    <a class="open-btn" href="hydrant.html">Open Hydrant Inspection &rarr;</a>
-
-    <h3>Filling out an inspection</h3>
-    <ol>
-      <li>Fill the header: <strong>Property name</strong>, optional <strong>Precision job #</strong> (picked from the scheduler), <strong>property address</strong>, <strong>Hydrant ID</strong>, and <strong>Location on property</strong> (e.g. &ldquo;SW corner near parking&rdquo;). Inspector and date auto-fill from your sign-in and today&rsquo;s date.</li>
-      <li>For each of the 16 inspection items, tap <strong>Yes</strong>, <strong>No</strong>, or <strong>N/A</strong>. If you tap <strong>No</strong>, a comments box opens on that row &mdash; describe what was found.</li>
-      <li>For a clean inspection, hit <strong>Mark all Yes</strong> at the top to fill empty rows fast. It won&rsquo;t overwrite an answer you&rsquo;ve already set.</li>
-      <li>Type your full name into <strong>Inspector signature</strong> at the bottom (defaults to your name; change it if a different inspector is signing).</li>
-      <li>Tap <strong>Save inspection</strong>. GPS is captured automatically so the record proves where the inspection happened.</li>
-    </ol>
-    <div class="tip"><strong>Past Inspections</strong> tab lists every saved inspection with the property, hydrant ID, inspector, date, GPS chip, and a CLEAR / N-fail badge. Tap any row to open a printable detail view &mdash; the layout matches the paper form so you can hand a fire marshal a clean PDF.</div>
-
-    <!-- ============ EQUIPMENT ============ -->
-    <h2 id="equipment"><span class="ic">&#9881;</span>Equipment Check</h2>
-    <div class="role-line">
-      <span class="role-pill field">Operator</span>
-      <span class="role-pill maint">Auto-routes failures</span>
-      <span class="role-pill office">Posts to supply list</span>
-    </div>
-    <p>Walk-around inspection for field equipment — hydrovac, excavator, skid steer, compactor, generator, pump, light tower. The checklist adapts to the equipment type.</p>
-    <a class="open-btn" href="inspections.html#equipment">Open Equipment &rarr;</a>
-
-    <h3>How it works</h3>
-    <ol>
-      <li>Tap the equipment card up top. Enter operator + hour-meter reading.</li>
-      <li>Run the <strong>General</strong> checklist (fluids, leaks, guards) then the type-specific list.</li>
-      <li>In <strong>Parts / Supplies Needed</strong>, type any consumables or parts the unit needs (e.g. <em>"2 ea 3/8" hose 24""</em>) and hit Add.</li>
-      <li>Submit. Fails go to maintenance as urgent. Each parts request becomes a supply-list ticket that shows up in <a href="inventory.html#shop">Inventory &rsaquo; Supply Run</a>.</li>
-    </ol>
-
-    <!-- ============ INVENTORY ============ -->
-    <h2 id="inventory"><span class="ic">&#128230;</span>Inventory</h2>
-    <div class="role-line">
-      <span class="role-pill office">Yard / Office</span>
-      <span class="role-pill everyone">Everyone reads</span>
-    </div>
-    <p>Parts, consumables, PPE, fittings, fluids. Quantities per truck or yard. Two tabs:</p>
-    <a class="open-btn" href="inventory.html">Open Inventory &rarr;</a>
-
-    <h3>Stock tab</h3>
-    <ul>
-      <li>Search filters live. Each row shows on-hand qty, location, status (<span style="color:#065f46;font-weight:700;">OK</span>, <span style="color:#92400e;font-weight:700;">LOW</span>, <span style="color:#5c4520;font-weight:700;">OUT</span>), and reorder threshold.</li>
-      <li>Use <strong>+ / &minus;</strong> buttons (or type) to adjust quantity as you use or restock items.</li>
-      <li>Click <strong>&#9881;</strong> on a row to edit name, category, location, unit, qty, or reorder threshold.</li>
-      <li>Hit <strong>+ Add item</strong> to add a new inventory line.</li>
-    </ul>
-
-    <h3>Supply Run tab</h3>
-    <p>Replaces the &ldquo;Groceries&rdquo; app. The list auto-fills from two sources:</p>
-    <ul>
-      <li><strong>Low-stock items</strong> (qty &le; reorder threshold) &mdash; tagged <span class="role-pill" style="background:#ecfeff;color:#1d4ed8;">AUTO</span>.</li>
-      <li><strong>Parts requests</strong> from Equipment Check or field issue reports &mdash; tagged <span class="role-pill" style="background:#faf4e8;color:#5c4520;">MAINT</span>.</li>
-    </ul>
-    <p>You can also type items directly into the &ldquo;Add to list&rdquo; box. At the supply house, tap each item&rsquo;s checkbox as you pick it up; checked items move to a <em>Picked up</em> section at the bottom.</p>
-
-    <!-- ============ MAINTENANCE ============ -->
-    <h2 id="maintenance"><span class="ic">&#128295;</span>Maintenance Inbox</h2>
-    <div class="role-line">
-      <span class="role-pill maint">Maintenance</span>
-      <span class="role-pill office">Office</span>
-    </div>
-    <p>Every truck issue, equipment fault, site safety note, and parts request ends up here. One funnel. The top four stat tiles tell you urgency at a glance.</p>
-    <a class="open-btn" href="maintenance.html">Open Inbox &rarr;</a>
-
-    <h3>Where tickets come from</h3>
-    <ul>
-      <li><strong>Pre-Trip Inspection</strong> &mdash; one ticket per FAIL, marked urgent, category <em>truck</em>.</li>
-      <li><strong>Equipment Check</strong> &mdash; one ticket per FAIL (urgent) and one per parts request (normal, <em>supply</em>).</li>
-      <li><strong>Field &gt; Report Issue</strong> &mdash; manual ticket from the crew, any category.</li>
-    </ul>
-
-    <h3>Working a ticket</h3>
-    <ol>
-      <li>Filter to <strong>Open</strong> or <strong>Urgent</strong> at the top.</li>
-      <li>Click a ticket card. The side panel shows the full report and reporter.</li>
-      <li>Change <strong>Status</strong> (Open &rarr; In Progress &rarr; Closed), pick a <strong>Severity</strong>, <strong>Assign to</strong> a tech.</li>
-      <li>Add an update in the <em>Add update</em> box (what you found, parts ordered, ETA). Saved updates show in the Activity timeline.</li>
-      <li><strong>Mark Closed</strong> when fixed.</li>
-    </ol>
-
-    <!-- ============ JOB BOARD ============ -->
-    <h2 id="jobs"><span class="ic">&#128203;</span>Job Board</h2>
-    <div class="role-line">
-      <span class="role-pill everyone">Everyone</span>
-      <span class="role-pill office">PM view</span>
-    </div>
-    <p>Replaces the Trello board. Six columns matching the existing workflow:</p>
-    <a class="open-btn" href="jobs.html">Open Job Board &rarr;</a>
-
-    <ol>
-      <li><strong>New / Inbound</strong> &mdash; just-arrived RFPs, customer calls, emergency-rate authorizations.</li>
-      <li><strong>Locates Called In?</strong> &mdash; waiting on Gopher One / utility locates before we can dig.</li>
-      <li><strong>Scheduled Jobs</strong> &mdash; on the calendar, crew assigned, ready to roll.</li>
-      <li><strong>Jobs Today</strong> &mdash; active right now, crew on site.</li>
-      <li><strong>Completed &mdash; Waiting on Resto / Traffic Control</strong> &mdash; work&rsquo;s done but post-work pending.</li>
-      <li><strong>Needs Invoiced</strong> &mdash; ready for billing.</li>
-    </ol>
-
-    <h3>How it relates to the Scheduler</h3>
-    <ul>
-      <li>Job Board and Scheduler share the same jobs &mdash; two views, one data set.</li>
-      <li>A job&rsquo;s column comes from its status. Not assigned = <em>New</em>. Assigned to a crew on a future date = <em>Scheduled</em>. Assigned for today = <em>Jobs Today</em> automatically. Other columns you set explicitly by dragging.</li>
-      <li>Dragging a card back to <em>New / Inbound</em> clears the crew/day.</li>
-      <li>Dragging to <em>Jobs Today</em> auto-sets the day to today if it wasn&rsquo;t already.</li>
-    </ul>
-
-    <h3>What&rsquo;s on each card</h3>
-    <p>Click any card to open the side panel. Every card now supports:</p>
-    <ul>
-      <li><strong>Address</strong> (primary title), <strong>work description</strong>, <strong>customer</strong>, type, hours, crew members.</li>
-      <li><strong>Contacts</strong> &mdash; one or more contact people per job: name, role, company, email, phone. The card shows a contact-count badge.</li>
-      <li><strong>Checklist</strong> &mdash; per-job items like &ldquo;Locates called&rdquo;, &ldquo;Permit pulled&rdquo;, &ldquo;Materials ordered&rdquo;. Card shows <em>n/m</em> done; turns green when complete.</li>
-      <li><strong>Created From Email</strong> &mdash; paste an RFP&rsquo;s subject and sender to attribute the job. Card shows an envelope icon.</li>
-      <li><strong>Photos</strong> &mdash; camera on mobile, library on desktop. Stored full-size as data URLs (5MB origin cap, see Storage below).</li>
-      <li><strong>Files</strong> &mdash; PDFs, docs, anything. Color-coded by extension (PDF red, image pink, other blue). Click the download arrow to save.</li>
-      <li><strong>Activity</strong> &mdash; running comment thread per job; stamps each note with date and submitter.</li>
-    </ul>
-    <div class="tip">Use the <strong>search box</strong> + <strong>type filter</strong> at the top to focus the board.</div>
-
-    <!-- ============ CHAT ============ -->
-    <h2 id="chat"><span class="ic">&#128172;</span>Crew Chat</h2>
-    <div class="role-line">
-      <span class="role-pill everyone">Everyone</span>
-    </div>
-    <p>Channel-based messaging. One <strong>#general</strong> for company-wide, one per crew/unit, plus <strong>#office</strong> and <strong>#maintenance</strong>.</p>
-    <a class="open-btn" href="chat.html">Open Chat &rarr;</a>
-
-    <h3>How to use it</h3>
-    <ol>
-      <li>Pick your name in the top right.</li>
-      <li>Click a channel in the left sidebar. On phone, tap the <kbd>&#9776;</kbd> to open the sidebar.</li>
-      <li>Type a message and hit Enter (Shift+Enter for newline). The paperclip icon attaches a photo.</li>
-      <li>Channels with unread messages show a red badge in the sidebar.</li>
-      <li><strong>+ New channel</strong> at the bottom of the sidebar creates a new one (e.g. <em>#job-burnsville-2026</em> for a specific job).</li>
-    </ol>
-
-    <!-- ============ DAILY ============ -->
-    <h2 id="daily"><span class="ic">&#128247;</span>Daily Log</h2>
-    <div class="role-line">
-      <span class="role-pill field">Field</span>
-      <span class="role-pill office">Office reviews</span>
-    </div>
-    <p>End-of-day write-up per job. Captures weather, hours, crew on site, work performed, materials, delays, and photos. Pinned to the job for the office to review.</p>
-    <a class="open-btn" href="myday.html#log">Open Daily Log &rarr;</a>
-
-    <h3>Filling one out</h3>
-    <ol>
-      <li>Date defaults to today. Pick the job from the dropdown.</li>
-      <li>Tap the weather chip that fits (sunny, rain, snow, etc.) and enter the temp.</li>
-      <li>Pick everyone who was on site from the crew row.</li>
-      <li>Enter start/end times and write what was done, what materials were used, and any delays or issues.</li>
-      <li>Tap <strong>+ Add photo</strong>. On mobile, the camera opens directly. Add as many as you want.</li>
-      <li>Hit <strong>Submit log</strong>. It moves to the <em>Past Logs</em> tab.</li>
-    </ol>
-    <div class="tip">Past logs are clickable &mdash; open one to edit and resubmit. Tap any thumbnail to view the photo full-screen.</div>
-
-    <!-- ============ DATA FLOW ============ -->
-    <!-- ============ ADMIN ============ -->
-    <h2 id="admin"><span class="ic">&#9881;</span>Admin &amp; Settings</h2>
-    <div class="role-line">
-      <span class="role-pill maint">Admin only</span>
-    </div>
-    <p>One settings page that controls users, roles, rates, equipment, crews, lists, and company info. Changes flow into the rest of the app live &mdash; the rate sheet, T&amp;M defaults, equipment lists, and crew rows all read from here when present.</p>
-    <a class="open-btn" href="admin.html">Open Admin &rarr;</a>
-
-    <h3>Tabs</h3>
-    <ul>
-      <li><strong>Users</strong> &mdash; the 22 team members with role, status, email, phone. Lock icon opens per-user permission overrides on top of the role&rsquo;s defaults.</li>
-      <li><strong>Roles &amp; Permissions</strong> &mdash; seven seeded roles (Admin, Office/PM, Crew Lead, Crew, Driver, Maintenance, Yard). Each row of checkboxes maps a role to its permissions across Admin / Operations / Field / Yard / Maintenance / Reports.</li>
-      <li><strong>Rates</strong> &mdash; T&amp;M defaults (ST/OT/DT labor rates, material markup %, equipment $/hr table) and the full emergency rate sheet (excavators, loaders, compaction, attachments, labor, other). Effective date is editable. Saved values override the hardcoded defaults in <a href="rates.html">rates.html</a> and <a href="tm.html">tm.html</a> on next page load.</li>
-      <li><strong>Equipment &amp; Vehicles</strong> &mdash; manage the equipment list (for the equipment check) and the vehicle list (for pre-trip).</li>
-      <li><strong>Crews</strong> &mdash; add or rename crews, set the lead, multi-select members. Crew rows show in the scheduler.</li>
-      <li><strong>Lists</strong> &mdash; materials (used in the trucking slip dropdown) and inventory locations (Shop, Yard, per-truck&hellip;).</li>
-      <li><strong>Company</strong> &mdash; legal name, address, phone, emergency phone, primary contact, office email, website, tagline, and the trucking ticket counter.</li>
-    </ul>
-    <div class="tip">
-      <strong>Save / Discard</strong> bar sticks to the bottom of every tab. Edits don&rsquo;t persist until you click <em>Save changes</em>. <strong>Export config</strong> in the sidebar downloads the full settings JSON for backup.<br/>
-      <strong>v0.1 enforcement:</strong> per-user permissions are captured but not yet enforced page-by-page &mdash; that gating comes with the v0.2 backend.
-    </div>
-
-    <!-- ============ LOCATION ============ -->
-    <h2 id="location"><span class="ic">&#128205;</span>Location tracking</h2>
-    <div class="role-line">
-      <span class="role-pill everyone">Everyone</span>
-    </div>
-    <p>On every record-creating action, the app asks the browser for GPS coordinates and attaches them to the saved record. Captured silently in the background, so the UI doesn&rsquo;t wait. If the user denies the prompt or location is unavailable, the record still saves &mdash; just without a pin.</p>
-
-    <h3>Where GPS is captured</h3>
-    <ul>
-      <li><strong>Clock In / Clock Out</strong> on the Field view.</li>
-      <li><strong>Report Issue</strong> from Field &mdash; the resulting maintenance ticket gets the field crew&rsquo;s location.</li>
-      <li><strong>T&amp;M sheet</strong> at draft save and submit.</li>
-      <li><strong>Pre-Trip Inspection</strong> at submit &mdash; the record and every auto-created maintenance ticket get the driver&rsquo;s location.</li>
-      <li><strong>Equipment Check</strong> at submit &mdash; record + tickets get GPS.</li>
-      <li><strong>Daily Log</strong> at submit.</li>
-      <li><strong>Trucking Slip</strong> at save.</li>
-    </ul>
-
-    <h3>Where to see pins</h3>
-    <p>Anywhere a record with GPS shows up, a small purple pin chip with lat/lng appears. Tap it to open Google Maps. Pins show on:</p>
-    <ul>
-      <li>Maintenance Inbox ticket cards (in the meta line).</li>
-      <li>T&amp;M Submitted list rows.</li>
-      <li>Daily Log past entries.</li>
-      <li>Trucking Slip past tickets.</li>
-      <li>Field view today&rsquo;s job card (next to <em>CLOCKED IN</em>).</li>
-    </ul>
-    <div class="warn"><strong>Permissions:</strong> the browser only asks for location once per origin. If a user denies it, future records save without GPS &mdash; tell them to re-grant permission via the browser&rsquo;s site settings if you need accurate tracking. iOS Safari is the strictest about this.</div>
-
-    <h3>What&rsquo;s stored</h3>
-    <p>Each location object on a record looks like <code>{ lat, lng, accuracy, ts }</code>. <code>accuracy</code> is the radius in meters reported by the browser (Wi-Fi positioning is typically 20&ndash;100m, GPS on a phone is 5&ndash;20m). <code>ts</code> is the capture time. Nothing leaves the device; storage is local in <code>localStorage</code> with the rest of the record.</p>
-
-    <!-- ============ CLOUD / AUTH ============ -->
-    <h2 id="cloud"><span class="ic">&#9729;</span>Cloud, Auth &amp; SSO</h2>
-    <div class="role-line">
-      <span class="role-pill office">v0.2 (Azure-hosted)</span>
-    </div>
-    <p>When the app is deployed to Azure Static Web Apps (see &ldquo;Deploying to Azure&rdquo; below), three things change vs. the local v0.1 demo:</p>
-    <ol>
-      <li><strong>Single sign-on</strong> via Entra ID (Azure AD). Every page except the 403 redirect requires a signed-in user. Sign-in is handled by the Static Web Apps platform at <code>/.auth/login/aad</code> &mdash; no auth code in the app itself. The user&rsquo;s identity is auto-mapped to the <code>bcc-field-who</code> name picker on first load, so the field / chat / daily-log views know who you are without asking.</li>
-      <li><strong>Data lives in Cosmos DB</strong> (Free Tier &mdash; 1000 RU/s, 25 GB, $0/mo forever). The same <code>bcc-*</code> keys you saw locally now exist as documents in one container, partitioned by tenant. All users in the company share the same dataset.</li>
-      <li><strong>Cross-device sync is transparent</strong>. The page code still reads/writes <code>localStorage</code> exactly like it did in v0.1; <a href="bcc-api.js">bcc-api.js</a> hooks <code>Storage.prototype.setItem</code> and debounces writes to <code>/api/data</code>. On page load it pulls every <code>bcc-*</code> doc from the server and mirrors them into <code>localStorage</code>. Result: the Office can drag a job on a desktop and the field crew sees it on their phone seconds later.</li>
-    </ol>
-
-    <h3>The sync chip</h3>
-    <p>Top-right of every page shows a small chip with the signed-in user&rsquo;s name and a status dot:</p>
-    <ul>
-      <li><strong>Green dot</strong> &mdash; signed in, cloud sync active.</li>
-      <li><strong>Amber dot, pulsing</strong> &mdash; pushing a batch of changes right now.</li>
-      <li><strong>Red dot</strong> &mdash; push failed; will retry in 5 seconds. Click <strong>Sign out</strong> and back in if it persists.</li>
-      <li><strong>Grey dot</strong> &mdash; anonymous / running locally only (no cloud sync).</li>
-    </ul>
-    <p>Sign-out link clears your session and redirects to the home page. Sign-in goes through Entra ID with whatever MFA / conditional-access policies you&rsquo;ve set on the tenant.</p>
-
-    <h3>Roles vs. permissions</h3>
-    <p>Two layers, intentionally:</p>
-    <ul>
-      <li><strong>Static Web Apps roles</strong> are the platform-level gate. The <code>administrator</code> role guards <code>/admin.html</code> at the routing layer. Anyone else trying to load it gets the 403 page. Assign via Azure Portal &rarr; Static Web App &rarr; Role management.</li>
-      <li><strong>App-level permissions</strong> live in the admin config (Users tab, Roles &amp; Permissions tab). Those are read by the app to decide what to render &mdash; e.g. show the &ldquo;Mark Invoiced&rdquo; button only to users with <code>invoice_jobs</code>. v0.2 captures them but doesn&rsquo;t yet gate every page; v0.3 will plumb the checks server-side via the Functions API.</li>
-    </ul>
-
-    <h3>Costs</h3>
-    <p>For the team&rsquo;s expected scale: $0/month. SWA Free covers 100 GB bandwidth, Functions executions are within the free quota, Cosmos Free Tier is forever. Custom domain SSL is also free.</p>
-
-    <!-- ============ DEPLOY ============ -->
-    <h2 id="deploy"><span class="ic">&#128640;</span>Deploying to Azure</h2>
-    <div class="role-line"><span class="role-pill maint">Admin only</span></div>
-    <p>Full step-by-step runbook is in <a href="DEPLOY.md"><code>DEPLOY.md</code></a> in the project root. Summary:</p>
-    <ol>
-      <li>Push the repo to GitHub (the SWA Free SKU only deploys from GitHub).</li>
-      <li>Create a GitHub personal access token (<code>repo</code> + <code>workflow</code> scopes).</li>
-      <li>Register an Entra ID app: <code>az ad app create</code>, capture <code>CLIENT_ID</code> + secret + tenant GUID.</li>
-      <li>Run <code>infra/deploy.ps1</code> or <code>infra/deploy.sh</code>. Provisions Cosmos DB (Free Tier), the Static Web App, and wires all app settings (<code>COSMOS_*</code>, <code>AZURE_*</code>, <code>BCC_TENANT_ID</code>).</li>
-      <li>Update the Entra app&rsquo;s redirect URI to point at your new SWA hostname.</li>
-      <li>Replace <code>AZURE_TENANT_ID</code> in <code>staticwebapp.config.json</code> with the real GUID and push &mdash; GitHub Actions deploys.</li>
-      <li>Invite admin users via the SWA portal&rsquo;s <em>Role management</em> panel.</li>
-      <li>(Optional) add the custom domain <code>app.bluecollarcoach.us</code>.</li>
-    </ol>
-    <div class="tip"><strong>One-Cosmos-free-tier limit:</strong> only one Cosmos account per Azure subscription can have Free Tier enabled. If that&rsquo;s already used, pass <code>-EnableCosmosFreeTier $false</code> &mdash; the minimum non-free Cosmos costs ~$18/month.</div>
-    <div class="warn"><strong>The deployment token</strong> is only visible in the SWA portal after the SWA is created. Copy it from <em>Manage deployment token</em> into your GitHub repo&rsquo;s secrets as <code>AZURE_STATIC_WEB_APPS_API_TOKEN</code>, then re-run the GitHub Action.</div>
-
-    <h3>Where each Azure piece lives in the codebase</h3>
-    <table class="data-table">
-      <thead><tr><th>Concern</th><th>File</th></tr></thead>
-      <tbody>
-        <tr><td>Identity provider config</td><td><a href="staticwebapp.config.json"><code>staticwebapp.config.json</code></a></td></tr>
-        <tr><td>API (data CRUD + profile)</td><td><code>api/src/index.js</code></td></tr>
-        <tr><td>Functions runtime config</td><td><code>api/host.json</code></td></tr>
-        <tr><td>Cosmos / SWA infrastructure</td><td><code>infra/main.bicep</code></td></tr>
-        <tr><td>One-shot deploy script</td><td><code>infra/deploy.ps1</code> &middot; <code>infra/deploy.sh</code></td></tr>
-        <tr><td>CI/CD</td><td><code>.github/workflows/azure-static-web-apps.yml</code></td></tr>
-        <tr><td>Client-side sync layer</td><td><a href="bcc-api.js"><code>bcc-api.js</code></a></td></tr>
-        <tr><td>Step-by-step runbook</td><td><a href="DEPLOY.md"><code>DEPLOY.md</code></a></td></tr>
-      </tbody>
-    </table>
-
-    <h2 id="flow"><span class="ic">&#128279;</span>How data flows between screens</h2>
-    <table class="data-table">
-      <thead><tr><th>When you...</th><th>This happens</th></tr></thead>
-      <tbody>
-        <tr><td>Create a job in Scheduler or Job Board</td><td>It appears in <em>both</em>, and shows up in the Field, T&amp;M, and Daily Log job pickers.</td></tr>
-        <tr><td>Drag a job onto a crew/day cell</td><td>Field view for everyone on that crew shows the job as <em>Today&rsquo;s Plan</em>.</td></tr>
-        <tr><td>Submit a Pre-Trip with FAILs</td><td>One urgent ticket per fail lands in Maintenance Inbox.</td></tr>
-        <tr><td>Submit an Equipment Check with parts requests</td><td>Each request creates a Maintenance ticket and an item on the Supply Run list.</td></tr>
-        <tr><td>An inventory item drops to its reorder threshold</td><td>It appears on the Supply Run list automatically.</td></tr>
-        <tr><td>Tap Report Issue in Field</td><td>A ticket is added to Maintenance Inbox under the category you chose.</td></tr>
-        <tr><td>Open T&amp;M with a job ID in the URL (e.g. from Field)</td><td>The form pre-fills with customer, notes, crew labor lines, and equipment lines from that job.</td></tr>
-      </tbody>
-    </table>
-
-    <!-- ============ STORAGE ============ -->
-    <h2 id="storage"><span class="ic">&#128190;</span>Storage &amp; limitations</h2>
-    <p>This is the <strong>v0.1 private preview</strong>. All data lives in the browser&rsquo;s <strong>localStorage</strong>, on the device you&rsquo;re using. Two consequences:</p>
-    <ul>
-      <li><strong>No sync between devices yet.</strong> If you create a job on the office computer, it won&rsquo;t automatically show up on a phone &mdash; that comes with the backend in v0.2.</li>
-      <li><strong>Storage cap.</strong> Browsers give each site roughly 5 MB. Photos are stored as base64, which is bigger than the original file. Plan on a few dozen full-size photos per browser before things tighten up. The production version will store photos in cloud storage.</li>
-    </ul>
-    <p>Where each module saves data:</p>
-    <table class="data-table">
-      <thead><tr><th>Module</th><th>localStorage key</th></tr></thead>
-      <tbody>
-        <tr><td>Scheduler / Job Board / Field / T&amp;M / Daily Log (jobs &amp; crews)</td><td><code>bcc-schedule-v1</code></td></tr>
-        <tr><td>T&amp;M submitted sheets</td><td><code>bcc-tm-sheets-v1</code></td></tr>
-        <tr><td>Pre-Trip records</td><td><code>bcc-pretrips-v1</code></td></tr>
-        <tr><td>Equipment Check records</td><td><code>bcc-eqchecks-v1</code></td></tr>
-        <tr><td>Inventory items</td><td><code>bcc-inventory-v1</code></td></tr>
-        <tr><td>Supply Run list</td><td><code>bcc-shop-list-v1</code></td></tr>
-        <tr><td>Maintenance Inbox tickets</td><td><code>bcc-maint-inbox-v1</code></td></tr>
-        <tr><td>Crew Chat (channels, messages, read state)</td><td><code>bcc-chat-channels-v1</code>, <code>bcc-chat-messages-v1</code>, <code>bcc-chat-last-read-v1</code></td></tr>
-        <tr><td>Daily Logs</td><td><code>bcc-daily-logs-v1</code></td></tr>
-        <tr><td>Rate-sheet customer authorizations</td><td><code>bcc-rate-authorizations-v1</code></td></tr>
-        <tr><td>Trucking slips</td><td><code>bcc-trucking-slips-v1</code></td></tr>
-        <tr><td>Trucking ticket-number counter</td><td><code>bcc-trucking-ticket-counter</code></td></tr>
-        <tr><td>Admin config (users, roles, rates, equipment, crews, lists, company)</td><td><code>bcc-admin-config-v1</code></td></tr>
-        <tr><td>Field clock-ins / who you are</td><td><code>bcc-field-clock</code>, <code>bcc-field-who</code></td></tr>
-      </tbody>
-    </table>
-    <div class="warn"><strong>Clearing browser data</strong> on this site will wipe all your demo entries. If you&rsquo;ve been entering real data into the preview to test, export or screenshot anything important before clearing.</div>
-
-    <!-- ============ FAQ ============ -->
-    <h2 id="faq"><span class="ic">&#10067;</span>FAQ</h2>
-
-    <h3>How do I switch who I am?</h3>
-    <p>In <a href="myday.html#today">My Day</a>, <a href="chat.html">Chat</a>, and <a href="myday.html#log">My Day</a>, there&rsquo;s a name picker in the top right. It remembers across pages.</p>
-
-    <h3>I assigned a job but nobody&rsquo;s on the crew.</h3>
-    <p>You can have a job assigned to a crew unit (e.g. Hydrovac 1) without explicit individuals. To show it under a person&rsquo;s <em>Today&rsquo;s Plan</em>, open the job and check the names on the <em>Crew members</em> list.</p>
-
-    <h3>How do I report an issue if I don&rsquo;t have an assigned job?</h3>
-    <p>Open <a href="myday.html#today">Today&rsquo;s Plan</a> with your name selected. Even on a no-job day, the <strong>Report Issue</strong> button is available.</p>
-
-    <h3>Where do I print a T&amp;M sheet for the customer?</h3>
-    <p>v0.1 doesn&rsquo;t have PDF export yet &mdash; use the browser&rsquo;s <em>Print</em> menu on the T&amp;M page (Ctrl/Cmd+P). PDF export is on the roadmap.</p>
-
-    <h3>How do I make a brand-new crew on the fly?</h3>
-    <p>On the Scheduler, <strong>+ Crew</strong> in the toolbar prompts for a name and lead. Members can be assigned by opening any job and picking from the crew chips.</p>
-
-    <h3>Roadmap (v0.2+)</h3>
-    <ul>
-      <li>Cloud backend so all devices sync in real time.</li>
-      <li>SMS / push notifications when a maintenance ticket is assigned to you.</li>
-      <li>PDF export of T&amp;M sheets and daily logs.</li>
-      <li>Customer-facing read-only job portal (like Caliber Connect).</li>
-      <li>Photos in cloud storage (not localStorage).</li>
-    </ul>
-
-    <div class="footer-note">
-      BCC Connect &middot; v0.1 &middot; Private preview. Questions? Talk to whoever set this up for you.
-    </div>
-
+    <section class="section" id="keyboard">
+      <h2>Keyboard + a11y</h2>
+      <ul>
+        <li>Every interactive element has a visible focus ring + 44 px touch target.</li>
+        <li>Skip-to-content link at the top of every page (tab to it from the very first focus).</li>
+        <li>Toasts are <code>aria-live</code>; the offline banner is announced on connection drop.</li>
+        <li>Drawer + topbar are reachable from keyboard alone (no mouse-only menus).</li>
+      </ul>
+    </section>
   </main>
 </div>
 
 <script>
 (function () {
-  var content   = document.querySelector('.content');
-  var input     = document.getElementById('guideSearch');
-  var clearBtn  = document.getElementById('guideClear');
-  var hint      = document.getElementById('searchHint');
-  var searchEl  = document.querySelector('.toc-search');
-  if (!content || !input) return;
+  // Build TOC from section H2s
+  var sections = document.querySelectorAll('main.content .section');
+  var ol = document.getElementById('tocList');
+  ol.innerHTML = Array.prototype.map.call(sections, function (s) {
+    var h = s.querySelector('h2'); if (!h) return '';
+    return '<li><a href="#' + s.id + '" data-title="' + h.textContent.toLowerCase() + '">' + h.textContent + '</a></li>';
+  }).join('');
 
-  // Group .content children by their preceding H1/H2 (each becomes a "section")
-  var sections = {};
-  var currentId = null;
-  Array.prototype.forEach.call(content.children, function (el) {
-    if ((el.tagName === 'H1' || el.tagName === 'H2') && el.id) {
-      currentId = el.id;
-      sections[currentId] = { text: '', els: [el] };
-    } else if (currentId) {
-      sections[currentId].els.push(el);
-    }
-  });
-  Object.keys(sections).forEach(function (id) {
-    sections[id].text = sections[id].els
-      .map(function (e) { return (e.textContent || '').toLowerCase(); })
-      .join(' ');
-  });
-
-  function applyFilter(query) {
-    query = (query || '').trim().toLowerCase();
-    if (searchEl) searchEl.classList.toggle('has-query', query.length > 0);
-
-    if (!query) {
-      Object.keys(sections).forEach(function (id) {
-        sections[id].els.forEach(function (e) { e.classList.remove('section-hidden'); });
-      });
-      Array.prototype.forEach.call(
-        document.querySelectorAll('.toc a:not(.section)'),
-        function (a) { a.classList.remove('toc-no-match'); }
-      );
-      if (hint) hint.style.display = 'none';
-      return;
-    }
-
-    var matchCount = 0;
-    Object.keys(sections).forEach(function (id) {
-      var matches = sections[id].text.indexOf(query) >= 0;
-      sections[id].els.forEach(function (e) { e.classList.toggle('section-hidden', !matches); });
-      var tocLink = document.querySelector('.toc a[href="#' + id + '"]');
-      if (tocLink) tocLink.classList.toggle('toc-no-match', !matches);
-      if (matches) matchCount++;
+  // Filter by search
+  document.getElementById('tocSearch').addEventListener('input', function (e) {
+    var q = e.target.value.toLowerCase();
+    ol.querySelectorAll('li').forEach(function (li) {
+      var a = li.querySelector('a');
+      var match = !q || (a.dataset.title || '').indexOf(q) >= 0 || a.textContent.toLowerCase().indexOf(q) >= 0;
+      li.classList.toggle('hidden', !match);
     });
-
-    if (hint) {
-      hint.style.display = 'block';
-      var safe = query.replace(/[<>&"']/g, '');
-      hint.innerHTML = '<strong>' + matchCount + '</strong> section' + (matchCount===1?'':'s') + ' match &ldquo;' + safe + '&rdquo;';
-    }
-  }
-
-  input.addEventListener('input', function (e) { applyFilter(e.target.value); });
-  if (clearBtn) clearBtn.addEventListener('click', function () { input.value = ''; applyFilter(''); input.focus(); });
-
-  // Keyboard: Ctrl+/ or Cmd+/ focuses the search box (Ctrl+F still works as browser find)
-  document.addEventListener('keydown', function (e) {
-    if ((e.ctrlKey || e.metaKey) && e.key === '/') {
-      e.preventDefault();
-      input.focus();
-      input.select();
-    }
-    if (e.key === 'Escape' && document.activeElement === input) {
-      input.value = ''; applyFilter(''); input.blur();
-    }
   });
 })();
 </script>
-
 </body>
 </html>
