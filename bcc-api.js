@@ -54,11 +54,17 @@
     add('preconnect', 'https://login.microsoftonline.com', { crossorigin: '' });
     // Logo shows up in every page's topbar and the home page hero.
     add('preload', '/bcc-logo.png', { as: 'image', fetchpriority: 'high' });
-    // Brand fonts: Inter for body, Cinzel for the wordmark + page headings.
-    // Loaded async so a slow font CDN doesn't block first paint.
+    // Brand fonts: Inter for body, Source Serif 4 for the wordmark + page
+    // headings. (The fonts come from bcc-brand.css's @import; this just
+    // warms the connection.)
     add('preconnect', 'https://fonts.googleapis.com');
     add('preconnect', 'https://fonts.gstatic.com', { crossorigin: '' });
-    add('stylesheet', 'https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;500;600;700;800&display=swap');
+    // Canonical brand stylesheet (single source of truth — design tokens +
+    // components). Injected ahead of any page-specific styles so per-page
+    // CSS can override locally if needed. The .bcc body class isn't
+    // required for the :root tokens to apply; component classes (.btn,
+    // .card, .tag, etc.) only activate inside a .bcc wrapper.
+    add('stylesheet', '/bcc-brand.css');
 
     // ---- PWA installability ----
     // Web App Manifest — lets browsers offer "Add to Home Screen" on every

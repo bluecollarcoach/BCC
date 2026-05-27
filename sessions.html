@@ -11,9 +11,9 @@
 <style>
   :root {
     --ink:#1a1a1a; --ink-soft:#2b2b2b; --ink-line:#2e2c27;
-    --gold:#a8884a; --gold-warm:#c2a05c; --gold-deep:#876d3a;
-    --gold-fade:rgba(168,136,74,0.12);
-    --chrome:#f6f6f4; --chrome-mute:#e2e1dd; --muted:#8a877e;
+    --gold:#c5a55a; --gold-warm:#d4b67a; --gold-deep:#a8884a;
+    --gold-fade:rgba(197,165,90,0.12);
+    --chrome:#f6f6f4; --chrome-mute:#e6e5e1; --muted:#6b7077;
   }
   * { box-sizing:border-box; }
   body { margin:0; font-family:'Inter', system-ui, sans-serif; color:var(--ink); background:var(--chrome); }
@@ -25,7 +25,7 @@
   }
   header.topbar a.home { display:flex; align-items:center; gap:12px; text-decoration:none; color:var(--chrome); }
   header.topbar img { height:30px; }
-  header.topbar .wordmark { font-family:'Cinzel', serif; font-size:14px; font-weight:700; letter-spacing:1.5px; }
+  header.topbar .wordmark { font-family:'Source Serif 4', Georgia, serif; font-size:14px; font-weight:700; letter-spacing:1.5px; }
   header.topbar .wordmark .light { color:var(--gold); }
   header.topbar .module {
     font-size:11px; font-weight:700; letter-spacing:2.5px; text-transform:uppercase; color:var(--gold-warm);
@@ -34,7 +34,7 @@
 
   .page { max-width:1200px; margin:0 auto; padding:22px 22px 70px; }
   .page-head { display:flex; align-items:flex-end; justify-content:space-between; gap:14px; margin-bottom:18px; flex-wrap:wrap; }
-  .page-head h1 { font-family:'Cinzel', serif; font-size:26px; margin:0; }
+  .page-head h1 { font-family:'Source Serif 4', Georgia, serif; font-size:26px; margin:0; }
   .page-head .sub { color:var(--muted); font-size:13px; margin-top:4px; }
 
   .toolbar {
@@ -45,7 +45,7 @@
   .toolbar .navbtns { display:flex; gap:6px; }
   .toolbar .navbtns button { min-height:38px; padding:0 12px; border:1px solid var(--chrome-mute); background:#fff; border-radius:8px; cursor:pointer; font:inherit; font-weight:700; font-size:13px; color:var(--ink); }
   .toolbar .navbtns button:hover { background:var(--chrome-mute); }
-  .toolbar .label { font-family:'Cinzel', serif; font-size:16px; flex:1; text-align:center; }
+  .toolbar .label { font-family:'Source Serif 4', Georgia, serif; font-size:16px; flex:1; text-align:center; }
   .toolbar .btn { min-height:38px; border:0; border-radius:8px; padding:0 14px; font:inherit; font-weight:700; font-size:13px; cursor:pointer; }
   .btn-primary { background:var(--gold); color:#fff; }
   .btn-primary:hover { background:var(--gold-deep); }
@@ -62,7 +62,7 @@
   .day.today { border-color:var(--gold); box-shadow:0 0 0 1px var(--gold) inset; }
   .day .header { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px; }
   .day .header .dow { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:1.4px; font-weight:700; }
-  .day .header .num { font-family:'Cinzel', serif; font-size:18px; color:var(--ink); }
+  .day .header .num { font-family:'Source Serif 4', Georgia, serif; font-size:18px; color:var(--ink); }
   .day.today .header .num { color:var(--gold-deep); }
   .day .events { display:flex; flex-direction:column; gap:5px; flex:1; }
   .day .events .ev {
@@ -89,7 +89,7 @@
     background:#fff; border-radius:14px; padding:22px; max-width:540px; width:100%;
     max-height:90vh; overflow-y:auto;
   }
-  .modal h3 { font-family:'Cinzel', serif; font-size:18px; margin:0 0 14px; }
+  .modal h3 { font-family:'Source Serif 4', Georgia, serif; font-size:18px; margin:0 0 14px; }
   .modal .form-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
   .modal label { display:flex; flex-direction:column; gap:4px; font-size:12px; font-weight:600; color:var(--muted); }
   .modal input, .modal select, .modal textarea {

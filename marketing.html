@@ -11,9 +11,9 @@
 <style>
   :root {
     --ink:#1a1a1a; --ink-soft:#2b2b2b; --ink-line:#2e2c27;
-    --gold:#a8884a; --gold-warm:#c2a05c; --gold-deep:#876d3a;
-    --gold-fade:rgba(168,136,74,0.12);
-    --chrome:#f6f6f4; --chrome-mute:#e2e1dd; --muted:#8a877e;
+    --gold:#c5a55a; --gold-warm:#d4b67a; --gold-deep:#a8884a;
+    --gold-fade:rgba(197,165,90,0.12);
+    --chrome:#f6f6f4; --chrome-mute:#e6e5e1; --muted:#6b7077;
   }
   * { box-sizing:border-box; }
   body { margin:0; font-family:'Inter', system-ui, sans-serif; color:var(--ink); background:var(--chrome); }
@@ -24,7 +24,7 @@
   }
   header.topbar a.home { display:flex; align-items:center; gap:12px; text-decoration:none; color:var(--chrome); }
   header.topbar img { height:30px; }
-  header.topbar .wordmark { font-family:'Cinzel', serif; font-size:14px; font-weight:700; letter-spacing:1.5px; }
+  header.topbar .wordmark { font-family:'Source Serif 4', Georgia, serif; font-size:14px; font-weight:700; letter-spacing:1.5px; }
   header.topbar .wordmark .light { color:var(--gold); }
   header.topbar .module {
     font-size:11px; font-weight:700; letter-spacing:2.5px; text-transform:uppercase; color:var(--gold-warm);
@@ -32,7 +32,7 @@
   }
   .page { max-width:1200px; margin:0 auto; padding:22px 22px 70px; }
   .page-head { display:flex; align-items:flex-end; justify-content:space-between; gap:14px; margin-bottom:18px; flex-wrap:wrap; }
-  .page-head h1 { font-family:'Cinzel', serif; font-size:26px; margin:0; }
+  .page-head h1 { font-family:'Source Serif 4', Georgia, serif; font-size:26px; margin:0; }
   .page-head .sub { color:var(--muted); font-size:13px; margin-top:4px; }
 
   /* Channel status row */
@@ -45,7 +45,7 @@
     padding:14px; text-align:center;
   }
   .channel-card .icon { font-size:24px; margin-bottom:6px; }
-  .channel-card .name { font-family:'Cinzel', serif; font-size:14px; font-weight:700; margin-bottom:4px; }
+  .channel-card .name { font-family:'Source Serif 4', Georgia, serif; font-size:14px; font-weight:700; margin-bottom:4px; }
   .channel-card .status { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; }
   .channel-card .status .dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:4px; vertical-align:middle; }
   .channel-card.connected .status { color:#065f46; }
@@ -100,13 +100,13 @@
   .icon-btn:hover { background:var(--chrome-mute); color:var(--ink); }
   .icon-btn.danger:hover { background:#f3e0e0; color:#6a1c1c; }
   .empty { padding:48px 20px; text-align:center; color:var(--muted); }
-  .empty .big { font-family:'Cinzel', serif; font-size:20px; color:var(--ink); margin-bottom:6px; }
+  .empty .big { font-family:'Source Serif 4', Georgia, serif; font-size:20px; color:var(--ink); margin-bottom:6px; }
 
   /* Edit modal */
   .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:200; display:none; align-items:center; justify-content:center; padding:18px; }
   .modal-bg.open { display:flex; }
   .modal { background:#fff; border-radius:14px; padding:22px; max-width:640px; width:100%; max-height:90vh; overflow-y:auto; }
-  .modal h3 { font-family:'Cinzel', serif; font-size:18px; margin:0 0 14px; }
+  .modal h3 { font-family:'Source Serif 4', Georgia, serif; font-size:18px; margin:0 0 14px; }
   .modal label { display:flex; flex-direction:column; gap:4px; font-size:12px; font-weight:600; color:var(--muted); }
   .modal input, .modal select, .modal textarea {
     border:1px solid var(--chrome-mute); border-radius:8px; padding:9px 11px; font:inherit; font-size:14px;

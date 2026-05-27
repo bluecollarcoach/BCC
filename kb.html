@@ -11,8 +11,8 @@
 <style>
   :root {
     --ink:#1a1a1a; --ink-line:#2e2c27;
-    --gold:#a8884a; --gold-warm:#c2a05c; --gold-deep:#876d3a; --gold-fade:rgba(168,136,74,0.12);
-    --chrome:#f6f6f4; --chrome-mute:#e2e1dd; --muted:#8a877e;
+    --gold:#c5a55a; --gold-warm:#d4b67a; --gold-deep:#a8884a; --gold-fade:rgba(197,165,90,0.12);
+    --chrome:#f6f6f4; --chrome-mute:#e6e5e1; --muted:#6b7077;
   }
   * { box-sizing:border-box; }
   body { margin:0; font-family:'Inter', system-ui, sans-serif; color:var(--ink); background:var(--chrome); }
@@ -23,7 +23,7 @@
   }
   header.topbar a.home { display:flex; align-items:center; gap:12px; text-decoration:none; color:var(--chrome); }
   header.topbar img { height:30px; }
-  header.topbar .wordmark { font-family:'Cinzel', serif; font-size:14px; font-weight:700; letter-spacing:1.5px; }
+  header.topbar .wordmark { font-family:'Source Serif 4', Georgia, serif; font-size:14px; font-weight:700; letter-spacing:1.5px; }
   header.topbar .wordmark .light { color:var(--gold); }
   header.topbar .module {
     font-size:11px; font-weight:700; letter-spacing:2.5px; text-transform:uppercase; color:var(--gold-warm);
@@ -31,7 +31,7 @@
   }
   .page { max-width:1100px; margin:0 auto; padding:22px 22px 70px; }
   .page-head { display:flex; align-items:flex-end; justify-content:space-between; gap:14px; margin-bottom:18px; flex-wrap:wrap; }
-  .page-head h1 { font-family:'Cinzel', serif; font-size:26px; margin:0; }
+  .page-head h1 { font-family:'Source Serif 4', Georgia, serif; font-size:26px; margin:0; }
   .page-head .sub { color:var(--muted); font-size:13px; margin-top:4px; }
   .btn { min-height:38px; border:0; border-radius:8px; padding:0 14px; font:inherit; font-weight:700; font-size:13px; cursor:pointer; }
   .btn-primary { background:var(--gold); color:#fff; }
@@ -63,13 +63,13 @@
   .list .item .meta  { font-size:11.5px; color:var(--muted); margin-top:3px; display:flex; gap:8px; flex-wrap:wrap; }
   .tag { display:inline-block; background:var(--gold-fade); color:var(--gold-deep); font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.8px; padding:2px 7px; border-radius:999px; }
   .empty { padding:48px 20px; text-align:center; color:var(--muted); }
-  .empty .big { font-family:'Cinzel', serif; font-size:18px; color:var(--ink); margin-bottom:6px; }
+  .empty .big { font-family:'Source Serif 4', Georgia, serif; font-size:18px; color:var(--ink); margin-bottom:6px; }
 
   .reader {
     background:#fff; border:1px solid var(--chrome-mute); border-radius:12px;
     padding:22px 26px; min-height:60vh;
   }
-  .reader h2 { font-family:'Cinzel', serif; font-size:22px; margin:0 0 6px; }
+  .reader h2 { font-family:'Source Serif 4', Georgia, serif; font-size:22px; margin:0 0 6px; }
   .reader .meta { color:var(--muted); font-size:12.5px; margin-bottom:14px; display:flex; gap:10px; flex-wrap:wrap; }
   .reader .meta .tags { display:flex; gap:5px; flex-wrap:wrap; }
   .reader .head-actions { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
@@ -77,7 +77,7 @@
     font-size:14px; line-height:1.7; color:var(--ink);
     white-space:pre-wrap; word-wrap:break-word;
   }
-  .reader .body h1, .reader .body h2, .reader .body h3 { font-family:'Cinzel', serif; margin-top:1.2em; margin-bottom:0.4em; }
+  .reader .body h1, .reader .body h2, .reader .body h3 { font-family:'Source Serif 4', Georgia, serif; margin-top:1.2em; margin-bottom:0.4em; }
   .reader .body code { background:var(--chrome-mute); padding:1px 5px; border-radius:4px; font-family:ui-monospace, monospace; font-size:13px; }
   .reader .empty { background:transparent; padding:48px 20px; }
 
@@ -255,7 +255,7 @@
     var a = id ? getArticle(id) : { id: '', title: '', tags: [], body: '' };
     readerEl.innerHTML =
       '<div class="editor open">' +
-        '<h2 style="font-family:Cinzel,serif;margin:0 0 12px;">' + (id ? 'Edit article' : 'New article') + '</h2>' +
+        '<h2 style="font-family:'Source Serif 4',Georgia,serif;margin:0 0 12px;">' + (id ? 'Edit article' : 'New article') + '</h2>' +
         '<label>Title<input type="text" id="ed-title" /></label>' +
         '<label>Tags (comma-separated)<input type="text" id="ed-tags" /></label>' +
         '<label>Body (Markdown lite: # ## ### **bold** `code`)<textarea id="ed-body"></textarea></label>' +

@@ -1,0 +1,370 @@
+/* ============================================================
+   BLUE COLLAR COACH — BRAND STYLESHEET
+   bcc-brand.css  ·  v1.0
+   ------------------------------------------------------------
+   A drop-in brand + component stylesheet for any Blue Collar
+   Coach application.
+
+   DESIGN
+   - Brand tokens live on :root (prefixed --bcc-*) so they are
+     available app-wide. Reference them anywhere: var(--bcc-gold),
+     var(--bcc-radius), etc.
+   - Component classes are scoped under a .bcc wrapper to avoid
+     collisions with whatever else is in the host app.
+
+   HOW TO USE
+   1. Load it:
+        <link rel="stylesheet" href="bcc-brand.css">
+
+   2. Add class="bcc" to your root container (or <body>) so the
+     component styles take effect:
+        <body class="bcc"> ... </body>
+
+   3. Use the component classes inside:
+        <button class="btn">Save</button>
+        <span class="tag">Coaching</span>
+        <div class="card">...</div>
+
+   The tokens are always available even outside the .bcc wrapper.
+   Only the component selectors require the wrapper.
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap');
+
+/* ------------------------------------------------------------
+   1. BRAND TOKENS  (global — :root)
+   ------------------------------------------------------------ */
+:root{
+  /* Inks — dark neutrals */
+  --bcc-ink-900:#0f0f0f;
+  --bcc-ink-800:#1a1a1a;
+  --bcc-ink-700:#252525;
+  --bcc-ink-600:#2b2b2b;
+
+  /* Gold — single accent. Use sparingly. */
+  --bcc-gold:#c5a55a;       /* fills, ticks, hairlines           */
+  --bcc-gold-deep:#a8884a;  /* gold text / links on light bg     */
+  --bcc-gold-tint:#f7f1e3;  /* pale-gold tag fill                */
+
+  /* Surfaces */
+  --bcc-cream:#faf7f0;
+  --bcc-bg:#f6f6f4;
+  --bcc-surface:#ffffff;
+
+  /* Text & lines */
+  --bcc-text:#23262b;
+  --bcc-muted:#6b7077;
+  --bcc-border:#e6e5e1;
+
+  /* Shape & depth */
+  --bcc-radius:9px;
+  --bcc-radius-lg:14px;
+  --bcc-shadow:0 1px 2px rgba(20,20,20,.05),0 6px 20px rgba(20,20,20,.05);
+
+  /* Type families */
+  --bcc-font-sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --bcc-font-serif:"Source Serif 4",Georgia,serif;
+}
+
+/* ------------------------------------------------------------
+   2. BASE  (applies inside .bcc — does not touch the host app)
+   ------------------------------------------------------------ */
+.bcc{
+  font-family:var(--bcc-font-sans);
+  color:var(--bcc-text);
+  background:var(--bcc-surface);
+  line-height:1.62;
+  font-size:16px;
+  -webkit-font-smoothing:antialiased;
+}
+.bcc *{box-sizing:border-box;}
+.bcc img{max-width:100%;display:block;}
+.bcc a{color:var(--bcc-gold-deep);text-decoration:none;}
+
+/* ------------------------------------------------------------
+   3. TYPOGRAPHY
+   Fluid headings; .eyebrow = small gold label; .lead = intro;
+   .serif = Source Serif 4 for pull quotes and wordmarks.
+   ------------------------------------------------------------ */
+.bcc h1,.bcc h2,.bcc h3,.bcc h4{
+  color:var(--bcc-text);margin:0 0 .4em;line-height:1.15;
+  letter-spacing:-0.022em;font-weight:800;
+}
+.bcc h1{font-size:clamp(2.05rem,4.2vw,3.2rem);}
+.bcc h2{font-size:clamp(1.6rem,2.6vw,2.1rem);}
+.bcc h3{font-size:1.08rem;font-weight:700;letter-spacing:-0.01em;}
+.bcc p{margin:0 0 1em;}
+.bcc .eyebrow{
+  font-size:11.5px;font-weight:700;letter-spacing:.24em;
+  text-transform:uppercase;color:var(--bcc-gold-deep);margin:0 0 14px;
+}
+.bcc .lead{font-size:1.13rem;color:var(--bcc-muted);}
+.bcc .serif{font-family:var(--bcc-font-serif);}
+
+/* ------------------------------------------------------------
+   4. BUTTONS
+   .btn (dark default) · .btn-outline · .btn-light
+   The button.btn block forces the style onto native <button>
+   when a host theme tries to override them.
+   ------------------------------------------------------------ */
+.bcc .btn{
+  display:inline-flex;align-items:center;gap:8px;padding:13px 26px;
+  border:0;border-radius:var(--bcc-radius);font:inherit;font-size:14px;
+  font-weight:600;cursor:pointer;transition:background .15s,transform .07s;
+  background:var(--bcc-ink-800);color:#fff;
+}
+.bcc .btn:hover{background:var(--bcc-ink-600);color:#fff;}
+.bcc .btn:active{transform:translateY(1px);}
+.bcc .btn-outline{background:transparent;border:1px solid var(--bcc-border);color:var(--bcc-text);}
+.bcc .btn-outline:hover{background:var(--bcc-bg);color:var(--bcc-text);}
+.bcc .btn-light{background:#fff;color:var(--bcc-ink-800);}
+.bcc .btn-light:hover{background:#efefef;color:var(--bcc-ink-800);}
+.bcc button.btn{
+  background:var(--bcc-ink-800) !important;color:#fff !important;
+  font:600 14px/1 var(--bcc-font-sans) !important;
+  padding:14px 28px !important;border:0 !important;border-radius:var(--bcc-radius) !important;
+  width:auto !important;display:inline-flex !important;align-items:center !important;
+  justify-content:center !important;cursor:pointer !important;
+  text-transform:none !important;letter-spacing:normal !important;
+}
+.bcc button.btn:hover{background:var(--bcc-ink-600) !important;}
+.bcc button.btn:disabled{opacity:.6 !important;cursor:default !important;}
+
+/* ------------------------------------------------------------
+   5. LAYOUT
+   .wrap = centered max-width. section = vertical rhythm.
+   .bg-soft / .bg-cream = tinted backgrounds.
+   .grid + .g-2 / .g-3 = card grids. .split = 2-column block.
+   ------------------------------------------------------------ */
+.bcc .wrap{max-width:1140px;margin:0 auto;padding:0 30px;}
+.bcc section{padding:74px 0;}
+.bcc .bg-soft{background:var(--bcc-bg);}
+.bcc .bg-cream{background:var(--bcc-cream);}
+.bcc .sec-head{max-width:64ch;margin-bottom:40px;}
+.bcc .sec-head .lead{font-size:1.05rem;margin:0;}
+.bcc .grid{display:grid;gap:18px;}
+.bcc .g-2{grid-template-columns:repeat(2,1fr);}
+.bcc .g-3{grid-template-columns:repeat(3,1fr);}
+.bcc .split{display:grid;grid-template-columns:1.05fr .95fr;gap:52px;align-items:center;}
+
+/* ------------------------------------------------------------
+   6. HEADER & NAV
+   Sticky translucent header. .nav-toggle = mobile hamburger
+   (hidden until <=860px). Toggle .nav-open on .site-header
+   to open the mobile menu.
+   ------------------------------------------------------------ */
+.bcc .site-header{
+  position:sticky;top:0;z-index:50;background:rgba(255,255,255,.96);
+  backdrop-filter:saturate(160%) blur(8px);border-bottom:1px solid var(--bcc-border);
+}
+.bcc .site-header .row{display:flex;align-items:center;justify-content:space-between;padding:13px 0;}
+.bcc .brand{display:flex;align-items:center;gap:11px;}
+.bcc .brand .emblem{width:40px;height:40px;border-radius:50%;background:transparent;flex:none;}
+.bcc .brand .wm{
+  font-family:var(--bcc-font-serif);font-weight:600;
+  font-size:20px;color:var(--bcc-ink-800);letter-spacing:.005em;
+}
+.bcc .nav{display:flex;gap:25px;align-items:center;}
+.bcc .nav a{color:var(--bcc-text);font-size:13.5px;font-weight:500;}
+.bcc .nav a:hover,.bcc .nav a.active{color:var(--bcc-gold-deep);}
+.bcc .nav-toggle{
+  display:none;width:42px;height:42px;border:1px solid var(--bcc-border);
+  border-radius:9px;background:#fff;cursor:pointer;flex-direction:column;
+  justify-content:center;align-items:center;gap:4px;padding:0;flex:none;
+}
+.bcc .nav-toggle span{
+  display:block;width:19px;height:2px;background:var(--bcc-ink-800);
+  border-radius:2px;transition:transform .2s,opacity .2s;
+}
+.bcc .site-header.nav-open .nav-toggle span:nth-child(1){transform:translateY(6px) rotate(45deg);}
+.bcc .site-header.nav-open .nav-toggle span:nth-child(2){opacity:0;}
+.bcc .site-header.nav-open .nav-toggle span:nth-child(3){transform:translateY(-6px) rotate(-45deg);}
+.bcc .nav a.nav-cta{display:none;}
+
+/* ------------------------------------------------------------
+   7. HERO
+   .hero = page intro band. .hero-tight = shorter variant.
+   .hero-actions = button row.
+   ------------------------------------------------------------ */
+.bcc .hero{
+  background:linear-gradient(180deg,var(--bcc-cream) 0%,var(--bcc-surface) 100%);
+  border-bottom:1px solid var(--bcc-border);padding:84px 0 72px;
+}
+.bcc .hero h1{max-width:19ch;}
+.bcc .hero .lead{max-width:48ch;margin:20px 0 30px;}
+.bcc .hero-actions{display:flex;gap:13px;flex-wrap:wrap;}
+.bcc .hero-tight{padding:64px 0 56px;}
+.bcc .hero-tight h1{max-width:24ch;}
+
+/* ------------------------------------------------------------
+   8. CARDS & TAGS
+   .card = bordered surface with gold top-bar on hover.
+   .tag = small pale-gold pill label.
+   ------------------------------------------------------------ */
+.bcc .card{
+  position:relative;background:var(--bcc-surface);border:1px solid var(--bcc-border);
+  border-radius:var(--bcc-radius-lg);padding:24px;box-shadow:var(--bcc-shadow);
+  overflow:hidden;transition:transform .12s,box-shadow .12s;
+}
+.bcc .card:hover{transform:translateY(-3px);box-shadow:0 12px 30px rgba(20,20,20,.09);}
+.bcc .card::before{
+  content:"";position:absolute;top:0;left:0;right:0;height:3px;
+  background:var(--bcc-gold);opacity:0;transition:opacity .12s;
+}
+.bcc .card:hover::before{opacity:1;}
+.bcc .card h3{margin:0 0 6px;}
+.bcc .card p{color:var(--bcc-muted);font-size:.93rem;margin:0;}
+.bcc .card .tags{margin-top:12px;display:flex;flex-wrap:wrap;gap:6px;}
+.bcc .tag{
+  font-size:10.5px;font-weight:600;color:var(--bcc-gold-deep);
+  background:var(--bcc-gold-tint);border-radius:999px;padding:3px 10px;letter-spacing:.02em;
+}
+
+/* ------------------------------------------------------------
+   9. SERVICE ROW  (.svc) — stacked detail blocks
+   ------------------------------------------------------------ */
+.bcc .svc{
+  border:1px solid var(--bcc-border);border-radius:var(--bcc-radius-lg);
+  padding:30px 32px;background:var(--bcc-surface);box-shadow:var(--bcc-shadow);margin-bottom:18px;
+}
+.bcc .svc .eyebrow{margin-bottom:8px;}
+.bcc .svc h3{font-size:1.32rem;font-weight:800;letter-spacing:-0.02em;margin:0 0 8px;}
+.bcc .svc p{color:var(--bcc-muted);margin:0 0 4px;max-width:70ch;}
+.bcc .svc .tags{margin-top:14px;display:flex;flex-wrap:wrap;gap:7px;}
+
+/* ------------------------------------------------------------
+   10. PANEL & QUOTE
+   .panel = dark callout. .quote = serif pull-quote.
+   Wrap quote marks in <span class="mk"> for the gold accent.
+   ------------------------------------------------------------ */
+.bcc .panel{background:var(--bcc-ink-800);border-radius:var(--bcc-radius-lg);padding:34px 32px;color:#e9e9e7;}
+.bcc .panel::before{content:"";display:block;width:36px;height:3px;background:var(--bcc-gold);margin-bottom:18px;}
+.bcc .panel h3{color:#fff;}
+.bcc .panel p{color:rgba(255,255,255,.74);font-size:.96rem;margin:0;}
+.bcc .quote{
+  font-family:var(--bcc-font-serif);font-size:1.3rem;
+  font-weight:500;line-height:1.5;color:var(--bcc-text);
+}
+.bcc .quote .mk{color:var(--bcc-gold);}
+
+/* ------------------------------------------------------------
+   11. LISTS
+   .list = hairline-divided list. <span class="num"> for a
+   serif gold number, <span class="tick"> for a gold marker.
+   .cols-2 = two-column text flow.
+   ------------------------------------------------------------ */
+.bcc .list{list-style:none;margin:0;padding:0;}
+.bcc .list li{display:flex;gap:13px;align-items:flex-start;padding:13px 0;border-bottom:1px solid var(--bcc-border);}
+.bcc .list li:last-child{border-bottom:0;}
+.bcc .list li .num{
+  font-family:var(--bcc-font-serif);color:var(--bcc-gold-deep);
+  font-weight:600;font-size:15px;flex:none;width:24px;
+}
+.bcc .list li .tick{color:var(--bcc-gold);flex:none;font-weight:700;}
+.bcc .list li b{font-weight:600;color:var(--bcc-text);}
+.bcc .cols-2{column-count:2;column-gap:34px;}
+@media(max-width:760px){.bcc .cols-2{column-count:1;}}
+
+/* ------------------------------------------------------------
+   12. FEATURE BLOCK
+   Dark two-pane block: .fbody (text) + .fside (checklist).
+   ------------------------------------------------------------ */
+.bcc .feature{background:var(--bcc-ink-800);border-radius:var(--bcc-radius-lg);overflow:hidden;color:#e8e8e6;}
+.bcc .feature .fbar{height:3px;background:var(--bcc-gold);}
+.bcc .feature .finner{display:grid;grid-template-columns:1.45fr 1fr;}
+.bcc .feature .fbody{padding:44px 42px;}
+.bcc .feature .fbody .eyebrow{color:var(--bcc-gold);}
+.bcc .feature .fbody h2{color:#fff;}
+.bcc .feature .fbody p{color:rgba(255,255,255,.74);}
+.bcc .feature .fside{
+  background:var(--bcc-ink-600);padding:40px 36px;display:flex;
+  flex-direction:column;justify-content:center;gap:13px;
+}
+.bcc .feature .fside .fli{display:flex;gap:11px;font-size:.93rem;color:rgba(255,255,255,.86);}
+.bcc .feature .fside .fli b{color:var(--bcc-gold);flex:none;}
+
+/* ------------------------------------------------------------
+   13. CTA BAND  (.cta) — centered call-to-action section
+   ------------------------------------------------------------ */
+.bcc .cta{background:var(--bcc-cream);text-align:center;}
+.bcc .cta h2{max-width:22ch;margin:0 auto .35em;}
+.bcc .cta .lead{max-width:52ch;margin:0 auto 26px;}
+
+/* ------------------------------------------------------------
+   14. FORMS
+   .form wraps fields. Uppercase <label>, full-width inputs,
+   gold focus ring. .form-status = inline message line.
+   ------------------------------------------------------------ */
+.bcc .form{max-width:560px;}
+.bcc .form label{
+  display:block;font-size:11px;font-weight:700;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--bcc-muted);margin:0 0 6px;
+}
+.bcc .form input,.bcc .form textarea{
+  width:100%;padding:11px 13px;border:1px solid var(--bcc-border) !important;
+  border-radius:var(--bcc-radius);background:#ffffff !important;color:var(--bcc-text) !important;
+  font:inherit !important;font-size:14px;margin-bottom:16px;-webkit-text-fill-color:var(--bcc-text);
+}
+.bcc .form input::placeholder,.bcc .form textarea::placeholder{color:#9aa0a6;}
+.bcc .form input:focus,.bcc .form textarea:focus{
+  outline:none;border-color:var(--bcc-gold) !important;box-shadow:0 0 0 3px rgba(197,165,90,.16);
+}
+.bcc .form textarea{min-height:120px;resize:vertical;}
+.bcc .form-status{font-size:13.5px;margin-top:6px;min-height:18px;}
+
+/* ------------------------------------------------------------
+   15. FOOTER
+   Dark footer. .fcols = column grid. .fbar = bottom legal bar.
+   ------------------------------------------------------------ */
+.bcc .site-footer{background:var(--bcc-ink-800);color:#c9c9c6;padding:54px 0 0;}
+.bcc .site-footer .fcols{display:grid;grid-template-columns:1.7fr 1fr 1fr;gap:40px;padding-bottom:36px;}
+.bcc .site-footer .brand .wm{color:#fff;}
+.bcc .site-footer h4{
+  color:#fff;font-size:12px;letter-spacing:.14em;text-transform:uppercase;margin:0 0 14px;
+}
+.bcc .site-footer p{color:#9a9a96;font-size:13.5px;}
+.bcc .site-footer nav{display:flex;flex-direction:column;gap:9px;}
+.bcc .site-footer nav a{color:#c9c9c6;font-size:13.5px;}
+.bcc .site-footer nav a:hover{color:var(--bcc-gold);}
+.bcc .site-footer .fbar{
+  border-top:1px solid rgba(255,255,255,.08);padding:18px 0;
+  font-size:12px;color:#86867f;text-align:center;
+}
+
+/* ------------------------------------------------------------
+   16. RESPONSIVE
+   <=860px: grids collapse to one column; header nav becomes
+   a hamburger; footer columns center. <=430px: headings step
+   down a little for very narrow phones.
+   ------------------------------------------------------------ */
+@media(max-width:860px){
+  .bcc .g-3,.bcc .g-2,.bcc .split,
+  .bcc .feature .finner,.bcc .site-footer .fcols{grid-template-columns:1fr;}
+  .bcc .cols-2{column-count:1;}
+  .bcc .site-header .row{flex-wrap:wrap;gap:0;justify-content:space-between;}
+  .bcc .nav-toggle{display:flex;}
+  .bcc .header-cta{display:none;}
+  .bcc .site-header .nav{
+    display:none;order:3;width:100%;flex-direction:column;align-items:stretch;
+    gap:0;margin-top:11px;border-top:1px solid var(--bcc-border);
+  }
+  .bcc .site-header.nav-open .nav{display:flex;}
+  .bcc .site-header .nav a{padding:13px 2px;border-bottom:1px solid var(--bcc-border);font-size:14.5px;}
+  .bcc .nav a.nav-cta{display:flex;justify-content:center;color:#fff;margin:14px 0 4px;padding:13px 26px;border-bottom:0;}
+  .bcc section{padding:50px 0;}
+  .bcc .hero{padding:50px 0 44px;}
+  .bcc .hero h1,.bcc .hero-tight h1{max-width:100%;}
+  .bcc .hero .lead,.bcc .cta h2,.bcc .cta .lead,.bcc .sec-head{max-width:100%;}
+  .bcc .wrap{padding:0 18px;}
+  .bcc .feature .fbody,.bcc .feature .fside,.bcc .panel,.bcc .svc{padding:24px 20px;}
+  .bcc .quote{font-size:1.16rem;}
+  .bcc .site-footer .fcols{text-align:center;}
+  .bcc .site-footer .brand{justify-content:center;}
+  .bcc .site-footer nav{align-items:center;}
+  .bcc .site-footer p{margin-left:auto;margin-right:auto;}
+}
+@media(max-width:430px){
+  .bcc h1{font-size:1.95rem;}
+  .bcc .brand .wm{font-size:18px;}
+  .bcc .brand .emblem{width:34px;height:34px;}
+}

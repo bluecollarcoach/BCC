@@ -25,6 +25,8 @@
     { "route": "/403.html",      "allowedRoles": ["anonymous", "authenticated"] },
     { "route": "/manifest.json", "allowedRoles": ["anonymous", "authenticated"] },
     { "route": "/sw.js",         "allowedRoles": ["anonymous", "authenticated"] },
+    { "route": "/bcc-brand.css", "allowedRoles": ["anonymous", "authenticated"] },
+    { "route": "/bcc-logo*.png", "allowedRoles": ["anonymous", "authenticated"] },
 
     { "route": "/api/data/*",  "allowedRoles": ["authenticated"] },
     { "route": "/api/profile", "allowedRoles": ["anonymous", "authenticated"] },

@@ -11,9 +11,9 @@
 <style>
   :root {
     --ink:#1a1a1a; --ink-soft:#2b2b2b; --ink-line:#2e2c27;
-    --gold:#a8884a; --gold-warm:#c2a05c; --gold-deep:#876d3a;
-    --gold-fade:rgba(168,136,74,0.12);
-    --chrome:#f6f6f4; --chrome-mute:#e2e1dd; --muted:#8a877e;
+    --gold:#c5a55a; --gold-warm:#d4b67a; --gold-deep:#a8884a;
+    --gold-fade:rgba(197,165,90,0.12);
+    --chrome:#f6f6f4; --chrome-mute:#e6e5e1; --muted:#6b7077;
   }
   * { box-sizing:border-box; }
   body { margin:0; font-family:'Inter', system-ui, sans-serif; color:var(--ink); background:var(--chrome); }
@@ -24,7 +24,7 @@
   }
   header.topbar a.home { display:flex; align-items:center; gap:12px; text-decoration:none; color:var(--chrome); }
   header.topbar img { height:30px; }
-  header.topbar .wordmark { font-family:'Cinzel', serif; font-size:14px; font-weight:700; letter-spacing:1.5px; }
+  header.topbar .wordmark { font-family:'Source Serif 4', Georgia, serif; font-size:14px; font-weight:700; letter-spacing:1.5px; }
   header.topbar .wordmark .light { color:var(--gold); }
   header.topbar .module {
     font-size:11px; font-weight:700; letter-spacing:2.5px; text-transform:uppercase; color:var(--gold-warm);
@@ -33,7 +33,7 @@
 
   .page { max-width:1100px; margin:0 auto; padding:22px 22px 70px; }
   .page-head { display:flex; align-items:flex-end; justify-content:space-between; gap:14px; margin-bottom:18px; flex-wrap:wrap; }
-  .page-head h1 { font-family:'Cinzel', serif; font-size:26px; margin:0; }
+  .page-head h1 { font-family:'Source Serif 4', Georgia, serif; font-size:26px; margin:0; }
   .page-head .sub { color:var(--muted); font-size:13px; margin-top:4px; }
 
   /* Upload area */
@@ -42,7 +42,7 @@
     padding:22px; margin-bottom:14px; text-align:center; transition:border-color 0.15s, background 0.15s;
   }
   .uploader.dragover { border-color:var(--gold); background:var(--gold-fade); }
-  .uploader h3 { font-family:'Cinzel', serif; font-size:18px; margin:0 0 4px; }
+  .uploader h3 { font-family:'Source Serif 4', Georgia, serif; font-size:18px; margin:0 0 4px; }
   .uploader p { color:var(--muted); font-size:13px; margin:0 0 12px; }
   .uploader .row { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; align-items:center; }
   .uploader input[type=text], .uploader input[type=file] {
@@ -89,7 +89,7 @@
   .icon-btn.danger:hover { background:#f3e0e0; color:#6a1c1c; }
 
   .empty { padding:48px 20px; text-align:center; color:var(--muted); }
-  .empty .big { font-family:'Cinzel', serif; font-size:20px; color:var(--ink); margin-bottom:6px; }
+  .empty .big { font-family:'Source Serif 4', Georgia, serif; font-size:20px; color:var(--ink); margin-bottom:6px; }
 
   .pill { display:inline-block; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:1px; padding:3px 9px; border-radius:999px; background:var(--gold-fade); color:var(--gold-deep); }
 
