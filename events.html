@@ -1,55 +1,314 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Events · BCC Connect</title>
-  <link rel="manifest" href="/manifest.json" />
-  <meta name="theme-color" content="#1a1a1a" />
-  <link rel="icon" href="/bcc-logo.png" />
-  <script defer src="/bcc-api.js"></script>
-  <style>
-    :root { color-scheme: light; }
-    * { box-sizing: border-box; }
-    body { margin: 0; font: 14px/1.45 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; color: #1a1a1a; background: #f6f6f4; }
-    header.topbar { display: flex; align-items: center; gap: 12px; padding: 12px 18px; background: #1a1a1a; color: #f6f6f4; }
-    header.topbar img { height: 28px; }
-    header.topbar h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: 0.2px; }
-    header.topbar .grow { flex: 1; }
-    main { max-width: 880px; margin: 0 auto; padding: 32px 18px; }
-    .module-stub {
-      background: #fff; border: 1px solid #e2e1dd; border-radius: 10px;
-      padding: 28px; box-shadow: 0 1px 3px rgba(0,0,0,.04);
-    }
-    .module-stub h2 { margin: 0 0 8px; font-size: 22px; }
-    .module-stub p { margin: 6px 0; color: #4b4b46; }
-    .module-stub .tag {
-      display: inline-block; padding: 3px 10px; border-radius: 999px;
-      background: #a8884a; color: #fff; font-size: 11px; font-weight: 700;
-      letter-spacing: 0.6px; text-transform: uppercase;
-    }
-    .module-stub ul { margin: 14px 0 0; padding-left: 22px; color: #1a1a1a; }
-    .module-stub li { padding: 3px 0; }
-    a { color: #a8884a; }
-  </style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#1a1a1a" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Events · BCC Connect</title>
+<link rel="icon" type="image/png" href="bcc-logo.png" />
+<link rel="manifest" href="manifest.json" />
+<style>
+  :root {
+    --ink:#1a1a1a; --ink-line:#2e2c27;
+    --gold:#a8884a; --gold-warm:#c2a05c; --gold-deep:#876d3a; --gold-fade:rgba(168,136,74,0.12);
+    --chrome:#f6f6f4; --chrome-mute:#e2e1dd; --muted:#8a877e;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:'Inter', system-ui, sans-serif; color:var(--ink); background:var(--chrome); }
+  header.topbar {
+    display:flex; align-items:center; gap:14px; padding:12px 22px; color:var(--chrome);
+    background:linear-gradient(90deg, #141414, #1f1f1f);
+    border-bottom:1px solid var(--ink-line); position:sticky; top:0; z-index:50;
+  }
+  header.topbar a.home { display:flex; align-items:center; gap:12px; text-decoration:none; color:var(--chrome); }
+  header.topbar img { height:30px; }
+  header.topbar .wordmark { font-family:'Cinzel', serif; font-size:14px; font-weight:700; letter-spacing:1.5px; }
+  header.topbar .wordmark .light { color:var(--gold); }
+  header.topbar .module {
+    font-size:11px; font-weight:700; letter-spacing:2.5px; text-transform:uppercase; color:var(--gold-warm);
+    border-left:1px solid rgba(255,255,255,0.18); padding-left:14px; margin-left:4px;
+  }
+  .page { max-width:1100px; margin:0 auto; padding:22px 22px 70px; }
+  .page-head { display:flex; align-items:flex-end; justify-content:space-between; gap:14px; margin-bottom:18px; flex-wrap:wrap; }
+  .page-head h1 { font-family:'Cinzel', serif; font-size:26px; margin:0; }
+  .page-head .sub { color:var(--muted); font-size:13px; margin-top:4px; }
+  .btn { min-height:38px; border:0; border-radius:8px; padding:0 14px; font:inherit; font-weight:700; font-size:13px; cursor:pointer; }
+  .btn-primary { background:var(--gold); color:#fff; }
+  .btn-primary:hover { background:var(--gold-deep); }
+  .btn-ghost { background:transparent; color:var(--ink); border:1px solid var(--chrome-mute); }
+  .btn-ghost:hover { background:var(--chrome-mute); }
+  .btn-danger { background:transparent; color:#6a1c1c; border:1px solid #e6c8c8; }
+  .btn-danger:hover { background:#f3e0e0; }
+
+  .ev-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:14px; }
+  .ev-card {
+    background:#fff; border:1px solid var(--chrome-mute); border-radius:12px;
+    padding:18px; cursor:pointer; position:relative; overflow:hidden;
+    transition:transform 0.15s, box-shadow 0.15s, border-color 0.15s;
+  }
+  .ev-card:hover { transform:translateY(-2px); box-shadow:0 10px 22px rgba(0,0,0,0.06); border-color:var(--gold); }
+  .ev-card::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; background:linear-gradient(90deg, var(--gold), var(--gold-warm)); }
+  .ev-card .when { font-size:11px; color:var(--gold-deep); font-weight:700; text-transform:uppercase; letter-spacing:1.2px; margin-bottom:4px; }
+  .ev-card h3 { font-family:'Cinzel', serif; font-size:17px; margin:0 0 4px; }
+  .ev-card .loc { font-size:12.5px; color:var(--muted); margin-bottom:10px; }
+  .ev-card .footer { display:flex; align-items:center; justify-content:space-between; font-size:12px; color:var(--muted); margin-top:10px; }
+  .ev-card .booked { font-family:'Cinzel', serif; font-size:14px; color:var(--ink); font-weight:700; }
+  .ev-card .booked .cap { font-family:'Inter', sans-serif; font-size:11.5px; color:var(--muted); font-weight:500; }
+  .ev-card .reg-open  { color:#065f46; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.8px; }
+  .ev-card .reg-closed{ color:#6a1c1c; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.8px; }
+  .empty { padding:48px 20px; text-align:center; color:var(--muted); background:#fff; border:1px solid var(--chrome-mute); border-radius:12px; }
+  .empty .big { font-family:'Cinzel', serif; font-size:20px; color:var(--ink); margin-bottom:6px; }
+
+  /* Modal */
+  .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:200; display:none; align-items:center; justify-content:center; padding:18px; }
+  .modal-bg.open { display:flex; }
+  .modal { background:#fff; border-radius:14px; padding:22px; max-width:640px; width:100%; max-height:90vh; overflow-y:auto; }
+  .modal h3 { font-family:'Cinzel', serif; font-size:18px; margin:0 0 14px; }
+  .modal label { display:flex; flex-direction:column; gap:4px; font-size:12px; font-weight:600; color:var(--muted); }
+  .modal input, .modal select, .modal textarea {
+    border:1px solid var(--chrome-mute); border-radius:8px; padding:9px 11px; font:inherit; font-size:14px; min-height:38px;
+    color:var(--ink); background:#fff; width:100%;
+  }
+  .modal textarea { min-height:60px; resize:vertical; }
+  .modal .grid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
+  @media (max-width:700px) { .modal .grid { grid-template-columns:1fr; } }
+  .modal .full { grid-column:1 / -1; }
+  .modal .actions { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; flex-wrap:wrap; }
+
+  .bookings { margin-top:18px; padding-top:14px; border-top:1px solid var(--chrome-mute); }
+  .bookings h4 { font-family:'Cinzel', serif; font-size:14px; margin:0 0 8px; }
+  .bookings ul { list-style:none; padding:0; margin:0; }
+  .bookings li { padding:6px 0; border-bottom:1px dashed var(--chrome-mute); font-size:13px; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .bookings li:last-child { border-bottom:none; }
+  .bookings .x { background:transparent; border:0; cursor:pointer; color:#6a1c1c; font-size:16px; padding:0 6px; }
+  .bookings .add { display:flex; gap:6px; margin-top:10px; }
+  .bookings .add input { flex:1; }
+</style>
+<script src="bcc-api.js" defer></script>
 </head>
 <body>
-  <header class="topbar">
-    <img src="/bcc-logo.png" alt="BCC" />
-    <h1>Events</h1>
-    <span class="grow"></span>
-  </header>
-  <main>
-    <div class="module-stub">
-      <span class="tag">Coming next</span>
-      <h2>Events</h2>
-      <p>Workshops, meetups, and community events with attendee bookings.</p>
-      <p>This page is a placeholder so the nav drawer doesn't 404. Real content
-      lands in a subsequent commit per the build plan.</p>
-      <ul>
-        <li><a href="/index.html">Back to Home</a></li>
-      </ul>
+<header class="topbar">
+  <a class="home" href="index.html">
+    <img src="bcc-logo.png" alt="Blue Collar Coach" />
+    <span class="wordmark">BLUE COLLAR <span class="light">COACH</span></span>
+  </a>
+  <span class="module">Events</span>
+  <span style="flex:1;"></span>
+</header>
+
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1>Events</h1>
+      <div class="sub">Workshops, meetups, intensives. Track bookings + capacity inline.</div>
     </div>
-  </main>
+    <button class="btn btn-primary" id="newBtn" type="button">+ New event</button>
+  </div>
+  <div id="grid"></div>
+</div>
+
+<!-- Event modal -->
+<div class="modal-bg" id="modalBg">
+  <div class="modal">
+    <h3 id="modalTitle">New event</h3>
+    <input type="hidden" id="m-id" />
+    <div class="grid">
+      <label class="full">Title<input type="text" id="m-title" placeholder="Owner Meetup — Q3" /></label>
+      <label>Start<input type="datetime-local" id="m-start" /></label>
+      <label>End<input type="datetime-local" id="m-end" /></label>
+      <label class="full">Location<input type="text" id="m-loc" placeholder="Zoom / address" /></label>
+      <label>Capacity<input type="number" id="m-cap" min="0" placeholder="30" /></label>
+      <label>Registration<select id="m-open"><option value="true">Open</option><option value="false">Closed</option></select></label>
+      <label class="full">Description<textarea id="m-desc" rows="3"></textarea></label>
+    </div>
+    <div class="bookings" id="bookings"></div>
+    <div class="actions">
+      <button class="btn btn-ghost" id="m-cancel" type="button">Cancel</button>
+      <button class="btn btn-danger" id="m-delete" type="button" style="display:none;">Delete event</button>
+      <button class="btn btn-primary" id="m-save" type="button">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var EV_PREFIX = 'bcc-event-';
+  var CONTACT_PREFIX = 'bcc-contact-';
+
+  function uid() { return 'e' + Date.now().toString(36) + Math.random().toString(36).slice(2,9); }
+  function nowIso() { return new Date().toISOString(); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
+  function toLocalInput(iso) {
+    if (!iso) return ''; var d = new Date(iso); if (isNaN(d)) return '';
+    var pad = function (n) { return String(n).padStart(2,'0'); };
+    return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+  function fromLocalInput(v) { if (!v) return ''; var d = new Date(v); return isNaN(d) ? '' : d.toISOString(); }
+  function fmtWhen(iso) {
+    if (!iso) return '';
+    var d = new Date(iso); if (isNaN(d)) return '';
+    return d.toLocaleDateString([], { month:'short', day:'numeric', year:'numeric' }) + ' · ' + d.toLocaleTimeString([], { hour:'numeric', minute:'2-digit' });
+  }
+
+  function allEvents() {
+    var out = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i); if (!k || k.indexOf(EV_PREFIX) !== 0) continue;
+      try { var e = JSON.parse(localStorage.getItem(k)); if (e && e.id) out.push(e); } catch (_) {}
+    }
+    return out.sort(function (a, b) { return (a.startAt || '').localeCompare(b.startAt || ''); });
+  }
+  function getEvent(id) { try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (_) { return null; } }
+  function saveEvent(e) {
+    e.updatedAt = nowIso();
+    if (!e.createdAt) e.createdAt = e.updatedAt;
+    if (!e.id) e.id = EV_PREFIX + uid();
+    if (!e.tenantId) e.tenantId = 'blue-collar-coach';
+    e.docType = 'event';
+    if (!Array.isArray(e.bookings)) e.bookings = [];
+    localStorage.setItem(e.id, JSON.stringify(e));
+    return e;
+  }
+  function deleteEvent(id) { localStorage.removeItem(id); }
+
+  function allContacts() {
+    var out = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i); if (!k || k.indexOf(CONTACT_PREFIX) !== 0) continue;
+      try { var c = JSON.parse(localStorage.getItem(k)); if (c && c.id) out.push(c); } catch (_) {}
+    }
+    return out;
+  }
+  function contactName(c) { return ((c.firstName || '') + ' ' + (c.lastName || '')).trim() || c.email || c.company || '(no name)'; }
+
+  function renderGrid() {
+    var all = allEvents();
+    if (all.length === 0) {
+      document.getElementById('grid').innerHTML = '<div class="empty"><div class="big">No events yet.</div><div>Click "+ New event" to schedule your first workshop or meetup.</div></div>';
+      return;
+    }
+    document.getElementById('grid').innerHTML = '<div class="ev-grid">' + all.map(function (e) {
+      var booked = (e.bookings || []).length;
+      var cap = e.capacity || 0;
+      var open = e.registrationOpen !== false;
+      return '<div class="ev-card" data-id="' + esc(e.id) + '">' +
+        '<div class="when">' + esc(fmtWhen(e.startAt)) + '</div>' +
+        '<h3>' + esc(e.title || '(untitled event)') + '</h3>' +
+        '<div class="loc">' + esc(e.location || '—') + '</div>' +
+        '<div class="footer">' +
+          '<span class="booked">' + booked + (cap ? ' / ' + cap : '') + ' <span class="cap">booked</span></span>' +
+          (open ? '<span class="reg-open">Open</span>' : '<span class="reg-closed">Closed</span>') +
+        '</div>' +
+      '</div>';
+    }).join('') + '</div>';
+    document.querySelectorAll('.ev-card').forEach(function (el) {
+      el.addEventListener('click', function () { openModal(el.dataset.id); });
+    });
+  }
+
+  /* Modal */
+  function renderBookings(ev) {
+    var ul = (ev.bookings || []).map(function (b) {
+      return '<li><span>' + esc(b.name || b.contactId || '?') + (b.registeredAt ? ' <span style="color:var(--muted); font-size:11px;">· ' + new Date(b.registeredAt).toLocaleDateString() + '</span>' : '') + '</span>' +
+        '<button class="x" data-booking="' + esc(b.id) + '" type="button" title="Remove">&times;</button></li>';
+    }).join('');
+    var contacts = allContacts();
+    var contactOpts = '<option value="">— Pick a contact or type name below —</option>' +
+      contacts.map(function (c) { return '<option value="' + esc(c.id) + '">' + esc(contactName(c)) + '</option>'; }).join('');
+    document.getElementById('bookings').innerHTML =
+      '<h4>Bookings <span style="font-family:Inter,sans-serif; font-weight:600; color:var(--muted); font-size:12px;">' + (ev.bookings || []).length + (ev.capacity ? ' / ' + ev.capacity : '') + '</span></h4>' +
+      '<ul id="booking-list">' + (ul || '<li style="color:var(--muted); font-style:italic;">No bookings yet.</li>') + '</ul>' +
+      '<div class="add">' +
+        '<select id="bk-contact">' + contactOpts + '</select>' +
+        '<input type="text" id="bk-name" placeholder="…or paste a name" />' +
+        '<button class="btn btn-ghost" id="bk-add" type="button">Book</button>' +
+      '</div>';
+
+    document.querySelectorAll('#booking-list .x').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var bid = b.dataset.booking;
+        var idVal = document.getElementById('m-id').value;
+        var rec = getEvent(idVal); if (!rec) return;
+        rec.bookings = (rec.bookings || []).filter(function (x) { return x.id !== bid; });
+        saveEvent(rec);
+        if (window.bccAudit) window.bccAudit('event-update', { key: rec.id, path: '/events.html', meta: { action: 'unbook' } });
+        renderBookings(rec);
+      });
+    });
+    document.getElementById('bk-add').addEventListener('click', function () {
+      var idVal = document.getElementById('m-id').value;
+      var rec = getEvent(idVal); if (!rec) return;
+      var contactId = document.getElementById('bk-contact').value;
+      var nameOverride = document.getElementById('bk-name').value.trim();
+      var c = contactId ? (contacts.find(function (x) { return x.id === contactId; })) : null;
+      var name = nameOverride || (c ? contactName(c) : '');
+      if (!name) { (window.bccNotify || alert)('Pick a contact or paste a name.', 'warn'); return; }
+      rec.bookings = rec.bookings || [];
+      rec.bookings.push({ id: 'b' + uid(), name: name, contactId: contactId || null, registeredAt: nowIso() });
+      saveEvent(rec);
+      if (window.bccAudit) window.bccAudit('event-update', { key: rec.id, path: '/events.html', meta: { action: 'book', name: name } });
+      document.getElementById('bk-name').value = '';
+      document.getElementById('bk-contact').value = '';
+      renderBookings(rec);
+    });
+  }
+
+  function openModal(id) {
+    document.getElementById('m-id').value = id || '';
+    var e = id ? getEvent(id) : null;
+    document.getElementById('modalTitle').textContent = id ? 'Edit event' : 'New event';
+    document.getElementById('m-delete').style.display = id ? '' : 'none';
+    document.getElementById('m-title').value = (e && e.title) || '';
+    document.getElementById('m-start').value = (e && e.startAt) ? toLocalInput(e.startAt) : '';
+    document.getElementById('m-end').value   = (e && e.endAt)   ? toLocalInput(e.endAt)   : '';
+    document.getElementById('m-loc').value   = (e && e.location) || '';
+    document.getElementById('m-cap').value   = (e && e.capacity) || '';
+    document.getElementById('m-open').value  = String(!e || e.registrationOpen !== false);
+    document.getElementById('m-desc').value  = (e && e.description) || '';
+    document.getElementById('bookings').innerHTML = id ? '' : '<p style="color:var(--muted); font-style:italic; font-size:13px;">Save the event first, then bookings appear here.</p>';
+    if (id) renderBookings(e);
+    document.getElementById('modalBg').classList.add('open');
+  }
+  function closeModal() { document.getElementById('modalBg').classList.remove('open'); }
+
+  document.getElementById('newBtn').addEventListener('click', function () { openModal(null); });
+  document.getElementById('m-cancel').addEventListener('click', closeModal);
+  document.getElementById('modalBg').addEventListener('click', function (e) { if (e.target.id === 'modalBg') closeModal(); });
+
+  document.getElementById('m-save').addEventListener('click', function () {
+    var id = document.getElementById('m-id').value;
+    var rec = id ? (getEvent(id) || {}) : {};
+    rec.title       = document.getElementById('m-title').value.trim() || '(untitled event)';
+    rec.startAt     = fromLocalInput(document.getElementById('m-start').value);
+    rec.endAt       = fromLocalInput(document.getElementById('m-end').value);
+    rec.location    = document.getElementById('m-loc').value.trim();
+    rec.capacity    = parseInt(document.getElementById('m-cap').value || '0', 10) || 0;
+    rec.registrationOpen = document.getElementById('m-open').value === 'true';
+    rec.description = document.getElementById('m-desc').value.trim();
+    if (!rec.startAt) { (window.bccNotify || alert)('Start time required.', 'warn'); return; }
+    saveEvent(rec);
+    if (window.bccAudit) window.bccAudit(id ? 'event-update' : 'event-create', { key: rec.id, path: '/events.html' });
+    if (window.bccNotifySaved) window.bccNotifySaved('Event saved.');
+    document.getElementById('m-id').value = rec.id;
+    document.getElementById('m-delete').style.display = '';
+    renderBookings(rec);
+    renderGrid();
+  });
+  document.getElementById('m-delete').addEventListener('click', function () {
+    var id = document.getElementById('m-id').value; if (!id) return;
+    if (!confirm('Delete this event and all bookings?')) return;
+    deleteEvent(id);
+    if (window.bccAudit) window.bccAudit('event-delete', { key: id, path: '/events.html' });
+    closeModal();
+    renderGrid();
+  });
+
+  function init() { renderGrid(); }
+  window.addEventListener('bcc-data-ready', renderGrid);
+  window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
+  setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
+})();
+</script>
 </body>
 </html>
