@@ -168,8 +168,33 @@
     <div class="card">
       <h3>Team members
         <button class="btn btn-ghost" id="refreshUsersBtn" type="button">Refresh from Entra</button>
+        <button class="btn btn-primary" id="addUserBtn" type="button" style="margin-left:8px;">+ Add user</button>
       </h3>
-      <p class="blurb">Pulled from your Microsoft 365 tenant via Graph. Anyone signed in is auto-listed once <code>bcc-api.js</code> mirrors the tenant. Toggle the admin role to grant access to this page; mark inactive to revoke without removing.</p>
+      <p class="blurb" id="usersBlurb">Pulled from your Microsoft 365 tenant via Graph when available. Add team members manually below; anyone signed in is auto-listed. Toggle the admin role to grant access to this page; mark inactive to revoke without removing.</p>
+
+      <!-- Manual add-user row, hidden until + Add user is clicked -->
+      <div id="addUserRow" style="display:none; background:rgba(168,136,74,0.08); border:1px solid rgba(168,136,74,0.25); border-radius:8px; padding:12px; margin:0 0 14px; display:none; flex-wrap:wrap; gap:8px; align-items:flex-end;">
+        <div style="flex:1; min-width:220px;">
+          <label style="display:block; font-size:11px; font-weight:700; color:var(--muted); letter-spacing:1.5px; text-transform:uppercase; margin-bottom:4px;">Display name</label>
+          <input id="newUserName" type="text" placeholder="e.g. Lewis Koljonen" style="width:100%;" />
+        </div>
+        <div style="flex:1; min-width:240px;">
+          <label style="display:block; font-size:11px; font-weight:700; color:var(--muted); letter-spacing:1.5px; text-transform:uppercase; margin-bottom:4px;">UPN / email</label>
+          <input id="newUserUpn" type="email" placeholder="lewis@bluecollarcoach.us" style="width:100%;" />
+        </div>
+        <div>
+          <label style="display:block; font-size:11px; font-weight:700; color:var(--muted); letter-spacing:1.5px; text-transform:uppercase; margin-bottom:4px;">Role</label>
+          <select id="newUserRole" style="min-height:34px;">
+            <option value="member" selected>Member</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <div style="display:flex; gap:6px;">
+          <button class="btn btn-primary" id="commitAddUserBtn" type="button">Add</button>
+          <button class="btn btn-ghost"   id="cancelAddUserBtn" type="button">Cancel</button>
+        </div>
+      </div>
+
       <table>
         <thead><tr><th>Name</th><th>UPN / email</th><th>Role</th><th>Landing page</th><th>Status</th><th></th></tr></thead>
         <tbody id="usersRows">
@@ -405,7 +430,7 @@
     });
     var tbody = document.getElementById('usersRows');
     if (rows.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:24px;">No team members visible yet. Wait for Graph to mirror the tenant.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:24px;">No team members yet. Click <strong>+ Add user</strong> above to invite the first one.</td></tr>';
       return;
     }
 
@@ -455,7 +480,12 @@
             : '<button class="icon-btn" data-act="promote" title="Promote to admin">&#8593;</button>') +
           (u.status === 'inactive'
             ? '<button class="icon-btn" data-act="activate" title="Mark active">&#10003;</button>'
-            : '<button class="icon-btn danger" data-act="deactivate" title="Mark inactive">&times;</button>') +
+            : '<button class="icon-btn" data-act="deactivate" title="Mark inactive">&#x1F6AB;</button>') +
+          // Remove only available for manually-added users (source==='saved').
+          // Self + Entra-pulled users can't be removed (use Inactive instead).
+          (u.source === 'saved'
+            ? '<button class="icon-btn danger" data-act="remove" title="Remove user">&times;</button>'
+            : '') +
         '</td>' +
       '</tr>';
     }).join('');
@@ -481,6 +511,18 @@
           openPermissionsModal(tr.dataset.upn);
           return;
         }
+        if (act === 'remove') {
+          var upnLc = (tr.dataset.upn || '').toLowerCase();
+          var displayName = tr.querySelector('td[data-label="Name"]').textContent.trim();
+          if (!confirm('Remove ' + displayName + ' from the team? They lose access immediately. (Their docs and history stay.)')) return;
+          var cfg = loadCfg(); cfg.users = cfg.users || [];
+          cfg.users = cfg.users.filter(function (x) { return (x.upn || '').toLowerCase() !== upnLc; });
+          saveCfg(cfg);
+          if (window.bccAudit) window.bccAudit('user-remove', { key: 'bcc-admin-config-v1', path: '/admin.html', meta: { upn: tr.dataset.upn } });
+          if (window.bccNotifySaved) window.bccNotifySaved(displayName + ' removed.');
+          renderUsers();
+          return;
+        }
         persistAction(tr, function (rec) {
           if (act === 'promote') rec.role = 'admin';
           if (act === 'demote')  rec.role = 'member';
@@ -503,6 +545,46 @@
   document.getElementById('refreshUsersBtn').addEventListener('click', function () {
     if (window.bccRecomputePeople) window.bccRecomputePeople();
     renderUsers();
+  });
+
+  /* ===== MANUAL ADD-USER FORM ===== */
+  // Inline form revealed by + Add user. Keeps everything on the Users panel;
+  // no modal. Same shape we store from Graph (upn, displayName, role, status).
+  var addRow = document.getElementById('addUserRow');
+  var nameI  = document.getElementById('newUserName');
+  var upnI   = document.getElementById('newUserUpn');
+  var roleI  = document.getElementById('newUserRole');
+  function showAddRow(yes) {
+    addRow.style.display = yes ? 'flex' : 'none';
+    if (yes) { nameI.value = ''; upnI.value = ''; roleI.value = 'member'; setTimeout(function () { nameI.focus(); }, 0); }
+  }
+  document.getElementById('addUserBtn').addEventListener('click', function () { showAddRow(true); });
+  document.getElementById('cancelAddUserBtn').addEventListener('click', function () { showAddRow(false); });
+  document.getElementById('commitAddUserBtn').addEventListener('click', function () {
+    var name = (nameI.value || '').trim();
+    var upn  = (upnI.value || '').trim().toLowerCase();
+    var role = roleI.value === 'admin' ? 'admin' : 'member';
+    if (!upn || upn.indexOf('@') < 0) {
+      (window.bccNotify || alert)('Enter a valid email/UPN (e.g. lewis@bluecollarcoach.us).', 'error');
+      upnI.focus(); return;
+    }
+    if (!name) name = upn.split('@')[0]; // fall back to local-part if name empty
+    var cfg = loadCfg(); cfg.users = cfg.users || [];
+    if (cfg.users.find(function (x) { return (x.upn || '').toLowerCase() === upn; })) {
+      (window.bccNotify || alert)(upn + ' is already on the team.', 'warn');
+      return;
+    }
+    cfg.users.push({ upn: upn, displayName: name, role: role, status: 'active' });
+    saveCfg(cfg);
+    if (window.bccAudit) window.bccAudit('user-add', { key: 'bcc-admin-config-v1', path: '/admin.html', meta: { upn: upn, role: role } });
+    if (window.bccNotifySaved) window.bccNotifySaved(name + ' added to the team.');
+    else if (window.bccNotify) window.bccNotify(name + ' added.', 'success');
+    showAddRow(false);
+    renderUsers();
+  });
+  // Allow Enter inside the form to submit
+  [nameI, upnI].forEach(function (el) {
+    el.addEventListener('keydown', function (e) { if (e.key === 'Enter') document.getElementById('commitAddUserBtn').click(); });
   });
 
   /* ===== PER-APP PERMISSIONS MODAL ===== */
