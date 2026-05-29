@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<meta name="theme-color" content="#1a1a1a" />
+<meta name="theme-color" content="#faf7f0" />
 <meta name="robots" content="noindex, nofollow, noarchive, nosnippet" />
 <meta name="referrer" content="no-referrer" />
 <title>BCC Connect</title>
@@ -13,224 +13,196 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet" />
 <style>
   :root {
-    --ink:        #1a1a1a;
-    --ink-soft:   #2b2b2b;
-    --ink-line:   #2e2c27;
+    --ink-900:#0f0f0f;
+    --ink-800:#1a1a1a;
+    --ink-700:#252525;
+    --ink-600:#2b2b2b;
     --gold:#c5a55a;
-    --gold-warm:#d4b67a;
     --gold-deep:#a8884a;
-    --chrome:     #f6f6f4;
-    --chrome-mute:#e6e5e1;
+    --gold-tint:#f7f1e3;
+    --cream:#faf7f0;
+    --bg:#f6f6f4;
+    --surface:#ffffff;
+    --text:#23262b;
     --muted:#6b7077;
+    --border:#e6e5e1;
+    --radius:9px;
+    --radius-lg:14px;
+    --shadow:0 1px 2px rgba(20,20,20,.05),0 6px 20px rgba(20,20,20,.05);
+    --font-sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --font-serif:"Source Serif 4",Georgia,serif;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; }
   body {
-    font-family: 'Inter', system-ui, -apple-system, Segoe UI, Arial, sans-serif;
-    color: var(--chrome);
-    background:
-      radial-gradient(circle at 14% 22%, rgba(168,136,74,0.16) 0%, transparent 48%),
-      radial-gradient(circle at 86% 78%, rgba(168,136,74,0.10) 0%, transparent 52%),
-      linear-gradient(165deg, #141414 0%, #1a1a1a 45%, #2b2b2b 100%);
+    font-family: var(--font-sans);
+    color: var(--text);
+    background: var(--bg);
     min-height: 100vh;
     -webkit-font-smoothing: antialiased;
+    line-height: 1.6;
   }
 
-  /* Topbar — handled by bcc-api.js auth chip + the hamburger drawer, but we
-     give it a sharp BCC-branded header line. */
+  /* Topbar — sticky, white, brand emblem + serif wordmark.
+     bcc-api.js injects the auth chip + hamburger into this header. */
   header.topbar {
+    position: sticky; top: 0; z-index: 50;
     display: flex; align-items: center; gap: 14px;
-    padding: 12px 22px;
-    background: linear-gradient(90deg, #141414 0%, #1f1f1f 100%);
-    border-bottom: 1px solid var(--ink-line);
+    padding: 12px 26px;
+    background: rgba(255,255,255,0.96);
+    backdrop-filter: saturate(160%) blur(8px);
+    border-bottom: 1px solid var(--border);
   }
   header.topbar a.home { display: flex; align-items: center; gap: 12px; text-decoration: none; }
-  header.topbar img { height: 32px; }
+  header.topbar img { height: 34px; }
   header.topbar .wordmark {
-    font-family: 'Source Serif 4', Georgia, serif;
-    color: var(--chrome);
-    font-size: 16px; font-weight: 700;
-    letter-spacing: 1.5px;
+    font-family: var(--font-serif);
+    color: var(--ink-800);
+    font-size: 19px; font-weight: 600;
+    letter-spacing: 0.01em;
   }
-  header.topbar .wordmark .light { color: var(--gold); }
+  header.topbar .wordmark .light { color: var(--gold-deep); }
   header.topbar .product {
-    color: rgba(255,255,255,0.55);
+    color: var(--muted);
     font-size: 10.5px; font-weight: 700;
     letter-spacing: 2.5px; text-transform: uppercase;
-    border-left: 1px solid rgba(255,255,255,0.18);
-    padding-left: 14px; margin-left: 4px;
+    border-left: 1px solid var(--border);
+    padding-left: 14px; margin-left: 2px;
   }
 
-  /* Hero */
+  /* Hero — cream→white gradient, serif headline, gold eyebrow */
   .hero {
-    padding: 56px 20px 22px;
-    display: flex; flex-direction: column; align-items: center;
+    background: linear-gradient(180deg, var(--cream) 0%, var(--surface) 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 60px 22px 48px;
     text-align: center;
   }
-  .hero .tag {
+  .hero .eyebrow {
     display: inline-block;
-    color: var(--gold-warm);
-    font-size: 11px; font-weight: 700;
-    letter-spacing: 3px; text-transform: uppercase;
-    padding: 6px 14px;
-    border: 1px solid rgba(168,136,74,0.35);
-    border-radius: 999px;
-    margin-bottom: 18px;
+    color: var(--gold-deep);
+    font-size: 11.5px; font-weight: 700;
+    letter-spacing: 0.24em; text-transform: uppercase;
+    margin-bottom: 16px;
   }
   .hero h1 {
-    font-family: 'Source Serif 4', Georgia, serif;
-    color: var(--chrome);
-    font-size: 38px; font-weight: 700;
-    letter-spacing: 0.5px;
-    max-width: 740px; line-height: 1.15;
+    font-family: var(--font-serif);
+    color: var(--ink-800);
+    font-size: clamp(1.9rem, 4vw, 2.9rem);
+    font-weight: 600;
+    letter-spacing: -0.01em; line-height: 1.12;
+    max-width: 20ch; margin: 0 auto;
   }
-  .hero h1 .accent { color: var(--gold); }
+  .hero h1 .accent { color: var(--gold-deep); }
   .hero .greeting {
-    color: rgba(255,255,255,0.7);
-    font-size: 15px; font-weight: 500;
-    margin-top: 14px; max-width: 600px;
+    color: var(--muted);
+    font-size: 1.02rem; font-weight: 500;
+    margin-top: 18px; max-width: 56ch; margin-left: auto; margin-right: auto;
   }
-  .hero .greeting strong { color: #fff; font-weight: 700; }
+  .hero .greeting strong { color: var(--text); font-weight: 700; }
 
   /* Layout */
-  .wrap {
-    max-width: 1080px; margin: 0 auto;
-    padding: 6px 22px 70px;
-  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 8px 26px 72px; }
   .section-label {
-    color: rgba(255,255,255,0.45);
-    font-size: 10.5px; font-weight: 700;
-    letter-spacing: 2.5px; text-transform: uppercase;
-    padding: 28px 4px 12px;
+    color: var(--muted);
+    font-size: 11px; font-weight: 700;
+    letter-spacing: 0.2em; text-transform: uppercase;
+    padding: 34px 2px 14px;
   }
 
-  /* Primary tiles — large, daily-use modules */
-  .primary {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 16px;
-  }
+  /* Primary tiles — large white cards, gold top stripe on hover */
+  .primary { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; }
   .primary .tile {
-    background: linear-gradient(160deg, #1f1f1f 0%, #1a1a1a 100%);
-    border: 1px solid var(--ink-line);
-    border-radius: 16px;
-    padding: 24px;
-    text-decoration: none;
-    color: var(--chrome);
-    display: flex; flex-direction: column;
-    box-shadow: 0 22px 48px rgba(0,0,0,0.45);
-    transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
     position: relative; overflow: hidden;
-    min-height: 156px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 26px;
+    text-decoration: none; color: inherit;
+    display: flex; flex-direction: column;
+    box-shadow: var(--shadow);
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+    min-height: 158px;
   }
   .primary .tile::before {
     content:''; position:absolute; top:0; left:0; right:0; height:3px;
-    background: linear-gradient(90deg, var(--gold) 0%, var(--gold-warm) 100%);
+    background: var(--gold); opacity: 0; transition: opacity 0.12s;
   }
-  .primary .tile:hover {
-    transform: translateY(-3px);
-    border-color: rgba(168,136,74,0.4);
-    box-shadow: 0 28px 56px rgba(0,0,0,0.55);
-  }
+  .primary .tile:hover { transform: translateY(-3px); box-shadow: 0 12px 30px rgba(20,20,20,0.09); }
+  .primary .tile:hover::before { opacity: 1; }
   .primary .tile .icon {
     width: 46px; height: 46px;
-    background: rgba(168,136,74,0.14);
-    color: var(--gold);
-    border: 1px solid rgba(168,136,74,0.30);
+    background: var(--gold-tint); color: var(--gold-deep);
     border-radius: 11px;
     display: flex; align-items: center; justify-content: center;
-    margin-bottom: 14px;
-    font-size: 22px;
+    margin-bottom: 16px; font-size: 22px;
   }
   .primary .tile h2 {
-    font-family: 'Source Serif 4', Georgia, serif;
-    font-size: 19px; font-weight: 700; letter-spacing: 0.3px;
-    color: var(--chrome); margin-bottom: 6px;
+    font-family: var(--font-serif);
+    font-size: 1.32rem; font-weight: 700; letter-spacing: -0.02em;
+    color: var(--ink-800); margin-bottom: 6px;
   }
-  .primary .tile p {
-    color: rgba(255,255,255,0.65); font-size: 13px; line-height: 1.55; flex: 1;
-  }
+  .primary .tile p { color: var(--muted); font-size: 0.93rem; line-height: 1.55; flex: 1; }
   .primary .tile .cta {
-    margin-top: 14px;
-    color: var(--gold-warm); font-weight: 700; font-size: 13px;
+    margin-top: 16px;
+    color: var(--gold-deep); font-weight: 700; font-size: 0.9rem;
     display: flex; align-items: center; gap: 6px;
-    letter-spacing: 0.3px;
   }
   .primary .tile .cta .arrow { transition: transform 0.15s; }
   .primary .tile:hover .cta .arrow { transform: translateX(3px); }
 
-  /* Secondary tiles — compact module grid */
-  .secondary {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 12px;
-  }
+  /* Secondary tiles — compact white cards */
+  .secondary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
   .secondary .stile {
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 13px;
-    padding: 16px 14px 14px;
-    text-decoration: none;
-    color: var(--chrome);
+    position: relative; overflow: hidden;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 18px 16px 16px;
+    text-decoration: none; color: inherit;
     display: flex; flex-direction: column;
-    transition: background 0.15s, border-color 0.15s, transform 0.15s;
-    min-height: 100px;
+    box-shadow: var(--shadow);
+    transition: transform 0.12s, box-shadow 0.12s;
+    min-height: 104px;
   }
-  .secondary .stile:hover {
-    background: rgba(168,136,74,0.10);
-    border-color: rgba(168,136,74,0.32);
-    transform: translateY(-2px);
+  .secondary .stile::before {
+    content:''; position:absolute; top:0; left:0; right:0; height:3px;
+    background: var(--gold); opacity: 0; transition: opacity 0.12s;
   }
-  .secondary .stile .ic {
-    font-size: 20px; margin-bottom: 6px; color: var(--gold);
-  }
-  .secondary .stile .name {
-    font-size: 14px; font-weight: 700;
-  }
-  .secondary .stile .sub {
-    font-size: 11.5px; color: rgba(255,255,255,0.55);
-    margin-top: 3px; line-height: 1.4;
-  }
-  .secondary .stile.stub::after {
-    content:'soon'; position:absolute; top:8px; right:10px;
-    font-size: 9px; font-weight: 700; color: var(--gold-warm);
-    letter-spacing: 1px; text-transform: uppercase;
-    background: rgba(168,136,74,0.18);
-    border-radius: 999px; padding: 2px 7px;
-  }
-  .secondary .stile { position: relative; }
+  .secondary .stile:hover { transform: translateY(-2px); box-shadow: 0 12px 30px rgba(20,20,20,0.09); }
+  .secondary .stile:hover::before { opacity: 1; }
+  .secondary .stile .ic { font-size: 21px; margin-bottom: 8px; color: var(--gold-deep); }
+  .secondary .stile .name { font-size: 0.97rem; font-weight: 700; color: var(--ink-800); }
+  .secondary .stile .sub { font-size: 0.8rem; color: var(--muted); margin-top: 3px; line-height: 1.4; }
 
   /* Tablet */
   @media (max-width: 900px) {
-    .hero { padding: 38px 20px 14px; }
-    .hero h1 { font-size: 30px; }
+    .hero { padding: 44px 20px 36px; }
     .secondary { grid-template-columns: repeat(3, 1fr); }
   }
   /* Phone */
   @media (max-width: 600px) {
-    .hero { padding: 26px 16px 8px; }
-    .hero .tag { font-size: 10px; letter-spacing: 2px; padding: 5px 12px; }
-    .hero h1 { font-size: 22px; }
-    .hero .greeting { font-size: 13px; margin-top: 10px; }
+    .hero { padding: 32px 16px 26px; }
     .primary { grid-template-columns: 1fr; gap: 12px; }
     .primary .tile { min-height: 0; padding: 20px; }
-    .secondary { grid-template-columns: repeat(2, 1fr); gap: 10px; }
-    .wrap { padding: 4px 16px 40px; }
-    header.topbar { padding: 10px 16px; gap: 10px; }
-    header.topbar img { height: 28px; }
-    header.topbar .wordmark { font-size: 13px; }
+    .secondary { grid-template-columns: repeat(2, 1fr); gap: 12px; }
+    .wrap { padding: 4px 16px 44px; }
+    header.topbar { padding: 11px 16px; gap: 10px; }
+    header.topbar img { height: 30px; }
+    header.topbar .wordmark { font-size: 16px; }
     header.topbar .product { font-size: 9.5px; letter-spacing: 2px; padding-left: 10px; }
   }
 
   footer {
-    color: rgba(255,255,255,0.30);
-    font-size: 11px;
+    color: var(--muted);
+    font-size: 12px;
     text-align: center;
-    padding: 20px 20px 36px;
-    line-height: 1.6;
+    padding: 28px 20px 40px;
+    line-height: 1.7;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
   }
-  footer a { color: rgba(255,255,255,0.55); text-decoration: none; }
-  footer a:hover { color: var(--gold-warm); }
+  footer a { color: var(--gold-deep); text-decoration: none; font-weight: 600; }
+  footer a:hover { text-decoration: underline; }
 </style>
 <script src="bcc-api.js" defer></script>
 </head>
@@ -239,14 +211,14 @@
 <header class="topbar">
   <a class="home" href="index.html">
     <img src="bcc-logo.png" alt="Blue Collar Coach" />
-    <span class="wordmark">BLUE COLLAR <span class="light">COACH</span></span>
+    <span class="wordmark">Blue Collar <span class="light">Coach</span></span>
   </a>
   <span class="product">Connect</span>
   <span style="flex:1;"></span>
 </header>
 
 <div class="hero">
-  <span class="tag">Internal workspace</span>
+  <span class="eyebrow">Internal Workspace</span>
   <h1>Businesses trust us with the parts they <span class="accent">can&rsquo;t afford to get wrong</span>.</h1>
   <div class="greeting" id="heroGreeting" hidden></div>
 </div>
@@ -257,13 +229,13 @@
     <a class="tile" href="myday.html">
       <div class="icon">&#128205;</div>
       <h2>My Day</h2>
-      <p>Today's coaching sessions, prep notes, and follow-ups. Clock in/out and submit your daily log.</p>
+      <p>Today&rsquo;s coaching sessions, prep notes, and follow-ups. Clock in/out and submit your daily log.</p>
       <div class="cta">Open <span class="arrow">&rarr;</span></div>
     </a>
     <a class="tile" href="sessions.html">
       <div class="icon">&#128197;</div>
       <h2>Sessions</h2>
-      <p>Coaching calendar synced to Microsoft 365. Book, reschedule, and prep with the client's notes alongside.</p>
+      <p>Coaching calendar synced to Microsoft 365. Book, reschedule, and prep with the client&rsquo;s notes alongside.</p>
       <div class="cta">Open <span class="arrow">&rarr;</span></div>
     </a>
   </div>
@@ -334,13 +306,9 @@
   document.getElementById('yr').textContent = new Date().getFullYear();
 
   // Personalized greeting once bcc-api.js resolves the signed-in identity.
-  // First-name + time-of-day; quietly upgrades from raw UPN to display name
-  // once Graph users come back via bcc-api.js's pull.
   function personalizeHero() {
     var who = (window.bccUser && window.bccUser.userDetails) || '';
     if (!who) return;
-    // bccFirstName resolves UPN -> display name via window.bccPeopleFull, and
-    // prettifies the email local-part if the user isn't in the list yet.
     var first = (window.bccFirstName ? window.bccFirstName(who) : '') || '';
     if (!first) return;
     var hour = new Date().getHours();
@@ -354,9 +322,7 @@
   window.addEventListener('bcc-auth-ready', personalizeHero);
   window.addEventListener('bcc-users-ready', personalizeHero);
 
-  // Hide tiles for apps the user can't access. bcc-api.js exposes
-  // bccCanAccess(appKey) once admin-config-v1 is loaded. We map each tile's
-  // href to its app key and drop the tile if the user has 'none'.
+  // Hide tiles for apps the user can't access (per-app permissions).
   function gateTiles() {
     if (!window.bccCanAccess || !window.BCC_PAGE_TO_APP) return;
     document.querySelectorAll('.primary .tile, .secondary .stile').forEach(function (a) {

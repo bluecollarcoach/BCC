@@ -774,23 +774,36 @@
         'button, .btn, [role="button"], input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), select, textarea{min-height:44px;}' +
         'a.nav-link, a.stile, .bcc-mm-link, .tabs-bar .tab, .toolbar .tab{min-height:44px;}' +
       '}' +
-      '.bcc-auth-chip{display:inline-flex;align-items:center;gap:6px;color:rgba(255,255,255,0.72);font-size:12.5px;font-weight:600;padding:4px 10px;border-radius:6px;background:rgba(255,255,255,0.06);}' +
+      // Light-topbar auth chip: dark text on a subtle gold-tinted pill.
+      '.bcc-auth-chip{display:inline-flex;align-items:center;gap:6px;color:#6b7077;font-size:12.5px;font-weight:600;padding:5px 11px;border-radius:999px;background:#f6f6f4;border:1px solid #e6e5e1;}' +
       '.bcc-auth-chip .bcc-dot{width:8px;height:8px;border-radius:50%;background:#10b981;flex-shrink:0;}' +
-      '.bcc-auth-chip.anon .bcc-dot{background:#6b685f;}' +
-      '.bcc-auth-chip.syncing .bcc-dot{background:#f59e0b;animation:bccPulse 1s infinite;}' +
-      '.bcc-auth-chip.error .bcc-dot{background:#7a4848;}' +
+      '.bcc-auth-chip.anon .bcc-dot{background:#b9b5ab;}' +
+      '.bcc-auth-chip.syncing .bcc-dot{background:#c5a55a;animation:bccPulse 1s infinite;}' +
+      '.bcc-auth-chip.error .bcc-dot{background:#b4524f;}' +
       '@keyframes bccPulse{0%{opacity:0.4;}50%{opacity:1;}100%{opacity:0.4;}}' +
-      '.bcc-auth-chip .bcc-name{color:#fff;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
-      '.bcc-auth-chip a{color:rgba(255,255,255,0.72);text-decoration:none;font-size:12px;white-space:nowrap;}' +
-      '.bcc-auth-chip a:hover{color:#fff;}' +
+      '.bcc-auth-chip .bcc-name{color:#23262b;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+      '.bcc-auth-chip a{color:#a8884a;text-decoration:none;font-size:12px;font-weight:700;white-space:nowrap;}' +
+      '.bcc-auth-chip a:hover{color:#8a6f3c;text-decoration:underline;}' +
       // Single unified menu pattern — same on every viewport. Per-page inline
       // <a class="nav-link"> elements are hidden so the topbar stays clean.
       'header.topbar{position:relative;flex-wrap:nowrap;}' +
       'header.topbar > a.nav-link{display:none !important;}' +
+      // ---- Global LIGHT topbar (brand concept) ----
+      // Every page body is already light (#f6f6f4/#fff); only the topbar was
+      // dark. Force it light app-wide here so the chrome matches the home page
+      // and bcc-brand.css without editing 18 per-page stylesheets.
+      'header.topbar{background:rgba(255,255,255,0.96) !important;backdrop-filter:saturate(160%) blur(8px);border-bottom:1px solid #e6e5e1 !important;color:#23262b !important;}' +
+      'header.topbar a.home,header.topbar .home{color:#1a1a1a !important;}' +
+      'header.topbar .wordmark{color:#1a1a1a !important;}' +
+      'header.topbar .wordmark .light{color:#a8884a !important;}' +
+      'header.topbar .module,header.topbar .product{color:#6b7077 !important;border-left-color:#e6e5e1 !important;}' +
+      // Module pages used a dark logo on dark bar; on the light bar drop any
+      // white-pill padding the logo had so it sits cleanly.
+      'header.topbar img{background:transparent !important;}' +
       // Hamburger button — always visible, lives on the right side of topbar.
-      '.bcc-hamburger{display:inline-flex;align-items:center;justify-content:center;background:rgba(255,255,255,0.12);border:none;color:#fff;width:40px;height:40px;border-radius:9px;cursor:pointer;font-size:20px;flex-shrink:0;padding:0;line-height:1;transition:background 0.15s;}' +
-      '.bcc-hamburger:hover{background:rgba(255,255,255,0.20);}' +
-      '.bcc-hamburger.open{background:rgba(255,255,255,0.20);}' +
+      '.bcc-hamburger{display:inline-flex;align-items:center;justify-content:center;background:#f6f6f4;border:1px solid #e6e5e1;color:#1a1a1a;width:40px;height:40px;border-radius:9px;cursor:pointer;font-size:20px;flex-shrink:0;padding:0;line-height:1;transition:background 0.15s,border-color 0.15s;}' +
+      '.bcc-hamburger:hover{background:#f7f1e3;border-color:#c5a55a;}' +
+      '.bcc-hamburger.open{background:#f7f1e3;border-color:#c5a55a;}' +
       // Menu drawer (slides from the right; full-height on mobile, panel on desktop)
       '.bcc-mobile-menu{display:none;position:fixed;top:0;right:0;bottom:0;width:320px;max-width:88vw;background:#fff;box-shadow:-12px 0 40px rgba(15,23,42,0.20);z-index:99;overflow-y:auto;padding:0;transform:translateX(100%);transition:transform 0.22s ease;}' +
       '.bcc-mobile-menu.open{display:block;transform:translateX(0);}' +
