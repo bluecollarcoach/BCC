@@ -26,6 +26,13 @@
     { "route": "/api/data/*",  "allowedRoles": ["authenticated"] },
     { "route": "/api/profile", "allowedRoles": ["anonymous", "authenticated"] },
 
+    { "route": "/api/integrations/qbo/callback",        "allowedRoles": ["anonymous", "authenticated"] },
+    { "route": "/api/integrations/msgraph/callback",    "allowedRoles": ["anonymous", "authenticated"] },
+    { "route": "/api/integrations/google-ads/callback", "allowedRoles": ["anonymous", "authenticated"] },
+    { "route": "/api/integrations/linkedin/callback",   "allowedRoles": ["anonymous", "authenticated"] },
+    { "route": "/api/integrations/meta/callback",       "allowedRoles": ["anonymous", "authenticated"] },
+    { "route": "/api/integrations/mailchimp/callback",  "allowedRoles": ["anonymous", "authenticated"] },
+
     { "route": "/api/*",  "allowedRoles": ["authenticated"] },
     { "route": "/*.html", "allowedRoles": ["authenticated"] },
     { "route": "/",       "allowedRoles": ["authenticated"], "rewrite": "/index.html" }
