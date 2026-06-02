@@ -1157,6 +1157,7 @@ app.http('integrations-qbo-sync', {
 
         // last 12 calendar months of P&L
         const periods = [];
+        const diag = { firstStatus: null, firstBody: null };
         for (let i = 0; i < 12; i++) {
           const target = new Date(now.getFullYear(), now.getMonth() - i, 1);
           const startStr = target.toISOString().slice(0, 10);
@@ -1165,6 +1166,7 @@ app.http('integrations-qbo-sync', {
           const url = base + '/v3/company/' + encodeURIComponent(comp.realmId) +
             '/reports/ProfitAndLoss?start_date=' + startStr + '&end_date=' + endStr + '&accounting_method=Accrual&minorversion=70';
           const r = await fetch(url, { headers: { 'Authorization': 'Bearer ' + accessToken, 'Accept': 'application/json' } });
+          if (i === 0) { diag.firstStatus = r.status; if (!r.ok) diag.firstBody = (await r.text().catch(() => '')).slice(0, 400); }
           if (!r.ok) continue;
           const j = await r.json().catch(() => null);
           let income = 0, expense = 0;
@@ -1193,7 +1195,8 @@ app.http('integrations-qbo-sync', {
         comp.lastSyncAt = new Date().toISOString();
         comp.updatedAt = comp.lastSyncAt;
         try { await c.items.upsert(comp); } catch (_) {}
-        out.push({ realmId: comp.realmId, companyName: comp.companyName, periods });
+        try { await c.items.upsert({ id: 'bcc-qbo-debug-sync', tenantId: BCC_TENANT_ID, docType: 'qbo-debug', at: new Date().toISOString(), realmId: comp.realmId, env, base, periodsBuilt: periods.length, firstStatus: diag.firstStatus, firstBody: diag.firstBody }); } catch (_) {}
+        out.push({ realmId: comp.realmId, companyName: comp.companyName, periodsBuilt: periods.length, firstStatus: diag.firstStatus, firstBody: diag.firstBody, periods });
       }
 
       return { jsonBody: { ok: true, companies: out } };
