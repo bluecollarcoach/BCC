@@ -1599,6 +1599,14 @@ app.http('qbo-connect', {
         redirect_uri: redirectUri,
         state: state
       }).toString();
+      // Breadcrumb: the EXACT redirect_uri we send to Intuit (must match a registered URI).
+      try {
+        await container().items.upsert({ id: 'bcc-qbo-debug-connect', tenantId: BCC_TENANT_ID, docType: 'qbo-debug',
+          at: new Date().toISOString(), redirectUri: redirectUri, env: env,
+          clientIdTail: String(fields.clientId).slice(-6),
+          xMsOriginalUrl: request.headers.get('x-ms-original-url') || null,
+          host: request.headers.get('host') || null, xfHost: request.headers.get('x-forwarded-host') || null });
+      } catch (_) {}
       return { status: 302, headers: { Location: authUrl } };
     } catch (e) {
       return { status: 500, jsonBody: { error: String(e.message || e) } };
@@ -1616,7 +1624,13 @@ app.http('qbo-callback', {
     const realmId = url.searchParams.get('realmId');
     const state = url.searchParams.get('state');
     const err = url.searchParams.get('error');
-    if (err) return { status: 302, headers: { Location: '/admin.html?qbo=' + encodeURIComponent(err) + '#integrations' } };
+    // Breadcrumb: prove the callback was reached + what Intuit sent back.
+    try {
+      await container().items.upsert({ id: 'bcc-qbo-debug-callback', tenantId: BCC_TENANT_ID, docType: 'qbo-debug',
+        at: new Date().toISOString(), hasCode: !!code, realmId: realmId || null, error: err || null,
+        query: (url.search || '').slice(0, 300), xMsOriginalUrl: request.headers.get('x-ms-original-url') || null });
+    } catch (_) {}
+    if (err) return { status: 302, headers: { Location: '/bookkeeping.html?qbo=' + encodeURIComponent(err) } };
     if (!code || !realmId) return { status: 400, jsonBody: { error: 'missing code or realmId' } };
     try {
       const fields = await getIntegrationFields('qbo');
