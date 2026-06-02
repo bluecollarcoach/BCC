@@ -1111,74 +1111,90 @@ app.http('integrations-qbo-sync', {
     if (!domainAllowed(p)) return domainBlocked();
     try {
       const fields = await getIntegrationFields('qbo');
-      const env = fields.environment === 'production' ? 'production' : 'sandbox';
-      if (!fields.refreshToken || !fields.clientId || !fields.clientSecret || !fields.realmId) {
-        return { status: 400, jsonBody: { ok: false, error: 'QBO not fully connected yet — complete the OAuth flow (clientId, clientSecret, refreshToken, realmId all required).' } };
+      if (!fields.clientId || !fields.clientSecret) {
+        return { status: 400, jsonBody: { ok: false, error: 'QBO app credentials missing (clientId/clientSecret). Set them in Admin → Integrations.' } };
+      }
+      const c = container();
+      const body = await request.json().catch(() => ({}));
+
+      // Which companies to sync — one (body.realmId) or every connected company.
+      let companyDocs;
+      if (body && body.realmId) {
+        const d = await c.item('bcc-qbo-company-' + body.realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+        companyDocs = d ? [d] : [];
+      } else {
+        const { resources } = await c.items.query({
+          query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="qbo-company"',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+        }).fetchAll();
+        companyDocs = resources;
+      }
+      if (!companyDocs.length) {
+        return { status: 400, jsonBody: { ok: false, error: 'No QBO companies connected yet. Click "Connect a company" first.' } };
       }
 
-      // 1) refresh token → access token
-      const tokenUrl = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
-      const tokBody = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: fields.refreshToken }).toString();
       const basic = Buffer.from(fields.clientId + ':' + fields.clientSecret).toString('base64');
-      const tokR = await fetch(tokenUrl, { method: 'POST', headers: { 'Authorization': 'Basic ' + basic, 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' }, body: tokBody });
-      if (!tokR.ok) return { status: 502, jsonBody: { ok: false, error: 'QBO token refresh failed (' + tokR.status + ')' } };
-      const tok = await tokR.json();
-      const accessToken = tok.access_token;
-      // Persist the rotated refresh token if Intuit gave us a new one
-      if (tok.refresh_token && tok.refresh_token !== fields.refreshToken) {
-        try {
-          const c = container();
-          const intDoc = await c.item('bcc-integration-qbo', BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-          if (intDoc) { intDoc.fields.refreshToken = tok.refresh_token; intDoc.updatedAt = new Date().toISOString(); await c.items.upsert(intDoc); }
-        } catch (_) {}
-      }
-
-      // 2) for each of the last 12 calendar months, call ProfitAndLoss
-      const base = env === 'production' ? 'https://quickbooks.api.intuit.com' : 'https://sandbox-quickbooks.api.intuit.com';
-      const periods = [];
       const now = new Date();
-      for (let i = 0; i < 12; i++) {
-        const target = new Date(now.getFullYear(), now.getMonth() - i, 1);
-        const startStr = target.toISOString().slice(0, 10);
-        const end = new Date(target.getFullYear(), target.getMonth() + 1, 0); // last day of that month
-        const endStr = end.toISOString().slice(0, 10);
-        const url = base + '/v3/company/' + encodeURIComponent(fields.realmId) +
-          '/reports/ProfitAndLoss?start_date=' + startStr + '&end_date=' + endStr + '&accounting_method=Accrual&minorversion=70';
-        const r = await fetch(url, { headers: { 'Authorization': 'Bearer ' + accessToken, 'Accept': 'application/json' } });
-        if (!r.ok) continue;
-        const j = await r.json().catch(() => null);
-        // QBO P&L is nested rows; sum top-level Income + Expense
-        let income = 0, expense = 0;
-        try {
-          const rows = (j && j.Rows && j.Rows.Row) || [];
-          for (const row of rows) {
-            const group = row.group || row.type || '';
-            const summary = row.Summary && row.Summary.ColData && row.Summary.ColData[1] ? parseFloat(row.Summary.ColData[1].value || '0') : 0;
-            if (/income/i.test(group)) income += summary;
-            else if (/expense/i.test(group) || /cogs/i.test(group)) expense += summary;
-          }
-        } catch (_) {}
-        const periodKey = startStr.slice(0, 7);
-        periods.push({
-          id: 'bcc-financial-period-' + periodKey,
-          tenantId: BCC_TENANT_ID,
-          docType: 'financial-period',
-          period: periodKey,
-          revenueCents: Math.round(income * 100),
-          expensesCents: Math.round(expense * 100),
-          netCents: Math.round((income - expense) * 100),
-          source: 'qbo',
-          syncedAt: new Date().toISOString()
+      const out = [];
+
+      for (const comp of companyDocs) {
+        const env = comp.environment === 'production' ? 'production'
+                  : (fields.environment === 'production' ? 'production' : 'sandbox');
+        const base = env === 'production' ? 'https://quickbooks.api.intuit.com' : 'https://sandbox-quickbooks.api.intuit.com';
+
+        // refresh token → access token (per company)
+        const tokR = await fetch('https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer', {
+          method: 'POST',
+          headers: { 'Authorization': 'Basic ' + basic, 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: comp.refreshToken }).toString()
         });
+        if (!tokR.ok) { out.push({ realmId: comp.realmId, companyName: comp.companyName, error: 'token refresh failed (' + tokR.status + ')' }); continue; }
+        const tok = await tokR.json();
+        const accessToken = tok.access_token;
+        if (tok.refresh_token && tok.refresh_token !== comp.refreshToken) comp.refreshToken = tok.refresh_token; // rotation
+
+        // last 12 calendar months of P&L
+        const periods = [];
+        for (let i = 0; i < 12; i++) {
+          const target = new Date(now.getFullYear(), now.getMonth() - i, 1);
+          const startStr = target.toISOString().slice(0, 10);
+          const end = new Date(target.getFullYear(), target.getMonth() + 1, 0);
+          const endStr = end.toISOString().slice(0, 10);
+          const url = base + '/v3/company/' + encodeURIComponent(comp.realmId) +
+            '/reports/ProfitAndLoss?start_date=' + startStr + '&end_date=' + endStr + '&accounting_method=Accrual&minorversion=70';
+          const r = await fetch(url, { headers: { 'Authorization': 'Bearer ' + accessToken, 'Accept': 'application/json' } });
+          if (!r.ok) continue;
+          const j = await r.json().catch(() => null);
+          let income = 0, expense = 0;
+          try {
+            const rows = (j && j.Rows && j.Rows.Row) || [];
+            for (const row of rows) {
+              const group = row.group || row.type || '';
+              const summary = row.Summary && row.Summary.ColData && row.Summary.ColData[1] ? parseFloat(row.Summary.ColData[1].value || '0') : 0;
+              if (/income/i.test(group)) income += summary;
+              else if (/expense/i.test(group) || /cogs/i.test(group)) expense += summary;
+            }
+          } catch (_) {}
+          const periodKey = startStr.slice(0, 7);
+          periods.push({
+            id: 'bcc-financial-period-' + comp.realmId + '-' + periodKey,
+            tenantId: BCC_TENANT_ID, docType: 'financial-period',
+            realmId: comp.realmId, companyName: comp.companyName,
+            period: periodKey,
+            revenueCents: Math.round(income * 100),
+            expensesCents: Math.round(expense * 100),
+            netCents: Math.round((income - expense) * 100),
+            source: 'qbo', syncedAt: new Date().toISOString()
+          });
+        }
+        for (const per of periods) { try { await c.items.upsert(per); } catch (_) {} }
+        comp.lastSyncAt = new Date().toISOString();
+        comp.updatedAt = comp.lastSyncAt;
+        try { await c.items.upsert(comp); } catch (_) {}
+        out.push({ realmId: comp.realmId, companyName: comp.companyName, periods });
       }
 
-      // 3) persist into Cosmos so other clients see it too
-      try {
-        const c = container();
-        for (const per of periods) await c.items.upsert(per);
-      } catch (e) { context.warn && context.warn('persist periods failed', e && e.message); }
-
-      return { jsonBody: { ok: true, periods: periods } };
+      return { jsonBody: { ok: true, companies: out } };
     } catch (err) {
       context.error('qbo-sync error', err);
       return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } };
@@ -1618,25 +1634,87 @@ app.http('qbo-callback', {
       if (!r.ok) throw new Error('Intuit token exchange failed (' + r.status + ')');
       const tok = await r.json();
 
-      // Persist refresh token + realmId back onto bcc-integration-qbo
+      const env = fields.environment === 'production' ? 'production' : 'sandbox';
+      const apiBase = env === 'production' ? 'https://quickbooks.api.intuit.com' : 'https://sandbox-quickbooks.api.intuit.com';
+      // Best-effort: fetch the company's display name so the UI lists it nicely.
+      let companyName = '';
+      try {
+        const ci = await fetch(apiBase + '/v3/company/' + encodeURIComponent(realmId) + '/companyinfo/' + encodeURIComponent(realmId) + '?minorversion=70',
+          { headers: { Authorization: 'Bearer ' + tok.access_token, Accept: 'application/json' } });
+        if (ci.ok) { const cj = await ci.json(); companyName = (cj.CompanyInfo && (cj.CompanyInfo.CompanyName || cj.CompanyInfo.LegalName)) || ''; }
+      } catch (_) {}
+
       const c = container();
+      // MULTI-COMPANY: one connection doc per QBO company (realmId). Connecting
+      // another company just adds another doc — nothing is overwritten.
+      const compId = 'bcc-qbo-company-' + realmId;
+      const existing = await c.item(compId, BCC_TENANT_ID).read().then(rr => rr.resource).catch(() => null);
+      const comp = existing || { id: compId, tenantId: BCC_TENANT_ID, docType: 'qbo-company', realmId };
+      comp.refreshToken = tok.refresh_token;
+      comp.environment = env;
+      comp.companyName = companyName || comp.companyName || ('Company ' + realmId);
+      comp.status = 'connected';
+      comp.connectedAt = comp.connectedAt || new Date().toISOString();
+      comp.updatedAt = new Date().toISOString();
+      await c.items.upsert(comp);
+
+      // Mark the shared integration row connected (keeps clientId/secret/env).
       const id = 'bcc-integration-qbo';
       const doc = await c.item(id, BCC_TENANT_ID).read().then(rr => rr.resource).catch(() => null);
       const rec = doc || { id, tenantId: BCC_TENANT_ID, docType: 'integration', channel: 'qbo', fields: {} };
       rec.fields = rec.fields || {};
-      rec.fields.refreshToken = tok.refresh_token;
-      rec.fields.realmId = realmId;
       rec.status = 'connected';
       rec.lastTest = { ok: true, at: new Date().toISOString() };
       rec.updatedAt = new Date().toISOString();
       await c.items.upsert(rec);
-      // Bust the integration cache so /sync sees the new tokens immediately
       _intCache.until = 0; _intCache.byChannel.clear();
 
-      return { status: 302, headers: { Location: '/admin.html?qbo=connected#integrations' } };
+      return { status: 302, headers: { Location: '/bookkeeping.html?qbo=connected&company=' + encodeURIComponent(companyName || realmId) } };
     } catch (e) {
       context.error('qbo callback failed', e);
       return { status: 302, headers: { Location: '/admin.html?qbo=error&detail=' + encodeURIComponent(e.message) + '#integrations' } };
+    }
+  })
+});
+
+/**
+ * GET /api/integrations/qbo/companies
+ * Lists every connected QBO company (one bcc-qbo-company-* doc per realm),
+ * with its most-recent synced financial period so the UI can show KPIs.
+ */
+app.http('qbo-companies', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'integrations/qbo/companies',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    try {
+      const c = container();
+      const { resources: comps } = await c.items.query({
+        query: 'SELECT c.realmId, c.companyName, c.environment, c.status, c.connectedAt, c.lastSyncAt FROM c WHERE c.tenantId=@t AND c.docType="qbo-company" ORDER BY c.companyName',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+      }).fetchAll();
+      // Attach the latest financial period per company (best-effort).
+      const { resources: periods } = await c.items.query({
+        query: 'SELECT c.realmId, c.period, c.revenueCents, c.expensesCents, c.netCents FROM c WHERE c.tenantId=@t AND c.docType="financial-period"',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+      }).fetchAll();
+      const latestByRealm = {};
+      for (const per of periods) {
+        const rid = per.realmId || '_';
+        if (!latestByRealm[rid] || (per.period || '') > (latestByRealm[rid].period || '')) latestByRealm[rid] = per;
+      }
+      const companies = comps.map(co => ({
+        realmId: co.realmId, companyName: co.companyName, environment: co.environment,
+        status: co.status, connectedAt: co.connectedAt, lastSyncAt: co.lastSyncAt,
+        latest: latestByRealm[co.realmId] || null
+      }));
+      return { jsonBody: { companies } };
+    } catch (err) {
+      context.error('qbo-companies error', err);
+      return { status: 500, jsonBody: { error: String(err && err.message || err) } };
     }
   })
 });

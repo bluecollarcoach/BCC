@@ -139,7 +139,8 @@
       <div class="sub" id="subline">Monthly P&amp;L snapshot. Numbers come from the QBO connector once it's configured.</div>
     </div>
     <div style="display:flex; gap:8px; flex-wrap:wrap;">
-      <button class="btn btn-ghost" id="syncBtn" type="button">Sync from QBO</button>
+      <button class="btn btn-primary" id="connectBtn" type="button">+ Connect a company</button>
+      <button class="btn btn-ghost" id="syncBtn" type="button">Sync all from QBO</button>
       <button class="btn btn-ghost" id="newBtn" type="button">+ Manual entry</button>
       <button class="btn btn-ghost" id="printBtn" type="button">Print report</button>
     </div>
@@ -167,6 +168,7 @@
 
   <!-- Toolbar -->
   <div class="toolbar">
+    <select id="companyFilter" aria-label="Company"><option value="">All companies</option></select>
     <select id="yearFilter" aria-label="Filter by year"><option value="">All years</option></select>
     <span style="flex:1;"></span>
     <span style="font-size:12px; color:var(--muted);" id="periodCount"></span>
@@ -214,6 +216,11 @@
   var PER_PREFIX = 'bcc-financial-period-';
   var INT_KEY    = 'bcc-integration-qbo';
 
+  // Multi-company state. companies come from /api/integrations/qbo/companies;
+  // currentRealm '' = "All companies" (firm-wide summary), else one company.
+  var companies = [];
+  var currentRealm = '';
+
   function nowIso() { return new Date().toISOString(); }
   function esc(s) { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
   function dollars(cents) {
@@ -225,23 +232,36 @@
     if (!prev) return null;
     return Math.round(((now - prev) / Math.abs(prev)) * 100);
   }
+  function companyName(realm) {
+    var c = companies.filter(function (x) { return x.realmId === realm; })[0];
+    return c ? (c.companyName || ('Company ' + realm)) : (realm || '—');
+  }
 
-  function loadIntegration() {
-    try { var raw = localStorage.getItem(INT_KEY); if (raw) return JSON.parse(raw); } catch (e) {}
-    return { status: 'disconnected' };
+  function loadCompanies() {
+    return fetch('/api/integrations/qbo/companies', { credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : { companies: [] }; })
+      .then(function (d) { companies = (d && d.companies) || []; })
+      .catch(function () { companies = []; });
+  }
+  function fillCompanyFilter() {
+    var sel = document.getElementById('companyFilter');
+    if (!sel) return;
+    var cur = currentRealm;
+    sel.innerHTML = '<option value="">All companies (' + companies.length + ')</option>' +
+      companies.map(function (c) { return '<option value="' + esc(c.realmId) + '">' + esc(c.companyName || ('Company ' + c.realmId)) + '</option>'; }).join('');
+    sel.value = cur;
   }
   function renderStatus() {
-    var rec = loadIntegration();
-    var s = rec.status || 'disconnected';
     var bar = document.getElementById('statusBar');
+    var n = companies.length;
     bar.classList.remove('connected','disconnected','error');
-    bar.classList.add(s);
-    document.getElementById('statusText').textContent =
-      s === 'connected' ? 'Connected — pulling P&L on demand' :
-      s === 'error' ? 'Connection error (re-check creds in Admin → Integrations)' :
-      'Not connected — set credentials in Admin → Integrations';
-    document.getElementById('configLink').textContent = s === 'connected' ? 'Edit credentials' : 'Configure →';
-    document.getElementById('syncBtn').disabled = (s !== 'connected');
+    bar.classList.add(n > 0 ? 'connected' : 'disconnected');
+    document.getElementById('statusText').textContent = n > 0
+      ? (n + ' compan' + (n === 1 ? 'y' : 'ies') + ' connected — click "Connect a company" to add more')
+      : 'No companies connected — click "Connect a company" to link a client’s QuickBooks';
+    var cfg = document.getElementById('configLink');
+    if (cfg) { cfg.textContent = 'Manage in Admin →'; }
+    document.getElementById('syncBtn').disabled = (n === 0);
   }
 
   function allPeriods() {
@@ -252,10 +272,27 @@
     }
     return out.sort(function (a, b) { return (b.period || '').localeCompare(a.period || ''); });
   }
+  // Periods for one company (realm), or all if realm is ''. Legacy period docs
+  // without a realmId are treated as belonging to no specific company.
+  function periodsFor(realm) {
+    var all = allPeriods();
+    if (!realm) return all;
+    return all.filter(function (p) { return (p.realmId || '') === realm; });
+  }
+  // Latest period per company (for the All-companies summary).
+  function latestByCompany() {
+    var map = {};
+    allPeriods().forEach(function (p) {
+      var r = p.realmId || '';
+      if (!map[r] || (p.period || '') > (map[r].period || '')) map[r] = p;
+    });
+    return map;
+  }
   function savePeriod(p) {
     p.updatedAt = nowIso();
     if (!p.createdAt) p.createdAt = p.updatedAt;
-    p.id = PER_PREFIX + p.period;
+    // QBO periods arrive with their own realm-scoped id; only mint one for manual entries.
+    if (!p.id) p.id = PER_PREFIX + (p.realmId ? p.realmId + '-' : '') + p.period;
     p.tenantId = 'blue-collar-coach';
     p.docType = 'financial-period';
     localStorage.setItem(p.id, JSON.stringify(p));
@@ -263,58 +300,108 @@
   function deletePeriod(id) { localStorage.removeItem(id); }
 
   /* ===== KPIs ===== */
+  function setDelta(el, txt, cls) { el.textContent = txt; el.className = 'delta ' + (cls || 'flat'); }
   function renderKpis() {
-    var all = allPeriods();
-    if (all.length === 0) {
-      ['kpiRev','kpiExp','kpiNet','kpiYtd'].forEach(function (k) { document.getElementById(k).textContent = '—'; });
+    var ids = ['kpiRev','kpiExp','kpiNet','kpiYtd'];
+    if (!currentRealm) {
+      // All companies: firm-wide totals from each company's latest month.
+      var map = latestByCompany();
+      var realms = Object.keys(map);
+      if (realms.length === 0) { ids.forEach(function (k){ document.getElementById(k).textContent='—'; }); return; }
+      var rev=0, exp=0; realms.forEach(function(r){ rev += (map[r].revenueCents||0); exp += (map[r].expensesCents||0); });
+      var net = rev - exp;
+      document.getElementById('kpiRev').textContent = dollars(rev);
+      document.getElementById('kpiExp').textContent = dollars(exp);
+      document.getElementById('kpiNet').textContent = dollars(net);
+      setDelta(document.getElementById('kpiRevD'), 'across ' + realms.length + ' compan' + (realms.length===1?'y':'ies'));
+      setDelta(document.getElementById('kpiExpD'), 'latest month each');
+      setDelta(document.getElementById('kpiNetD'), net>=0?'profitable overall':'net loss', net>=0?'up':'down');
+      // YTD net across all companies, current year.
+      var year = (new Date()).getFullYear().toString();
+      var yRev=0, yExp=0; allPeriods().forEach(function(p){ if(p.period&&p.period.indexOf(year)===0){ yRev+=(p.revenueCents||0); yExp+=(p.expensesCents||0);} });
+      document.getElementById('kpiYtd').textContent = dollars(yRev - yExp);
+      setDelta(document.getElementById('kpiYtdD'), year + ' · all companies');
       return;
     }
-    var last = all[0];
-    var prev = all[1] || null;
-    var rev = last.revenueCents || 0;
-    var exp = last.expensesCents || 0;
-    var net = rev - exp;
+    // Single company.
+    var all = periodsFor(currentRealm);
+    if (all.length === 0) { ids.forEach(function (k){ document.getElementById(k).textContent='—'; });
+      setDelta(document.getElementById('kpiRevD'),'no data — Sync from QBO'); setDelta(document.getElementById('kpiExpD'),''); setDelta(document.getElementById('kpiNetD'),''); setDelta(document.getElementById('kpiYtdD'),''); return; }
+    var last = all[0], prev = all[1] || null;
+    var rev = last.revenueCents||0, exp = last.expensesCents||0, net = rev - exp;
     document.getElementById('kpiRev').textContent = dollars(rev);
     document.getElementById('kpiExp').textContent = dollars(exp);
     document.getElementById('kpiNet').textContent = dollars(net);
-    function deltaText(el, v) {
-      if (v == null) { el.textContent = 'no prior period'; el.className = 'delta flat'; return; }
-      el.textContent = (v >= 0 ? '↑ ' : '↓ ') + Math.abs(v) + '% vs prior';
-      el.className = 'delta ' + (v > 0 ? 'up' : v < 0 ? 'down' : 'flat');
-    }
-    deltaText(document.getElementById('kpiRevD'), prev ? pct(rev, prev.revenueCents) : null);
-    deltaText(document.getElementById('kpiExpD'), prev ? pct(exp, prev.expensesCents) : null);
-    deltaText(document.getElementById('kpiNetD'), prev ? pct(net, (prev.revenueCents || 0) - (prev.expensesCents || 0)) : null);
-
-    // YTD: sum periods that match the same year as `last`
+    function dlt(el, v){ if(v==null){ setDelta(el,'no prior period'); return;} setDelta(el,(v>=0?'↑ ':'↓ ')+Math.abs(v)+'% vs prior', v>0?'up':v<0?'down':'flat'); }
+    dlt(document.getElementById('kpiRevD'), prev?pct(rev, prev.revenueCents):null);
+    dlt(document.getElementById('kpiExpD'), prev?pct(exp, prev.expensesCents):null);
+    dlt(document.getElementById('kpiNetD'), prev?pct(net, (prev.revenueCents||0)-(prev.expensesCents||0)):null);
     var year = last.period ? last.period.slice(0,4) : '';
-    var ytdRev = 0, ytdExp = 0;
-    all.forEach(function (p) { if (p.period && p.period.indexOf(year) === 0) { ytdRev += (p.revenueCents || 0); ytdExp += (p.expensesCents || 0); } });
-    var ytdNet = ytdRev - ytdExp;
-    document.getElementById('kpiYtd').textContent = dollars(ytdNet);
-    document.getElementById('kpiYtdD').textContent = year + ' · revenue ' + dollars(ytdRev) + ' · expenses ' + dollars(ytdExp);
-    document.getElementById('kpiYtdD').className = 'delta flat';
+    var ytdRev=0, ytdExp=0; all.forEach(function(p){ if(p.period&&p.period.indexOf(year)===0){ ytdRev+=(p.revenueCents||0); ytdExp+=(p.expensesCents||0);} });
+    document.getElementById('kpiYtd').textContent = dollars(ytdRev - ytdExp);
+    setDelta(document.getElementById('kpiYtdD'), year + ' · ' + companyName(currentRealm));
   }
 
   /* ===== Table ===== */
   var yearFilter, rowsEl, emptyEl;
+  function setHead(cols) {
+    var tr = document.querySelector('.list thead tr');
+    if (tr) tr.innerHTML = cols.map(function (c) { return '<th' + (c.num ? ' class="num"' : '') + '>' + esc(c.label) + '</th>'; }).join('');
+  }
   function renderTable() {
-    var all = allPeriods();
-    var year = yearFilter.value;
-    var rows = year ? all.filter(function (p) { return (p.period || '').indexOf(year) === 0; }) : all;
-    document.getElementById('periodCount').textContent = rows.length + ' of ' + all.length + ' period' + (all.length === 1 ? '' : 's');
+    var yf = document.getElementById('yearFilter');
 
-    // Populate year filter from data
+    if (!currentRealm) {
+      // ── All companies: one summary row per connected company ──
+      yf.style.display = 'none';
+      setHead([{label:'Company'},{label:'Latest period'},{label:'Revenue',num:true},{label:'Expenses',num:true},{label:'Net',num:true},{label:'Last sync'},{label:''}]);
+      document.getElementById('periodCount').textContent = companies.length + ' compan' + (companies.length === 1 ? 'y' : 'ies');
+      if (companies.length === 0) {
+        rowsEl.innerHTML = ''; emptyEl.hidden = false;
+        emptyEl.querySelector('.big').textContent = 'No companies connected yet.';
+        var sub = emptyEl.querySelector('div:last-child'); if (sub) sub.innerHTML = 'Click <strong>+ Connect a company</strong> to link a client’s QuickBooks.';
+        return;
+      }
+      emptyEl.hidden = true;
+      var map = latestByCompany();
+      rowsEl.innerHTML = companies.map(function (c) {
+        var l = map[c.realmId];
+        var net = l ? ((l.revenueCents || 0) - (l.expensesCents || 0)) : null;
+        var ls = c.lastSyncAt ? new Date(c.lastSyncAt).toLocaleDateString([], { month:'short', day:'numeric', year:'numeric' }) : 'never';
+        return '<tr data-realm="' + esc(c.realmId) + '" style="cursor:pointer;">' +
+          '<td data-label="Company"><strong>' + esc(c.companyName || ('Company ' + c.realmId)) + '</strong></td>' +
+          '<td data-label="Latest period">' + esc(l ? l.period : '—') + '</td>' +
+          '<td data-label="Revenue" class="num">' + (l ? dollars(l.revenueCents) : '—') + '</td>' +
+          '<td data-label="Expenses" class="num">' + (l ? dollars(l.expensesCents) : '—') + '</td>' +
+          '<td data-label="Net" class="num">' + (l ? '<strong style="color:' + (net >= 0 ? 'var(--green)' : 'var(--burgundy)') + ';">' + dollars(net) + '</strong>' : '—') + '</td>' +
+          '<td data-label="Last sync" style="color:var(--muted);font-size:12.5px;">' + esc(ls) + '</td>' +
+          '<td style="text-align:right;"><span style="color:var(--gold-deep);font-weight:700;font-size:12px;">View →</span></td>' +
+        '</tr>';
+      }).join('');
+      rowsEl.querySelectorAll('tr[data-realm]').forEach(function (tr) {
+        tr.addEventListener('click', function () { currentRealm = tr.dataset.realm; document.getElementById('companyFilter').value = currentRealm; renderAll(); });
+      });
+      return;
+    }
+
+    // ── Single company: monthly periods ──
+    yf.style.display = '';
+    setHead([{label:'Period'},{label:'Revenue',num:true},{label:'Expenses',num:true},{label:'Net',num:true},{label:'Source'},{label:'Synced'},{label:''}]);
+    var all = periodsFor(currentRealm);
+    var year = yf.value;
+    var rows = year ? all.filter(function (p) { return (p.period || '').indexOf(year) === 0; }) : all;
+    document.getElementById('periodCount').textContent = companyName(currentRealm) + ' · ' + rows.length + ' of ' + all.length + ' period' + (all.length === 1 ? '' : 's');
+
     var years = {};
     all.forEach(function (p) { if (p.period) years[p.period.slice(0,4)] = true; });
-    var cur = yearFilter.value;
-    yearFilter.innerHTML = '<option value="">All years</option>' +
+    var cur = yf.value;
+    yf.innerHTML = '<option value="">All years</option>' +
       Object.keys(years).sort().reverse().map(function (y) { return '<option value="' + esc(y) + '">' + esc(y) + '</option>'; }).join('');
-    yearFilter.value = cur;
+    yf.value = cur;
 
     if (rows.length === 0) {
       rowsEl.innerHTML = ''; emptyEl.hidden = false;
-      emptyEl.querySelector('.big').textContent = all.length === 0 ? 'No periods recorded yet.' : 'No periods for that year.';
+      emptyEl.querySelector('.big').textContent = all.length === 0 ? 'No periods yet — hit "Sync all from QBO".' : 'No periods for that year.';
       return;
     }
     emptyEl.hidden = true;
@@ -372,36 +459,46 @@
     renderAll();
   });
 
-  /* ===== Sync from QBO (placeholder until backend) ===== */
+  /* ===== Connect a company / Sync ===== */
+  document.getElementById('connectBtn').addEventListener('click', function () {
+    // Per-company OAuth: the accountant picks which QuickBooks company to authorize.
+    window.location.href = '/api/integrations/qbo/connect';
+  });
   document.getElementById('syncBtn').addEventListener('click', function () {
     var btn = this; btn.disabled = true; btn.textContent = 'Syncing…';
-    fetch('/api/integrations/qbo/sync', { method: 'POST', credentials: 'include' })
-      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+    var body = currentRealm ? JSON.stringify({ realmId: currentRealm }) : '{}';
+    fetch('/api/integrations/qbo/sync', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: body })
+      .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
       .then(function (resp) {
-        (resp.periods || []).forEach(savePeriod);
-        if (window.bccNotifySaved) window.bccNotifySaved('Synced ' + (resp.periods || []).length + ' period(s).');
-        renderAll();
+        var n = 0;
+        (resp.companies || []).forEach(function (co) { (co.periods || []).forEach(function (p) { savePeriod(p); n++; }); });
+        if (window.bccNotifySaved) window.bccNotifySaved('Synced ' + (resp.companies || []).length + ' company(ies), ' + n + ' period(s).');
+        return loadCompanies();
       })
-      .catch(function (e) {
-        if (window.bccNotify) window.bccNotify('QBO sync endpoint not wired yet — coming in a follow-up commit.', 'warn');
-      })
-      .finally(function () {
-        btn.disabled = false; btn.textContent = 'Sync from QBO';
-      });
+      .then(function () { renderAll(); })
+      .catch(function (e) { if (window.bccNotify) window.bccNotify('Sync failed: ' + e.message, 'warn'); else alert('Sync failed: ' + e.message); })
+      .finally(function () { btn.disabled = false; btn.textContent = 'Sync all from QBO'; });
   });
 
   document.getElementById('printBtn').addEventListener('click', function () { window.print(); });
   document.getElementById('yearFilter').addEventListener('change', renderTable);
+  document.getElementById('companyFilter').addEventListener('change', function () { currentRealm = this.value; renderAll(); });
 
   /* ===== Init ===== */
-  function renderAll() { renderStatus(); renderKpis(); renderTable(); }
+  function renderAll() { fillCompanyFilter(); renderStatus(); renderKpis(); renderTable(); }
   function init() {
     yearFilter = document.getElementById('yearFilter');
     rowsEl = document.getElementById('rows');
     emptyEl = document.getElementById('empty');
-    renderAll();
+    try {
+      var qs = new URLSearchParams(location.search);
+      if (qs.get('qbo') === 'connected' && window.bccNotifySaved) window.bccNotifySaved('QuickBooks connected: ' + (qs.get('company') || 'company'));
+      else if (qs.get('qbo') === 'error' && window.bccNotify) window.bccNotify('QuickBooks connect failed: ' + (qs.get('detail') || ''), 'warn');
+    } catch (_) {}
+    loadCompanies().then(renderAll);
   }
-  window.addEventListener('bcc-data-ready', renderAll);
+  // localStorage→Cosmos sync can land after init; re-render the data views (not the company list).
+  window.addEventListener('bcc-data-ready', function () { renderKpis(); renderTable(); });
   window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
   setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
 })();
