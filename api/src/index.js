@@ -1633,8 +1633,9 @@ app.http('qbo-callback', {
         headers: { 'Authorization': 'Basic ' + basic, 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
         body
       });
-      if (!r.ok) throw new Error('Intuit token exchange failed (' + r.status + ')');
-      const tok = await r.json();
+      const tokText = await r.text();
+      if (!r.ok) throw new Error('Intuit token exchange ' + r.status + ' (redirect_uri=' + redirectUri + '): ' + tokText.slice(0, 300));
+      const tok = JSON.parse(tokText);
 
       const env = fields.environment === 'production' ? 'production' : 'sandbox';
       const apiBase = env === 'production' ? 'https://quickbooks.api.intuit.com' : 'https://sandbox-quickbooks.api.intuit.com';
@@ -1674,9 +1675,13 @@ app.http('qbo-callback', {
       await c.items.upsert(rec);
       _intCache.until = 0; _intCache.byChannel.clear();
 
+      // Diagnostic breadcrumb (readable from Cosmos): last connect outcome.
+      try { await c.items.upsert({ id: 'bcc-qbo-debug', tenantId: BCC_TENANT_ID, docType: 'qbo-debug', at: new Date().toISOString(), step: 'stored', ok: true, realmId, companyName: comp.companyName, redirectUri }); } catch (_) {}
+
       return { status: 302, headers: { Location: '/bookkeeping.html?qbo=connected&company=' + encodeURIComponent(companyName || realmId) } };
     } catch (e) {
       context.error('qbo callback failed', e);
+      try { await container().items.upsert({ id: 'bcc-qbo-debug', tenantId: BCC_TENANT_ID, docType: 'qbo-debug', at: new Date().toISOString(), step: 'error', ok: false, realmId: realmId, error: String(e.message || e) }); } catch (_) {}
       return { status: 302, headers: { Location: '/bookkeeping.html?qbo=error&detail=' + encodeURIComponent(e.message) } };
     }
   })
