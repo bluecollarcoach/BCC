@@ -220,6 +220,9 @@
   // currentRealm '' = "All companies" (firm-wide summary), else one company.
   var companies = [];
   var currentRealm = '';
+  var isAdmin = false;        // admins can toggle companies on/off + assign users
+  var usersDir = [];          // [{upn, displayName}] for the per-user access picker
+  var accessEditRealm = null; // realm whose access editor is open (admin)
 
   function nowIso() { return new Date().toISOString(); }
   function esc(s) { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
@@ -240,8 +243,16 @@
   function loadCompanies() {
     return fetch('/api/integrations/qbo/companies', { credentials: 'include' })
       .then(function (r) { return r.ok ? r.json() : { companies: [] }; })
-      .then(function (d) { companies = (d && d.companies) || []; })
-      .catch(function () { companies = []; });
+      .then(function (d) { companies = (d && d.companies) || []; isAdmin = !!(d && d.isAdmin); usersDir = (d && d.users) || []; })
+      .catch(function () { companies = []; isAdmin = false; usersDir = []; });
+  }
+  function updateCompany(realm, patch) {
+    return fetch('/api/integrations/qbo/companies/' + encodeURIComponent(realm), {
+      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch)
+    }).then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
+      .then(function () { return loadCompanies(); })
+      .then(function () { renderAll(); })
+      .catch(function (e) { if (window.bccNotify) window.bccNotify('Update failed: ' + e.message, 'warn'); else alert(e.message); });
   }
   function fillCompanyFilter() {
     var sel = document.getElementById('companyFilter');
@@ -354,12 +365,17 @@
     if (!currentRealm) {
       // ── All companies: one summary row per connected company ──
       yf.style.display = 'none';
-      setHead([{label:'Company'},{label:'Latest period'},{label:'Revenue',num:true},{label:'Expenses',num:true},{label:'Net',num:true},{label:'Last sync'},{label:''}]);
-      document.getElementById('periodCount').textContent = companies.length + ' compan' + (companies.length === 1 ? 'y' : 'ies');
+      var cols = [{label:'Company'},{label:'Latest period'},{label:'Revenue',num:true},{label:'Expenses',num:true},{label:'Net',num:true},{label:'Last sync'}];
+      if (isAdmin) cols.push({label:'Enabled'}, {label:'Access'});
+      cols.push({label:''});
+      setHead(cols);
+      var span = cols.length;
+      document.getElementById('periodCount').textContent = companies.length + ' compan' + (companies.length === 1 ? 'y' : 'ies') + (isAdmin ? ' · admin controls on' : '');
       if (companies.length === 0) {
         rowsEl.innerHTML = ''; emptyEl.hidden = false;
-        emptyEl.querySelector('.big').textContent = 'No companies connected yet.';
-        var sub = emptyEl.querySelector('div:last-child'); if (sub) sub.innerHTML = 'Click <strong>+ Connect a company</strong> to link a client’s QuickBooks.';
+        emptyEl.querySelector('.big').textContent = isAdmin ? 'No companies connected yet.' : 'No companies are turned on for you yet.';
+        var sub = emptyEl.querySelector('div:last-child');
+        if (sub) sub.innerHTML = isAdmin ? 'Click <strong>+ Connect a company</strong> to link a client’s QuickBooks.' : 'Ask an admin to give you access in Bookkeeping → All companies.';
         return;
       }
       emptyEl.hidden = true;
@@ -368,19 +384,71 @@
         var l = map[c.realmId];
         var net = l ? ((l.revenueCents || 0) - (l.expensesCents || 0)) : null;
         var ls = c.lastSyncAt ? new Date(c.lastSyncAt).toLocaleDateString([], { month:'short', day:'numeric', year:'numeric' }) : 'never';
-        return '<tr data-realm="' + esc(c.realmId) + '" style="cursor:pointer;">' +
+        var dim = (isAdmin && c.enabled === false) ? ' style="opacity:.5;"' : '';
+        var adminCells = '';
+        if (isAdmin) {
+          var access = (c.allowedUserUpns && c.allowedUserUpns.length) ? (c.allowedUserUpns.length + ' user' + (c.allowedUserUpns.length === 1 ? '' : 's')) : 'All users';
+          adminCells =
+            '<td data-label="Enabled" class="nodrill"><label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" data-act="enabled" ' + (c.enabled !== false ? 'checked' : '') + ' /> <span style="font-size:12px;">' + (c.enabled !== false ? 'On' : 'Off') + '</span></label></td>' +
+            '<td data-label="Access" class="nodrill"><span style="font-size:12.5px;">' + esc(access) + '</span> <button class="btn btn-ghost" data-act="access" type="button" style="font-size:11px;padding:0 8px;min-height:28px;margin-left:6px;">Edit</button></td>';
+        }
+        var row = '<tr data-realm="' + esc(c.realmId) + '"' + dim + ' style="cursor:pointer;">' +
           '<td data-label="Company"><strong>' + esc(c.companyName || ('Company ' + c.realmId)) + '</strong></td>' +
           '<td data-label="Latest period">' + esc(l ? l.period : '—') + '</td>' +
           '<td data-label="Revenue" class="num">' + (l ? dollars(l.revenueCents) : '—') + '</td>' +
           '<td data-label="Expenses" class="num">' + (l ? dollars(l.expensesCents) : '—') + '</td>' +
           '<td data-label="Net" class="num">' + (l ? '<strong style="color:' + (net >= 0 ? 'var(--green)' : 'var(--burgundy)') + ';">' + dollars(net) + '</strong>' : '—') + '</td>' +
           '<td data-label="Last sync" style="color:var(--muted);font-size:12.5px;">' + esc(ls) + '</td>' +
+          adminCells +
           '<td style="text-align:right;"><span style="color:var(--gold-deep);font-weight:700;font-size:12px;">View →</span></td>' +
         '</tr>';
+        // Inline access editor row (admin)
+        if (isAdmin && accessEditRealm === c.realmId) {
+          var allow = (c.allowedUserUpns || []).map(function (u) { return u.toLowerCase(); });
+          var checks = usersDir.length
+            ? usersDir.map(function (u) {
+                return '<label style="display:inline-flex;align-items:center;gap:6px;margin:0 14px 8px 0;font-size:13px;"><input type="checkbox" data-upn="' + esc(u.upn) + '" ' + (allow.indexOf(u.upn) >= 0 ? 'checked' : '') + ' /> ' + esc(u.displayName || u.upn) + '</label>';
+              }).join('')
+            : '<span class="muted">No users in the directory yet (add team members in Admin → Users).</span>';
+          row += '<tr data-editor="' + esc(c.realmId) + '"><td colspan="' + span + '" style="background:var(--chrome);">' +
+            '<div style="padding:10px 4px;">' +
+              '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Who can see ' + esc(c.companyName || c.realmId) + '?</div>' +
+              '<div style="margin-bottom:8px;">' + checks + '</div>' +
+              '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Tick specific users, or leave all unticked = visible to everyone. Admins always see every company.</div>' +
+              '<button class="btn btn-primary" data-act="access-save" type="button" style="font-size:12px;min-height:32px;">Save access</button> ' +
+              '<button class="btn btn-ghost" data-act="access-cancel" type="button" style="font-size:12px;min-height:32px;">Cancel</button>' +
+            '</div></td></tr>';
+        }
+        return row;
       }).join('');
+
+      // Drill-in (ignore clicks on admin controls / editor rows).
       rowsEl.querySelectorAll('tr[data-realm]').forEach(function (tr) {
-        tr.addEventListener('click', function () { currentRealm = tr.dataset.realm; document.getElementById('companyFilter').value = currentRealm; renderAll(); });
+        tr.addEventListener('click', function (ev) {
+          if (ev.target.closest('.nodrill') || ev.target.closest('[data-act]')) return;
+          currentRealm = tr.dataset.realm; document.getElementById('companyFilter').value = currentRealm; accessEditRealm = null; renderAll();
+        });
       });
+      if (isAdmin) {
+        rowsEl.querySelectorAll('input[data-act=enabled]').forEach(function (cb) {
+          cb.addEventListener('change', function (ev) { ev.stopPropagation(); var realm = cb.closest('tr').dataset.realm; updateCompany(realm, { enabled: cb.checked }); });
+        });
+        rowsEl.querySelectorAll('button[data-act=access]').forEach(function (b) {
+          b.addEventListener('click', function (ev) { ev.stopPropagation(); var realm = b.closest('tr').dataset.realm; accessEditRealm = (accessEditRealm === realm ? null : realm); renderTable(); });
+        });
+        rowsEl.querySelectorAll('button[data-act=access-cancel]').forEach(function (b) {
+          b.addEventListener('click', function (ev) { ev.stopPropagation(); accessEditRealm = null; renderTable(); });
+        });
+        rowsEl.querySelectorAll('button[data-act=access-save]').forEach(function (b) {
+          b.addEventListener('click', function (ev) {
+            ev.stopPropagation();
+            var editorTr = b.closest('tr'); var realm = editorTr.dataset.editor;
+            var upns = []; editorTr.querySelectorAll('input[data-upn]:checked').forEach(function (i) { upns.push(i.getAttribute('data-upn')); });
+            accessEditRealm = null;
+            updateCompany(realm, { allowedUserUpns: upns });
+          });
+        });
+      }
       return;
     }
 

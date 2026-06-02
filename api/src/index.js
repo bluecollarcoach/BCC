@@ -1656,6 +1656,9 @@ app.http('qbo-callback', {
       comp.environment = env;
       comp.companyName = companyName || comp.companyName || ('Company ' + realmId);
       comp.status = 'connected';
+      // Visibility controls (admins manage these): enabled on/off + per-user allow-list.
+      if (comp.enabled === undefined) comp.enabled = true;
+      if (!Array.isArray(comp.allowedUserUpns)) comp.allowedUserUpns = []; // [] = visible to all users
       comp.connectedAt = comp.connectedAt || new Date().toISOString();
       comp.updatedAt = new Date().toISOString();
       await c.items.upsert(comp);
@@ -1674,15 +1677,17 @@ app.http('qbo-callback', {
       return { status: 302, headers: { Location: '/bookkeeping.html?qbo=connected&company=' + encodeURIComponent(companyName || realmId) } };
     } catch (e) {
       context.error('qbo callback failed', e);
-      return { status: 302, headers: { Location: '/admin.html?qbo=error&detail=' + encodeURIComponent(e.message) + '#integrations' } };
+      return { status: 302, headers: { Location: '/bookkeeping.html?qbo=error&detail=' + encodeURIComponent(e.message) } };
     }
   })
 });
 
 /**
  * GET /api/integrations/qbo/companies
- * Lists every connected QBO company (one bcc-qbo-company-* doc per realm),
- * with its most-recent synced financial period so the UI can show KPIs.
+ * Lists connected QBO companies. Admins see ALL companies plus their visibility
+ * controls (enabled + allowedUserUpns) and a user directory for assignment.
+ * Non-admins see only companies that are enabled AND (visible to all OR include
+ * their UPN). Each company carries its most-recent synced period for KPIs.
  */
 app.http('qbo-companies', {
   methods: ['GET'],
@@ -1695,10 +1700,9 @@ app.http('qbo-companies', {
     try {
       const c = container();
       const { resources: comps } = await c.items.query({
-        query: 'SELECT c.realmId, c.companyName, c.environment, c.status, c.connectedAt, c.lastSyncAt FROM c WHERE c.tenantId=@t AND c.docType="qbo-company" ORDER BY c.companyName',
+        query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="qbo-company" ORDER BY c.companyName',
         parameters: [{ name: '@t', value: BCC_TENANT_ID }]
       }).fetchAll();
-      // Attach the latest financial period per company (best-effort).
       const { resources: periods } = await c.items.query({
         query: 'SELECT c.realmId, c.period, c.revenueCents, c.expensesCents, c.netCents FROM c WHERE c.tenantId=@t AND c.docType="financial-period"',
         parameters: [{ name: '@t', value: BCC_TENANT_ID }]
@@ -1708,15 +1712,64 @@ app.http('qbo-companies', {
         const rid = per.realmId || '_';
         if (!latestByRealm[rid] || (per.period || '') > (latestByRealm[rid].period || '')) latestByRealm[rid] = per;
       }
-      const companies = comps.map(co => ({
+      const admin = await isAppAdmin(p);
+      const who = String(p.userDetails || p.userId || '').toLowerCase();
+      let companies = comps.map(co => ({
         realmId: co.realmId, companyName: co.companyName, environment: co.environment,
         status: co.status, connectedAt: co.connectedAt, lastSyncAt: co.lastSyncAt,
+        enabled: co.enabled !== false,
+        allowedUserUpns: Array.isArray(co.allowedUserUpns) ? co.allowedUserUpns : [],
         latest: latestByRealm[co.realmId] || null
       }));
-      return { jsonBody: { companies } };
+      if (!admin) {
+        // Non-admins: only enabled companies that are visible to everyone or to them.
+        companies = companies
+          .filter(co => co.enabled && (co.allowedUserUpns.length === 0 || co.allowedUserUpns.map(u => u.toLowerCase()).includes(who)))
+          .map(co => { const { allowedUserUpns, ...rest } = co; return rest; });
+        return { jsonBody: { isAdmin: false, companies } };
+      }
+      // Admins: everything + the firm's user directory for the per-user picker.
+      const cfg = await getAdminCfg();
+      const users = (cfg && Array.isArray(cfg.users) ? cfg.users : [])
+        .map(u => ({ upn: (u.upn || u.email || '').toLowerCase(), displayName: u.displayName || u.upn || u.email }))
+        .filter(u => u.upn);
+      return { jsonBody: { isAdmin: true, companies, users } };
     } catch (err) {
       context.error('qbo-companies error', err);
       return { status: 500, jsonBody: { error: String(err && err.message || err) } };
+    }
+  })
+});
+
+/**
+ * POST /api/integrations/qbo/companies/{realmId}   (admin only)
+ * Body: { enabled?: bool, allowedUserUpns?: string[] }
+ * Turns a company on/off and/or sets which users can see it ([] = everyone).
+ */
+app.http('qbo-company-update', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'integrations/qbo/companies/{realmId}',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    if (!(await isAppAdmin(p))) return { status: 403, jsonBody: { error: 'admin only' } };
+    try {
+      const realmId = request.params.realmId;
+      const body = await request.json().catch(() => ({}));
+      const c = container();
+      const id = 'bcc-qbo-company-' + realmId;
+      const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      if (!doc) return { status: 404, jsonBody: { error: 'company not found' } };
+      if (typeof body.enabled === 'boolean') doc.enabled = body.enabled;
+      if (Array.isArray(body.allowedUserUpns)) doc.allowedUserUpns = body.allowedUserUpns.map(s => String(s).toLowerCase()).filter(Boolean);
+      doc.updatedAt = new Date().toISOString();
+      await c.items.upsert(doc);
+      return { jsonBody: { ok: true, realmId, enabled: doc.enabled !== false, allowedUserUpns: doc.allowedUserUpns || [] } };
+    } catch (e) {
+      context.error('qbo-company-update error', e);
+      return { status: 500, jsonBody: { error: String(e.message || e) } };
     }
   })
 });
