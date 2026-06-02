@@ -209,6 +209,22 @@
       <div>Hit "Sync from QBO" once the integration is connected, or use "+ Manual entry" to add a period by hand.</div>
     </div>
   </div>
+
+  <!-- QuickBooks live reports (shown when a single company is selected) -->
+  <div class="card" id="qboReports" style="display:none; margin-top:14px;">
+    <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 4px;">QuickBooks live reports <span id="qboReportsCo" style="color:var(--muted); font-weight:400; font-size:13px;"></span></h3>
+    <div style="display:flex; gap:6px; flex-wrap:wrap; margin:10px 0;">
+      <button class="btn btn-ghost" data-rpt="pl" type="button">P&amp;L</button>
+      <button class="btn btn-ghost" data-rpt="balancesheet" type="button">Balance Sheet</button>
+      <button class="btn btn-ghost" data-rpt="ar-aging" type="button">A/R Aging</button>
+      <button class="btn btn-ghost" data-rpt="ap-aging" type="button">A/P Aging</button>
+      <button class="btn btn-ghost" data-rpt="customers" type="button">Customers</button>
+      <button class="btn btn-ghost" data-rpt="vendors" type="button">Vendors</button>
+      <button class="btn btn-ghost" data-rpt="invoices" type="button">Open Invoices</button>
+      <button class="btn btn-ghost" data-rpt="bills" type="button">Open Bills</button>
+    </div>
+    <div id="qboReportOut" style="overflow:auto;"></div>
+  </div>
 </div>
 
 <script>
@@ -552,12 +568,54 @@
   document.getElementById('yearFilter').addEventListener('change', renderTable);
   document.getElementById('companyFilter').addEventListener('change', function () { currentRealm = this.value; renderAll(); });
 
+  /* ===== QuickBooks live reports ===== */
+  function money2(v) { var n = parseFloat(String(v == null ? '' : v).replace(/,/g, '')); return isNaN(n) ? (v == null ? '' : esc(v)) : ((n < 0 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString()); }
+  function toggleQboReports() {
+    var box = document.getElementById('qboReports'); if (!box) return;
+    if (currentRealm) { box.style.display = ''; document.getElementById('qboReportsCo').textContent = '· ' + companyName(currentRealm); }
+    else { box.style.display = 'none'; var o = document.getElementById('qboReportOut'); if (o) o.innerHTML = ''; }
+  }
+  function renderReport(resp) {
+    var d = (resp && resp.data) || {};
+    if (d.kind === 'list') {
+      if (!d.items || !d.items.length) return '<div style="color:var(--muted);padding:10px;">No records.</div>';
+      var cols = Object.keys(d.items[0]);
+      var head = '<tr>' + cols.map(function (k) { return '<th' + ((k === 'balance' || k === 'total') ? ' class="num"' : '') + '>' + esc(k) + '</th>'; }).join('') + '</tr>';
+      var bodyL = d.items.map(function (it) { return '<tr>' + cols.map(function (k) { var v = it[k]; var num = (k === 'balance' || k === 'total'); return '<td' + (num ? ' class="num"' : '') + '>' + (num ? money2(v) : (v === true ? 'yes' : v === false ? 'no' : esc(v == null ? '' : v))) + '</td>'; }).join('') + '</tr>'; }).join('');
+      return '<table><thead>' + head + '</thead><tbody>' + bodyL + '</tbody></table>';
+    }
+    var cc = d.columns || [];
+    if (!(d.rows || []).length) return '<div style="color:var(--muted);padding:10px;">No data in this report' + (d.range ? ' for ' + esc(JSON.stringify(d.range)) : '') + '.</div>';
+    var head2 = '<tr>' + cc.map(function (c, i) { return '<th' + (i > 0 ? ' class="num"' : '') + '>' + esc(c || '') + '</th>'; }).join('') + '</tr>';
+    var body = (d.rows || []).map(function (row) {
+      var style = 'padding-left:' + (8 + (row.level || 0) * 16) + 'px;' + ((row.type === 'summary' || row.type === 'header') ? 'font-weight:700;' : '');
+      var cells = (row.cells || []).map(function (v) { return '<td class="num">' + money2(v) + '</td>'; }).join('');
+      var pads = ''; for (var k = (row.cells || []).length; k < cc.length - 1; k++) pads += '<td class="num"></td>';
+      return '<tr><td style="' + style + '">' + esc(row.label) + '</td>' + cells + pads + '</tr>';
+    }).join('');
+    return '<table><thead>' + head2 + '</thead><tbody>' + body + '</tbody></table>';
+  }
+  function loadQboReport(type, btn) {
+    if (!currentRealm) return;
+    var out = document.getElementById('qboReportOut');
+    out.innerHTML = '<div style="color:var(--muted);padding:10px;">Loading ' + esc(type) + '…</div>';
+    document.querySelectorAll('#qboReports button[data-rpt]').forEach(function (b) { b.classList.remove('btn-primary'); b.classList.add('btn-ghost'); });
+    if (btn) { btn.classList.remove('btn-ghost'); btn.classList.add('btn-primary'); }
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/report?type=' + encodeURIComponent(type), { credentials: 'include' })
+      .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
+      .then(function (resp) { out.innerHTML = renderReport(resp); })
+      .catch(function (e) { out.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:10px;font-size:13px;">QuickBooks: ' + esc(e.message) + '</div>'; });
+  }
+
   /* ===== Init ===== */
-  function renderAll() { fillCompanyFilter(); renderStatus(); renderKpis(); renderTable(); }
+  function renderAll() { fillCompanyFilter(); renderStatus(); renderKpis(); renderTable(); toggleQboReports(); }
   function init() {
     yearFilter = document.getElementById('yearFilter');
     rowsEl = document.getElementById('rows');
     emptyEl = document.getElementById('empty');
+    document.querySelectorAll('#qboReports button[data-rpt]').forEach(function (b) {
+      b.addEventListener('click', function () { loadQboReport(b.getAttribute('data-rpt'), b); });
+    });
     try {
       var qs = new URLSearchParams(location.search);
       if (qs.get('qbo') === 'connected' && window.bccNotifySaved) window.bccNotifySaved('QuickBooks connected: ' + (qs.get('company') || 'company'));

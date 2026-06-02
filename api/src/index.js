@@ -1796,6 +1796,104 @@ app.http('qbo-company-update', {
   })
 });
 
+/* ============ QBO live reports (per company) ============
+ * One endpoint serves every report/list type for a connected company, minting a
+ * fresh access token from the stored refresh token each call. QBO report JSON is
+ * flattened to { columns, rows[] } so the UI renders any report uniformly; list
+ * types (customers/vendors/invoices/bills) come back as { items[] }.
+ */
+async function qboAccessForCompany(comp, fields) {
+  const basic = Buffer.from(fields.clientId + ':' + fields.clientSecret).toString('base64');
+  const r = await fetch('https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer', {
+    method: 'POST',
+    headers: { 'Authorization': 'Basic ' + basic, 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: comp.refreshToken }).toString()
+  });
+  if (!r.ok) throw new Error('QBO token refresh ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 200));
+  const tok = await r.json();
+  if (tok.refresh_token && tok.refresh_token !== comp.refreshToken) { comp.refreshToken = tok.refresh_token; try { await container().items.upsert(comp); } catch (_) {} }
+  const env = comp.environment === 'production' ? 'production' : (fields.environment === 'production' ? 'production' : 'sandbox');
+  const base = env === 'production' ? 'https://quickbooks.api.intuit.com' : 'https://sandbox-quickbooks.api.intuit.com';
+  return { accessToken: tok.access_token, base };
+}
+// Flatten a QBO report (nested Header/Rows/Summary) into columns + indented rows.
+function flattenQboReport(rep) {
+  const columns = (((rep || {}).Columns || {}).Column || []).map(c => c.ColTitle || '');
+  const rows = [];
+  (function walk(rs, level) {
+    for (const row of (rs || [])) {
+      if (row.Header && row.Header.ColData) rows.push({ label: row.Header.ColData[0].value || '', cells: row.Header.ColData.slice(1).map(d => d.value), level, type: 'header' });
+      if (row.Rows && row.Rows.Row) walk(row.Rows.Row, level + 1);
+      if (row.ColData) rows.push({ label: (row.ColData[0] || {}).value || '', cells: row.ColData.slice(1).map(d => d.value), level, type: 'data' });
+      if (row.Summary && row.Summary.ColData) rows.push({ label: (row.Summary.ColData[0] || {}).value || '', cells: row.Summary.ColData.slice(1).map(d => d.value), level, type: 'summary' });
+    }
+  })(((rep || {}).Rows || {}).Row || [], 0);
+  return { title: ((rep || {}).Header || {}).ReportName || '', columns, rows };
+}
+
+app.http('qbo-report', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'integrations/qbo/companies/{realmId}/report',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const realmId = request.params.realmId;
+    const url = new URL(request.url);
+    const type = (url.searchParams.get('type') || 'pl').toLowerCase();
+    try {
+      const c = container();
+      const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      if (!comp) return { status: 404, jsonBody: { error: 'company not connected' } };
+      // Visibility gate (admins see all; users need access).
+      if (!(await isAppAdmin(p))) {
+        const who = String(p.userDetails || p.userId || '').toLowerCase();
+        const allow = (comp.allowedUserUpns || []).map(u => u.toLowerCase());
+        if (comp.enabled === false || (allow.length && allow.indexOf(who) < 0)) return { status: 403, jsonBody: { error: 'no access to this company' } };
+      }
+      const fields = await getIntegrationFields('qbo');
+      const { accessToken, base } = await qboAccessForCompany(comp, fields);
+      const apiGet = async (path) => {
+        const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70';
+        const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
+        if (!r.ok) throw new Error('QBO ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 200));
+        return r.json();
+      };
+      const queryAll = async (sql) => {
+        const j = await apiGet('/query?query=' + encodeURIComponent(sql + ' MAXRESULTS 1000'));
+        const qr = j.QueryResponse || {}; const k = Object.keys(qr).find(x => Array.isArray(qr[x])); return k ? qr[k] : [];
+      };
+      const today = new Date().toISOString().slice(0, 10);
+      const yStart = today.slice(0, 4) + '-01-01';
+      let data;
+      switch (type) {
+        case 'pl': {
+          const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
+          data = flattenQboReport(await apiGet('/reports/ProfitAndLoss?start_date=' + from + '&end_date=' + to + '&accounting_method=Accrual'));
+          data.range = { from, to }; data.kind = 'report'; break;
+        }
+        case 'balancesheet': {
+          const asOf = url.searchParams.get('asOf') || today;
+          data = flattenQboReport(await apiGet('/reports/BalanceSheet?as_of=' + asOf + '&accounting_method=Accrual'));
+          data.range = { asOf }; data.kind = 'report'; break;
+        }
+        case 'ar-aging': { data = flattenQboReport(await apiGet('/reports/AgedReceivables')); data.kind = 'report'; break; }
+        case 'ap-aging': { data = flattenQboReport(await apiGet('/reports/AgedPayables')); data.kind = 'report'; break; }
+        case 'customers': { data = { kind: 'list', items: (await queryAll('SELECT Id, DisplayName, Balance, Active FROM Customer')).map(x => ({ name: x.DisplayName, balance: x.Balance, active: x.Active !== false })) }; break; }
+        case 'vendors': { data = { kind: 'list', items: (await queryAll('SELECT Id, DisplayName, Balance, Active FROM Vendor')).map(x => ({ name: x.DisplayName, balance: x.Balance, active: x.Active !== false })) }; break; }
+        case 'invoices': { data = { kind: 'list', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, CustomerRef FROM Invoice WHERE Balance > '0'")).map(x => ({ doc: x.DocNumber, name: x.CustomerRef && x.CustomerRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance })) }; break; }
+        case 'bills': { data = { kind: 'list', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, VendorRef FROM Bill WHERE Balance > '0'")).map(x => ({ doc: x.DocNumber, name: x.VendorRef && x.VendorRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance })) }; break; }
+        default: return { status: 400, jsonBody: { error: 'unknown report type "' + type + '"' } };
+      }
+      return { jsonBody: { type, realmId, companyName: comp.companyName, data } };
+    } catch (e) {
+      context.error('qbo-report error', e);
+      return { status: 502, jsonBody: { error: String(e.message || e) } };
+    }
+  })
+});
+
 /* ============ Marketing OAuth: Google Ads, LinkedIn, Meta, Mailchimp ============
  *
  * Same pattern as QBO above (UI-pasted clientId / clientSecret on the
