@@ -909,12 +909,14 @@ app.http('integrations-test', {
           if (!fields.clientId || !fields.clientSecret) {
             result = { ok: false, error: 'clientId and clientSecret required' };
           } else {
-            // Hitting Intuit's openid discovery is a cheap reachability test.
+            // Intuit's OpenID discovery doc is the correct reachability probe.
             const base = (fields.environment === 'production')
-              ? 'https://accounts.intuit.com/.well-known/openid_configuration'
-              : 'https://accounts.intuit.com/.well-known/openid_configuration';
-            const r = await fetch(base).catch(e => null);
-            result = r && r.ok ? { ok: true } : { ok: false, error: 'reachability check failed' };
+              ? 'https://developer.api.intuit.com/.well-known/openid_configuration'
+              : 'https://developer.api.intuit.com/.well-known/openid_sandbox_configuration';
+            const r = await fetch(base).catch(() => null);
+            result = r && r.ok
+              ? { ok: true, note: 'Credentials present and Intuit reachable. Click "Connect QBO" to authorize a company.' }
+              : { ok: false, error: 'could not reach Intuit discovery endpoint (' + (r && r.status) + ')' };
           }
           break;
 
