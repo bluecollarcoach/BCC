@@ -433,10 +433,10 @@
   });
 
   function isGraphConnected() {
-    try {
-      var rec = JSON.parse(localStorage.getItem('bcc-integration-msgraph') || 'null');
-      return !!(rec && rec.status === 'connected');
-    } catch (e) { return false; }
+    // Microsoft Graph is now tenant-wide (app-only, admin-consented) and works
+    // automatically for every signed-in @bluecollarcoach.us user — no per-user
+    // "Connect Outlook" step. Calendar mirror/pull are always available.
+    return true;
   }
   function mirrorSessionToGraph(s) {
     if (!isGraphConnected()) return Promise.resolve(null);

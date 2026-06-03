@@ -1075,16 +1075,19 @@
         '</label>';
       }).join('');
 
+      // msgraph is tenant-wide app-only (admin-consented) — always connected,
+      // no per-user secret to "save", so don't show the misleading status.
+      var dispStatus = (conn.channel === 'msgraph') ? 'connected' : rec.status;
       var lastSync = rec.updatedAt ? new Date(rec.updatedAt).toLocaleString() : 'never saved';
       return '<div class="int-card" data-channel="' + esc(conn.channel) + '">' +
         '<div class="int-head">' +
           '<div class="int-name">' + esc(conn.name) + '</div>' +
-          '<div class="int-status">' + statusDot(rec.status) + statusLabel(rec.status) + '</div>' +
+          '<div class="int-status">' + statusDot(dispStatus) + statusLabel(dispStatus) + '</div>' +
         '</div>' +
         '<p class="blurb" style="margin:6px 0 12px;">' + esc(conn.blurb) + '</p>' +
         '<div class="form-grid">' + fieldsHtml + '</div>' +
         '<div class="int-foot">' +
-          '<span class="int-last">Last saved: ' + esc(lastSync) + '</span>' +
+          '<span class="int-last">' + (conn.channel === 'msgraph' ? 'Tenant-wide — no setup needed' : 'Last saved: ' + esc(lastSync)) + '</span>' +
           '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
             ((conn.channel === 'msgraph')
               ? '<span style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;color:#059669;"><span style="width:9px;height:9px;border-radius:50%;background:#059669;"></span>Connected automatically for all users</span>' : '') +
