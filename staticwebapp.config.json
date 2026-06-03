@@ -33,6 +33,8 @@
     { "route": "/api/integrations/meta/callback",       "allowedRoles": ["anonymous", "authenticated"] },
     { "route": "/api/integrations/mailchimp/callback",  "allowedRoles": ["anonymous", "authenticated"] },
 
+    { "route": "/api/cron/reminders", "allowedRoles": ["anonymous", "authenticated"] },
+
     { "route": "/api/*",  "allowedRoles": ["authenticated"] },
     { "route": "/*.html", "allowedRoles": ["authenticated"] },
     { "route": "/",       "allowedRoles": ["authenticated"], "rewrite": "/index.html" }
