@@ -888,11 +888,10 @@
     {
       channel: 'msgraph',
       name: 'Microsoft Graph (Outlook calendar + mail)',
-      blurb: 'Per-user OAuth that lets sessions you create in BCC mirror to your Outlook calendar automatically. Click Connect to authorize with your Microsoft 365 account; no credentials to paste.',
+      blurb: 'Connected automatically for everyone. Calendar sync and email send work for every signed-in @bluecollarcoach.us user via tenant-wide Microsoft Graph (admin-consented) — no per-user "Connect" needed.',
       perUser: true,
-      fields: [
-        { key: 'connectedFor', label: 'Connected as', type: 'text', secret: false, readOnly: true, hint: 'The UPN whose Outlook is currently linked. Click Connect again to re-authorize or switch accounts.' }
-      ]
+      autoConnected: true,
+      fields: []
     },
     {
       channel: 'qbo',
@@ -1088,7 +1087,7 @@
           '<span class="int-last">Last saved: ' + esc(lastSync) + '</span>' +
           '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
             ((conn.channel === 'msgraph')
-              ? '<a class="btn btn-primary" href="/api/integrations/msgraph/connect">Connect Outlook</a>' : '') +
+              ? '<span style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;color:#059669;"><span style="width:9px;height:9px;border-radius:50%;background:#059669;"></span>Connected automatically for all users</span>' : '') +
             ((conn.channel === 'slack' || conn.channel === 'teams')
               ? '<button class="btn btn-ghost" data-int-act="notify" type="button">Send test message</button>' : '') +
             ((conn.channel === 'qbo')

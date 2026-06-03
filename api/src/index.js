@@ -1368,14 +1368,9 @@ app.http('msgraph-upsert-event', {
     if (!domainAllowed(p)) return domainBlocked();
     try {
       const body = await request.json().catch(() => ({}));
-      const tokens = await loadMsGraphTokensFor(p.userDetails || p.userId);
-      if (!tokens) return { status: 400, jsonBody: { ok: false, error: 'Outlook not connected. Click Connect in Admin → Integrations → Microsoft Graph.' } };
-      const tok = await refreshGraphAccessToken(tokens.refreshToken);
-      const access = tok.access_token;
-      // Persist any rotated refresh token
-      if (tok.refresh_token && tok.refresh_token !== tokens.refreshToken) {
-        await saveMsGraphTokensFor(p.userDetails || p.userId, tok.refresh_token, '');
-      }
+      // App-only Graph: works automatically for every signed-in user — no per-user "Connect".
+      const upn = encodeURIComponent(p.userDetails || p.userId);
+      const access = await getGraphToken();
 
       const eventPayload = {
         subject: body.subject || '(untitled session)',
@@ -1388,7 +1383,7 @@ app.http('msgraph-upsert-event', {
           { id: 'String {00020329-0000-0000-C000-000000000046} Name BCC_SessionId', value: String(body.sessionId) }
         ] : undefined
       };
-      const graphBase = 'https://graph.microsoft.com/v1.0/me/events';
+      const graphBase = 'https://graph.microsoft.com/v1.0/users/' + upn + '/events';
       let r;
       if (body.graphEventId) {
         r = await fetch(graphBase + '/' + encodeURIComponent(body.graphEventId), {
@@ -1422,11 +1417,10 @@ app.http('msgraph-delete-event', {
     try {
       const body = await request.json().catch(() => ({}));
       if (!body.graphEventId) return badRequest('graphEventId required');
-      const tokens = await loadMsGraphTokensFor(p.userDetails || p.userId);
-      if (!tokens) return { status: 400, jsonBody: { ok: false, error: 'Outlook not connected' } };
-      const tok = await refreshGraphAccessToken(tokens.refreshToken);
-      const r = await fetch('https://graph.microsoft.com/v1.0/me/events/' + encodeURIComponent(body.graphEventId), {
-        method: 'DELETE', headers: { Authorization: 'Bearer ' + tok.access_token }
+      const upn = encodeURIComponent(p.userDetails || p.userId);
+      const access = await getGraphToken();
+      const r = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/events/' + encodeURIComponent(body.graphEventId), {
+        method: 'DELETE', headers: { Authorization: 'Bearer ' + access }
       });
       if (!r.ok && r.status !== 404) return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')' } };
       return { jsonBody: { ok: true } };
@@ -1461,9 +1455,8 @@ app.http('msgraph-send-mail', {
       const subject = String(body.subject || '(no subject)').slice(0, 250);
       const html = String(body.bodyHtml || body.body || '');
 
-      const tokens = await loadMsGraphTokensFor(p.userDetails || p.userId);
-      if (!tokens) return { status: 400, jsonBody: { ok: false, error: 'Outlook not connected. Click Connect in Admin → Integrations → Microsoft Graph.' } };
-      const tok = await refreshGraphAccessToken(tokens.refreshToken);
+      const upn = encodeURIComponent(p.userDetails || p.userId);
+      const access = await getGraphToken();
 
       const payload = {
         message: {
@@ -1473,9 +1466,9 @@ app.http('msgraph-send-mail', {
         },
         saveToSentItems: true
       };
-      const r = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+      const r = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/sendMail', {
         method: 'POST',
-        headers: { Authorization: 'Bearer ' + tok.access_token, 'Content-Type': 'application/json' },
+        headers: { Authorization: 'Bearer ' + access, 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       if (!r.ok && r.status !== 202) {
@@ -1513,12 +1506,8 @@ app.http('msgraph-pull-events', {
     if (!domainAllowed(p)) return domainBlocked();
     try {
       const body = await request.json().catch(() => ({}));
-      const tokens = await loadMsGraphTokensFor(p.userDetails || p.userId);
-      if (!tokens) return { status: 400, jsonBody: { ok: false, error: 'Outlook not connected.' } };
-      const tok = await refreshGraphAccessToken(tokens.refreshToken);
-      if (tok.refresh_token && tok.refresh_token !== tokens.refreshToken) {
-        await saveMsGraphTokensFor(p.userDetails || p.userId, tok.refresh_token, '');
-      }
+      const upn = encodeURIComponent(p.userDetails || p.userId);
+      const access = await getGraphToken();
 
       const now = new Date();
       const rangeStart = body.rangeStart || new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
