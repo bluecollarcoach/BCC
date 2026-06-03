@@ -265,7 +265,14 @@ function init() {
     if (!n) return;
     const id = n.toLowerCase().replace(/[^a-z0-9-]/g,'-');
     if (chans.some(c => c.id === id)) { alert('Already exists.'); return; }
-    chans.push({ id, name:id, desc:'' }); saveChans(chans); render();
+    // New channels are PRIVATE by default — created with just you as a member.
+    // Use the "Members" button (opened automatically) to add people, or flip
+    // it to "Open to everyone".
+    chans.push({ id, name:id, desc:'', members:[whoUpn()], createdBy: whoUpn() });
+    saveChans(chans);
+    active = id;
+    render();
+    openMembersModal(id);
   };
   document.getElementById('menuBtn').onclick = () => document.getElementById('sidebar').classList.toggle('open');
   render();
@@ -273,6 +280,9 @@ function init() {
 
 function render() {
   msgs = loadMsgs(); read = loadRead();
+  // Keep the active channel valid against what this user can actually see.
+  var vis = visibleChans();
+  if (!vis.some(function (c) { return c.id === active; })) active = vis.length ? vis[0].id : null;
   renderSidebar();
   renderThread();
 }
@@ -284,7 +294,7 @@ function unreadCount(chId) {
 }
 
 function renderSidebar() {
-  document.getElementById('chanList').innerHTML = chans.map(c => {
+  document.getElementById('chanList').innerHTML = visibleChans().map(c => {
     const u = unreadCount(c.id);
     return `
       <div class="chan ${c.id===active?'active':''}" data-id="${c.id}">
@@ -307,6 +317,21 @@ function renderSidebar() {
 function isAdmin() { return !!(window.bccIsAdmin && window.bccIsAdmin()); }
 function msgId(m) { return m.id || ('m' + m.at + '-' + (m.author||'').slice(0,4).replace(/\W/g,'')); }
 
+// ---- Channel membership (privacy gating) ----
+// A channel with no members[] is "open" (everyone sees it). A channel with a
+// members[] array of UPNs is private to those people (+ admins). bcc-api.js
+// owns the canonical check (window.bccChatCanSee); we fall back gracefully if
+// it hasn't loaded yet (deferred script).
+function whoUpn() { return String((window.bccUser && window.bccUser.userDetails) || '').toLowerCase(); }
+function canSeeChan(c) {
+  if (window.bccChatCanSee) return window.bccChatCanSee(c, whoUpn());
+  return !!(c && !Array.isArray(c.members)); // pre-load fallback: open channels only
+}
+function canManageChan(c) {
+  return isAdmin() || (c && c.createdBy && String(c.createdBy).toLowerCase() === whoUpn());
+}
+function visibleChans() { return chans.filter(canSeeChan); }
+
 function renderThread() {
   const c = chans.find(x => x.id === active);
   if (!c) {
@@ -323,6 +348,7 @@ function renderThread() {
       ${c.desc ? `<span class="meta">&middot; ${escapeHtml(c.desc)}</span>` : ''}
       <span class="spacer" style="flex:1;"></span>
       <span class="meta">${list.length} message${list.length===1?'':'s'}</span>
+      ${canManageChan(c) ? `<button class="clear-btn" id="membersBtn" style="color:var(--p-navy);" title="Manage who can see this channel">&#128101; ${Array.isArray(c.members) ? ('Members ('+c.members.length+')') : 'Open'}</button>` : ''}
       ${admin && list.length ? `<button class="clear-btn" id="clearChan" title="Delete every message in this channel">&#128465; Clear channel</button>` : ''}
     </div>
     <div class="messages" id="messages">
@@ -404,6 +430,10 @@ function renderThread() {
     };
   });
 
+  // Manage channel members
+  const mb = document.getElementById('membersBtn');
+  if (mb) mb.onclick = () => openMembersModal(active);
+
   // Admin clear-channel
   const cb = document.getElementById('clearChan');
   if (cb) {
@@ -440,6 +470,71 @@ function send() {
     meta: { channel: active, preview: (t||'').slice(0, 80), hasPhoto: !!newMsg.photo }
   });
   render();
+}
+
+// ---- Member manager modal (admins + channel creator) ----
+function openMembersModal(chId) {
+  const c = chans.find(x => x.id === chId);
+  if (!c || !canManageChan(c)) return;
+  const meUpn = whoUpn();
+  const people = (window.bccPeopleFull || []).filter(p => p && p.upn)
+    .slice().sort((a,b) => (a.displayName||'').localeCompare(b.displayName||''));
+  const isOpen = !Array.isArray(c.members);
+  const memberSet = new Set((Array.isArray(c.members) ? c.members : []).map(s => String(s).toLowerCase()));
+
+  const rows = people.length ? people.map(p => {
+    const u = String(p.upn).toLowerCase();
+    const checked = memberSet.has(u) || u === meUpn;
+    return `<label style="display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid #f3f3f1;cursor:pointer;font-size:14px;">
+      <input type="checkbox" data-upn="${escapeHtml(u)}"${checked?' checked':''}${u===meUpn?' disabled':''} style="width:auto;margin:0;" />
+      <span>${escapeHtml(p.displayName||p.upn)}${u===meUpn?' <em style="color:#a8a79e;font-style:normal;">(you)</em>':''}</span></label>`;
+  }).join('') : '<div style="padding:14px 4px;color:#8a877e;font-size:13px;">User directory still loading… you can reopen this in a moment.</div>';
+
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.55);display:flex;align-items:center;justify-content:center;z-index:300;padding:20px;';
+  ov.innerHTML = `
+    <div style="background:#fff;border-radius:14px;max-width:460px;width:100%;max-height:85vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 50px rgba(15,23,42,0.3);font-family:inherit;">
+      <div style="padding:16px 20px;border-bottom:1px solid #eee;">
+        <div style="font-weight:800;font-size:17px;color:#2b2b2b;">Members of #${escapeHtml(c.name)}</div>
+        <div style="font-size:12.5px;color:#6b685f;margin-top:3px;">Private channels are visible only to their members. Admins always have access.</div>
+      </div>
+      <label style="display:flex;align-items:center;gap:10px;padding:12px 20px;border-bottom:1px solid #eee;font-weight:700;font-size:13.5px;color:#1a1a1a;cursor:pointer;">
+        <input type="checkbox" id="m-open"${isOpen?' checked':''} style="width:auto;margin:0;" /> Open to everyone (no membership)
+      </label>
+      <div id="m-people" style="overflow-y:auto;padding:6px 20px;flex:1;${isOpen?'opacity:0.4;pointer-events:none;':''}">${rows}</div>
+      <div style="padding:14px 20px;border-top:1px solid #eee;display:flex;gap:8px;justify-content:flex-end;">
+        <button type="button" id="m-cancel" style="padding:9px 16px;border-radius:8px;border:1px solid #e2e1dd;background:#f6f6f4;font-weight:700;cursor:pointer;">Cancel</button>
+        <button type="button" id="m-save" style="padding:9px 16px;border-radius:8px;border:none;background:#a8884a;color:#fff;font-weight:700;cursor:pointer;">Save</button>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  const close = () => { if (ov.parentNode) ov.parentNode.removeChild(ov); };
+  ov.addEventListener('click', e => { if (e.target === ov) close(); });
+  ov.querySelector('#m-cancel').onclick = close;
+  const openChk = ov.querySelector('#m-open');
+  const peopleBox = ov.querySelector('#m-people');
+  openChk.onchange = () => {
+    if (openChk.checked) { peopleBox.style.opacity = '0.4'; peopleBox.style.pointerEvents = 'none'; }
+    else { peopleBox.style.opacity = ''; peopleBox.style.pointerEvents = ''; }
+  };
+  ov.querySelector('#m-save').onclick = () => {
+    if (openChk.checked) {
+      delete c.members;
+    } else {
+      const sel = [meUpn];
+      ov.querySelectorAll('#m-people input[type=checkbox]').forEach(cb => {
+        if (cb.checked && cb.dataset.upn && sel.indexOf(cb.dataset.upn) < 0) sel.push(cb.dataset.upn);
+      });
+      c.members = sel;
+      if (!c.createdBy) c.createdBy = meUpn;
+    }
+    saveChans(chans);
+    window.bccAudit && window.bccAudit('chat-members-update', {
+      key: c.id, meta: { channel: c.id, open: !!openChk.checked, count: Array.isArray(c.members) ? c.members.length : null }
+    });
+    close();
+    render();
+  };
 }
 
 function dayLabel(d) {

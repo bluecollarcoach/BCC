@@ -843,6 +843,153 @@ async function fanoutPush(action, body, p, context) {
   }
 }
 
+/* ============ Scheduled reminders (Web Push when the app is closed) ============
+ *
+ * POST /api/cron/reminders  — called by an external scheduler (GitHub Actions
+ * cron). Auth is a shared secret in the 'x-bcc-cron-secret' header matching the
+ * CRON_SECRET app setting (NOT the SWA Entra cookie — this runs headless).
+ *
+ * Scans every session + event doc, and for each one starting within the next
+ * 24h fires two reminders exactly once each: a "day-ahead" (<=24h, >15m) and a
+ * "starting soon" (<=15m). De-dupe markers live in a single Cosmos doc
+ * (bcc-reminder-sent-v1). Recipients = anyone with a push subscription; a
+ * session with a coachUpn is sent only to that coach. The in-app bell handles
+ * the same reminders when a tab is open; this covers the closed-app case.
+ */
+const REM_DAY_MS = 24 * 60 * 60 * 1000;
+const REM_MIN15_MS = 15 * 60 * 1000;
+const REM_SENT_ID = 'bcc-reminder-sent-v1';
+
+async function loadAllPushSubs() {
+  const c = container();
+  const q = {
+    query: 'SELECT c.id, c.user, c.subscription FROM c WHERE c.tenantId = @t AND c.docType = "push-sub"',
+    parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+  };
+  const { resources } = await c.items.query(q).fetchAll();
+  return resources;
+}
+
+function remFmtTime(t) {
+  try {
+    return new Date(t).toLocaleString('en-US', {
+      weekday: 'short', month: 'short', day: 'numeric',
+      hour: 'numeric', minute: '2-digit', timeZone: 'America/Chicago'
+    });
+  } catch (e) { return new Date(t).toISOString(); }
+}
+
+app.http('cron-reminders', {
+  methods: ['POST', 'GET'],
+  authLevel: 'anonymous',
+  route: 'cron/reminders',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    const given = request.headers.get('x-bcc-cron-secret') || '';
+    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+
+    const wp = getWebPush();
+    if (!wp) return { status: 200, jsonBody: { ok: true, skipped: 'VAPID not configured' } };
+
+    const c = container();
+    const now = Date.now();
+
+    try {
+      // 1) Load upcoming sessions + events.
+      const q = {
+        query: 'SELECT c.id, c.data FROM c WHERE c.tenantId = @t AND (STARTSWITH(c.id, "bcc-session-") OR STARTSWITH(c.id, "bcc-event-"))',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+      };
+      const { resources: docs } = await c.items.query(q).fetchAll();
+
+      // 2) De-dupe marker doc.
+      let sentDoc = null;
+      try {
+        const r = await c.item(REM_SENT_ID, BCC_TENANT_ID).read();
+        sentDoc = r.resource;
+      } catch (e) { if (e.code !== 404) throw e; }
+      const sent = (sentDoc && sentDoc.data && sentDoc.data.map) ? sentDoc.data.map : {};
+
+      // 3) Subscriptions grouped by lowercased user.
+      const subs = await loadAllPushSubs();
+      const subsByUser = new Map();
+      for (const s of subs) {
+        const u = String(s.user || '').toLowerCase();
+        if (!subsByUser.has(u)) subsByUser.set(u, []);
+        subsByUser.get(u).push(s);
+      }
+      const allSubs = subs;
+
+      const toSend = []; // { sub, payload }
+      let dueCount = 0;
+
+      for (const d of docs) {
+        const data = d.data || {};
+        const startAt = data.startAt;
+        if (!startAt) continue;
+        const t = Date.parse(startAt);
+        if (isNaN(t) || t <= now) continue;
+        const remaining = t - now;
+        if (remaining > REM_DAY_MS) continue;
+
+        const isSession = d.id.indexOf('bcc-session-') === 0;
+        const title = data.title || (isSession ? 'Coaching session' : 'Event');
+        const loc = data.location ? ' · ' + data.location : '';
+        let kind, payloadTitle, payloadBody;
+        if (remaining <= REM_MIN15_MS) {
+          kind = '15m'; payloadTitle = 'Starting soon: ' + title; payloadBody = 'Begins ' + remFmtTime(t) + loc;
+        } else {
+          kind = 'day'; payloadTitle = 'Upcoming: ' + title; payloadBody = 'Starts ' + remFmtTime(t) + loc;
+        }
+        const marker = d.id + ':' + kind;
+        if (sent[marker]) continue;
+        sent[marker] = now;
+        dueCount++;
+
+        // Recipients: a session with a coachUpn → just that coach; otherwise
+        // everyone who has a push subscription.
+        let targetSubs;
+        if (isSession && data.coachUpn) {
+          targetSubs = subsByUser.get(String(data.coachUpn).toLowerCase()) || [];
+        } else {
+          targetSubs = allSubs;
+        }
+        const payload = JSON.stringify({
+          title: payloadTitle,
+          body: payloadBody,
+          url: isSession ? '/sessions.html' : '/events.html',
+          tag: marker
+        });
+        for (const s of targetSubs) toSend.push({ sub: s, payload });
+      }
+
+      // 4) Send + clean up dead subscriptions.
+      let okCount = 0, deadCount = 0;
+      await Promise.allSettled(toSend.map(async ({ sub, payload }) => {
+        try {
+          await wp.sendNotification(sub.subscription, payload, { TTL: 60 * 60 });
+          okCount++;
+        } catch (e) {
+          const code = (e && (e.statusCode || e.status)) || 0;
+          if (code === 404 || code === 410) {
+            deadCount++;
+            try { await c.item(sub.id, BCC_TENANT_ID).delete(); } catch (_) {}
+          }
+        }
+      }));
+
+      // 5) Persist de-dupe markers, pruning anything older than 3 days.
+      for (const k of Object.keys(sent)) { if (now - sent[k] > 3 * REM_DAY_MS) delete sent[k]; }
+      await c.items.upsert({ id: REM_SENT_ID, tenantId: BCC_TENANT_ID, docType: 'reminder-sent', data: { map: sent }, updatedAt: new Date().toISOString() });
+
+      return { jsonBody: { ok: true, scanned: docs.length, due: dueCount, pushed: okCount, pruned: deadCount } };
+    } catch (err) {
+      context.error('cron-reminders error', err);
+      return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } };
+    }
+  }
+});
+
 /* ============ Integrations — credential resolver + test endpoint ============
  *
  * Admin → Integrations writes bcc-integration-<channel> docs into Cosmos

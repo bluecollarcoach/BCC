@@ -1648,6 +1648,285 @@
     setTimeout(maybeShowPushBanner, 500);
   });
 
+  /* ====================================================================
+   * In-app notification center + reminder/chat poller  (additive)
+   * --------------------------------------------------------------------
+   *  - A bell in the topbar with an unread badge + dropdown panel.
+   *  - Stored LOCALLY: the keys below start with 'bccnc-' (NOT 'bcc-'),
+   *    so the localStorage->Cosmos sync hook ignores them. Notifications
+   *    are therefore per-device / per-user, never shared tenant-wide.
+   *  - A 60s poller scans the (already synced) session/event docs for
+   *    24h + 15min reminders, and member chat channels for new messages,
+   *    raising: a center entry + unread badge, a toast (tab visible), and
+   *    an OS notification (permission granted + tab hidden).
+   * ==================================================================== */
+
+  // Can the given user see a chat channel? Channels with no members[] are
+  // "open" (visible to everyone, back-compat with the default seeded set);
+  // channels with a members[] array are private to those upns (+ admins).
+  window.bccChatCanSee = function (ch, upn) {
+    if (!ch) return false;
+    if (!Array.isArray(ch.members)) return true;
+    if (window.bccIsAdmin && window.bccIsAdmin()) return true;
+    var me = String(upn || (user && user.userDetails) || '').toLowerCase();
+    return ch.members.some(function (m) { return String(m).toLowerCase() === me; });
+  };
+
+  var NC_KEY      = 'bccnc-items-v1';
+  var NC_FIRED    = 'bccnc-fired-v1';
+  var NC_CHATSEEN = 'bccnc-chatseen-v1';
+  var NC_MAX      = 60;
+  var DAY_MS      = 24 * 60 * 60 * 1000;
+  var MIN15_MS    = 15 * 60 * 1000;
+  var _ncPollStarted = false;
+
+  function ncLoad()    { try { return JSON.parse(localStorage.getItem(NC_KEY)) || []; } catch (e) { return []; } }
+  function ncSave(a)   { try { localStorage.setItem(NC_KEY, JSON.stringify(a.slice(0, NC_MAX))); } catch (e) {} }
+  function ncFired()   { try { return JSON.parse(localStorage.getItem(NC_FIRED)) || {}; } catch (e) { return {}; } }
+  function ncFiredSave(o) { try { localStorage.setItem(NC_FIRED, JSON.stringify(o)); } catch (e) {} }
+  function ncUnread()  { return ncLoad().filter(function (i) { return !i.read; }).length; }
+  function ncMyUpn()   { return String((user && user.userDetails) || '').toLowerCase(); }
+
+  function ncBadge() {
+    var b = document.getElementById('bcc-bell-badge');
+    if (!b) return;
+    var n = ncUnread();
+    if (n > 0) { b.textContent = n > 99 ? '99+' : String(n); b.style.display = 'flex'; }
+    else b.style.display = 'none';
+  }
+
+  function ncAdd(item) {
+    if (!item || !item.title) return;
+    var list = ncLoad();
+    var tag = item.tag || '';
+    if (tag && list.some(function (i) { return i.tag === tag; })) return; // collapse dups
+    var rec = {
+      id: 'n' + Date.now() + Math.random().toString(36).slice(2, 6),
+      type: item.type || 'info',
+      title: String(item.title).slice(0, 120),
+      body: String(item.body || '').slice(0, 200),
+      url: item.url || '',
+      tag: tag,
+      at: Date.now(),
+      read: false
+    };
+    list.unshift(rec);
+    ncSave(list);
+    ncBadge();
+    ncRenderPanel();
+    try {
+      if (!document.hidden && window.bccNotify) {
+        window.bccNotify(rec.title + (rec.body ? ' — ' + rec.body : ''), 'info', 6000);
+      }
+      if (('Notification' in window) && Notification.permission === 'granted' && document.hidden) {
+        var n = new Notification(rec.title, { body: rec.body, icon: '/bcc-logo.png', tag: rec.tag || rec.id });
+        n.onclick = function () { try { window.focus(); } catch (e) {} if (rec.url) location.href = rec.url; try { n.close(); } catch (e) {} };
+      }
+    } catch (e) {}
+    return rec;
+  }
+
+  window.bccNotifyCenter = {
+    add: ncAdd,
+    list: ncLoad,
+    unread: ncUnread,
+    markAllRead: function () { var l = ncLoad(); l.forEach(function (i) { i.read = true; }); ncSave(l); ncBadge(); ncRenderPanel(); },
+    clear: function () { ncSave([]); ncBadge(); ncRenderPanel(); }
+  };
+
+  function ncTimeAgo(ts) {
+    var s = Math.floor((Date.now() - ts) / 1000);
+    if (s < 60) return 'just now';
+    if (s < 3600) return Math.floor(s / 60) + 'm ago';
+    if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+    return Math.floor(s / 86400) + 'd ago';
+  }
+  function ncFmtTime(t) {
+    try { return new Date(t).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }); }
+    catch (e) { return ''; }
+  }
+
+  function ncRenderPanel() {
+    var list = document.getElementById('bcc-bell-list');
+    if (!list) return;
+    var items = ncLoad();
+    if (!items.length) { list.innerHTML = '<div id="bcc-bell-empty">No notifications yet.</div>'; return; }
+    list.innerHTML = items.map(function (i) {
+      return '<a class="ni' + (i.read ? '' : ' unread') + '" data-id="' + i.id + '" href="' + (i.url || '#') + '">' +
+        '<div class="t">' + escapeHtml(i.title) + '</div>' +
+        (i.body ? '<div class="b">' + escapeHtml(i.body) + '</div>' : '') +
+        '<div class="w">' + ncTimeAgo(i.at) + '</div></a>';
+    }).join('');
+    list.querySelectorAll('.ni').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var id = el.getAttribute('data-id');
+        var l = ncLoad(); var it = l.find(function (x) { return x.id === id; });
+        if (it) { it.read = true; ncSave(l); ncBadge(); }
+      });
+    });
+  }
+
+  function ncMountBell() {
+    if (!signedIn) return;
+    var topbar = document.querySelector('header.topbar');
+    if (!topbar || document.getElementById('bcc-bell')) return;
+
+    if (!document.getElementById('bcc-bell-css')) {
+      var st = document.createElement('style');
+      st.id = 'bcc-bell-css';
+      st.textContent = [
+        '#bcc-bell{position:relative;background:rgba(255,255,255,0.12);border:none;color:#fff;width:34px;height:34px;border-radius:8px;cursor:pointer;font-size:16px;line-height:1;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;}',
+        '#bcc-bell:hover{background:rgba(255,255,255,0.22);}',
+        '#bcc-bell-badge{position:absolute;top:-5px;right:-5px;background:#dc2626;color:#fff;font-size:9.5px;font-weight:800;line-height:1;min-width:16px;height:16px;border-radius:999px;display:none;align-items:center;justify-content:center;padding:0 4px;border:2px solid #1a1a1a;box-sizing:border-box;}',
+        '#bcc-bell-panel{position:fixed;top:52px;right:12px;width:340px;max-width:calc(100vw - 24px);max-height:72vh;background:#fff;color:#1a1a1a;border:1px solid #e2e1dd;border-radius:12px;box-shadow:0 18px 50px rgba(15,23,42,0.28);z-index:9997;display:none;flex-direction:column;overflow:hidden;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;}',
+        '#bcc-bell-panel.open{display:flex;}',
+        '#bcc-bell-panel .nch{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 14px;border-bottom:1px solid #eee;}',
+        '#bcc-bell-panel .nch strong{font-size:14px;color:#1a1a1a;}',
+        '#bcc-bell-panel .nch button{background:none;border:none;color:#a8884a;font-size:11.5px;font-weight:700;cursor:pointer;padding:2px 4px;}',
+        '#bcc-bell-list{overflow-y:auto;flex:1;}',
+        '#bcc-bell-list .ni{display:block;padding:11px 14px;border-bottom:1px solid #f3f3f1;text-decoration:none;color:inherit;cursor:pointer;}',
+        '#bcc-bell-list .ni:hover{background:#faf7f0;}',
+        '#bcc-bell-list .ni.unread{background:#fbf6ec;}',
+        '#bcc-bell-list .ni .t{font-weight:700;font-size:13px;color:#1a1a1a;}',
+        '#bcc-bell-list .ni .b{font-size:12px;color:#6b685f;margin-top:2px;line-height:1.35;}',
+        '#bcc-bell-list .ni .w{font-size:10.5px;color:#a8a79e;margin-top:3px;}',
+        '#bcc-bell-empty{padding:26px 14px;text-align:center;color:#8a877e;font-size:13px;}',
+        '#bcc-bell-foot{padding:10px 14px;border-top:1px solid #eee;}',
+        '#bcc-bell-foot button{width:100%;padding:8px;border-radius:7px;border:1px solid #e2e1dd;background:#f8fafc;font-size:12px;font-weight:700;cursor:pointer;color:#1a1a1a;}',
+        '#bcc-bell-foot button:hover{background:#eef0f3;}'
+      ].join('');
+      document.head.appendChild(st);
+    }
+
+    var bell = document.createElement('button');
+    bell.id = 'bcc-bell';
+    bell.type = 'button';
+    bell.setAttribute('aria-label', 'Notifications');
+    bell.innerHTML = '🔔<span id="bcc-bell-badge"></span>';
+
+    var chip = document.getElementById('bcc-auth-chip');
+    var hamb = document.getElementById('bcc-hamburger');
+    if (chip) chip.parentNode.insertBefore(bell, chip);
+    else if (hamb) hamb.parentNode.insertBefore(bell, hamb);
+    else topbar.appendChild(bell);
+
+    var panel = document.createElement('div');
+    panel.id = 'bcc-bell-panel';
+    panel.innerHTML =
+      '<div class="nch"><strong>Notifications</strong>' +
+      '<div><button id="bcc-bell-readall">Mark all read</button>' +
+      '<button id="bcc-bell-clear">Clear</button></div></div>' +
+      '<div id="bcc-bell-list"></div>' +
+      '<div id="bcc-bell-foot"><button id="bcc-bell-enable" type="button">Enable alerts on this device</button></div>';
+    document.body.appendChild(panel);
+
+    bell.onclick = function (e) {
+      e.stopPropagation();
+      if (panel.classList.toggle('open')) ncRenderPanel();
+    };
+    document.addEventListener('click', function (e) {
+      if (panel.classList.contains('open') && !panel.contains(e.target) && !bell.contains(e.target)) panel.classList.remove('open');
+    });
+    var ra = document.getElementById('bcc-bell-readall');
+    var cl = document.getElementById('bcc-bell-clear');
+    var en = document.getElementById('bcc-bell-enable');
+    if (ra) ra.onclick = function () { window.bccNotifyCenter.markAllRead(); };
+    if (cl) cl.onclick = function () { window.bccNotifyCenter.clear(); };
+    if (en) en.onclick = function () { if (window.bccEnablePush) window.bccEnablePush(); };
+
+    ncBadge();
+    ncRenderPanel();
+  }
+
+  function ncScanReminders() {
+    var now = Date.now();
+    var fired = ncFired();
+    var changed = false;
+    var myUpn = ncMyUpn();
+    for (var i = 0; i < localStorage.length; i++) {
+      var key = localStorage.key(i);
+      if (!key) continue;
+      var isSession = key.indexOf('bcc-session-') === 0;
+      var isEvent = key.indexOf('bcc-event-') === 0;
+      if (!isSession && !isEvent) continue;
+      var doc; try { doc = JSON.parse(localStorage.getItem(key)); } catch (e) { continue; }
+      if (!doc || !doc.startAt) continue;
+      var t = Date.parse(doc.startAt);
+      if (isNaN(t) || t <= now) continue;
+      var remaining = t - now;
+      if (remaining > DAY_MS) continue;
+      // Sessions: only remind the assigned coach (when one is set).
+      if (isSession && doc.coachUpn && String(doc.coachUpn).toLowerCase() !== myUpn) continue;
+      var title = doc.title || (isSession ? 'Coaching session' : 'Event');
+      var loc = doc.location ? ' · ' + doc.location : '';
+      var kind, ntitle, body;
+      if (remaining <= MIN15_MS) { kind = '15m'; ntitle = 'Starting soon: ' + title; body = 'Begins ' + ncFmtTime(t) + loc; }
+      else                       { kind = 'day'; ntitle = 'Upcoming: ' + title;     body = 'Starts ' + ncFmtTime(t) + loc; }
+      var fkey = key + ':' + kind;
+      if (fired[fkey]) continue;
+      fired[fkey] = now; changed = true;
+      ncAdd({ type: 'reminder', title: ntitle, body: body, url: (isSession ? '/sessions.html' : '/events.html'), tag: fkey });
+    }
+    Object.keys(fired).forEach(function (k) { if (now - fired[k] > 3 * DAY_MS) { delete fired[k]; changed = true; } });
+    if (changed) ncFiredSave(fired);
+  }
+
+  function ncScanChat() {
+    var here = (location.pathname.split('/').pop() || '').toLowerCase();
+    if (here === 'chat.html') return; // they see messages live there
+    var chans, msgs, read, seen;
+    try { chans = JSON.parse(localStorage.getItem('bcc-chat-channels-v1')) || []; } catch (e) { return; }
+    try { msgs  = JSON.parse(localStorage.getItem('bcc-chat-messages-v1')) || {}; } catch (e) { msgs = {}; }
+    try { read  = JSON.parse(localStorage.getItem('bcc-chat-last-read-v1')) || {}; } catch (e) { read = {}; }
+    try { seen  = JSON.parse(localStorage.getItem(NC_CHATSEEN)) || {}; } catch (e) { seen = {}; }
+    var myUpn = ncMyUpn();
+    var myName = ((window.bccDisplayName ? window.bccDisplayName(myUpn) : '') || '').toLowerCase();
+    var changed = false;
+    chans.forEach(function (ch) {
+      if (!window.bccChatCanSee(ch, myUpn)) return;
+      var arr = msgs[ch.id] || [];
+      if (!arr.length) return;
+      if (seen[ch.id] == null) { seen[ch.id] = arr[arr.length - 1].at; changed = true; return; } // baseline
+      var floor = Math.max(seen[ch.id] || 0, read[ch.id] || 0);
+      var fresh = arr.filter(function (m) {
+        if (!m || m.at <= floor) return false;
+        var a = String(m.author || '').toLowerCase();
+        return a !== myUpn && a !== myName;
+      });
+      if (!fresh.length) return;
+      var newest = fresh[fresh.length - 1];
+      seen[ch.id] = newest.at; changed = true;
+      var preview = String(newest.text || (newest.photo ? '📷 photo' : '')).slice(0, 80);
+      ncAdd({
+        type: 'chat',
+        title: 'New message in #' + (ch.name || ch.id),
+        body: (newest.author ? newest.author + ': ' : '') + preview,
+        url: '/chat.html',
+        tag: 'chat-' + ch.id + '-' + newest.at
+      });
+    });
+    if (changed) { try { localStorage.setItem(NC_CHATSEEN, JSON.stringify(seen)); } catch (e) {} }
+  }
+
+  function ncPoll() {
+    if (!signedIn) return;
+    try { ncScanReminders(); } catch (e) {}
+    try { ncScanChat(); } catch (e) {}
+  }
+
+  function ncStartPoller() {
+    ncMountBell();
+    if (_ncPollStarted || !signedIn) return;
+    _ncPollStarted = true;
+    setTimeout(ncPoll, 3000);
+    setInterval(ncPoll, 60000);
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) ncPoll(); });
+    window.addEventListener('focus', ncPoll);
+  }
+
+  window.addEventListener('bcc-auth-ready', ncStartPoller);
+  window.addEventListener('bcc-users-ready', ncMountBell);
+
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', bootstrap);
   } else {
