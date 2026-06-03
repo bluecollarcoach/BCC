@@ -737,8 +737,10 @@ app.http('push-subscribe', {
 // notification when X" use cases emerge.
 const NOTIFY_ACTIONS = new Set([
   'rate-signature',      // a customer signed a rate sheet
-  'session-create',      // a new coaching session was booked
-  'engagement-stage'     // a deal moved stage in the pipeline
+  'session-create'       // a new coaching session was booked
+  // NOTE: deal/engagement changes are surfaced to ADMINS ONLY via the in-app
+  // notification center (client poller in bcc-api.js), not this broad push
+  // fan-out, so they are not listed here.
 ]);
 
 async function loadNotifyRecipients() {

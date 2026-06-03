@@ -308,6 +308,7 @@
           var oldStage = rec.stage;
           rec.stage = newStage;
           saveEng(rec);
+          if (window.bccMarkEngagementSeen) window.bccMarkEngagementSeen(rec.id);
           if (window.bccAudit) window.bccAudit('engagement-stage', { key: rec.id, path: '/jobs.html', meta: { from: oldStage, stage: newStage } });
           renderBoard();
         }
@@ -400,6 +401,7 @@
     rec.renewAt     = document.getElementById('m-renew').value || null;
     rec.notes       = document.getElementById('m-notes').value.trim();
     saveEng(rec);
+    if (window.bccMarkEngagementSeen) window.bccMarkEngagementSeen(rec.id);
     if (window.bccAudit) window.bccAudit(id ? 'engagement-update' : 'engagement-create', { key: rec.id, path: '/jobs.html', meta: { stage: rec.stage, type: rec.serviceType } });
     if (window.bccNotifySaved) window.bccNotifySaved('Engagement saved.');
     closeModal();

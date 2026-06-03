@@ -117,22 +117,24 @@
     <section class="lede">
       <span class="tag">BCC Connect</span>
       <h1>How to use this workspace</h1>
-      <p>Short walk-through of every module — what each one does, how the
-      data flows between them, and the one or two non-obvious things to
-      know. Updated as the app grows.</p>
+      <p>A walk-through of every module — what each one does, how the data
+      flows between them, and the non-obvious things to know. This page is
+      kept current with the live app, including notifications, the full
+      QuickBooks integration, automatic Outlook, private chat channels, and
+      per-app permissions.</p>
     </section>
 
     <section class="section" id="getting-started">
       <h2>Getting started</h2>
-      <p class="lead">Five things to do the first time you sign in.</p>
+      <p class="lead">A few things to do the first time you sign in.</p>
       <ol class="step-list">
-        <li>Sign in with your <strong>@bluecollarcoach.us</strong> Microsoft 365 account. The whole workspace is gated by your tenant.</li>
-        <li>Open <a href="admin.html">Admin → Users &amp; Roles</a> and promote teammates you want to manage the workspace. The first signed-in admin is bootstrapped automatically.</li>
-        <li>Visit <a href="admin.html">Admin → Customer Types</a> and shape the dropdown that powers CRM and Engagements (default: Coaching, Bookkeeping, Consulting, Marketing, Training, Technology, Other).</li>
-        <li>Drop in connector credentials at <a href="admin.html">Admin → Integrations</a> for any external service you use (QBO, Google Ads, Meta, LinkedIn, Mailchimp, WordPress, GoDaddy, Slack, Teams). Click <strong>Test connection</strong> on each.</li>
-        <li>Set your company info at <a href="admin.html">Admin → Company Info</a> — name, phone, email, address, tagline. This drives the letterhead on the rate sheet and other customer-facing artifacts.</li>
+        <li>Sign in with your <strong>@bluecollarcoach.us</strong> Microsoft 365 account. The whole workspace is gated by your tenant — there's no separate password to remember.</li>
+        <li>Click the <strong>🔔 bell</strong> in the top bar → <strong>Enable alerts on this device</strong>, and accept the browser prompt. That's what lets reminders reach you even when the app is closed.</li>
+        <li>Admins: open <a href="admin.html">Admin → Users</a> to promote teammates, mark people inactive, or tune <strong>per-app permissions</strong> (the ⚙ gear on each row). The first signed-in admin is bootstrapped automatically.</li>
+        <li>Admins: shape the dropdown that powers CRM and Engagements at <a href="admin.html">Admin → Customer Types</a>, and drop connector credentials in at <a href="admin.html">Admin → Integrations</a> (QuickBooks, Google Ads, Meta, LinkedIn, Mailchimp, …). Click <strong>Test connection</strong> on each.</li>
+        <li>Admins: set your company info at <a href="admin.html">Admin → Company Info</a> — name, phone, email, address, tagline. This drives the letterhead on the rate sheet and other customer-facing artifacts.</li>
       </ol>
-      <div class="callout"><strong>Tip:</strong> every action you take is written to the <a href="activity.html">Activity Log</a> (password-gated). Rotate the password from Admin → Security after first deploy.</div>
+      <div class="callout"><strong>Outlook just works:</strong> calendar sync and email-send are wired tenant-wide via Microsoft Graph — there is no per-person "Connect Outlook" step. See <a href="#m365">Microsoft 365 integration</a>.</div>
     </section>
 
     <section class="section" id="my-day">
@@ -144,10 +146,15 @@
 
     <section class="section" id="sessions">
       <h2>Sessions</h2>
-      <p class="lead">Coaching calendar, focused on the week ahead.</p>
-      <p>Seven columns, one per day. Click a session card to edit; click <strong>+ Add</strong> on a day to create one pre-filled to that date. Sessions can link to a CRM contact (dropdown) so the same person shows up across modules.</p>
-      <p>Local-only sessions get a gold left border. Sessions synced to Microsoft 365 (when Graph sync ships) get a blue one.</p>
-      <div class="callout"><strong>Cross-references:</strong> Sessions you add here automatically appear on <a href="myday.html">My Day</a>'s today/tomorrow lists and the <a href="scheduler.html">Scheduler</a> month/year views. Same data, different lens.</div>
+      <p class="lead">Coaching calendar, focused on the week ahead, two-way with Outlook.</p>
+      <p>Seven columns, one per day. Click a session card to edit; click <strong>+ New session</strong> to create one. Sessions can link to a CRM contact (dropdown) so the same person shows up across modules.</p>
+      <h3>Outlook calendar sync (live)</h3>
+      <ul>
+        <li><strong>Create / edit / delete</strong> a session and it automatically mirrors to your Outlook calendar — no setup, no "Connect" button.</li>
+        <li><strong>Pull from Outlook</strong> brings your existing calendar events into the week so nothing is double-booked. Events sourced from Outlook show a blue left border; local-only ones show gold.</li>
+      </ul>
+      <div class="callout"><strong>Reminders:</strong> every session fires a notification <strong>24 hours</strong> and <strong>15 minutes</strong> before it starts. If a session has an assigned coach, only that coach is reminded. See <a href="#notifications">Notifications</a>.</div>
+      <div class="callout"><strong>Cross-references:</strong> Sessions appear on <a href="myday.html">My Day</a>'s today/tomorrow lists and the <a href="scheduler.html">Scheduler</a> month/year views. Same data, different lens.</div>
     </section>
 
     <section class="section" id="scheduler">
@@ -155,6 +162,39 @@
       <p class="lead">Month and year overview.</p>
       <p>Toggle between month grid (clickable days that open a per-day modal with every session + event) and a 12-month year view (each month is a mini calendar; days with events are gold-tinted). Click any mini month to drill in.</p>
       <p>Read-only view — to add a session, the toolbar's <strong>+ Session</strong> button jumps to <a href="sessions.html">Sessions</a> with the chosen day pre-selected.</p>
+    </section>
+
+    <section class="section" id="chat">
+      <h2>Team Chat</h2>
+      <p class="lead">Internal channels, with private membership.</p>
+      <p>Pick a channel on the left; type at the bottom. Enter sends, Shift+Enter makes a new line. You can attach a photo with the 📎 button. Messages show the author, avatar, and time, grouped by day.</p>
+      <h3>Channels &amp; membership</h3>
+      <ul>
+        <li>The default channels (general, coaching, bookkeeping, consulting, marketing, training, technology, ops) are <strong>open to everyone</strong>.</li>
+        <li><strong>+ New channel</strong> creates a <strong>private</strong> channel — visible only to its members. You're added as the first member automatically and the Members manager opens so you can add people.</li>
+        <li>The channel creator (and any admin) sees a <strong>👥 Members</strong> button in the channel header. Use it to add/remove people, or flip the channel to <em>“Open to everyone.”</em> Private channels are hidden from non-members.</li>
+        <li><strong>New-message alerts:</strong> if you're not on the Chat page, a new message in a channel you can see raises a notification. (You're never pinged for your own messages.)</li>
+      </ul>
+      <div class="callout"><strong>Moderation:</strong> you can delete your own messages; admins can delete any message or <strong>Clear channel</strong>. Deletions are recorded in the <a href="activity.html">Activity Log</a>.</div>
+    </section>
+
+    <section class="section" id="notifications">
+      <h2>Notifications</h2>
+      <p class="lead">A bell in the top bar, plus reminders that reach you when the app is closed.</p>
+      <p>The <strong>🔔 bell</strong> shows an unread badge and opens a panel of recent notifications (Mark all read / Clear). Notifications are per-person and per-device — they're not shared across the team.</p>
+      <h3>What raises a notification</h3>
+      <ul>
+        <li><strong>Event &amp; session reminders</strong> — once at <strong>24 hours</strong> out and once at <strong>15 minutes</strong> out.</li>
+        <li><strong>New chat messages</strong> in channels you belong to (when you're not already on the Chat page).</li>
+        <li><strong>Deal / engagement changes</strong> — <em>admins only</em>: when anyone creates, edits, or moves an engagement card, every other admin is notified.</li>
+      </ul>
+      <h3>Where they show up</h3>
+      <ul>
+        <li>In the <strong>bell panel</strong> (always) and as a <strong>toast</strong> while a tab is open.</li>
+        <li>As a <strong>desktop / phone pop-up</strong> when a tab is in the background — once you've granted permission.</li>
+        <li>Even with the app fully closed for the time-based <strong>event/session reminders</strong> — these are sent from the server via Web Push.</li>
+      </ul>
+      <div class="callout"><strong>One-time setup per device:</strong> click the bell → <strong>Enable alerts on this device</strong> and accept the browser prompt. Until then you'll still see the in-app bell and toasts whenever a tab is open.</div>
     </section>
 
     <section class="section" id="crm">
@@ -177,6 +217,7 @@
       <p class="lead">Kanban pipeline of coaching/consulting deals.</p>
       <p>Six columns: <code>New → Scheduled → Active → Waiting → Invoiced → Done</code>. Drag a card between columns to move stage; each drag fires an audit row so you can see who moved what when.</p>
       <p>Each card: title, linked contact name, value, renewal/close date. Click to open the modal and edit. Service type is pulled from the Admin → Customer Types list so the same vocabulary works across CRM and Engagements.</p>
+      <div class="callout"><strong>Admin alerts:</strong> whenever anyone creates, edits, or drags an engagement, every <em>other</em> admin gets a notification (the person who made the change isn't pinged). See <a href="#notifications">Notifications</a>.</div>
     </section>
 
     <section class="section" id="rates">
@@ -203,9 +244,20 @@
 
     <section class="section" id="bookkeeping">
       <h2>Bookkeeping</h2>
-      <p class="lead">Monthly P&amp;L tied to QuickBooks Online.</p>
-      <p>KPI strip at top: last-month revenue, expenses, net, YTD net — each with ↑/↓ delta vs the prior period. Underneath: a per-month table with net color-coded (gold = positive, burgundy = negative).</p>
-      <p><strong>Sync from QBO</strong> is enabled once the QBO connector in <a href="admin.html">Admin → Integrations</a> goes green. Until then, use <strong>+ Manual entry</strong> to record a period by hand.</p>
+      <p class="lead">Live QuickBooks Online financials across every connected company.</p>
+      <h3>Connecting companies</h3>
+      <p>Click <strong>Connect a company</strong> to run the QuickBooks sign-in; repeat for each business you manage. The <strong>All companies</strong> table lists everything connected. Admins get a per-company <strong>Enabled</strong> toggle and an <strong>Access</strong> editor to choose exactly which user(s) can see each company — so a coach only sees the clients they work with.</p>
+      <h3>Financial-health KPIs</h3>
+      <p>Pick a company to see KPI tiles at the top: <strong>months of cash</strong> (rounded down to a whole number), <strong>days of cash</strong>, <strong>current ratio</strong>, working capital, cash on hand, revenue / COGS / OpEx / net income, and net margin. Choose the period and <strong>Cash vs Accrual</strong> (accrual is the default).</p>
+      <h3>Live reports</h3>
+      <ul>
+        <li><strong>Profit &amp; Loss</strong> (monthly, detail, and YTD)</li>
+        <li><strong>Balance Sheet</strong></li>
+        <li><strong>A/R &amp; A/P aging</strong> and cash position</li>
+        <li><strong>Customers, Vendors, Invoices, Bills</strong> lists</li>
+      </ul>
+      <p>Reports pull straight from QuickBooks for the period and method you select. Use <strong>Sync</strong> to refresh the stored monthly snapshots.</p>
+      <div class="callout"><strong>CRM companies vs QuickBooks companies:</strong> a CRM company is a contact record; a QuickBooks company is a connected accounting file. They're separate — connect QuickBooks here, manage relationships in CRM.</div>
     </section>
 
     <section class="section" id="training">
@@ -231,19 +283,43 @@
 
     <section class="section" id="admin">
       <h2>Admin Center</h2>
-      <p class="lead">Six tabs, in order of how often you'll touch them.</p>
-      <h3>Users &amp; Roles</h3>
-      <p>Microsoft 365 tenant members pulled via Graph. Promote teammates to admin / mark inactive. The signed-in user is always auto-listed.</p>
+      <p class="lead">Everything that configures the workspace, in one place. Admins only.</p>
+      <h3>Users</h3>
+      <p>Microsoft 365 tenant members pulled via Graph. Promote teammates to admin or mark inactive (the signed-in user is always auto-listed). The <strong>⚙ gear</strong> on each row opens that person's <strong>per-app permissions</strong> — see <a href="#permissions">Roles &amp; permissions</a>.</p>
       <h3>Customer Types</h3>
       <p>The dropdown source CRM + Engagements read. Add / rename / recolor / delete — saved as a single <code>bcc-customer-types-v1</code> doc.</p>
       <h3>Integrations</h3>
-      <p>Twelve connector cards. Paste credentials, click <strong>Test connection</strong>. Once a connector is green, the corresponding module (Bookkeeping for QBO, Marketing for ad channels, etc.) wires the saved creds in automatically — no env-var trip required.</p>
+      <p>Connector cards for QuickBooks and the marketing channels. Paste credentials and click <strong>Test connection</strong>; once green, the matching module wires the saved creds in automatically — no env-var trip required. <strong>Microsoft Outlook</strong> shows as “Connected automatically for all users” — it needs no setup (see <a href="#m365">Microsoft 365 integration</a>).</p>
       <h3>Company Info</h3>
       <p>Legal name, display name, phones, email, website, address, tagline. Drives the letterhead on customer-facing artifacts (rate sheet today; contracts + reports next).</p>
       <h3>Security</h3>
-      <p>Rotate the activity-log password + edit the domain allow-list. The tenant-level Entra restriction is already enforced; this is just a belt-and-suspenders layer for guest scenarios.</p>
+      <p>Rotate the activity-log password and edit the domain allow-list. The password field is <strong>masked</strong> — leave it blank to keep the current one, or type a new value to change it (toggle <strong>Show</strong> to reveal what you're typing). The tenant-level Entra restriction is already enforced; this is a belt-and-suspenders layer for guest scenarios.</p>
       <h3>Data &amp; Backups</h3>
       <p>Storage tally by key prefix + a one-click JSON snapshot export of every <code>bcc-*</code> doc in your browser. Useful before any architectural change.</p>
+    </section>
+
+    <section class="section" id="permissions">
+      <h2>Roles &amp; permissions</h2>
+      <p class="lead">Who can see and do what.</p>
+      <p>There are two global roles — <strong>Admin</strong> and <strong>Member</strong> — plus an optional per-app override on top.</p>
+      <h3>Default access for a Member</h3>
+      <p>Out of the box, a non-admin can use: <strong>My Day, Sessions, Scheduler, Bookkeeping, Documents, Team Chat, Training, Events,</strong> and <strong>Knowledge Base</strong>. They do <em>not</em> see CRM, Engagements, Marketing, Rate Sheet, or the Admin Center.</p>
+      <h3>Admins</h3>
+      <p>Admins have full access to everything, including the Admin Center and the Activity Log.</p>
+      <h3>Per-person overrides</h3>
+      <p>In <a href="admin.html">Admin → Users</a>, the ⚙ gear opens a grid where you can set each app to <strong>Admin / Edit / View / None</strong> for that person — e.g. grant one member CRM access, or restrict another further. Hidden modules disappear from their menu, home tiles, and are blocked if deep-linked. Only what differs from the default is stored.</p>
+    </section>
+
+    <section class="section" id="m365">
+      <h2>Microsoft 365 integration</h2>
+      <p class="lead">Outlook calendar and email, wired for everyone automatically.</p>
+      <p>The app talks to Microsoft Graph tenant-wide (admin-consented), so every signed-in <strong>@bluecollarcoach.us</strong> user gets the integration with <strong>no per-person “Connect” step</strong>:</p>
+      <ul>
+        <li><strong>Calendar:</strong> sessions you create/edit/delete mirror to your Outlook calendar, and <strong>Pull from Outlook</strong> brings events the other way (on <a href="sessions.html">Sessions</a>).</li>
+        <li><strong>Email:</strong> the app can send mail on your behalf (e.g. Rate Sheet → “Send for review”).</li>
+        <li><strong>Directory:</strong> the team/user lists and dropdowns are populated from your Entra tenant.</li>
+      </ul>
+      <div class="callout">This is the standard tenant-wide app integration; access is admin-consented and scoped to your organization.</div>
     </section>
 
     <section class="section muted" id="data-model">
@@ -256,8 +332,8 @@
     <section class="section" id="audit">
       <h2>Activity Log</h2>
       <p class="lead">Who did what, when. Password-gated.</p>
-      <p>Every save / delete / sign-in / integration test fires a structured audit row. The feed filters by category (Admin / CRM / Sessions / Documents / Rates / My Day / Integrations / System) and by user. Sortable by time; clickable to drill in.</p>
-      <p>Default password: <code>bcc-audit-2026</code>. Rotate from <a href="admin.html">Admin → Security</a>.</p>
+      <p>Every save / delete / sign-in / integration test / chat moderation action fires a structured audit row. The feed filters by category (Admin / CRM / Sessions / Documents / Rates / My Day / Integrations / System) and by user. Sortable by time; clickable to drill in.</p>
+      <p>Access is password-gated; an admin sets and rotates the password from <a href="admin.html">Admin → Security</a> (it's stored masked).</p>
     </section>
 
     <section class="section" id="keyboard">

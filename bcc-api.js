@@ -1908,10 +1908,68 @@
     if (changed) { try { localStorage.setItem(NC_CHATSEEN, JSON.stringify(seen)); } catch (e) {} }
   }
 
+  // ---- Deal / engagement change alerts (ADMINS ONLY) ----
+  // Engagements are stored as bcc-engagement-* docs (board cards on jobs.html).
+  // We track each doc's updatedAt locally; when it advances on another admin's
+  // change, we raise a bell entry. The actor suppresses their own change via
+  // window.bccMarkEngagementSeen() (called from jobs.html on save/drag).
+  var NC_ENGSEEN = 'bccnc-engseen-v1';
+
+  function ncEngSnapshot() {
+    var snap = {};
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i);
+      if (!k || k.indexOf('bcc-engagement-') !== 0) continue;
+      var d; try { d = JSON.parse(localStorage.getItem(k)); } catch (e) { continue; }
+      if (d && d.id) snap[k] = { u: d.updatedAt || '', title: d.title || '(untitled)', stage: d.stage || '' };
+    }
+    return snap;
+  }
+  function ncEngSeen() { try { return JSON.parse(localStorage.getItem(NC_ENGSEEN)) || {}; } catch (e) { return {}; } }
+  function ncEngSeenSave(o) { try { localStorage.setItem(NC_ENGSEEN, JSON.stringify(o)); } catch (e) {} }
+
+  // Called by jobs.html right after the current user saves/moves an engagement,
+  // so their own change is treated as already-seen and never self-notifies.
+  window.bccMarkEngagementSeen = function (id) {
+    var seen = ncEngSeen();
+    if (!seen.__init) { var s = ncEngSnapshot(); seen = { __init: true }; Object.keys(s).forEach(function (k) { seen[k] = s[k].u; }); }
+    try { var d = JSON.parse(localStorage.getItem(id)); if (d) seen[id] = d.updatedAt || ''; } catch (e) {}
+    ncEngSeenSave(seen);
+  };
+
+  function ncScanEngagements() {
+    if (!(window.bccIsAdmin && window.bccIsAdmin())) return; // admins only
+    var snap = ncEngSnapshot();
+    var seen = ncEngSeen();
+    if (!seen.__init) { // first run: baseline silently
+      var base = { __init: true };
+      Object.keys(snap).forEach(function (k) { base[k] = snap[k].u; });
+      ncEngSeenSave(base);
+      return;
+    }
+    var changed = false;
+    Object.keys(snap).forEach(function (k) {
+      var cur = snap[k].u;
+      if (seen[k] === cur) return;
+      var isNew = !(k in seen);
+      seen[k] = cur; changed = true;
+      var stageLabel = snap[k].stage ? (snap[k].stage.charAt(0).toUpperCase() + snap[k].stage.slice(1)) : '';
+      ncAdd({
+        type: 'deal',
+        title: (isNew ? 'New deal: ' : 'Deal updated: ') + snap[k].title,
+        body: stageLabel ? ('Stage: ' + stageLabel) : 'Engagement changed',
+        url: '/jobs.html',
+        tag: 'eng-' + k + ':' + cur
+      });
+    });
+    if (changed) ncEngSeenSave(seen);
+  }
+
   function ncPoll() {
     if (!signedIn) return;
     try { ncScanReminders(); } catch (e) {}
     try { ncScanChat(); } catch (e) {}
+    try { ncScanEngagements(); } catch (e) {}
   }
 
   function ncStartPoller() {
