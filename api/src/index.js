@@ -1820,15 +1820,27 @@ async function qboAccessForCompany(comp, fields) {
 function flattenQboReport(rep) {
   const columns = (((rep || {}).Columns || {}).Column || []).map(c => c.ColTitle || '');
   const rows = [];
-  (function walk(rs, level) {
+  (function walk(rs, level, grp) {
     for (const row of (rs || [])) {
-      if (row.Header && row.Header.ColData) rows.push({ label: row.Header.ColData[0].value || '', cells: row.Header.ColData.slice(1).map(d => d.value), level, type: 'header' });
-      if (row.Rows && row.Rows.Row) walk(row.Rows.Row, level + 1);
-      if (row.ColData) rows.push({ label: (row.ColData[0] || {}).value || '', cells: row.ColData.slice(1).map(d => d.value), level, type: 'data' });
-      if (row.Summary && row.Summary.ColData) rows.push({ label: (row.Summary.ColData[0] || {}).value || '', cells: row.Summary.ColData.slice(1).map(d => d.value), level, type: 'summary' });
+      const g = row.group || grp || null;
+      if (row.Header && row.Header.ColData) rows.push({ label: row.Header.ColData[0].value || '', cells: row.Header.ColData.slice(1).map(d => d.value), level, type: 'header', group: g });
+      if (row.Rows && row.Rows.Row) walk(row.Rows.Row, level + 1, g);
+      if (row.ColData) rows.push({ label: (row.ColData[0] || {}).value || '', cells: row.ColData.slice(1).map(d => d.value), level, type: 'data', group: g });
+      if (row.Summary && row.Summary.ColData) rows.push({ label: (row.Summary.ColData[0] || {}).value || '', cells: row.Summary.ColData.slice(1).map(d => d.value), level, type: 'summary', group: row.group || g });
     }
-  })(((rep || {}).Rows || {}).Row || [], 0);
+  })(((rep || {}).Rows || {}).Row || [], 0, null);
   return { title: ((rep || {}).Header || {}).ReportName || '', columns, rows };
+}
+// Sum the numeric value of a flattened report row by its QBO group code (e.g.
+// "TotalCurrentAssets"), tolerant of label fallbacks.
+function reportNum(s) { const n = parseFloat(String(s == null ? '' : s).replace(/,/g, '')); return isNaN(n) ? 0 : n; }
+function findByGroup(flat, group) {
+  const r = (flat.rows || []).find(x => x.group === group && (x.type === 'summary' || x.type === 'data'));
+  return r ? reportNum((r.cells || [])[r.cells.length - 1]) : null;
+}
+function findByLabel(flat, rx) {
+  const r = (flat.rows || []).find(x => rx.test(String(x.label || '')));
+  return r ? reportNum((r.cells || [])[r.cells.length - 1]) : null;
 }
 
 app.http('qbo-report', {
@@ -1866,17 +1878,18 @@ app.http('qbo-report', {
       };
       const today = new Date().toISOString().slice(0, 10);
       const yStart = today.slice(0, 4) + '-01-01';
+      const method = (url.searchParams.get('method') || 'accrual').toLowerCase() === 'cash' ? 'Cash' : 'Accrual';
       let data;
       switch (type) {
         case 'pl': {
           const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
-          data = flattenQboReport(await apiGet('/reports/ProfitAndLoss?start_date=' + from + '&end_date=' + to + '&accounting_method=Accrual'));
-          data.range = { from, to }; data.kind = 'report'; break;
+          data = flattenQboReport(await apiGet('/reports/ProfitAndLoss?start_date=' + from + '&end_date=' + to + '&accounting_method=' + method));
+          data.range = { from, to, method }; data.kind = 'report'; break;
         }
         case 'balancesheet': {
           const asOf = url.searchParams.get('asOf') || today;
-          data = flattenQboReport(await apiGet('/reports/BalanceSheet?as_of=' + asOf + '&accounting_method=Accrual'));
-          data.range = { asOf }; data.kind = 'report'; break;
+          data = flattenQboReport(await apiGet('/reports/BalanceSheet?as_of=' + asOf + '&accounting_method=' + method));
+          data.range = { asOf, method }; data.kind = 'report'; break;
         }
         case 'ar-aging': { data = flattenQboReport(await apiGet('/reports/AgedReceivables')); data.kind = 'report'; break; }
         case 'ap-aging': { data = flattenQboReport(await apiGet('/reports/AgedPayables')); data.kind = 'report'; break; }
@@ -1889,6 +1902,83 @@ app.http('qbo-report', {
       return { jsonBody: { type, realmId, companyName: comp.companyName, data } };
     } catch (e) {
       context.error('qbo-report error', e);
+      return { status: 502, jsonBody: { error: String(e.message || e) } };
+    }
+  })
+});
+
+/**
+ * GET /api/integrations/qbo/companies/{realmId}/kpis?method=&asOf=&burnMonths=
+ * Computes headline financial-health KPIs from QBO Balance Sheet + trailing P&L:
+ * cash, current ratio, working capital, monthly burn, months of cash (floored),
+ * days of cash, revenue/net for the trailing window.
+ */
+app.http('qbo-kpis', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'integrations/qbo/companies/{realmId}/kpis',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const realmId = request.params.realmId;
+    const url = new URL(request.url);
+    try {
+      const c = container();
+      const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      if (!comp) return { status: 404, jsonBody: { error: 'company not connected' } };
+      if (!(await isAppAdmin(p))) {
+        const who = String(p.userDetails || p.userId || '').toLowerCase();
+        const allow = (comp.allowedUserUpns || []).map(u => u.toLowerCase());
+        if (comp.enabled === false || (allow.length && allow.indexOf(who) < 0)) return { status: 403, jsonBody: { error: 'no access to this company' } };
+      }
+      const fields = await getIntegrationFields('qbo');
+      const { accessToken, base } = await qboAccessForCompany(comp, fields);
+      const apiGet = async (path) => {
+        const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70';
+        const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
+        if (!r.ok) throw new Error('QBO ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 200));
+        return r.json();
+      };
+      const method = (url.searchParams.get('method') || 'accrual').toLowerCase() === 'cash' ? 'Cash' : 'Accrual';
+      const asOf = url.searchParams.get('asOf') || new Date().toISOString().slice(0, 10);
+      const burnMonths = Math.max(1, Math.min(12, parseInt(url.searchParams.get('burnMonths') || '3', 10) || 3));
+
+      const bs = flattenQboReport(await apiGet('/reports/BalanceSheet?as_of=' + asOf + '&accounting_method=' + method));
+      const cash = (findByLabel(bs, /total bank account/i) ?? findByLabel(bs, /bank account/i) ?? findByLabel(bs, /checking|savings|cash on hand|^cash$/i)) || 0;
+      const currentAssets = (findByGroup(bs, 'TotalCurrentAssets') ?? findByLabel(bs, /total current assets/i)) || 0;
+      const currentLiabilities = (findByGroup(bs, 'TotalCurrentLiabilities') ?? findByLabel(bs, /total current liabilities/i)) || 0;
+      const totalAssets = (findByLabel(bs, /^total assets/i) ?? findByGroup(bs, 'TotalAssets')) || 0;
+      const totalLiabilities = (findByGroup(bs, 'TotalLiabilities') ?? findByLabel(bs, /^total liabilities$/i)) || 0;
+
+      const end = new Date(asOf);
+      const start = new Date(end.getFullYear(), end.getMonth() - (burnMonths - 1), 1);
+      const from = start.toISOString().slice(0, 10);
+      const pl = flattenQboReport(await apiGet('/reports/ProfitAndLoss?start_date=' + from + '&end_date=' + asOf + '&accounting_method=' + method));
+      const revenue = (findByGroup(pl, 'Income') ?? findByLabel(pl, /total income/i)) || 0;
+      const cogs = (findByGroup(pl, 'COGS') ?? findByLabel(pl, /total cost of goods sold|total cogs/i)) || 0;
+      const opex = (findByGroup(pl, 'Expenses') ?? findByLabel(pl, /total expenses/i)) || 0;
+      const netIncome = (findByGroup(pl, 'NetIncome') ?? (revenue - cogs - opex));
+      const expenses = cogs + opex;
+      const monthlyBurn = expenses / burnMonths;
+
+      const currentRatio = currentLiabilities > 0 ? currentAssets / currentLiabilities : null;
+      const workingCapital = currentAssets - currentLiabilities;
+      const monthsOfCash = monthlyBurn > 0 ? Math.floor(cash / monthlyBurn) : null;
+      const daysOfCash = monthlyBurn > 0 ? Math.round((cash / monthlyBurn) * 30) : null;
+
+      return { jsonBody: {
+        realmId, companyName: comp.companyName, asOf, method, burnMonths,
+        kpis: {
+          cash, currentAssets, currentLiabilities, currentRatio, workingCapital,
+          monthlyBurn, monthsOfCash, daysOfCash,
+          revenue, cogs, opex, expenses, netIncome,
+          netMargin: revenue ? netIncome / revenue : null,
+          totalAssets, totalLiabilities
+        }
+      } };
+    } catch (e) {
+      context.error('qbo-kpis error', e);
       return { status: 502, jsonBody: { error: String(e.message || e) } };
     }
   })

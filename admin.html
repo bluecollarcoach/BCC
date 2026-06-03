@@ -292,8 +292,12 @@
       <p class="blurb">The audit feed at <a href="activity.html">Activity Log</a> is gated by this password so a casual visitor with the URL can't read who-did-what. Rotate any time. Anyone with this password can view; only admins can change it.</p>
       <div class="form-grid">
         <label class="field" style="grid-column:1 / -1;">New password
-          <input type="text" id="auditPw" autocomplete="off" />
+          <input type="password" id="auditPw" autocomplete="new-password" placeholder="leave blank to keep current" />
         </label>
+        <div style="grid-column:1 / -1; margin-top:-4px; display:flex; align-items:center; gap:10px;">
+          <button class="btn btn-ghost" id="auditPwShow" type="button" style="font-size:11px; padding:0 10px; min-height:28px;">Show</button>
+          <span class="blurb" style="margin:0;">The current password is hidden. Type a new one only if you want to change it.</span>
+        </div>
       </div>
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:14px;">
         <button class="btn btn-primary" id="saveAuditPwBtn" type="button">Update password</button>
@@ -813,13 +817,27 @@
   /* ===== SECURITY ===== */
   function renderSecurity() {
     var cfg = loadCfg();
-    document.getElementById('auditPw').value = cfg.auditPassword || '';
+    // Never surface the actual password — leave the field blank; placeholder shows state.
+    var pw = document.getElementById('auditPw');
+    pw.value = '';
+    pw.type = 'password';
+    pw.placeholder = cfg.auditPassword ? 'leave blank to keep current' : 'set a password';
+    var sh = document.getElementById('auditPwShow'); if (sh) sh.textContent = 'Show';
     document.getElementById('allowedDomains').value = (cfg.allowedDomains || []).join(', ');
   }
+  document.getElementById('auditPwShow').addEventListener('click', function () {
+    var i = document.getElementById('auditPw');
+    if (i.type === 'password') { i.type = 'text'; this.textContent = 'Hide'; }
+    else { i.type = 'password'; this.textContent = 'Show'; }
+  });
   document.getElementById('saveAuditPwBtn').addEventListener('click', function () {
     var v = document.getElementById('auditPw').value.trim();
+    if (!v) { (window.bccNotify || alert)('Enter a new password to change it — blank keeps the current one.', 'warn'); return; }
     if (v.length < 4) { (window.bccNotify || alert)('Use at least 4 characters.', 'warn'); return; }
     var cfg = loadCfg(); cfg.auditPassword = v; saveCfg(cfg);
+    document.getElementById('auditPw').value = '';
+    document.getElementById('auditPw').type = 'password';
+    document.getElementById('auditPwShow').textContent = 'Show';
     if (window.bccNotifySaved) window.bccNotifySaved('Activity-log password updated.');
     else (window.bccNotify || alert)('Updated.', 'success');
   });

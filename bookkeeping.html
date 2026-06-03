@@ -210,6 +210,31 @@
     </div>
   </div>
 
+  <!-- QuickBooks financial-health KPIs + controls (shown when a company is selected) -->
+  <div class="card" id="qboKpis" style="display:none; margin-top:14px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+      <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0;">Financial health <span id="qboKpisCo" style="color:var(--muted); font-weight:400; font-size:13px;"></span></h3>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <select id="qboMethod" title="Accounting method" style="background:var(--chrome); border:1px solid var(--chrome-mute); border-radius:8px; padding:7px 9px; font:inherit; font-size:13px; min-height:36px;">
+          <option value="accrual">Accrual</option>
+          <option value="cash">Cash</option>
+        </select>
+        <select id="qboPeriod" title="Period" style="background:var(--chrome); border:1px solid var(--chrome-mute); border-radius:8px; padding:7px 9px; font:inherit; font-size:13px; min-height:36px;">
+          <option value="ytd">Year to date</option>
+          <option value="thismonth">This month</option>
+          <option value="lastmonth">Last month</option>
+          <option value="qtd">Quarter to date</option>
+          <option value="last12">Last 12 months</option>
+          <option value="custom">Custom…</option>
+        </select>
+        <input type="date" id="qboFrom" title="From" style="display:none; border:1px solid var(--chrome-mute); border-radius:8px; padding:6px 8px; font:inherit; font-size:13px; min-height:36px;" />
+        <input type="date" id="qboTo" title="To" style="display:none; border:1px solid var(--chrome-mute); border-radius:8px; padding:6px 8px; font:inherit; font-size:13px; min-height:36px;" />
+      </div>
+    </div>
+    <div class="kpi-grid" id="qboKpiTiles" style="margin-top:12px;"></div>
+    <div class="blurb" id="qboKpiNote" style="margin-top:6px; color:var(--muted); font-size:12px;"></div>
+  </div>
+
   <!-- QuickBooks live reports (shown when a single company is selected) -->
   <div class="card" id="qboReports" style="display:none; margin-top:14px;">
     <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 4px;">QuickBooks live reports <span id="qboReportsCo" style="color:var(--muted); font-weight:400; font-size:13px;"></span></h3>
@@ -568,13 +593,57 @@
   document.getElementById('yearFilter').addEventListener('change', renderTable);
   document.getElementById('companyFilter').addEventListener('change', function () { currentRealm = this.value; renderAll(); });
 
-  /* ===== QuickBooks live reports ===== */
+  /* ===== QuickBooks live KPIs + reports ===== */
+  var qboActiveReport = null;
   function money2(v) { var n = parseFloat(String(v == null ? '' : v).replace(/,/g, '')); return isNaN(n) ? (v == null ? '' : esc(v)) : ((n < 0 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString()); }
-  function toggleQboReports() {
-    var box = document.getElementById('qboReports'); if (!box) return;
-    if (currentRealm) { box.style.display = ''; document.getElementById('qboReportsCo').textContent = '· ' + companyName(currentRealm); }
-    else { box.style.display = 'none'; var o = document.getElementById('qboReportOut'); if (o) o.innerHTML = ''; }
+  function qboRange() {
+    var now = new Date();
+    function iso(d) { return d.toISOString().slice(0, 10); }
+    var per = (document.getElementById('qboPeriod') || {}).value || 'ytd';
+    var from, to;
+    if (per === 'custom') { from = document.getElementById('qboFrom').value || iso(new Date(now.getFullYear(), 0, 1)); to = document.getElementById('qboTo').value || iso(now); }
+    else if (per === 'thismonth') { from = iso(new Date(now.getFullYear(), now.getMonth(), 1)); to = iso(now); }
+    else if (per === 'lastmonth') { from = iso(new Date(now.getFullYear(), now.getMonth() - 1, 1)); to = iso(new Date(now.getFullYear(), now.getMonth(), 0)); }
+    else if (per === 'qtd') { from = iso(new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1)); to = iso(now); }
+    else if (per === 'last12') { from = iso(new Date(now.getFullYear(), now.getMonth() - 11, 1)); to = iso(now); }
+    else { from = iso(new Date(now.getFullYear(), 0, 1)); to = iso(now); }
+    return { from: from, to: to, method: ((document.getElementById('qboMethod') || {}).value || 'accrual') };
   }
+  function toggleQboReports() {
+    var box = document.getElementById('qboReports'), kbox = document.getElementById('qboKpis');
+    if (currentRealm) {
+      if (box) { box.style.display = ''; document.getElementById('qboReportsCo').textContent = '· ' + companyName(currentRealm); }
+      if (kbox) { kbox.style.display = ''; document.getElementById('qboKpisCo').textContent = '· ' + companyName(currentRealm); }
+      loadQboKpis();
+    } else {
+      if (box) { box.style.display = 'none'; var o = document.getElementById('qboReportOut'); if (o) o.innerHTML = ''; }
+      if (kbox) kbox.style.display = 'none';
+      qboActiveReport = null;
+    }
+  }
+  function kpiTile(label, value, sub, cls) { return '<div class="kpi"><div class="label">' + esc(label) + '</div><div class="value">' + value + '</div>' + (sub ? '<div class="delta ' + (cls || 'flat') + '">' + esc(sub) + '</div>' : '') + '</div>'; }
+  function loadQboKpis() {
+    if (!currentRealm) return;
+    var rg = qboRange();
+    var tiles = document.getElementById('qboKpiTiles');
+    tiles.innerHTML = '<div class="kpi"><div class="label">Loading…</div></div>';
+    document.getElementById('qboKpiNote').textContent = '';
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/kpis?method=' + rg.method + '&asOf=' + rg.to + '&burnMonths=3', { credentials: 'include' })
+      .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
+      .then(function (resp) {
+        var k = resp.kpis || {};
+        tiles.innerHTML =
+          kpiTile('Months of cash', k.monthsOfCash == null ? '—' : k.monthsOfCash, 'rounded down', (k.monthsOfCash != null && k.monthsOfCash < 3 ? 'down' : 'up')) +
+          kpiTile('Days of cash', k.daysOfCash == null ? '—' : k.daysOfCash, '', '') +
+          kpiTile('Current ratio', k.currentRatio == null ? '—' : k.currentRatio.toFixed(2), k.currentRatio == null ? 'no current liabilities' : 'assets ÷ liabilities', (k.currentRatio != null && k.currentRatio < 1 ? 'down' : 'up')) +
+          kpiTile('Cash on hand', money2(k.cash), '', '') +
+          kpiTile('Working capital', money2(k.workingCapital), 'current assets − liabilities', (k.workingCapital < 0 ? 'down' : 'up')) +
+          kpiTile('Net margin', k.netMargin == null ? '—' : (k.netMargin * 100).toFixed(1) + '%', 'trailing ' + resp.burnMonths + ' mo', (k.netMargin != null && k.netMargin < 0 ? 'down' : 'up'));
+        document.getElementById('qboKpiNote').textContent = 'As of ' + resp.asOf + ' · ' + resp.method + ' basis · monthly burn ' + money2(k.monthlyBurn) + ' (trailing ' + resp.burnMonths + ' mo). Months of cash = cash ÷ monthly burn, rounded down.';
+      })
+      .catch(function (e) { tiles.innerHTML = ''; document.getElementById('qboKpiNote').innerHTML = '<span style="color:var(--burgundy);">QuickBooks: ' + esc(e.message) + '</span>'; });
+  }
+  function qboRefresh() { if (!currentRealm) return; loadQboKpis(); if (qboActiveReport) loadQboReport(qboActiveReport, document.querySelector('#qboReports button[data-rpt="' + qboActiveReport + '"]')); }
   function renderReport(resp) {
     var d = (resp && resp.data) || {};
     if (d.kind === 'list') {
@@ -597,11 +666,16 @@
   }
   function loadQboReport(type, btn) {
     if (!currentRealm) return;
+    qboActiveReport = type;
+    var rg = qboRange();
+    var q = 'type=' + encodeURIComponent(type) + '&method=' + rg.method;
+    if (type === 'pl') q += '&from=' + rg.from + '&to=' + rg.to;
+    else if (type === 'balancesheet') q += '&asOf=' + rg.to;
     var out = document.getElementById('qboReportOut');
     out.innerHTML = '<div style="color:var(--muted);padding:10px;">Loading ' + esc(type) + '…</div>';
     document.querySelectorAll('#qboReports button[data-rpt]').forEach(function (b) { b.classList.remove('btn-primary'); b.classList.add('btn-ghost'); });
     if (btn) { btn.classList.remove('btn-ghost'); btn.classList.add('btn-primary'); }
-    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/report?type=' + encodeURIComponent(type), { credentials: 'include' })
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/report?' + q, { credentials: 'include' })
       .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
       .then(function (resp) { out.innerHTML = renderReport(resp); })
       .catch(function (e) { out.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:10px;font-size:13px;">QuickBooks: ' + esc(e.message) + '</div>'; });
@@ -615,6 +689,13 @@
     emptyEl = document.getElementById('empty');
     document.querySelectorAll('#qboReports button[data-rpt]').forEach(function (b) {
       b.addEventListener('click', function () { loadQboReport(b.getAttribute('data-rpt'), b); });
+    });
+    ['qboMethod', 'qboPeriod', 'qboFrom', 'qboTo'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.addEventListener('change', function () {
+        if (id === 'qboPeriod') { var cust = document.getElementById('qboPeriod').value === 'custom'; document.getElementById('qboFrom').style.display = cust ? '' : 'none'; document.getElementById('qboTo').style.display = cust ? '' : 'none'; }
+        qboRefresh();
+      });
     });
     try {
       var qs = new URLSearchParams(location.search);
