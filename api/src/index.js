@@ -1514,14 +1514,14 @@ app.http('msgraph-pull-events', {
       const rangeEnd   = body.rangeEnd   || new Date(now.getTime() + 28 * 24 * 60 * 60 * 1000).toISOString();
 
       // calendarView returns expanded recurring instances, which is what we want.
-      const url = 'https://graph.microsoft.com/v1.0/me/calendarView?' + new URLSearchParams({
+      const url = 'https://graph.microsoft.com/v1.0/users/' + upn + '/calendarView?' + new URLSearchParams({
         startDateTime: rangeStart,
         endDateTime: rangeEnd,
         $select: 'id,subject,start,end,location,bodyPreview,isAllDay,showAs,categories',
         $top: '250',
         $orderby: 'start/dateTime'
       }).toString();
-      const r = await fetch(url, { headers: { Authorization: 'Bearer ' + tok.access_token, Prefer: 'outlook.timezone="UTC"' } });
+      const r = await fetch(url, { headers: { Authorization: 'Bearer ' + access, Prefer: 'outlook.timezone="UTC"' } });
       if (!r.ok) return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')' } };
       const data = await r.json();
       const events = Array.isArray(data.value) ? data.value : [];
