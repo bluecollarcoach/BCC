@@ -387,7 +387,8 @@
    *
    * Defaults when appPermissions is absent on a user record:
    *   global role 'admin' -> 'admin' for every app
-   *   global role 'member' (or anything else) -> 'edit' for every app
+   *   global role 'member' (or anything else) -> 'edit' for the core member
+   *     app set (see MEMBER_DEFAULT_APPS), 'none' for everything else.
    * The admin page is an exception: it always requires effective 'admin'
    * unless the user.role is 'admin' (admins implicitly admin every app).
    *
@@ -422,6 +423,14 @@
     'guide.html':    'home'     // help page available to anyone with home
   };
   var LEVEL_RANK = { none: 0, view: 1, edit: 2, admin: 3 };
+  // Apps a non-admin (member) can use by default, with no per-app override.
+  // Everything not listed here (CRM, Engagements, Marketing, Rate Sheet,
+  // Admin) defaults to 'none' for members. 'home' is included so members can
+  // reach the landing/navigation hub.
+  window.BCC_MEMBER_DEFAULT_APPS = {
+    home: 1, myday: 1, sessions: 1, scheduler: 1, bookkeeping: 1,
+    documents: 1, chat: 1, training: 1, events: 1, kb: 1
+  };
   function _adminCfg() {
     try { return JSON.parse(localStorage.getItem('bcc-admin-config-v1') || 'null'); } catch (e) { return null; }
   }
@@ -459,7 +468,8 @@
       // is required.
       return (window.bccIsAdmin && window.bccIsAdmin()) ? 'admin' : 'none';
     }
-    return 'edit';
+    // Non-admin (member) default: edit on the core member app set, else none.
+    return window.BCC_MEMBER_DEFAULT_APPS[appKey] ? 'edit' : 'none';
   };
   window.bccCanAccess = function (appKey, upn) {
     return LEVEL_RANK[window.bccGetAppPermission(appKey, upn)] >= LEVEL_RANK.view;

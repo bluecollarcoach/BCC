@@ -618,10 +618,15 @@
   ];
   // Returns the *default* permission for an app given a user's global role
   // (no per-app override stored). Mirrors the fallback logic in bcc-api.js.
+  // Mirrors window.BCC_MEMBER_DEFAULT_APPS in bcc-api.js — keep in sync.
+  var MEMBER_DEFAULT_APPS = (window.BCC_MEMBER_DEFAULT_APPS) || {
+    home: 1, myday: 1, sessions: 1, scheduler: 1, bookkeeping: 1,
+    documents: 1, chat: 1, training: 1, events: 1, kb: 1
+  };
   function defaultPermFor(role, appKey) {
     if (role === 'admin') return 'admin';
     if (appKey === 'admin') return 'none';
-    return 'edit';
+    return MEMBER_DEFAULT_APPS[appKey] ? 'edit' : 'none';
   }
   var _permsOpenUpn = null; // upn of the user whose modal is open
 
