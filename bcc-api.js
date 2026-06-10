@@ -397,7 +397,7 @@
    * shows an access-denied overlay and freezes the page.
    */
   window.BCC_APP_KEYS = [
-    'home','myday','sessions','crm','jobs','scheduler','marketing',
+    'home','myday','sessions','dashboard','crm','jobs','scheduler','marketing',
     'bookkeeping','documents','rates','chat','training','events','kb','admin'
   ];
   // Filename (with .html) -> app key. Used to map location.pathname to a key.
@@ -406,6 +406,7 @@
     'index.html':    'home',
     'myday.html':    'myday',
     'sessions.html': 'sessions',
+    'dashboard.html':'dashboard',
     'crm.html':      'crm',
     'crm-companies.html': 'crm',
     'jobs.html':     'jobs',
@@ -428,7 +429,7 @@
   // Admin) defaults to 'none' for members. 'home' is included so members can
   // reach the landing/navigation hub.
   window.BCC_MEMBER_DEFAULT_APPS = {
-    home: 1, myday: 1, sessions: 1, scheduler: 1, bookkeeping: 1,
+    home: 1, myday: 1, sessions: 1, dashboard: 1, scheduler: 1, bookkeeping: 1,
     documents: 1, chat: 1, training: 1, events: 1, kb: 1
   };
   function _adminCfg() {
@@ -706,6 +707,7 @@
     { label: 'My workspace', items: [
       { href: 'myday.html',     icon: '📍', name: 'My Day' },
       { href: 'sessions.html',  icon: '🗓', name: 'Sessions' },
+      { href: 'dashboard.html', icon: '🎯', name: 'Client Dashboard' },
       { href: 'chat.html',      icon: '💬', name: 'Team Chat' }
     ]},
     { label: 'Revenue', items: [

@@ -597,6 +597,7 @@
     { k:'home',        label:'Home',           desc:'Landing page & tile grid' },
     { k:'myday',       label:'My Day',         desc:'Today’s sessions & clock-in' },
     { k:'sessions',    label:'Sessions',       desc:'Coaching calendar' },
+    { k:'dashboard',   label:'Client Dashboard', desc:'One-page strategic snapshot' },
     { k:'crm',         label:'CRM',            desc:'Contacts, companies, deals' },
     { k:'jobs',        label:'Engagements',    desc:'Pipeline & engagements board' },
     { k:'scheduler',   label:'Scheduler',      desc:'Week & month calendar' },
@@ -620,7 +621,7 @@
   // (no per-app override stored). Mirrors the fallback logic in bcc-api.js.
   // Mirrors window.BCC_MEMBER_DEFAULT_APPS in bcc-api.js — keep in sync.
   var MEMBER_DEFAULT_APPS = (window.BCC_MEMBER_DEFAULT_APPS) || {
-    home: 1, myday: 1, sessions: 1, scheduler: 1, bookkeeping: 1,
+    home: 1, myday: 1, sessions: 1, dashboard: 1, scheduler: 1, bookkeeping: 1,
     documents: 1, chat: 1, training: 1, events: 1, kb: 1
   };
   function defaultPermFor(role, appKey) {

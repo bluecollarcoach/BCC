@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#1a1a1a" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Client Dashboard · BCC Connect</title>
+<link rel="icon" type="image/png" href="bcc-logo.png" />
+<link rel="manifest" href="manifest.json" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --ink:#1a1a1a; --ink-line:#2e2c27; --ink-800:#2b2b2b;
+    --gold:#c5a55a; --gold-warm:#d4b67a; --gold-deep:#a8884a; --gold-fade:rgba(197,165,90,0.12);
+    --chrome:#f6f6f4; --chrome-mute:#e6e5e1; --muted:#6b7077; --border:#e2e1dd;
+    --green:#0f7b4f; --red:#6a1c1c;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:'Inter', system-ui, sans-serif; color:var(--ink); background:var(--chrome); }
+  header.topbar {
+    display:flex; align-items:center; gap:14px; padding:12px 22px; color:var(--chrome);
+    background:linear-gradient(90deg, #141414, #1f1f1f);
+    border-bottom:1px solid var(--ink-line); position:sticky; top:0; z-index:50;
+  }
+  header.topbar a.home { display:flex; align-items:center; gap:12px; text-decoration:none; color:var(--chrome); }
+  header.topbar img { height:30px; }
+  header.topbar .wordmark { font-family:'Source Serif 4', Georgia, serif; font-size:14px; font-weight:700; letter-spacing:1.5px; }
+  header.topbar .wordmark .light { color:var(--gold); }
+  header.topbar .module {
+    font-size:11px; font-weight:700; letter-spacing:2.5px; text-transform:uppercase; color:var(--gold-warm);
+    border-left:1px solid rgba(255,255,255,0.18); padding-left:14px; margin-left:4px;
+  }
+  header.topbar .spacer { flex:1; }
+
+  /* Client toolbar */
+  .toolbar {
+    position:sticky; top:55px; z-index:40; background:#fff; border-bottom:1px solid var(--border);
+    padding:12px 22px; display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+  }
+  .toolbar label { font-size:11px; font-weight:700; letter-spacing:0.5px; text-transform:uppercase; color:var(--muted); margin-right:6px; }
+  .toolbar select, .toolbar input {
+    border:1px solid var(--border); border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; background:#fff; color:var(--ink); min-height:38px;
+  }
+  .toolbar select:focus, .toolbar input:focus { outline:2px solid var(--gold); outline-offset:-1px; border-color:var(--gold); }
+  .toolbar .grow { flex:1; }
+  .toolbar .btn {
+    border:none; border-radius:8px; padding:9px 14px; font:inherit; font-weight:700; font-size:13px; cursor:pointer;
+    background:var(--gold-deep); color:#fff;
+  }
+  .toolbar .btn:hover { background:#876d3a; }
+  .toolbar .btn.ghost { background:var(--chrome); color:var(--ink); border:1px solid var(--border); }
+  .toolbar .btn.ghost:hover { background:var(--chrome-mute); }
+  .save-state { font-size:12px; color:var(--muted); min-width:74px; }
+  .save-state.saved { color:var(--green); }
+
+  .wrap { max-width:1320px; margin:0 auto; padding:20px 22px 70px; }
+  .empty-hint { background:#fff; border:1px solid var(--border); border-radius:12px; padding:30px; text-align:center; color:var(--muted); }
+  .empty-hint a { color:var(--gold-deep); font-weight:700; }
+
+  /* Masonry-ish card grid */
+  .grid { column-gap:16px; }
+  @media (min-width:1180px){ .grid { column-count:4; } }
+  @media (min-width:780px) and (max-width:1179px){ .grid { column-count:2; } }
+  @media (max-width:779px){ .grid { column-count:1; } }
+
+  .card {
+    break-inside:avoid; background:#fff; border:1px solid var(--border); border-radius:12px;
+    padding:14px 15px; margin:0 0 16px; display:inline-block; width:100%;
+  }
+  .card h2 {
+    font-family:'Source Serif 4', Georgia, serif; font-size:16px; margin:0 0 8px; color:var(--ink);
+    display:flex; align-items:center; gap:8px;
+  }
+  .card h2 .ic { color:var(--gold-deep); font-size:15px; }
+  .card .sub { font-size:11px; color:var(--muted); font-weight:600; margin:-4px 0 8px; }
+  .card textarea {
+    width:100%; border:1px solid var(--border); border-radius:8px; padding:9px 10px; font:inherit; font-size:13.5px;
+    line-height:1.5; color:var(--ink); resize:none; overflow:hidden; min-height:64px; background:#fffdf9;
+  }
+  .card textarea:focus { outline:2px solid var(--gold); outline-offset:-1px; border-color:var(--gold); background:#fff; }
+  .card.tall textarea { min-height:150px; }
+
+  .swot-grid { display:grid; grid-template-columns:1fr; gap:8px; }
+  .swot-grid .lbl { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:var(--gold-deep); margin-bottom:3px; }
+
+  .fin-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:7px 0; border-bottom:1px dashed var(--chrome-mute); }
+  .fin-row:last-child { border-bottom:none; }
+  .fin-row .fl { font-size:13px; font-weight:600; color:var(--ink); }
+  .fin-row input { width:120px; text-align:right; border:1px solid var(--border); border-radius:7px; padding:7px 9px; font:inherit; font-size:13.5px; background:#fffdf9; }
+  .fin-row input:focus { outline:2px solid var(--gold); outline-offset:-1px; }
+  .pull-note { font-size:11px; color:var(--muted); margin-top:8px; }
+
+  .check-list { display:flex; flex-direction:column; gap:2px; }
+  .check-item { display:flex; align-items:flex-start; gap:9px; padding:7px 0; border-bottom:1px dashed var(--chrome-mute); }
+  .check-item:last-child { border-bottom:none; }
+  .check-item input[type=checkbox] { width:18px; height:18px; margin-top:1px; accent-color:var(--gold-deep); flex-shrink:0; cursor:pointer; }
+  .check-item .ci-body { flex:1; min-width:0; }
+  .check-item .ci-label { font-size:13.5px; color:var(--ink); font-weight:600; line-height:1.35; }
+  .check-item input.ci-note { width:100%; border:none; border-bottom:1px solid transparent; padding:2px 0; font:inherit; font-size:12.5px; color:var(--muted); background:transparent; margin-top:2px; }
+  .check-item input.ci-note:focus { outline:none; border-bottom-color:var(--gold); color:var(--ink); }
+
+  @media print {
+    header.topbar, .toolbar .btn, .toolbar select, .toolbar label, .save-state { display:none !important; }
+    .toolbar { position:static; border:none; }
+    body { background:#fff; }
+    .grid { column-count:4; }
+    .card { border:1px solid #ccc; }
+    .card textarea, .fin-row input, .check-item input.ci-note { background:#fff !important; border-color:#ddd; }
+  }
+</style>
+<script src="bcc-api.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="home" href="index.html">
+    <img src="bcc-logo.png" alt="Blue Collar Coach" />
+    <span class="wordmark">BLUE COLLAR <span class="light">COACH</span></span>
+  </a>
+  <span class="module">Client Dashboard</span>
+  <span class="spacer"></span>
+</header>
+
+<div class="toolbar">
+  <div><label for="sel_client">Client</label>
+    <select id="sel_client"><option value="">— Select a client —</option></select>
+  </div>
+  <div><label for="sel_qbo">QuickBooks</label>
+    <select id="sel_qbo"><option value="">— Not linked —</option></select>
+  </div>
+  <button class="btn ghost" id="btn_pull" title="Fill Financials from the linked QuickBooks company">↻ Pull financials</button>
+  <span class="grow"></span>
+  <span class="save-state" id="saveState"></span>
+  <button class="btn ghost" id="btn_print">Print</button>
+</div>
+
+<div class="wrap">
+  <div class="empty-hint" id="emptyHint">
+    Pick a <strong>client</strong> above to open their one-page dashboard.
+    <div style="margin-top:6px;font-size:13px;">No clients yet? Add a company in <a href="crm.html">CRM</a> first.</div>
+  </div>
+
+  <div class="grid" id="grid" style="display:none;">
+    <div class="card tall"><h2><span class="ic">◎</span>Vision</h2><textarea id="f_vision" placeholder="Where is this business going? The 3–10 year picture."></textarea></div>
+    <div class="card tall"><h2><span class="ic">❖</span>Core Values</h2><textarea id="f_coreValues" placeholder="The handful of values that define how they operate."></textarea></div>
+    <div class="card"><h2><span class="ic">?</span>Why</h2><textarea id="f_why" placeholder="The purpose / cause / passion behind the business."></textarea></div>
+    <div class="card tall"><h2><span class="ic">▤</span>90 Day Plan</h2><textarea id="f_ninetyDay" placeholder="The priorities / rocks for the next quarter."></textarea></div>
+
+    <div class="card">
+      <h2><span class="ic">⚄</span>SWOT</h2>
+      <div class="swot-grid">
+        <div><div class="lbl">Strengths</div><textarea id="f_swot_s"></textarea></div>
+        <div><div class="lbl">Weaknesses</div><textarea id="f_swot_w"></textarea></div>
+        <div><div class="lbl">Opportunities</div><textarea id="f_swot_o"></textarea></div>
+        <div><div class="lbl">Threats</div><textarea id="f_swot_t"></textarea></div>
+      </div>
+    </div>
+
+    <div class="card"><h2><span class="ic">⚠</span>Bottleneck</h2><textarea id="f_bottleneck" placeholder="The #1 constraint holding the business back right now."></textarea></div>
+
+    <div class="card">
+      <h2><span class="ic">$</span>Financials</h2>
+      <div class="sub" id="finSub">Enter manually, or pull from QuickBooks.</div>
+      <div class="fin-row"><span class="fl">Current ratio</span><input id="f_fin_cr" placeholder="—" /></div>
+      <div class="fin-row"><span class="fl">Months of cash on hand</span><input id="f_fin_mc" placeholder="—" /></div>
+      <div class="fin-row"><span class="fl">Net margin</span><input id="f_fin_nm" placeholder="—" /></div>
+      <div class="pull-note" id="finPulled"></div>
+    </div>
+
+    <div class="card tall"><h2><span class="ic">▥</span>KPI&rsquo;s</h2><textarea id="f_kpis" placeholder="The numbers this business watches weekly. One per line."></textarea></div>
+
+    <div class="card">
+      <h2><span class="ic">↻</span>Meeting Pulse</h2>
+      <div class="sub">Are these meetings happening? (done or not)</div>
+      <div class="check-list" id="pulseList"></div>
+      <textarea id="f_pulse_notes" placeholder="Notes on cadence / attendance…" style="margin-top:8px;"></textarea>
+    </div>
+
+    <div class="card">
+      <h2><span class="ic">☑</span>People &amp; Accountability</h2>
+      <div class="sub">Done or not done</div>
+      <div class="check-list" id="peopleList"></div>
+    </div>
+
+    <div class="card tall"><h2><span class="ic">◆</span>Marketing Plan</h2><textarea id="f_marketingPlan" placeholder="Target market, message, channels, and the plan."></textarea></div>
+    <div class="card"><h2><span class="ic">≈</span>Flavor of Lean</h2><textarea id="f_flavorOfLean" placeholder="The continuous-improvement approach in use."></textarea></div>
+    <div class="card"><h2><span class="ic">▣</span>SNE</h2><textarea id="f_sne" placeholder="Single Necessary Element / next essential step."></textarea></div>
+    <div class="card"><h2><span class="ic">▦</span>Books reading</h2><textarea id="f_books" placeholder="What the owner / team is reading."></textarea></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var DASH_PREFIX = 'bcc-dashboard-';
+  var LAST_CLIENT = 'dash-last-client'; // local-only (no bcc- prefix → not synced)
+
+  // Fixed checklist definitions (match the reference dashboard).
+  var PULSE = [
+    { key:'daily',     label:'Daily' },
+    { key:'weekly',    label:'Weekly' },
+    { key:'monthly',   label:'Monthly' },
+    { key:'quarterly', label:'Quarterly' },
+    { key:'annual',    label:'Annual' }
+  ];
+  var PEOPLE = [
+    'DISC assessment & training for all employees',
+    'Training plan for all employees',
+    'Org chart updated',
+    'Team sizes right',
+    'Good meetings'
+  ];
+
+  var FREE_FIELDS = ['vision','coreValues','why','ninetyDay','bottleneck','kpis','marketingPlan','flavorOfLean','sne','books','pulse_notes'];
+
+  var current = null;     // current dashboard doc
+  var currentId = '';     // current company id
+  var saveTimer = null;
+  var qboCompanies = [];
+
+  function esc(s){ return String(s==null?'':s).replace(/[<>&"']/g,function(c){return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]);}); }
+  function $(id){ return document.getElementById(id); }
+
+  /* ---- Clients (CRM companies) ---- */
+  function allCompanies() {
+    var out = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i); if (!k || k.indexOf('bcc-company-') !== 0) continue;
+      try { var c = JSON.parse(localStorage.getItem(k)); if (c && c.id) out.push(c); } catch (e) {}
+    }
+    return out.sort(function (a,b){ return (a.name||'').localeCompare(b.name||''); });
+  }
+  function populateClients() {
+    var sel = $('sel_client');
+    var companies = allCompanies();
+    sel.innerHTML = '<option value="">— Select a client —</option>' +
+      companies.map(function (c){ return '<option value="' + esc(c.id) + '">' + esc(c.name || '(unnamed)') + (c.industry ? ' · ' + esc(c.industry) : '') + '</option>'; }).join('');
+  }
+
+  /* ---- Build the checklist UIs ---- */
+  function buildPulse() {
+    $('pulseList').innerHTML = PULSE.map(function (p) {
+      return '<label class="check-item"><input type="checkbox" data-pulse="' + p.key + '" />' +
+        '<div class="ci-body"><div class="ci-label">' + esc(p.label) + '</div></div></label>';
+    }).join('');
+  }
+  function buildPeople() {
+    $('peopleList').innerHTML = PEOPLE.map(function (label, i) {
+      return '<div class="check-item"><input type="checkbox" data-people="' + i + '" />' +
+        '<div class="ci-body"><div class="ci-label">' + esc(label) + '</div>' +
+        '<input class="ci-note" data-peoplenote="' + i + '" placeholder="note…" /></div></div>';
+    }).join('');
+  }
+
+  /* ---- Doc <-> form ---- */
+  function blankDoc(id) {
+    return {
+      id: DASH_PREFIX + id, companyId: id, qboRealmId: '',
+      vision:'', coreValues:'', why:'', ninetyDay:'', bottleneck:'', kpis:'',
+      marketingPlan:'', flavorOfLean:'', sne:'', books:'', pulse_notes:'',
+      swot:{ strengths:'', weaknesses:'', opportunities:'', threats:'' },
+      financials:{ currentRatio:'', monthsCash:'', netMargin:'', pulledAt:'' },
+      pulse:{}, people:[]
+    };
+  }
+  function loadDoc(id) {
+    try { var d = JSON.parse(localStorage.getItem(DASH_PREFIX + id)); if (d && d.companyId) return d; } catch (e) {}
+    return blankDoc(id);
+  }
+
+  function fillForm(d) {
+    $('f_vision').value = d.vision || '';
+    $('f_coreValues').value = d.coreValues || '';
+    $('f_why').value = d.why || '';
+    $('f_ninetyDay').value = d.ninetyDay || '';
+    $('f_bottleneck').value = d.bottleneck || '';
+    $('f_kpis').value = d.kpis || '';
+    $('f_marketingPlan').value = d.marketingPlan || '';
+    $('f_flavorOfLean').value = d.flavorOfLean || '';
+    $('f_sne').value = d.sne || '';
+    $('f_books').value = d.books || '';
+    $('f_pulse_notes').value = d.pulse_notes || '';
+    var s = d.swot || {};
+    $('f_swot_s').value = s.strengths || ''; $('f_swot_w').value = s.weaknesses || '';
+    $('f_swot_o').value = s.opportunities || ''; $('f_swot_t').value = s.threats || '';
+    var f = d.financials || {};
+    $('f_fin_cr').value = f.currentRatio || ''; $('f_fin_mc').value = f.monthsCash || ''; $('f_fin_nm').value = f.netMargin || '';
+    $('finPulled').textContent = f.pulledAt ? ('Pulled from QuickBooks ' + new Date(f.pulledAt).toLocaleString()) : '';
+    // pulse checkboxes
+    var pulse = d.pulse || {};
+    document.querySelectorAll('[data-pulse]').forEach(function (cb){ cb.checked = !!pulse[cb.getAttribute('data-pulse')]; });
+    // people
+    var people = Array.isArray(d.people) ? d.people : [];
+    document.querySelectorAll('[data-people]').forEach(function (cb){ var i = +cb.getAttribute('data-people'); cb.checked = !!(people[i] && people[i].done); });
+    document.querySelectorAll('[data-peoplenote]').forEach(function (inp){ var i = +inp.getAttribute('data-peoplenote'); inp.value = (people[i] && people[i].note) || ''; });
+    // QBO link
+    $('sel_qbo').value = d.qboRealmId || '';
+    autosizeAll();
+  }
+
+  function collect() {
+    if (!current) return null;
+    var d = current;
+    d.vision = $('f_vision').value;
+    d.coreValues = $('f_coreValues').value;
+    d.why = $('f_why').value;
+    d.ninetyDay = $('f_ninetyDay').value;
+    d.bottleneck = $('f_bottleneck').value;
+    d.kpis = $('f_kpis').value;
+    d.marketingPlan = $('f_marketingPlan').value;
+    d.flavorOfLean = $('f_flavorOfLean').value;
+    d.sne = $('f_sne').value;
+    d.books = $('f_books').value;
+    d.pulse_notes = $('f_pulse_notes').value;
+    d.swot = { strengths:$('f_swot_s').value, weaknesses:$('f_swot_w').value, opportunities:$('f_swot_o').value, threats:$('f_swot_t').value };
+    d.financials = d.financials || {};
+    d.financials.currentRatio = $('f_fin_cr').value;
+    d.financials.monthsCash = $('f_fin_mc').value;
+    d.financials.netMargin = $('f_fin_nm').value;
+    d.pulse = {};
+    document.querySelectorAll('[data-pulse]').forEach(function (cb){ d.pulse[cb.getAttribute('data-pulse')] = cb.checked; });
+    d.people = PEOPLE.map(function (label, i) {
+      var cb = document.querySelector('[data-people="' + i + '"]');
+      var note = document.querySelector('[data-peoplenote="' + i + '"]');
+      return { label: label, done: !!(cb && cb.checked), note: (note && note.value) || '' };
+    });
+    d.qboRealmId = $('sel_qbo').value || '';
+    return d;
+  }
+
+  function scheduleSave() {
+    setSaveState('Saving…', false);
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(doSave, 600);
+  }
+  function doSave() {
+    var d = collect(); if (!d) return;
+    d.updatedAt = new Date().toISOString();
+    d.updatedBy = (window.bccUser && window.bccUser.userDetails) || '';
+    localStorage.setItem(d.id, JSON.stringify(d));
+    setSaveState('Saved', true);
+    if (window.bccAudit) window.bccAudit('dashboard-update', { key: d.id, path:'/dashboard.html', meta:{ companyId: d.companyId } });
+  }
+  function setSaveState(txt, ok) { var el = $('saveState'); el.textContent = txt; el.classList.toggle('saved', !!ok); }
+
+  /* ---- autosize textareas ---- */
+  function autosize(t) { t.style.height = 'auto'; t.style.height = Math.max(t.classList ? 0 : 0, t.scrollHeight) + 'px'; }
+  function autosizeAll() { document.querySelectorAll('.card textarea').forEach(function (t){ t.style.height='auto'; t.style.height = t.scrollHeight + 'px'; }); }
+
+  /* ---- client selection ---- */
+  function openClient(id) {
+    currentId = id;
+    if (!id) { current = null; $('grid').style.display='none'; $('emptyHint').style.display=''; setSaveState('', false); return; }
+    current = loadDoc(id);
+    $('emptyHint').style.display='none'; $('grid').style.display='';
+    fillForm(current);
+    setSaveState(current.updatedAt ? 'Saved' : '', !!current.updatedAt);
+    try { localStorage.setItem(LAST_CLIENT, id); } catch (e) {}
+    updatePullState();
+  }
+
+  /* ---- QuickBooks link + pull ---- */
+  function loadQboCompanies() {
+    fetch('/api/integrations/qbo/companies', { credentials:'include' })
+      .then(function (r){ return r.ok ? r.json() : { companies:[] }; })
+      .then(function (d){
+        qboCompanies = (d && d.companies) || [];
+        var sel = $('sel_qbo');
+        sel.innerHTML = '<option value="">— Not linked —</option>' +
+          qboCompanies.map(function (c){ return '<option value="' + esc(c.realmId) + '">' + esc(c.companyName || ('Company ' + c.realmId)) + '</option>'; }).join('');
+        if (current) sel.value = current.qboRealmId || '';
+        updatePullState();
+      })
+      .catch(function (){ qboCompanies = []; });
+  }
+  function updatePullState() {
+    var has = !!$('sel_qbo').value;
+    $('btn_pull').disabled = !has || !current;
+    $('btn_pull').style.opacity = (!has || !current) ? '0.5' : '';
+  }
+  function pullFinancials() {
+    if (!current) return;
+    var realm = $('sel_qbo').value; if (!realm) { (window.bccNotify||alert)('Link a QuickBooks company first.', 'warn'); return; }
+    var btn = $('btn_pull'); btn.disabled = true; var old = btn.textContent; btn.textContent = 'Pulling…';
+    var asOf = new Date().toISOString().slice(0,10);
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(realm) + '/kpis?method=accrual&asOf=' + asOf + '&burnMonths=3', { credentials:'include' })
+      .then(function (r){ return r.json().catch(function(){ return { ok:false }; }); })
+      .then(function (resp){
+        var k = (resp && resp.kpis) || {};
+        if (resp && resp.ok === false) { (window.bccNotify||alert)('Could not pull from QuickBooks.', 'error'); return; }
+        $('f_fin_cr').value = (k.currentRatio == null) ? '' : Number(k.currentRatio).toFixed(2);
+        $('f_fin_mc').value = (k.monthsOfCash == null) ? '' : String(k.monthsOfCash);
+        $('f_fin_nm').value = (k.netMargin == null) ? '' : (Number(k.netMargin) * 100).toFixed(1) + '%';
+        current.financials = current.financials || {};
+        current.financials.pulledAt = new Date().toISOString();
+        $('finPulled').textContent = 'Pulled from QuickBooks ' + new Date().toLocaleString();
+        doSave();
+        if (window.bccNotifySaved) window.bccNotifySaved('Financials pulled from QuickBooks.');
+      })
+      .catch(function (){ (window.bccNotify||alert)('Could not reach QuickBooks.', 'error'); })
+      .finally(function (){ btn.textContent = old; updatePullState(); });
+  }
+
+  /* ---- wiring ---- */
+  function wire() {
+    // Any edit → debounced save + autosize on textareas.
+    $('grid').addEventListener('input', function (e) {
+      if (e.target.tagName === 'TEXTAREA') autosize(e.target);
+      scheduleSave();
+    });
+    $('grid').addEventListener('change', scheduleSave); // checkboxes
+    $('sel_client').addEventListener('change', function (e){ openClient(e.target.value); });
+    $('sel_qbo').addEventListener('change', function (){ updatePullState(); scheduleSave(); });
+    $('btn_pull').addEventListener('click', pullFinancials);
+    $('btn_print').addEventListener('click', function (){ window.print(); });
+  }
+
+  function init() {
+    buildPulse(); buildPeople(); wire();
+    populateClients();
+    loadQboCompanies();
+    // Restore last client if it still exists.
+    var last = localStorage.getItem(LAST_CLIENT) || '';
+    if (last && document.querySelector('#sel_client option[value="' + (window.CSS && CSS.escape ? CSS.escape(last) : last) + '"]')) {
+      $('sel_client').value = last; openClient(last);
+    }
+  }
+
+  // bcc-api.js may still be loading the synced docs when we first run; refresh
+  // the client list once auth/data settle.
+  window.addEventListener('bcc-auth-ready', function () { populateClients(); var v=$('sel_client').value; if (v) $('sel_client').value=v; });
+  window.addEventListener('bcc-users-ready', function () { populateClients(); var v=$('sel_client').value; if (v) $('sel_client').value=v; });
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+</body>
+</html>
