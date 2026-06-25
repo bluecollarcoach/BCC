@@ -1607,14 +1607,17 @@ app.http('msgraph-send-mail', {
       const upn = encodeURIComponent(p.userDetails || p.userId);
       const access = await getGraphToken();
 
-      const payload = {
-        message: {
-          subject: subject,
-          body: { contentType: 'HTML', content: html },
-          toRecipients: toList.filter(Boolean).map(e => ({ emailAddress: { address: String(e) } }))
-        },
-        saveToSentItems: true
+      const ccList  = Array.isArray(body.cc)  ? body.cc  : (body.cc  ? [body.cc]  : []);
+      const bccList = Array.isArray(body.bcc) ? body.bcc : (body.bcc ? [body.bcc] : []);
+      const recip = e => ({ emailAddress: { address: String(e) } });
+      const msg = {
+        subject: subject,
+        body: { contentType: 'HTML', content: html },
+        toRecipients: toList.filter(Boolean).map(recip)
       };
+      if (ccList.length)  msg.ccRecipients  = ccList.filter(Boolean).map(recip);
+      if (bccList.length) msg.bccRecipients = bccList.filter(Boolean).map(recip);
+      const payload = { message: msg, saveToSentItems: true };
       const r = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/sendMail', {
         method: 'POST',
         headers: { Authorization: 'Bearer ' + access, 'Content-Type': 'application/json' },

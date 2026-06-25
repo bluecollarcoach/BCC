@@ -188,6 +188,7 @@
       <button class="ws-tab" data-tab="files" type="button">Files</button>
       <button class="ws-tab" data-tab="tasks" type="button">Tasks</button>
       <button class="ws-tab" data-tab="time" type="button">Time</button>
+      <button class="ws-tab" data-tab="email" type="button">Email</button>
       <button class="ws-tab" data-tab="payroll" type="button">Certified payroll</button>
       <button class="ws-tab" data-tab="access" type="button">Team &amp; access</button>
     </div>
@@ -302,6 +303,10 @@
   <div class="card" id="tab-time" style="display:none; margin-top:14px;">
     <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Time tracking</h3>
     <div id="time-body"></div>
+  </div>
+  <div class="card" id="tab-email" style="display:none; margin-top:14px;">
+    <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Email <span style="color:var(--muted);font-weight:400;font-size:12px;">· send &amp; log per client</span></h3>
+    <div id="email-body"></div>
   </div>
   <div class="card" id="tab-payroll" style="display:none; margin-top:14px;">
     <div id="payroll-body"></div>
@@ -770,7 +775,7 @@
       tabbar.querySelectorAll('[data-tab]').forEach(function (b) { b.classList.toggle('active', b.dataset.tab === currentTab); });
     }
     setFinVisible(fin);
-    ['info','files','tasks','time','payroll','access'].forEach(function (t) {
+    ['info','files','tasks','time','email','payroll','access'].forEach(function (t) {
       var el = document.getElementById('tab-' + t); if (el) el.style.display = (currentRealm && currentTab === t) ? '' : 'none';
     });
     if (currentRealm && currentTab !== 'financials') renderTabContent(currentTab);
@@ -780,6 +785,7 @@
     else if (tab === 'files') renderFiles();
     else if (tab === 'tasks') renderTasks();
     else if (tab === 'time') renderTime();
+    else if (tab === 'email') renderEmail();
     else if (tab === 'payroll') renderPayroll();
     else if (tab === 'access') renderAccess();
   }
@@ -960,6 +966,56 @@
       updateCompany(currentRealm, { allowedUserUpns: upns, enabled: document.getElementById('acc_enabled').checked });
       if (window.bccNotifySaved) window.bccNotifySaved('Access updated.');
     };
+  }
+
+  /* ---- Email (send via Graph + per-client logged history) ---- */
+  function emailPrefix() { return 'bcc-email-' + currentRealm + '-'; }
+  function allEmails() { var out = []; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (!k || k.indexOf(emailPrefix()) !== 0) continue; try { var m = JSON.parse(localStorage.getItem(k)); if (m && m.id) out.push(m); } catch (e) {} } return out; }
+  function parseAddrs(s) { return String(s || '').split(/[\s,;]+/).map(function (x) { return x.trim(); }).filter(function (x) { return x.indexOf('@') > 0; }); }
+  function renderEmail() {
+    var body = document.getElementById('email-body'); if (!body) return;
+    var info = {}; try { info = JSON.parse(localStorage.getItem('bcc-client-info-' + currentRealm)) || {}; } catch (e) {}
+    var compose = '<div class="ws-form" style="margin-bottom:14px;">' +
+      '<label class="full">To (comma-separated)<input id="em_to" value="' + esc(info.email || '') + '" placeholder="client@example.com, second@example.com" /></label>' +
+      '<label class="full">CC (optional)<input id="em_cc" placeholder="cc@example.com" /></label>' +
+      '<label class="full">Subject<input id="em_subject" /></label>' +
+      '<label class="full">Message<textarea id="em_body" rows="7"></textarea></label>' +
+      '<div class="full"><button class="btn btn-primary" id="em_send" type="button">Send email</button> <span id="em_status" style="font-size:12px;color:var(--muted);"></span></div></div>';
+    var sent = allEmails().sort(function (a, b) { return (b.sentAt || '').localeCompare(a.sentAt || ''); });
+    var hist = '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:6px 0 8px;">Sent history</div>' +
+      (sent.length ? sent.map(function (m) {
+        var when = m.sentAt ? new Date(m.sentAt).toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }) : '';
+        var by = (window.bccDisplayName && window.bccDisplayName(m.sentBy)) || m.sentBy || '';
+        return '<div class="ws-row" style="align-items:flex-start;"><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:14px;">' + esc(m.subject || '(no subject)') + '</div>' +
+          '<div style="font-size:12px;color:var(--muted);">To: ' + esc((m.to || []).join(', ')) + (m.cc && m.cc.length ? ' · Cc: ' + esc(m.cc.join(', ')) : '') + '</div>' +
+          '<div style="font-size:12px;color:var(--muted);">' + esc(when) + ' · ' + esc(by) + '</div>' +
+          (m.bodyText ? '<div style="font-size:12.5px;color:var(--ink);margin-top:4px;white-space:pre-wrap;max-height:90px;overflow:auto;">' + esc(m.bodyText) + '</div>' : '') +
+          '</div><button class="btn btn-ghost" data-emdel="' + esc(m.id) + '" type="button" style="font-size:11px;min-height:28px;">Delete</button></div>';
+      }).join('') : '<div style="color:var(--muted);padding:8px 0;">No emails sent yet for this client.</div>');
+    var inboxNote = '<div style="margin-top:14px;padding:10px 12px;background:var(--chrome);border-radius:8px;font-size:12.5px;color:var(--muted);">Inbox viewing (incoming mail) is coming next — it needs a one-time Microsoft <code>Mail.Read</code> admin consent.</div>';
+    body.innerHTML = compose + hist + inboxNote;
+    document.getElementById('em_send').onclick = sendClientEmail;
+    body.querySelectorAll('[data-emdel]').forEach(function (b) { b.onclick = function () { if (!confirm('Delete this logged email?')) return; localStorage.removeItem(b.getAttribute('data-emdel')); renderEmail(); }; });
+  }
+  function sendClientEmail() {
+    var to = parseAddrs(document.getElementById('em_to').value); if (!to.length) { (window.bccNotify || alert)('Add at least one valid recipient.', 'warn'); return; }
+    var cc = parseAddrs(document.getElementById('em_cc').value);
+    var subject = document.getElementById('em_subject').value.trim() || '(no subject)';
+    var bodyText = document.getElementById('em_body').value;
+    var html = esc(bodyText).replace(/\n/g, '<br>');
+    var btn = document.getElementById('em_send'), st = document.getElementById('em_status'); var ot = btn.textContent; btn.disabled = true; btn.textContent = 'Sending…'; st.textContent = '';
+    var payload = { to: to, subject: subject, bodyHtml: html }; if (cc.length) payload.cc = cc;
+    fetch('/api/integrations/msgraph/send-mail', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+      .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
+      .then(function (resp) {
+        if (resp && resp.ok === false) throw new Error(resp.error || 'send failed');
+        var id = emailPrefix() + uid2();
+        localStorage.setItem(id, JSON.stringify({ id: id, tenantId: 'blue-collar-coach', docType: 'client-email', realmId: currentRealm, to: to, cc: cc, subject: subject, bodyText: bodyText, sentAt: nowIso(), sentBy: myUpn(), status: 'sent' }));
+        if (window.bccAudit) window.bccAudit('client-email-send', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm, recipients: to.length } });
+        if (window.bccNotifySaved) window.bccNotifySaved('Email sent.');
+        renderEmail();
+      })
+      .catch(function (e) { st.textContent = 'Send failed: ' + e.message; btn.disabled = false; btn.textContent = ot; });
   }
 
   /* ---- Certified payroll (Minnesota DLI format) ---- */
