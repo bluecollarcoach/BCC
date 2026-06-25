@@ -1604,7 +1604,15 @@ app.http('msgraph-send-mail', {
       const subject = String(body.subject || '(no subject)').slice(0, 250);
       const html = String(body.bodyHtml || body.body || '');
 
-      const upn = encodeURIComponent(p.userDetails || p.userId);
+      let upn;
+      if (body.realmId) {
+        const rc = await resolveClientMailbox(p, String(body.realmId));
+        if (rc.err) return rc.err;
+        if (!rc.cfg || !rc.cfg.mailbox || rc.cfg.enabled === false) return badRequest('no client mailbox configured for this client');
+        upn = encodeURIComponent(rc.cfg.mailbox);
+      } else {
+        upn = encodeURIComponent(p.userDetails || p.userId);
+      }
       const access = await getGraphToken();
 
       const ccList  = Array.isArray(body.cc)  ? body.cc  : (body.cc  ? [body.cc]  : []);
@@ -1648,11 +1656,59 @@ app.http('msgraph-send-mail', {
  * Read-only against Graph; never writes back. The push half lives in
  * /upsert-event above.
  */
+/* ===== Per-client mailbox (shared mailbox routing) =====
+ * A client can have a dedicated shared mailbox (e.g. mikesrepair@bluecollarcoach.us).
+ * The shared mailbox itself is created once by an M365 admin (Graph can't create
+ * shared mailboxes); here we just store the address per client and route the
+ * client's send/inbox through it. Config doc: bcc-client-mailbox-<realmId>.
+ */
+async function resolveClientMailbox(p, realmId) {
+  const c = container();
+  const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+  if (!comp) return { err: { status: 404, jsonBody: { ok: false, error: 'company not connected' } } };
+  if (!(await isAppAdmin(p))) {
+    const who = String(p.userDetails || p.userId || '').toLowerCase();
+    const allow = (comp.allowedUserUpns || []).map(u => u.toLowerCase());
+    if (comp.enabled === false || (allow.length && allow.indexOf(who) < 0)) return { err: { status: 403, jsonBody: { ok: false, error: 'no access to this client' } } };
+  }
+  const cfg = await c.item('bcc-client-mailbox-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+  return { comp, cfg };
+}
+
+app.http('msgraph-client-mailbox', {
+  methods: ['GET', 'POST'],
+  authLevel: 'anonymous',
+  route: 'integrations/msgraph/client-mailbox/{realmId}',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const realmId = request.params.realmId;
+    try {
+      const rc = await resolveClientMailbox(p, realmId);
+      if (rc.err) return rc.err;
+      if (request.method === 'GET') {
+        return { jsonBody: { ok: true, mailbox: (rc.cfg && rc.cfg.mailbox) || '', enabled: rc.cfg ? rc.cfg.enabled !== false : false } };
+      }
+      if (!(await isAppAdmin(p))) return { status: 403, jsonBody: { ok: false, error: 'admin only' } };
+      const b = await request.json().catch(() => ({}));
+      const mailbox = String(b.mailbox || '').trim().toLowerCase();
+      const enabled = b.enabled !== false;
+      if (mailbox) {
+        const dom = mailbox.split('@')[1] || '';
+        if (ALLOWED_DOMAINS.indexOf(dom) < 0) return badRequest('mailbox must be on an allowed domain: ' + ALLOWED_DOMAINS.join(', '));
+      }
+      const c = container();
+      await c.items.upsert({ id: 'bcc-client-mailbox-' + realmId, tenantId: BCC_TENANT_ID, docType: 'client-mailbox', realmId: realmId, mailbox: mailbox, enabled: enabled, updatedAt: new Date().toISOString(), updatedBy: String(p.userDetails || p.userId || '').toLowerCase() });
+      return { jsonBody: { ok: true, mailbox: mailbox, enabled: enabled } };
+    } catch (e) { context.error('client-mailbox', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+
 /**
- * Reads the signed-in user's mailbox (app-only Mail.Read) and returns recent
- * messages, optionally filtered by a $search query (e.g. a client's email
- * address) so the bookkeeping client workspace can show "your correspondence
- * with this client". Read-only.
+ * Reads a mailbox (app-only Mail.Read) and returns recent messages, optionally
+ * filtered by $search. With ?realmId it reads that client's dedicated shared
+ * mailbox; otherwise it reads the signed-in user's mailbox. Read-only.
  */
 app.http('msgraph-messages', {
   methods: ['GET'],
@@ -1663,9 +1719,18 @@ app.http('msgraph-messages', {
     if (!p) return unauthorized();
     if (!domainAllowed(p)) return domainBlocked();
     try {
-      const upn = encodeURIComponent(p.userDetails || p.userId);
       const access = await getGraphToken();
       const u = new URL(request.url);
+      const realmId = u.searchParams.get('realmId');
+      let upn;
+      if (realmId) {
+        const rc = await resolveClientMailbox(p, realmId);
+        if (rc.err) return rc.err;
+        if (!rc.cfg || !rc.cfg.mailbox || rc.cfg.enabled === false) return { jsonBody: { ok: true, messages: [], note: 'no client mailbox configured' } };
+        upn = encodeURIComponent(rc.cfg.mailbox);
+      } else {
+        upn = encodeURIComponent(p.userDetails || p.userId);
+      }
       const q = (u.searchParams.get('q') || '').trim();
       const top = Math.min(parseInt(u.searchParams.get('top') || '25', 10) || 25, 50);
       const select = 'id,subject,from,toRecipients,receivedDateTime,bodyPreview,isRead,webLink,hasAttachments';

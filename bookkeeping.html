@@ -1123,19 +1123,65 @@
     var inbox = '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:18px 0 8px;">Inbox · your correspondence with this client</div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;"><input id="em_search" value="' + esc(info.email || '') + '" placeholder="search address or keyword" style="flex:1;min-width:200px;border:1px solid var(--chrome-mute);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;" /><button class="btn btn-ghost" id="em_refresh" type="button">Refresh inbox</button></div>' +
       '<div id="em_inbox"><div style="color:var(--muted);">' + (info.email ? 'Loading messages…' : 'Add the client’s email in Client info, or type a search above, then Refresh.') + '</div></div>';
-    body.innerHTML = compose + hist + inbox;
+    body.innerHTML = '<div id="em_mailbox"></div>' + compose + hist + inbox;
     document.getElementById('em_send').onclick = sendClientEmail;
     document.getElementById('em_refresh').onclick = loadInbox;
     document.getElementById('em_search').addEventListener('keydown', function (e) { if (e.key === 'Enter') loadInbox(); });
     body.querySelectorAll('[data-emdel]').forEach(function (b) { b.onclick = function () { if (!confirm('Delete this logged email?')) return; localStorage.removeItem(b.getAttribute('data-emdel')); renderEmail(); }; });
-    if (info.email && _inboxLoadedFor !== currentRealm) { _inboxLoadedFor = currentRealm; loadInbox(); }
+    loadClientMailbox(info);
   }
   var _inboxLoadedFor = null;
+  var _clientMailbox = null;
+  function suggestMailbox() { var n = companyName(currentRealm) || ''; var local = n.toLowerCase().replace(/[^a-z0-9]+/g, ''); return local ? (local + '@bluecollarcoach.us') : ''; }
+  function loadClientMailbox(info) {
+    fetch('/api/integrations/msgraph/client-mailbox/' + encodeURIComponent(currentRealm), { credentials: 'include' })
+      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+      .then(function (cfg) { _clientMailbox = (cfg && cfg.ok) ? { mailbox: cfg.mailbox, enabled: cfg.enabled } : { mailbox: '', enabled: false }; renderMailboxSection(info); maybeAutoInbox(info); })
+      .catch(function () { _clientMailbox = { mailbox: '', enabled: false }; renderMailboxSection(info); maybeAutoInbox(info); });
+  }
+  function mailboxActive() { return !!(_clientMailbox && _clientMailbox.mailbox && _clientMailbox.enabled !== false); }
+  function maybeAutoInbox(info) {
+    var active = mailboxActive();
+    if (active) { var s = document.getElementById('em_search'); if (s) s.value = ''; }
+    if ((active || info.email) && _inboxLoadedFor !== currentRealm) { _inboxLoadedFor = currentRealm; loadInbox(); }
+  }
+  function renderMailboxSection(info) {
+    var el = document.getElementById('em_mailbox'); if (!el) return;
+    var cm = _clientMailbox || {};
+    var fromWho = mailboxActive() ? cm.mailbox : ((window.bccUser && window.bccUser.userDetails) || 'your account');
+    var fromLine = '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Sending as: <strong>' + esc(fromWho) + '</strong></div>';
+    if (mailboxActive()) {
+      el.innerHTML = '<div style="background:var(--gold-fade);border:1px solid var(--chrome-mute);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;">📬 Dedicated client mailbox: <strong>' + esc(cm.mailbox) + '</strong>. Sends and the inbox below use this address.' + (isAdmin ? ' <button class="btn btn-ghost" id="cm_change" type="button" style="font-size:11px;min-height:26px;">Change</button>' : '') + '</div>' + fromLine;
+      var cc = document.getElementById('cm_change'); if (cc) cc.onclick = function () { openMailboxSetup(info); };
+      return;
+    }
+    if (isAdmin) { el.innerHTML = '<div id="cm_setupwrap" style="background:var(--chrome);border-radius:8px;padding:12px;margin-bottom:12px;"></div>'; openMailboxSetup(info); }
+    else { el.innerHTML = '<div style="background:var(--chrome);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12.5px;color:var(--muted);">No dedicated client mailbox set — emails send from your account. Ask an admin to set one up.</div>' + fromLine; }
+  }
+  function openMailboxSetup(info) {
+    var wrap = document.getElementById('cm_setupwrap') || document.getElementById('em_mailbox'); if (!wrap) return;
+    var cm = _clientMailbox || {}; var sug = cm.mailbox || suggestMailbox();
+    wrap.innerHTML = '<div style="font-weight:700;font-size:13.5px;margin-bottom:6px;">Client mailbox setup</div>' +
+      '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">First create a <strong>shared mailbox</strong> with this address in the Microsoft 365 admin center (free — no license). Then save it here; the app will send from and read this mailbox for this client.</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;"><input id="cm_addr" value="' + esc(sug) + '" placeholder="mikesrepair@bluecollarcoach.us" style="flex:1;min-width:220px;border:1px solid var(--chrome-mute);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;" />' +
+      '<button class="btn btn-primary" id="cm_save" type="button">Save mailbox</button>' + (cm.mailbox ? '<button class="btn btn-ghost" id="cm_clear" type="button">Remove</button>' : '') + '</div>' +
+      '<div id="cm_status" style="font-size:12px;color:var(--muted);margin-top:6px;"></div>';
+    document.getElementById('cm_save').onclick = function () { saveMailbox(document.getElementById('cm_addr').value.trim(), true, info); };
+    var clr = document.getElementById('cm_clear'); if (clr) clr.onclick = function () { saveMailbox('', false, info); };
+  }
+  function saveMailbox(mailbox, enabled, info) {
+    var st = document.getElementById('cm_status'); if (st) st.textContent = 'Saving…';
+    fetch('/api/integrations/msgraph/client-mailbox/' + encodeURIComponent(currentRealm), { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mailbox: mailbox, enabled: enabled }) })
+      .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
+      .then(function (resp) { if (!resp.ok) throw new Error(resp.error || 'save failed'); _clientMailbox = { mailbox: resp.mailbox, enabled: resp.enabled }; if (window.bccAudit) window.bccAudit('client-mailbox-set', { path: '/bookkeeping.html', meta: { realmId: currentRealm, mailbox: resp.mailbox, enabled: resp.enabled } }); _inboxLoadedFor = null; renderEmail(); })
+      .catch(function (e) { if (st) st.textContent = 'Save failed: ' + e.message; });
+  }
   function loadInbox() {
     var box = document.getElementById('em_inbox'); if (!box) return;
     var q = (document.getElementById('em_search') || {}).value || '';
     box.innerHTML = '<div style="color:var(--muted);">Loading…</div>';
-    fetch('/api/integrations/msgraph/messages?top=25&q=' + encodeURIComponent(q.trim()), { credentials: 'include' })
+    var rid = mailboxActive() ? ('&realmId=' + encodeURIComponent(currentRealm)) : '';
+    fetch('/api/integrations/msgraph/messages?top=25&q=' + encodeURIComponent(q.trim()) + rid, { credentials: 'include' })
       .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
       .then(function (resp) {
         if (!resp || !resp.ok) { box.innerHTML = '<div style="color:var(--burgundy);">Inbox unavailable: ' + esc((resp && resp.error) || 'error') + '</div>'; return; }
@@ -1160,12 +1206,13 @@
     var html = esc(bodyText).replace(/\n/g, '<br>');
     var btn = document.getElementById('em_send'), st = document.getElementById('em_status'); var ot = btn.textContent; btn.disabled = true; btn.textContent = 'Sending…'; st.textContent = '';
     var payload = { to: to, subject: subject, bodyHtml: html }; if (cc.length) payload.cc = cc;
+    var usingMailbox = mailboxActive(); if (usingMailbox) payload.realmId = currentRealm;
     fetch('/api/integrations/msgraph/send-mail', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
       .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
       .then(function (resp) {
         if (resp && resp.ok === false) throw new Error(resp.error || 'send failed');
         var id = emailPrefix() + uid2();
-        localStorage.setItem(id, JSON.stringify({ id: id, tenantId: 'blue-collar-coach', docType: 'client-email', realmId: currentRealm, to: to, cc: cc, subject: subject, bodyText: bodyText, sentAt: nowIso(), sentBy: myUpn(), status: 'sent' }));
+        localStorage.setItem(id, JSON.stringify({ id: id, tenantId: 'blue-collar-coach', docType: 'client-email', realmId: currentRealm, from: (usingMailbox && _clientMailbox ? _clientMailbox.mailbox : myUpn()), to: to, cc: cc, subject: subject, bodyText: bodyText, sentAt: nowIso(), sentBy: myUpn(), status: 'sent' }));
         if (window.bccAudit) window.bccAudit('client-email-send', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm, recipients: to.length } });
         if (window.bccNotifySaved) window.bccNotifySaved('Email sent.');
         renderEmail();
