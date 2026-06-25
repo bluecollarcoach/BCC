@@ -1648,6 +1648,56 @@ app.http('msgraph-send-mail', {
  * Read-only against Graph; never writes back. The push half lives in
  * /upsert-event above.
  */
+/**
+ * Reads the signed-in user's mailbox (app-only Mail.Read) and returns recent
+ * messages, optionally filtered by a $search query (e.g. a client's email
+ * address) so the bookkeeping client workspace can show "your correspondence
+ * with this client". Read-only.
+ */
+app.http('msgraph-messages', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'integrations/msgraph/messages',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    try {
+      const upn = encodeURIComponent(p.userDetails || p.userId);
+      const access = await getGraphToken();
+      const u = new URL(request.url);
+      const q = (u.searchParams.get('q') || '').trim();
+      const top = Math.min(parseInt(u.searchParams.get('top') || '25', 10) || 25, 50);
+      const select = 'id,subject,from,toRecipients,receivedDateTime,bodyPreview,isRead,webLink,hasAttachments';
+      let gurl;
+      if (q) {
+        // $search cannot be combined with $orderby; it ranks by relevance/recency.
+        gurl = 'https://graph.microsoft.com/v1.0/users/' + upn + '/messages?$search=' + encodeURIComponent('"' + q + '"') + '&$top=' + top + '&$select=' + select;
+      } else {
+        gurl = 'https://graph.microsoft.com/v1.0/users/' + upn + '/messages?$top=' + top + '&$orderby=receivedDateTime%20desc&$select=' + select;
+      }
+      const r = await fetch(gurl, { headers: { Authorization: 'Bearer ' + access } });
+      if (!r.ok) { const detail = (await r.text()).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')', detail } }; }
+      const data = await r.json();
+      const messages = (Array.isArray(data.value) ? data.value : []).map(m => ({
+        id: m.id,
+        subject: m.subject || '(no subject)',
+        from: (m.from && m.from.emailAddress && m.from.emailAddress.address) || '',
+        fromName: (m.from && m.from.emailAddress && m.from.emailAddress.name) || '',
+        to: (m.toRecipients || []).map(x => x.emailAddress && x.emailAddress.address).filter(Boolean),
+        received: m.receivedDateTime || '',
+        preview: m.bodyPreview || '',
+        isRead: !!m.isRead,
+        webLink: m.webLink || '',
+        hasAttachments: !!m.hasAttachments
+      }));
+      return { jsonBody: { ok: true, messages: messages } };
+    } catch (e) {
+      return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } };
+    }
+  })
+});
+
 app.http('msgraph-pull-events', {
   methods: ['POST'],
   authLevel: 'anonymous',
