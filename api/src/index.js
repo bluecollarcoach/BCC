@@ -2086,8 +2086,8 @@ app.http('qbo-report', {
         case 'ap-aging': { data = flattenQboReport(await apiGet('/reports/AgedPayables')); data.kind = 'report'; break; }
         case 'customers': { data = { kind: 'list', items: (await queryAll('SELECT Id, DisplayName, Balance, Active FROM Customer')).map(x => ({ name: x.DisplayName, balance: x.Balance, active: x.Active !== false })) }; break; }
         case 'vendors': { data = { kind: 'list', items: (await queryAll('SELECT Id, DisplayName, Balance, Active FROM Vendor')).map(x => ({ name: x.DisplayName, balance: x.Balance, active: x.Active !== false })) }; break; }
-        case 'invoices': { data = { kind: 'list', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, CustomerRef FROM Invoice WHERE Balance > '0'")).map(x => ({ doc: x.DocNumber, name: x.CustomerRef && x.CustomerRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance })) }; break; }
-        case 'bills': { data = { kind: 'list', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, VendorRef FROM Bill WHERE Balance > '0'")).map(x => ({ doc: x.DocNumber, name: x.VendorRef && x.VendorRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance })) }; break; }
+        case 'invoices': { data = { kind: 'list', editable: 'invoice', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, CustomerRef FROM Invoice WHERE Balance > '0'")).map(x => ({ id: x.Id, doc: x.DocNumber, name: x.CustomerRef && x.CustomerRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance })) }; break; }
+        case 'bills': { data = { kind: 'list', editable: 'bill', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, VendorRef FROM Bill WHERE Balance > '0'")).map(x => ({ id: x.Id, doc: x.DocNumber, name: x.VendorRef && x.VendorRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance })) }; break; }
         case 'transactions': {
           const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
           data = flattenQboReport(await apiGet('/reports/TransactionList?start_date=' + from + '&end_date=' + to)); data.range = { from, to }; data.kind = 'report'; break;
@@ -2102,11 +2102,11 @@ app.http('qbo-report', {
         }
         case 'all-invoices': {
           const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
-          data = { kind: 'list', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, CustomerRef FROM Invoice WHERE TxnDate >= '" + from + "' AND TxnDate <= '" + to + "' ORDERBY TxnDate DESC")).map(x => ({ doc: x.DocNumber, name: x.CustomerRef && x.CustomerRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance, status: (Number(x.Balance) > 0 ? 'open' : 'paid') })) }; break;
+          data = { kind: 'list', editable: 'invoice', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, CustomerRef FROM Invoice WHERE TxnDate >= '" + from + "' AND TxnDate <= '" + to + "' ORDERBY TxnDate DESC")).map(x => ({ id: x.Id, doc: x.DocNumber, name: x.CustomerRef && x.CustomerRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance, status: (Number(x.Balance) > 0 ? 'open' : 'paid') })) }; break;
         }
         case 'all-bills': {
           const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
-          data = { kind: 'list', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, VendorRef FROM Bill WHERE TxnDate >= '" + from + "' AND TxnDate <= '" + to + "' ORDERBY TxnDate DESC")).map(x => ({ doc: x.DocNumber, name: x.VendorRef && x.VendorRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance, status: (Number(x.Balance) > 0 ? 'open' : 'paid') })) }; break;
+          data = { kind: 'list', editable: 'bill', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, VendorRef FROM Bill WHERE TxnDate >= '" + from + "' AND TxnDate <= '" + to + "' ORDERBY TxnDate DESC")).map(x => ({ id: x.Id, doc: x.DocNumber, name: x.VendorRef && x.VendorRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance, status: (Number(x.Balance) > 0 ? 'open' : 'paid') })) }; break;
         }
         default: return { status: 400, jsonBody: { error: 'unknown report type "' + type + '"' } };
       }
@@ -2115,6 +2115,118 @@ app.http('qbo-report', {
       context.error('qbo-report error', e);
       return { status: 502, jsonBody: { error: String(e.message || e) } };
     }
+  })
+});
+
+/* ===== QBO write helpers shared by refs / entity / write endpoints ===== */
+async function qboResolveAccess(request, realmId) {
+  const p = principal(request);
+  if (!p) return { err: unauthorized() };
+  if (!domainAllowed(p)) return { err: domainBlocked() };
+  const c = container();
+  const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+  if (!comp) return { err: { status: 404, jsonBody: { error: 'company not connected' } } };
+  if (!(await isAppAdmin(p))) {
+    const who = String(p.userDetails || p.userId || '').toLowerCase();
+    const allow = (comp.allowedUserUpns || []).map(u => u.toLowerCase());
+    if (comp.enabled === false || (allow.length && allow.indexOf(who) < 0)) return { err: { status: 403, jsonBody: { error: 'no access to this company' } } };
+  }
+  const fields = await getIntegrationFields('qbo');
+  const { accessToken, base } = await qboAccessForCompany(comp, fields);
+  const apiGet = async (path) => {
+    const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70';
+    const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
+    if (!r.ok) throw new Error('QBO ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 250));
+    return r.json();
+  };
+  const apiPost = async (path, bodyObj) => {
+    const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + '?minorversion=70';
+    const r = await fetch(u, { method: 'POST', headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(bodyObj) });
+    if (!r.ok) throw new Error('QBO ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 300));
+    return r.json();
+  };
+  const queryAll = async (sql) => { const j = await apiGet('/query?query=' + encodeURIComponent(sql + ' MAXRESULTS 1000')); const qr = j.QueryResponse || {}; const k = Object.keys(qr).find(x => Array.isArray(qr[x])); return k ? qr[k] : []; };
+  return { p, comp, apiGet, apiPost, queryAll };
+}
+
+/** GET refs — dropdown data for the transaction forms (customers/vendors/items/accounts). */
+app.http('qbo-refs', {
+  methods: ['GET'], authLevel: 'anonymous', route: 'integrations/qbo/companies/{realmId}/refs',
+  handler: withAccessLog(async (request, context) => {
+    try {
+      const ctx = await qboResolveAccess(request, request.params.realmId);
+      if (ctx.err) return ctx.err;
+      const customers = (await ctx.queryAll('SELECT Id, DisplayName FROM Customer WHERE Active = true')).map(x => ({ id: x.Id, name: x.DisplayName }));
+      const vendors   = (await ctx.queryAll('SELECT Id, DisplayName FROM Vendor WHERE Active = true')).map(x => ({ id: x.Id, name: x.DisplayName }));
+      const items     = (await ctx.queryAll('SELECT Id, Name, UnitPrice FROM Item WHERE Active = true')).map(x => ({ id: x.Id, name: x.Name, price: x.UnitPrice }));
+      const accounts  = (await ctx.queryAll('SELECT Id, Name, AccountType, Classification FROM Account WHERE Active = true')).map(x => ({ id: x.Id, name: x.Name, type: x.AccountType, classification: x.Classification }));
+      return { jsonBody: { ok: true, customers, vendors, items, accounts } };
+    } catch (e) { context.error('qbo-refs', e); return { status: 502, jsonBody: { ok: false, error: String(e.message || e) } }; }
+  })
+});
+
+/** GET entity — fetch one invoice/bill for edit prefill (includes SyncToken). */
+app.http('qbo-entity', {
+  methods: ['GET'], authLevel: 'anonymous', route: 'integrations/qbo/companies/{realmId}/entity',
+  handler: withAccessLog(async (request, context) => {
+    try {
+      const ctx = await qboResolveAccess(request, request.params.realmId);
+      if (ctx.err) return ctx.err;
+      const u = new URL(request.url);
+      const type = (u.searchParams.get('type') || '').toLowerCase();
+      const id = u.searchParams.get('id');
+      const cap = { invoice: 'Invoice', bill: 'Bill', payment: 'Payment' }[type];
+      if (!cap || !id) return badRequest('type (invoice|bill|payment) and id required');
+      const j = await ctx.apiGet('/' + type + '/' + encodeURIComponent(id));
+      return { jsonBody: { ok: true, entity: j[cap] || null } };
+    } catch (e) { context.error('qbo-entity', e); return { status: 502, jsonBody: { ok: false, error: String(e.message || e) } }; }
+  })
+});
+
+/** POST write — create or update an invoice / bill / payment in the client's QBO. */
+app.http('qbo-write', {
+  methods: ['POST'], authLevel: 'anonymous', route: 'integrations/qbo/companies/{realmId}/write',
+  handler: withAccessLog(async (request, context) => {
+    try {
+      const ctx = await qboResolveAccess(request, request.params.realmId);
+      if (ctx.err) return ctx.err;
+      const b = await request.json().catch(() => ({}));
+      const entity = String(b.entity || '').toLowerCase();
+      const f = b.fields || {};
+      const cap = { invoice: 'Invoice', bill: 'Bill', payment: 'Payment' }[entity];
+      if (!cap) return badRequest('entity must be invoice, bill, or payment');
+      let payload;
+      if (entity === 'invoice') {
+        const lines = (f.lines || []).filter(l => l && (l.amount || l.itemId)).map(l => ({
+          DetailType: 'SalesItemLineDetail', Amount: Number(l.amount) || 0, Description: l.desc || undefined,
+          SalesItemLineDetail: Object.assign({ ItemRef: { value: String(l.itemId) } }, l.qty ? { Qty: Number(l.qty) } : {}, l.unitPrice ? { UnitPrice: Number(l.unitPrice) } : {})
+        }));
+        if (!f.customerId || !lines.length) return badRequest('customer and at least one line required');
+        payload = { CustomerRef: { value: String(f.customerId) }, Line: lines };
+        if (f.txnDate) payload.TxnDate = f.txnDate; if (f.dueDate) payload.DueDate = f.dueDate;
+      } else if (entity === 'bill') {
+        const lines = (f.lines || []).filter(l => l && (l.amount || l.accountId)).map(l => ({
+          DetailType: 'AccountBasedExpenseLineDetail', Amount: Number(l.amount) || 0, Description: l.desc || undefined,
+          AccountBasedExpenseLineDetail: { AccountRef: { value: String(l.accountId) } }
+        }));
+        if (!f.vendorId || !lines.length) return badRequest('vendor and at least one line required');
+        payload = { VendorRef: { value: String(f.vendorId) }, Line: lines };
+        if (f.txnDate) payload.TxnDate = f.txnDate; if (f.dueDate) payload.DueDate = f.dueDate;
+      } else {
+        if (!f.customerId || !f.totalAmt) return badRequest('customer and amount required');
+        payload = { CustomerRef: { value: String(f.customerId) }, TotalAmt: Number(f.totalAmt) || 0 };
+        if (f.txnDate) payload.TxnDate = f.txnDate;
+        if (f.depositAccountId) payload.DepositToAccountRef = { value: String(f.depositAccountId) };
+        if (f.invoiceId) payload.Line = [{ Amount: Number(f.totalAmt) || 0, LinkedTxn: [{ TxnId: String(f.invoiceId), TxnType: 'Invoice' }] }];
+      }
+      if (b.op === 'update') {
+        if (!b.id || !b.syncToken) return badRequest('id and syncToken required for update');
+        payload.Id = String(b.id); payload.SyncToken = String(b.syncToken); payload.sparse = true;
+      }
+      const res = await ctx.apiPost('/' + entity, payload);
+      const created = res[cap] || {};
+      return { jsonBody: { ok: true, id: created.Id, docNumber: created.DocNumber, syncToken: created.SyncToken, total: created.TotalAmt } };
+    } catch (e) { context.error('qbo-write', e); return { status: 502, jsonBody: { ok: false, error: String(e.message || e) } }; }
   })
 });
 
