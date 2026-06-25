@@ -2088,6 +2088,26 @@ app.http('qbo-report', {
         case 'vendors': { data = { kind: 'list', items: (await queryAll('SELECT Id, DisplayName, Balance, Active FROM Vendor')).map(x => ({ name: x.DisplayName, balance: x.Balance, active: x.Active !== false })) }; break; }
         case 'invoices': { data = { kind: 'list', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, CustomerRef FROM Invoice WHERE Balance > '0'")).map(x => ({ doc: x.DocNumber, name: x.CustomerRef && x.CustomerRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance })) }; break; }
         case 'bills': { data = { kind: 'list', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, VendorRef FROM Bill WHERE Balance > '0'")).map(x => ({ doc: x.DocNumber, name: x.VendorRef && x.VendorRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance })) }; break; }
+        case 'transactions': {
+          const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
+          data = flattenQboReport(await apiGet('/reports/TransactionList?start_date=' + from + '&end_date=' + to)); data.range = { from, to }; data.kind = 'report'; break;
+        }
+        case 'payments': {
+          const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
+          data = { kind: 'list', items: (await queryAll("SELECT Id, TxnDate, TotalAmt, PaymentRefNum, CustomerRef FROM Payment WHERE TxnDate >= '" + from + "' AND TxnDate <= '" + to + "' ORDERBY TxnDate DESC")).map(x => ({ date: x.TxnDate, ref: x.PaymentRefNum, name: x.CustomerRef && x.CustomerRef.name, total: x.TotalAmt })) }; break;
+        }
+        case 'expenses': {
+          const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
+          data = { kind: 'list', items: (await queryAll("SELECT Id, TxnDate, TotalAmt, DocNumber, PaymentType, EntityRef FROM Purchase WHERE TxnDate >= '" + from + "' AND TxnDate <= '" + to + "' ORDERBY TxnDate DESC")).map(x => ({ date: x.TxnDate, doc: x.DocNumber, name: x.EntityRef && x.EntityRef.name, type: x.PaymentType, total: x.TotalAmt })) }; break;
+        }
+        case 'all-invoices': {
+          const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
+          data = { kind: 'list', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, CustomerRef FROM Invoice WHERE TxnDate >= '" + from + "' AND TxnDate <= '" + to + "' ORDERBY TxnDate DESC")).map(x => ({ doc: x.DocNumber, name: x.CustomerRef && x.CustomerRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance, status: (Number(x.Balance) > 0 ? 'open' : 'paid') })) }; break;
+        }
+        case 'all-bills': {
+          const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
+          data = { kind: 'list', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, VendorRef FROM Bill WHERE TxnDate >= '" + from + "' AND TxnDate <= '" + to + "' ORDERBY TxnDate DESC")).map(x => ({ doc: x.DocNumber, name: x.VendorRef && x.VendorRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance, status: (Number(x.Balance) > 0 ? 'open' : 'paid') })) }; break;
+        }
         default: return { status: 400, jsonBody: { error: 'unknown report type "' + type + '"' } };
       }
       return { jsonBody: { type, realmId, companyName: comp.companyName, data } };

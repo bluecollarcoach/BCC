@@ -283,6 +283,11 @@
       <button class="btn btn-ghost" data-rpt="vendors" type="button">Vendors</button>
       <button class="btn btn-ghost" data-rpt="invoices" type="button">Open Invoices</button>
       <button class="btn btn-ghost" data-rpt="bills" type="button">Open Bills</button>
+      <button class="btn btn-ghost" data-rpt="transactions" type="button">Transactions</button>
+      <button class="btn btn-ghost" data-rpt="payments" type="button">Payments</button>
+      <button class="btn btn-ghost" data-rpt="expenses" type="button">Expenses</button>
+      <button class="btn btn-ghost" data-rpt="all-invoices" type="button">All Invoices</button>
+      <button class="btn btn-ghost" data-rpt="all-bills" type="button">All Bills</button>
     </div>
     <div id="qboReportOut" style="overflow:auto;"></div>
   </div>
@@ -734,7 +739,8 @@
     qboActiveReport = type;
     var rg = qboRange();
     var q = 'type=' + encodeURIComponent(type) + '&method=' + rg.method;
-    if (type === 'pl') q += '&from=' + rg.from + '&to=' + rg.to;
+    var RANGE_TYPES = { pl:1, transactions:1, payments:1, expenses:1, 'all-invoices':1, 'all-bills':1 };
+    if (RANGE_TYPES[type]) q += '&from=' + rg.from + '&to=' + rg.to;
     else if (type === 'balancesheet') q += '&asOf=' + rg.to;
     var out = document.getElementById('qboReportOut');
     out.innerHTML = '<div style="color:var(--muted);padding:10px;">Loading ' + esc(type) + '…</div>';
