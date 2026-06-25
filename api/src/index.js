@@ -2258,8 +2258,8 @@ app.http('qbo-write', {
       const b = await request.json().catch(() => ({}));
       const entity = String(b.entity || '').toLowerCase();
       const f = b.fields || {};
-      const cap = { invoice: 'Invoice', bill: 'Bill', payment: 'Payment' }[entity];
-      if (!cap) return badRequest('entity must be invoice, bill, or payment');
+      const cap = { invoice: 'Invoice', bill: 'Bill', payment: 'Payment', customer: 'Customer', vendor: 'Vendor', item: 'Item', account: 'Account' }[entity];
+      if (!cap) return badRequest('unsupported entity: ' + entity);
       let payload;
       if (entity === 'invoice') {
         const lines = (f.lines || []).filter(l => l && (l.amount || l.itemId)).map(l => ({
@@ -2277,12 +2277,28 @@ app.http('qbo-write', {
         if (!f.vendorId || !lines.length) return badRequest('vendor and at least one line required');
         payload = { VendorRef: { value: String(f.vendorId) }, Line: lines };
         if (f.txnDate) payload.TxnDate = f.txnDate; if (f.dueDate) payload.DueDate = f.dueDate;
-      } else {
+      } else if (entity === 'payment') {
         if (!f.customerId || !f.totalAmt) return badRequest('customer and amount required');
         payload = { CustomerRef: { value: String(f.customerId) }, TotalAmt: Number(f.totalAmt) || 0 };
         if (f.txnDate) payload.TxnDate = f.txnDate;
         if (f.depositAccountId) payload.DepositToAccountRef = { value: String(f.depositAccountId) };
         if (f.invoiceId) payload.Line = [{ Amount: Number(f.totalAmt) || 0, LinkedTxn: [{ TxnId: String(f.invoiceId), TxnType: 'Invoice' }] }];
+      } else if (entity === 'customer' || entity === 'vendor') {
+        if (!f.displayName) return badRequest('name required');
+        payload = { DisplayName: String(f.displayName) };
+        if (f.companyName) payload.CompanyName = String(f.companyName);
+        if (f.email) payload.PrimaryEmailAddr = { Address: String(f.email) };
+        if (f.phone) payload.PrimaryPhone = { FreeFormNumber: String(f.phone) };
+      } else if (entity === 'account') {
+        if (!f.name || !f.accountType) return badRequest('name and accountType required');
+        payload = { Name: String(f.name), AccountType: String(f.accountType) };
+        if (f.acctSubType) payload.AccountSubType = String(f.acctSubType);
+      } else if (entity === 'item') {
+        if (!f.name || !f.itemType) return badRequest('name and itemType required');
+        payload = { Name: String(f.name), Type: String(f.itemType) };
+        if (f.incomeAccountId) payload.IncomeAccountRef = { value: String(f.incomeAccountId) };
+        if (f.expenseAccountId) payload.ExpenseAccountRef = { value: String(f.expenseAccountId) };
+        if (f.unitPrice) payload.UnitPrice = Number(f.unitPrice);
       }
       if (b.op === 'update') {
         if (!b.id || !b.syncToken) return badRequest('id and syncToken required for update');
@@ -2292,6 +2308,71 @@ app.http('qbo-write', {
       const created = res[cap] || {};
       return { jsonBody: { ok: true, id: created.Id, docNumber: created.DocNumber, syncToken: created.SyncToken, total: created.TotalAmt } };
     } catch (e) { context.error('qbo-write', e); return { status: 502, jsonBody: { ok: false, error: String(e.message || e) } }; }
+  })
+});
+
+/**
+ * POST /api/ai/extract-receipt  (multipart: file)
+ * Sends a receipt/invoice image or PDF to Claude and returns structured fields
+ * (vendor, date, subtotal, tax, total, line items) to auto-fill a transaction.
+ * Requires ANTHROPIC_API_KEY app setting; returns needsKey:true if absent.
+ */
+app.http('ai-extract-receipt', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'ai/extract-receipt',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const key = process.env.ANTHROPIC_API_KEY;
+    if (!key) return { jsonBody: { ok: false, needsKey: true, error: 'AI not configured — add ANTHROPIC_API_KEY in the app settings.' } };
+    try {
+      const form = await request.formData();
+      const file = form.get('file');
+      if (!file || typeof file.arrayBuffer !== 'function') return badRequest('file required');
+      const buf = Buffer.from(await file.arrayBuffer());
+      if (buf.length > 12 * 1024 * 1024) return badRequest('file too large (max 12 MB)');
+      const b64 = buf.toString('base64');
+      const mt = (file.type || '').toLowerCase() || 'image/jpeg';
+      const isPdf = /pdf/.test(mt);
+      const srcBlock = isPdf
+        ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } }
+        : { type: 'image', source: { type: 'base64', media_type: (/(png|jpe?g|webp|gif)/.test(mt) ? mt : 'image/jpeg'), data: b64 } };
+      const tool = {
+        name: 'record_document',
+        description: 'Record the structured data extracted from a receipt or invoice.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            docType: { type: 'string', enum: ['receipt', 'invoice', 'other'] },
+            vendorName: { type: 'string', description: 'Merchant / vendor / supplier name' },
+            date: { type: 'string', description: 'Transaction date as YYYY-MM-DD' },
+            currency: { type: 'string' },
+            subtotal: { type: 'number' },
+            tax: { type: 'number' },
+            total: { type: 'number' },
+            lineItems: { type: 'array', items: { type: 'object', properties: { description: { type: 'string' }, amount: { type: 'number' }, quantity: { type: 'number' } } } },
+            suggestedCategory: { type: 'string', description: 'A likely expense category, e.g. Fuel, Office Supplies, Meals' }
+          },
+          required: ['docType', 'total']
+        }
+      };
+      const model = process.env.AI_MODEL || 'claude-sonnet-4-6';
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: model, max_tokens: 1024, tools: [tool], tool_choice: { type: 'tool', name: 'record_document' },
+          messages: [{ role: 'user', content: [srcBlock, { type: 'text', text: 'Extract the vendor, date (YYYY-MM-DD), subtotal, tax, total, currency, and individual line items from this document. Call record_document with the data.' }] }]
+        })
+      });
+      if (!r.ok) { const t = (await r.text().catch(() => '')).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'AI error ' + r.status, detail: t } }; }
+      const j = await r.json();
+      const tu = (j.content || []).find(c => c.type === 'tool_use');
+      if (!tu) return { jsonBody: { ok: false, error: 'No data extracted' } };
+      return { jsonBody: { ok: true, data: tu.input } };
+    } catch (e) { context.error('ai-extract', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
 

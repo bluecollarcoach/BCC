@@ -276,11 +276,17 @@
     <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
       <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0;">New transaction <span style="color:var(--muted);font-weight:400;font-size:12px;">· posts to QuickBooks</span></h3>
       <div style="display:flex; gap:6px; flex-wrap:wrap;">
-        <button class="btn btn-primary" data-tx="invoice" type="button">+ Invoice</button>
+        <button class="btn btn-primary" data-scan="1" type="button">📷 Scan receipt (AI)</button>
+        <button class="btn btn-ghost" data-tx="invoice" type="button">+ Invoice</button>
         <button class="btn btn-ghost" data-tx="bill" type="button">+ Bill / expense</button>
-        <button class="btn btn-ghost" data-tx="payment" type="button">+ Receive payment</button>
+        <button class="btn btn-ghost" data-tx="payment" type="button">+ Payment</button>
+        <button class="btn btn-ghost" data-add="customer" type="button">+ Customer</button>
+        <button class="btn btn-ghost" data-add="vendor" type="button">+ Vendor</button>
+        <button class="btn btn-ghost" data-add="item" type="button">+ Item</button>
+        <button class="btn btn-ghost" data-add="account" type="button">+ Account</button>
       </div>
     </div>
+    <input type="file" id="scanInput" accept="image/*,application/pdf" capture="environment" style="display:none;" />
     <div id="qboWriteForm" style="margin-top:12px;"></div>
   </div>
 
@@ -788,21 +794,22 @@
     var expAccts = (refs.accounts || []).filter(function (a) { return a.classification === 'Expense' || /expense|cost of goods/i.test(a.type || ''); });
     return '<div class="ws-row" data-lrow="' + i + '" style="gap:8px;flex-wrap:wrap;"><select data-l="accountId" style="flex:2;min-width:140px;border:1px solid var(--chrome-mute);border-radius:7px;padding:7px;">' + txOpt(expAccts.length ? expAccts : refs.accounts, ln.accountId) + '</select>' + desc + amt + rm + '</div>';
   }
-  function openTxnForm(entity, edit) {
+  function openTxnForm(entity, edit, seed) {
     _txnEdit = edit || null;
     var host = document.getElementById('qboWriteForm'); if (!host) return;
     host.innerHTML = '<div style="color:var(--muted);">Loading QuickBooks lists…</div>';
     loadQboRefs(function (refs) {
       var pre = (edit && edit.entity) || {};
       var today = new Date().toISOString().slice(0, 10);
+      var partyVal = (entity === 'invoice' ? (pre.CustomerRef && pre.CustomerRef.value) : (pre.VendorRef && pre.VendorRef.value)) || (seed && seed.party) || '';
       var html = '<div style="border:1px solid var(--chrome-mute);border-radius:10px;padding:14px;">' +
         '<div style="font-weight:700;margin-bottom:10px;">' + (edit ? 'Edit ' : 'New ') + esc(entity) + (edit && edit.docNumber ? (' #' + esc(edit.docNumber)) : '') + '</div>';
       if (entity === 'invoice' || entity === 'bill') {
         var who = entity === 'invoice'
-          ? '<label class="full">Customer<select id="tx_party">' + txOpt(refs.customers, pre.CustomerRef && pre.CustomerRef.value) + '</select></label>'
-          : '<label class="full">Vendor<select id="tx_party">' + txOpt(refs.vendors, pre.VendorRef && pre.VendorRef.value) + '</select></label>';
+          ? '<label class="full">Customer<select id="tx_party">' + txOpt(refs.customers, partyVal) + '</select></label>'
+          : '<label class="full">Vendor<select id="tx_party">' + txOpt(refs.vendors, partyVal) + '</select></label>';
         html += '<div class="ws-form" style="margin-bottom:10px;">' + who +
-          '<label>Date<input type="date" id="tx_date" value="' + esc(pre.TxnDate || today) + '" /></label>' +
+          '<label>Date<input type="date" id="tx_date" value="' + esc(pre.TxnDate || (seed && seed.date) || today) + '" /></label>' +
           '<label>Due date<input type="date" id="tx_due" value="' + esc(pre.DueDate || '') + '" /></label></div>' +
           '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Line items</div><div id="tx_lines"></div>' +
           '<button class="btn btn-ghost" id="tx_addline" type="button" style="margin-top:6px;font-size:12px;">+ Add line</button>';
@@ -811,7 +818,7 @@
         html += '<div class="ws-form" style="margin-bottom:10px;">' +
           '<label class="full">Customer<select id="tx_party">' + txOpt(refs.customers, pre.CustomerRef && pre.CustomerRef.value) + '</select></label>' +
           '<label>Amount<input id="tx_amount" value="' + esc(pre.TotalAmt || '') + '" style="text-align:right;" /></label>' +
-          '<label>Date<input type="date" id="tx_date" value="' + esc(pre.TxnDate || today) + '" /></label>' +
+          '<label>Date<input type="date" id="tx_date" value="' + esc(pre.TxnDate || (seed && seed.date) || today) + '" /></label>' +
           '<label class="full">Deposit to (optional)<select id="tx_deposit">' + txOpt(bankAccts.length ? bankAccts : refs.accounts, '') + '</select></label>' +
           '<label class="full">Apply to open invoice Id (optional)<input id="tx_invoiceId" placeholder="QBO invoice Id" /></label></div>';
       }
@@ -824,6 +831,7 @@
           if (entity === 'invoice' && l.DetailType === 'SalesItemLineDetail') draft.push({ itemId: (l.SalesItemLineDetail && l.SalesItemLineDetail.ItemRef && l.SalesItemLineDetail.ItemRef.value) || '', desc: l.Description || '', amount: l.Amount || '' });
           else if (entity === 'bill' && l.DetailType === 'AccountBasedExpenseLineDetail') draft.push({ accountId: (l.AccountBasedExpenseLineDetail && l.AccountBasedExpenseLineDetail.AccountRef && l.AccountBasedExpenseLineDetail.AccountRef.value) || '', desc: l.Description || '', amount: l.Amount || '' });
         });
+        if (!draft.length && seed && seed.lines && seed.lines.length) draft = seed.lines.map(function (l) { return { desc: l.desc || '', amount: l.amount || '', accountId: l.accountId || '', itemId: l.itemId || '' }; });
         if (!draft.length) draft.push({});
         function paintLines() {
           linesEl.innerHTML = draft.map(function (ln, i) { return txnLineRow(entity, refs, ln, i); }).join('');
@@ -871,6 +879,92 @@
   function wireTxEdit(out, data) {
     if (!data || !data.editable) return;
     out.querySelectorAll('[data-txedit]').forEach(function (b) { b.onclick = function () { editTxn(data.editable, b.getAttribute('data-txedit')); }; });
+  }
+
+  /* ----- Add master records (customers, vendors, items, accounts) ----- */
+  var ACCOUNT_TYPES = ['Expense', 'Income', 'Bank', 'Accounts Receivable', 'Accounts Payable', 'Credit Card', 'Other Current Asset', 'Fixed Asset', 'Other Asset', 'Other Current Liability', 'Long Term Liability', 'Equity', 'Cost of Goods Sold', 'Other Income', 'Other Expense'];
+  function openEntityForm(entity, onCreated) {
+    var host = document.getElementById('qboWriteForm'); if (!host) return;
+    host.innerHTML = '<div style="color:var(--muted);">Loading…</div>';
+    loadQboRefs(function (refs) {
+      var html = '<div style="border:1px solid var(--chrome-mute);border-radius:10px;padding:14px;"><div style="font-weight:700;margin-bottom:10px;">New ' + esc(entity) + '</div><div class="ws-form">';
+      if (entity === 'customer' || entity === 'vendor') {
+        html += '<label class="full">Name<input id="en_displayName" placeholder="' + (entity === 'customer' ? 'Customer' : 'Vendor') + ' name" /></label>' +
+          '<label>Company<input id="en_companyName" /></label><label>Email<input id="en_email" /></label><label>Phone<input id="en_phone" /></label>';
+      } else if (entity === 'account') {
+        html += '<label class="full">Account name<input id="en_name" /></label>' +
+          '<label class="full">Account type<select id="en_accountType">' + ACCOUNT_TYPES.map(function (t) { return '<option value="' + esc(t) + '"' + (t === 'Expense' ? ' selected' : '') + '>' + esc(t) + '</option>'; }).join('') + '</select></label>';
+      } else if (entity === 'item') {
+        var income = (refs.accounts || []).filter(function (a) { return /income/i.test(a.type || ''); });
+        html += '<label class="full">Item name<input id="en_name" /></label>' +
+          '<label>Type<select id="en_itemType"><option value="Service">Service</option><option value="NonInventory">Non-inventory</option></select></label>' +
+          '<label>Unit price<input id="en_unitPrice" /></label>' +
+          '<label class="full">Income account<select id="en_incomeAccountId">' + txOpt(income.length ? income : refs.accounts, '') + '</select></label>';
+      }
+      html += '</div><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;"><button class="btn btn-ghost" id="en_cancel" type="button">Cancel</button><button class="btn btn-primary" id="en_save" type="button">Create in QuickBooks</button></div></div>';
+      host.innerHTML = html;
+      document.getElementById('en_cancel').onclick = function () { host.innerHTML = ''; };
+      document.getElementById('en_save').onclick = function () { submitEntity(entity, onCreated); };
+    });
+  }
+  function submitEntity(entity, onCreated) {
+    var fields = {};
+    if (entity === 'customer' || entity === 'vendor') {
+      fields.displayName = (document.getElementById('en_displayName').value || '').trim();
+      fields.companyName = document.getElementById('en_companyName').value || '';
+      fields.email = document.getElementById('en_email').value || '';
+      fields.phone = document.getElementById('en_phone').value || '';
+      if (!fields.displayName) { (window.bccNotify || alert)('Name required.', 'warn'); return; }
+    } else if (entity === 'account') {
+      fields.name = (document.getElementById('en_name').value || '').trim();
+      fields.accountType = document.getElementById('en_accountType').value;
+      if (!fields.name) { (window.bccNotify || alert)('Account name required.', 'warn'); return; }
+    } else if (entity === 'item') {
+      fields.name = (document.getElementById('en_name').value || '').trim();
+      fields.itemType = document.getElementById('en_itemType').value;
+      fields.unitPrice = document.getElementById('en_unitPrice').value || '';
+      fields.incomeAccountId = document.getElementById('en_incomeAccountId').value || '';
+      if (!fields.name) { (window.bccNotify || alert)('Item name required.', 'warn'); return; }
+      if (!fields.incomeAccountId) { (window.bccNotify || alert)('Pick an income account.', 'warn'); return; }
+    }
+    var btn = document.getElementById('en_save'); var ot = btn.textContent; btn.disabled = true; btn.textContent = 'Creating…';
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/write', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ entity: entity, op: 'create', fields: fields }) })
+      .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error(resp.error || 'create failed');
+        if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: currentRealm, entity: entity, op: 'create', id: resp.id } });
+        if (window.bccNotifySaved) window.bccNotifySaved(entity.charAt(0).toUpperCase() + entity.slice(1) + ' added to QuickBooks.');
+        _qboRefs = null; // refresh dropdown cache so new record appears
+        document.getElementById('qboWriteForm').innerHTML = '';
+        if (onCreated) loadQboRefs(function () { onCreated(resp.id); });
+      })
+      .catch(function (e) { btn.disabled = false; btn.textContent = ot; (window.bccNotify || alert)('QuickBooks rejected it: ' + e.message, 'error', 7000); });
+  }
+
+  /* ----- AI receipt/invoice capture ----- */
+  function scanReceipt(file) {
+    if (file.size > 12 * 1024 * 1024) { (window.bccNotify || alert)('File too large (max 12 MB).', 'warn'); return; }
+    var host = document.getElementById('qboWriteForm');
+    if (host) host.innerHTML = '<div style="padding:14px;color:var(--muted);">📷 Reading “' + esc(file.name) + '” with AI…</div>';
+    var fd = new FormData(); fd.append('file', file);
+    fetch('/api/ai/extract-receipt', { method: 'POST', credentials: 'include', body: fd })
+      .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
+      .then(function (resp) {
+        if (resp && resp.needsKey) { if (host) host.innerHTML = '<div style="padding:12px;background:#fbf6ec;border-radius:8px;font-size:13px;">AI capture isn’t configured yet. An admin needs to add an <strong>ANTHROPIC_API_KEY</strong> to the app settings (Azure portal → Static Web App → Configuration). Once added, scanning will auto-fill transactions.</div>'; return; }
+        if (!resp || !resp.ok) throw new Error((resp && resp.error) || 'extraction failed');
+        var d = resp.data || {};
+        loadQboRefs(function (refs) {
+          var vmatch = '';
+          var vn = (d.vendorName || '').toLowerCase().trim();
+          if (vn) { var hit = (refs.vendors || []).find(function (v) { return (v.name || '').toLowerCase() === vn || (v.name || '').toLowerCase().indexOf(vn) >= 0 || vn.indexOf((v.name || '').toLowerCase()) >= 0; }); if (hit) vmatch = hit.id; }
+          var lines = (d.lineItems && d.lineItems.length) ? d.lineItems.map(function (li) { return { desc: li.description || '', amount: li.amount != null ? li.amount : '' }; }) : [{ desc: d.suggestedCategory || (d.vendorName ? ('Purchase — ' + d.vendorName) : 'Expense'), amount: d.total != null ? d.total : '' }];
+          openTxnForm('bill', null, { party: vmatch, date: d.date || '', lines: lines });
+          var tot = (d.total != null ? ('$' + Number(d.total).toLocaleString()) : '');
+          if (vmatch) { if (window.bccNotifySaved) window.bccNotifySaved('Filled from ' + (d.docType || 'document') + (tot ? (' · ' + tot) : '') + '. Pick the expense account(s) and post.'); }
+          else { (window.bccNotify || alert)('Filled from receipt' + (tot ? (' · ' + tot) : '') + (d.vendorName ? ('. Vendor “' + d.vendorName + '” isn’t in QuickBooks — pick one or use + Vendor.') : '. Pick a vendor.'), 'info', 8000); }
+        });
+      })
+      .catch(function (e) { if (host) host.innerHTML = ''; (window.bccNotify || alert)('Could not read the document: ' + e.message, 'error', 7000); });
   }
 
   /* ===== Per-client workspace (tabs) ===== */
@@ -1504,6 +1598,14 @@
     document.querySelectorAll('#qboWrite button[data-tx]').forEach(function (b) {
       b.addEventListener('click', function () { openTxnForm(b.getAttribute('data-tx')); });
     });
+    document.querySelectorAll('#qboWrite button[data-add]').forEach(function (b) {
+      b.addEventListener('click', function () { openEntityForm(b.getAttribute('data-add')); });
+    });
+    var scanBtn = document.querySelector('#qboWrite button[data-scan]'); var scanInput = document.getElementById('scanInput');
+    if (scanBtn && scanInput) {
+      scanBtn.addEventListener('click', function () { scanInput.value = ''; scanInput.click(); });
+      scanInput.addEventListener('change', function () { var f = scanInput.files && scanInput.files[0]; if (f) scanReceipt(f); });
+    }
     ['qboMethod', 'qboPeriod', 'qboFrom', 'qboTo'].forEach(function (id) {
       var el = document.getElementById(id);
       if (el) el.addEventListener('change', function () {
