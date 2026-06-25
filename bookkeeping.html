@@ -188,6 +188,7 @@
       <button class="ws-tab" data-tab="files" type="button">Files</button>
       <button class="ws-tab" data-tab="tasks" type="button">Tasks</button>
       <button class="ws-tab" data-tab="time" type="button">Time</button>
+      <button class="ws-tab" data-tab="payroll" type="button">Certified payroll</button>
       <button class="ws-tab" data-tab="access" type="button">Team &amp; access</button>
     </div>
   </div>
@@ -301,6 +302,9 @@
   <div class="card" id="tab-time" style="display:none; margin-top:14px;">
     <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Time tracking</h3>
     <div id="time-body"></div>
+  </div>
+  <div class="card" id="tab-payroll" style="display:none; margin-top:14px;">
+    <div id="payroll-body"></div>
   </div>
   <div class="card" id="tab-access" style="display:none; margin-top:14px;">
     <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Team &amp; access</h3>
@@ -766,7 +770,7 @@
       tabbar.querySelectorAll('[data-tab]').forEach(function (b) { b.classList.toggle('active', b.dataset.tab === currentTab); });
     }
     setFinVisible(fin);
-    ['info','files','tasks','time','access'].forEach(function (t) {
+    ['info','files','tasks','time','payroll','access'].forEach(function (t) {
       var el = document.getElementById('tab-' + t); if (el) el.style.display = (currentRealm && currentTab === t) ? '' : 'none';
     });
     if (currentRealm && currentTab !== 'financials') renderTabContent(currentTab);
@@ -776,6 +780,7 @@
     else if (tab === 'files') renderFiles();
     else if (tab === 'tasks') renderTasks();
     else if (tab === 'time') renderTime();
+    else if (tab === 'payroll') renderPayroll();
     else if (tab === 'access') renderAccess();
   }
 
@@ -955,6 +960,268 @@
       updateCompany(currentRealm, { allowedUserUpns: upns, enabled: document.getElementById('acc_enabled').checked });
       if (window.bccNotifySaved) window.bccNotifySaved('Access updated.');
     };
+  }
+
+  /* ---- Certified payroll (Minnesota DLI format) ---- */
+  var cprEditingId = null;   // null = list view; else editing this report id
+  var cprDraft = null;       // in-memory report being edited
+  var DOW = ['Su','M','T','W','Th','F','S'];
+
+  function cprPrefix() { return 'bcc-cpr-' + currentRealm + '-'; }
+  function allCpr() { var out = []; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (!k || k.indexOf(cprPrefix()) !== 0) continue; try { var r = JSON.parse(localStorage.getItem(k)); if (r && r.id) out.push(r); } catch (e) {} } return out; }
+  function cnum(v) { var n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')); return isNaN(n) ? 0 : n; }
+  function money(v) { var n = cnum(v); return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function sumArr(a) { return (a || []).reduce(function (s, x) { return s + cnum(x); }, 0); }
+  function computeEmp(e) {
+    var stH = sumArr(e.st), otH = sumArr(e.ot), totalHrs = stH + otH;
+    var grossJob = stH * cnum(e.stRate) + otH * cnum(e.otRate);
+    var ded = cnum(e.dedFica) + cnum(e.dedFed) + cnum(e.dedState) + cnum(e.dedOther1) + cnum(e.dedOther2);
+    var grossPeriod = cnum(e.grossThisPeriod) || grossJob;
+    return { stH: stH, otH: otH, totalHrs: totalHrs, grossJob: grossJob, ded: ded, grossPeriod: grossPeriod, net: grossPeriod - ded };
+  }
+  function blankEmp() { return { name:'', address:'', idNumber:'', exemptions:'', laborCode:'', classification:'', apprentice:false, st:['','','','','','',''], ot:['','','','','','',''], stRate:'', otRate:'', grossThisPeriod:'', dedFica:'', dedFed:'', dedState:'', dedOther1Label:'', dedOther1:'', dedOther2Label:'', dedOther2:'' }; }
+  function weekDates(weekStart) {
+    var out = []; if (!weekStart) return ['','','','','','',''];
+    var d = new Date(weekStart + 'T00:00:00');
+    for (var i = 0; i < 7; i++) { var x = new Date(d); x.setDate(d.getDate() + i); out.push((x.getMonth()+1) + '/' + x.getDate()); }
+    return out;
+  }
+
+  function renderPayroll() {
+    var body = document.getElementById('payroll-body'); if (!body) return;
+    if (cprEditingId !== null) { renderCprEditor(body); return; }
+    var reports = allCpr().sort(function (a, b) { return (cnum(b.payrollNo) - cnum(a.payrollNo)) || (b.updatedAt || '').localeCompare(a.updatedAt || ''); });
+    var head = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;">' +
+      '<h3 style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;margin:0;">Certified payroll <span style="color:var(--muted);font-weight:400;font-size:12px;">· Minnesota DLI format</span></h3>' +
+      '<button class="btn btn-primary" id="cpr_new" type="button">+ New payroll report</button></div>';
+    var list = reports.length ? ('<table><thead><tr><th>Payroll #</th><th>Pay period end</th><th>Project</th><th class="num">Employees</th><th>Updated</th><th></th></tr></thead><tbody>' + reports.map(function (r) {
+      var when = r.updatedAt ? new Date(r.updatedAt).toLocaleDateString([], { month:'short', day:'numeric' }) : '';
+      return '<tr><td><strong>' + esc(r.payrollNo || '—') + '</strong>' + (r.isFinal ? ' <span style="font-size:10px;color:var(--gold-deep);font-weight:700;">FINAL</span>' : '') + '</td>' +
+        '<td>' + esc(r.payPeriodEnd || '—') + '</td><td>' + esc(r.projectName || '—') + '</td>' +
+        '<td class="num">' + ((r.employees || []).length) + '</td><td style="color:var(--muted);font-size:12.5px;">' + esc(when) + '</td>' +
+        '<td style="text-align:right;white-space:nowrap;"><button class="btn btn-ghost" data-cpr-open="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;">Open</button> ' +
+        '<button class="btn btn-ghost" data-cpr-print="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;">Print</button> ' +
+        '<button class="btn btn-ghost" data-cpr-del="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;">Delete</button></td></tr>';
+    }).join('') + '</tbody></table>') : '<div style="color:var(--muted);padding:10px 0;">No payroll reports yet. Click <strong>+ New payroll report</strong> to create one.</div>';
+    body.innerHTML = head + list;
+    document.getElementById('cpr_new').onclick = cprNew;
+    body.querySelectorAll('[data-cpr-open]').forEach(function (b) { b.onclick = function () { cprEditingId = b.getAttribute('data-cpr-open'); try { cprDraft = JSON.parse(localStorage.getItem(cprEditingId)); } catch (e) { cprDraft = null; } if (!cprDraft) { cprEditingId = null; return; } if (!cprDraft.employees) cprDraft.employees = []; renderPayroll(); }; });
+    body.querySelectorAll('[data-cpr-print]').forEach(function (b) { b.onclick = function () { var r; try { r = JSON.parse(localStorage.getItem(b.getAttribute('data-cpr-print'))); } catch (e) {} if (r) printCpr(r); }; });
+    body.querySelectorAll('[data-cpr-del]').forEach(function (b) { b.onclick = function () { if (!confirm('Delete this payroll report?')) return; localStorage.removeItem(b.getAttribute('data-cpr-del')); if (window.bccAudit) window.bccAudit('cpr-delete', { key: b.getAttribute('data-cpr-del'), path:'/bookkeeping.html' }); renderPayroll(); }; });
+  }
+
+  function cprNew() {
+    var info = {}; try { info = JSON.parse(localStorage.getItem('bcc-client-info-' + currentRealm)) || {}; } catch (e) {}
+    var reports = allCpr(); var maxNo = 0; reports.forEach(function (r) { maxNo = Math.max(maxNo, cnum(r.payrollNo)); });
+    cprDraft = {
+      id: cprPrefix() + uid2(), tenantId: 'blue-collar-coach', docType: 'cpr', realmId: currentRealm,
+      contractorName: info.legalName || companyName(currentRealm) || '', contractorAddress: info.address || '', contractorPhone: info.phone || '',
+      primeName: '', primeAddress: '', primePhone: '', contractName: '', contractNumber: '',
+      payPeriodEnd: '', projectName: '', payrollNo: String(maxNo + 1), isFinal: false, weekStart: '',
+      contractingAuthority: '', generalContractor: '', typeOfWork: '',
+      socName: '', socTitle: '', socBusiness: info.legalName || companyName(currentRealm) || '', socDate: new Date().toISOString().slice(0,10),
+      socCommence: '', socEnd: '', fringe: '', fringeExceptions: '', fringePrograms: '',
+      employees: [ blankEmp() ], createdAt: nowIso(), updatedAt: nowIso()
+    };
+    cprEditingId = cprDraft.id; renderPayroll();
+  }
+
+  function txt(label, field, ph, wide) { return '<label' + (wide ? ' class="full"' : '') + '>' + esc(label) + '<input data-cf="' + field + '" value="' + esc(cprDraft[field] || '') + '"' + (ph ? ' placeholder="' + esc(ph) + '"' : '') + ' /></label>'; }
+
+  function renderCprEditor(body) {
+    var wd = weekDates(cprDraft.weekStart);
+    var header = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;">' +
+      '<h3 style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;margin:0;">Payroll #' + esc(cprDraft.payrollNo || '') + ' — ' + esc(companyName(currentRealm)) + '</h3>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-ghost" id="cpr_back" type="button">← Back</button>' +
+      '<button class="btn btn-ghost" id="cpr_print" type="button">Print MN form</button>' +
+      '<button class="btn btn-primary" id="cpr_save" type="button">Save</button></div></div>';
+
+    var hdr = '<div class="ws-form" style="margin-bottom:14px;">' +
+      txt('Contractor / subcontractor name', 'contractorName') +
+      txt('Contractor address & phone', 'contractorAddress') +
+      txt('Prime contractor name', 'primeName') +
+      txt('Prime contractor address & phone', 'primeAddress') +
+      txt('Contract or grant name', 'contractName') +
+      txt('Contract or grant number', 'contractNumber') +
+      '<label>Pay period end date<input type="date" data-cf="payPeriodEnd" value="' + esc(cprDraft.payPeriodEnd || '') + '" /></label>' +
+      '<label>Week starting (Sunday)<input type="date" data-cf="weekStart" value="' + esc(cprDraft.weekStart || '') + '" /></label>' +
+      txt('Project name and location', 'projectName', '', true) +
+      '<label>Payroll #<input data-cf="payrollNo" value="' + esc(cprDraft.payrollNo || '') + '" /></label>' +
+      '<label style="flex-direction:row;align-items:center;gap:8px;text-transform:none;font-size:13px;"><input type="checkbox" data-cf="isFinal" ' + (cprDraft.isFinal ? 'checked' : '') + ' /> Mark as FINAL report</label>' +
+      '</div>';
+
+    var empsHtml = '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:6px 0 8px;">Employees</div>' +
+      (cprDraft.employees || []).map(function (e, i) { return cprEmpCard(e, i, wd); }).join('') +
+      '<button class="btn btn-ghost" id="cpr_addemp" type="button" style="margin-top:6px;">+ Add employee</button>';
+
+    var soc = '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:18px 0 8px;">Statement of compliance</div>' +
+      '<div class="ws-form" style="margin-bottom:14px;">' +
+      txt('Signer name', 'socName') + txt('Signer title', 'socTitle') +
+      txt('Business name', 'socBusiness') +
+      '<label>Statement date<input type="date" data-cf="socDate" value="' + esc(cprDraft.socDate || '') + '" /></label>' +
+      '<label>Payroll period commencing<input type="date" data-cf="socCommence" value="' + esc(cprDraft.socCommence || '') + '" /></label>' +
+      '<label>Payroll period ending<input type="date" data-cf="socEnd" value="' + esc(cprDraft.socEnd || '') + '" /></label>' +
+      txt('Contracting authority', 'contractingAuthority') + txt('Type of work', 'typeOfWork') +
+      '<label class="full">Fringe benefits<select data-cf="fringe"><option value="">— select —</option><option value="plans"' + (cprDraft.fringe==='plans'?' selected':'') + '>(a) Paid into approved plans/funds/programs</option><option value="cash"' + (cprDraft.fringe==='cash'?' selected':'') + '>(b) Paid in cash to employees</option></select></label>' +
+      '<label class="full">Fringe exceptions (employees not receiving fringe)<textarea data-cf="fringeExceptions" rows="2">' + esc(cprDraft.fringeExceptions || '') + '</textarea></label>' +
+      '<label class="full">Benefit program details (plan, $/hr, administrator)<textarea data-cf="fringePrograms" rows="2">' + esc(cprDraft.fringePrograms || '') + '</textarea></label>' +
+      '</div>';
+
+    body.innerHTML = header + hdr + empsHtml + soc +
+      '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px;"><button class="btn btn-ghost" id="cpr_back2" type="button">← Back</button><button class="btn btn-primary" id="cpr_save2" type="button">Save</button></div>';
+
+    // wiring
+    body.querySelectorAll('[data-cf]').forEach(function (el) {
+      el.addEventListener('input', cprCollectField);
+      if (el.type === 'checkbox' || el.tagName === 'SELECT') el.addEventListener('change', cprCollectField);
+    });
+    body.querySelectorAll('[data-emp]').forEach(function (el) { el.addEventListener('input', cprEmpField); });
+    var addb = document.getElementById('cpr_addemp'); if (addb) addb.onclick = function () { cprDraft.employees.push(blankEmp()); renderPayroll(); };
+    document.getElementById('cpr_back').onclick = document.getElementById('cpr_back2').onclick = function () { cprEditingId = null; cprDraft = null; renderPayroll(); };
+    document.getElementById('cpr_save').onclick = document.getElementById('cpr_save2').onclick = cprSave;
+    document.getElementById('cpr_print').onclick = function () { cprSave(true); printCpr(cprDraft); };
+  }
+
+  function cprEmpCard(e, i, wd) {
+    var c = computeEmp(e);
+    function dayCells(arr, label) {
+      return '<td style="font-weight:700;color:var(--muted);font-size:11px;">' + label + '</td>' + DOW.map(function (d, di) {
+        return '<td><input data-emp="' + i + '" data-arr="' + (label === 'OT' ? 'ot' : 'st') + '" data-d="' + di + '" value="' + esc(arr[di] || '') + '" style="width:42px;text-align:center;border:1px solid var(--chrome-mute);border-radius:5px;padding:5px 2px;font-size:12.5px;" /></td>';
+      }).join('');
+    }
+    var dayHead = '<td></td>' + wd.map(function (x, di) { return '<td style="font-size:10px;color:var(--muted);text-align:center;">' + DOW[di] + '<br>' + esc(x) + '</td>'; }).join('');
+    return '<div style="border:1px solid var(--chrome-mute);border-radius:10px;padding:12px;margin-bottom:10px;">' +
+      '<div class="ws-form" style="margin-bottom:8px;">' +
+        '<label class="full">Employee name<input data-emp="' + i + '" data-f="name" value="' + esc(e.name || '') + '" /></label>' +
+        '<label>Address<input data-emp="' + i + '" data-f="address" value="' + esc(e.address || '') + '" /></label>' +
+        '<label>Identifying # (not SSN)<input data-emp="' + i + '" data-f="idNumber" value="' + esc(e.idNumber || '') + '" /></label>' +
+        '<label># exemptions<input data-emp="' + i + '" data-f="exemptions" value="' + esc(e.exemptions || '') + '" /></label>' +
+        '<label>Labor code<input data-emp="' + i + '" data-f="laborCode" value="' + esc(e.laborCode || '') + '" placeholder="e.g. 101" /></label>' +
+        '<label>Classification<input data-emp="' + i + '" data-f="classification" value="' + esc(e.classification || '') + '" placeholder="e.g. General Laborer" /></label>' +
+        '<label style="flex-direction:row;align-items:center;gap:6px;text-transform:none;font-size:13px;"><input type="checkbox" data-emp="' + i + '" data-f="apprentice" ' + (e.apprentice ? 'checked' : '') + ' /> Apprentice</label>' +
+      '</div>' +
+      '<div style="overflow-x:auto;margin-bottom:8px;"><table style="border-collapse:collapse;"><tbody>' +
+        '<tr>' + dayHead + '</tr>' +
+        '<tr>' + dayCells(e.st, 'ST') + '</tr>' +
+        '<tr>' + dayCells(e.ot, 'OT') + '</tr>' +
+      '</tbody></table></div>' +
+      '<div class="ws-form">' +
+        '<label>ST rate<input data-emp="' + i + '" data-f="stRate" value="' + esc(e.stRate || '') + '" /></label>' +
+        '<label>OT rate<input data-emp="' + i + '" data-f="otRate" value="' + esc(e.otRate || '') + '" /></label>' +
+        '<label>Gross this pay period<input data-emp="' + i + '" data-f="grossThisPeriod" value="' + esc(e.grossThisPeriod || '') + '" placeholder="incl. off-site" /></label>' +
+        '<label>FICA<input data-emp="' + i + '" data-f="dedFica" value="' + esc(e.dedFica || '') + '" /></label>' +
+        '<label>Federal tax<input data-emp="' + i + '" data-f="dedFed" value="' + esc(e.dedFed || '') + '" /></label>' +
+        '<label>State tax<input data-emp="' + i + '" data-f="dedState" value="' + esc(e.dedState || '') + '" /></label>' +
+        '<label>Other 1 label<input data-emp="' + i + '" data-f="dedOther1Label" value="' + esc(e.dedOther1Label || '') + '" /></label>' +
+        '<label>Other 1 amt<input data-emp="' + i + '" data-f="dedOther1" value="' + esc(e.dedOther1 || '') + '" /></label>' +
+        '<label>Other 2 label<input data-emp="' + i + '" data-f="dedOther2Label" value="' + esc(e.dedOther2Label || '') + '" /></label>' +
+        '<label>Other 2 amt<input data-emp="' + i + '" data-f="dedOther2" value="' + esc(e.dedOther2 || '') + '" /></label>' +
+      '</div>' +
+      '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;font-size:12.5px;color:var(--muted);" data-calcrow="' + i + '">' +
+        '<span>Total hrs: <strong data-calc="hrs">' + c.totalHrs.toFixed(2) + '</strong></span>' +
+        '<span>Gross this job: <strong data-calc="job">$' + money(c.grossJob) + '</strong></span>' +
+        '<span>Total deductions: <strong data-calc="ded">$' + money(c.ded) + '</strong></span>' +
+        '<span>Net wages: <strong data-calc="net">$' + money(c.net) + '</strong></span>' +
+        '<span style="flex:1;"></span><button class="btn btn-ghost" data-empdel="' + i + '" type="button" style="font-size:11px;min-height:26px;">Remove employee</button>' +
+      '</div></div>';
+  }
+
+  function cprCollectField(ev) {
+    var el = ev.target; var f = el.getAttribute('data-cf');
+    cprDraft[f] = (el.type === 'checkbox') ? el.checked : el.value;
+    if (f === 'weekStart') renderPayroll(); // refresh day headers
+  }
+  function cprEmpField(ev) {
+    var el = ev.target; var i = +el.getAttribute('data-emp'); var e = cprDraft.employees[i]; if (!e) return;
+    if (el.getAttribute('data-arr')) { e[el.getAttribute('data-arr')][+el.getAttribute('data-d')] = el.value; }
+    else { var f = el.getAttribute('data-f'); e[f] = (el.type === 'checkbox') ? el.checked : el.value; }
+    // repaint computed row for this employee
+    var c = computeEmp(e);
+    var row = document.querySelector('[data-calcrow="' + i + '"]'); if (row) {
+      row.querySelector('[data-calc=hrs]').textContent = c.totalHrs.toFixed(2);
+      row.querySelector('[data-calc=job]').textContent = '$' + money(c.grossJob);
+      row.querySelector('[data-calc=ded]').textContent = '$' + money(c.ded);
+      row.querySelector('[data-calc=net]').textContent = '$' + money(c.net);
+    }
+  }
+  // delegated remove-employee (cards are re-rendered, so bind on body each render)
+  document.getElementById('payroll-body') && document.getElementById('payroll-body').addEventListener('click', function (ev) {
+    var b = ev.target.closest && ev.target.closest('[data-empdel]'); if (!b) return;
+    var i = +b.getAttribute('data-empdel'); if (!cprDraft || !cprDraft.employees) return;
+    if (cprDraft.employees.length <= 1) { (window.bccNotify || alert)('At least one employee row is required.', 'warn'); return; }
+    cprDraft.employees.splice(i, 1); renderPayroll();
+  });
+
+  function cprSave(silent) {
+    if (!cprDraft) return;
+    cprDraft.updatedAt = nowIso(); cprDraft.updatedBy = myUpn();
+    localStorage.setItem(cprDraft.id, JSON.stringify(cprDraft));
+    if (window.bccAudit) window.bccAudit('cpr-save', { key: cprDraft.id, path:'/bookkeeping.html', meta:{ realmId: currentRealm, payrollNo: cprDraft.payrollNo } });
+    if (!silent && window.bccNotifySaved) window.bccNotifySaved('Payroll report saved.');
+  }
+
+  function printCpr(r) {
+    var wd = weekDates(r.weekStart);
+    var totals = { hrs:0, job:0, gp:0, ded:0, net:0 };
+    var empRows = (r.employees || []).map(function (e) {
+      var c = computeEmp(e); totals.hrs += c.totalHrs; totals.job += c.grossJob; totals.gp += c.grossPeriod; totals.ded += c.ded; totals.net += c.net;
+      function dr(arr) { return DOW.map(function (d, di) { return '<td class="d">' + esc(arr[di] || '') + '</td>'; }).join(''); }
+      var nameCell = '<strong>' + esc(e.name || '') + '</strong>' + (e.address ? '<br>' + esc(e.address) : '') + (e.idNumber ? '<br>' + esc(e.idNumber) : '');
+      var cls = esc(e.classification || '') + (e.apprentice ? ' (app)' : '') + (e.laborCode ? '<br><span class="mut">code ' + esc(e.laborCode) + '</span>' : '');
+      return '<tr>' +
+        '<td rowspan="2" class="l">' + nameCell + '</td>' +
+        '<td rowspan="2" class="c">' + esc(e.exemptions || '') + '</td>' +
+        '<td rowspan="2" class="l">' + cls + '</td>' +
+        '<td class="c b">ST</td>' + dr(e.st) + '<td class="n">' + c.stH.toFixed(2) + '</td><td class="n">' + (e.stRate ? money(e.stRate) : '') + '</td>' +
+        '<td rowspan="2" class="n">' + money(c.grossJob) + '</td><td rowspan="2" class="n">' + money(c.grossPeriod) + '</td>' +
+        '<td rowspan="2" class="n">' + (e.dedFica ? money(e.dedFica) : '') + '</td><td rowspan="2" class="n">' + (e.dedFed ? money(e.dedFed) : '') + '</td><td rowspan="2" class="n">' + (e.dedState ? money(e.dedState) : '') + '</td>' +
+        '<td rowspan="2" class="n">' + (e.dedOther1 ? money(e.dedOther1) : '') + '</td><td rowspan="2" class="n">' + (e.dedOther2 ? money(e.dedOther2) : '') + '</td>' +
+        '<td rowspan="2" class="n">' + money(c.ded) + '</td><td rowspan="2" class="n">' + money(c.net) + '</td></tr>' +
+        '<tr><td class="c b">OT</td>' + dr(e.ot) + '<td class="n">' + c.otH.toFixed(2) + '</td><td class="n">' + (e.otRate ? money(e.otRate) : '') + '</td></tr>';
+    }).join('');
+    var dayHead = wd.map(function (x, di) { return '<th>' + DOW[di] + '<br>' + esc(x) + '</th>'; }).join('');
+    var fringeLine = r.fringe === 'plans' ? '☒ (a) paid into approved plans/funds/programs &nbsp;&nbsp; ☐ (b) paid in cash'
+                  : r.fringe === 'cash' ? '☐ (a) approved plans &nbsp;&nbsp; ☒ (b) paid in cash to employees'
+                  : '☐ (a) approved plans &nbsp;&nbsp; ☐ (b) paid in cash';
+    var doc = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Certified Payroll #' + esc(r.payrollNo || '') + '</title><style>' +
+      '@page{size:landscape;margin:.4in;} *{box-sizing:border-box;} body{font-family:Arial,Helvetica,sans-serif;color:#000;font-size:10px;margin:0;padding:8px;}' +
+      'h1{font-size:14px;text-align:center;margin:0 0 6px;} .hdr{width:100%;border-collapse:collapse;margin-bottom:8px;font-size:10px;} .hdr td{border:1px solid #000;padding:3px 5px;vertical-align:top;} .hdr .k{font-weight:bold;background:#f0f0f0;white-space:nowrap;}' +
+      'table.grid{width:100%;border-collapse:collapse;font-size:8.5px;} table.grid th,table.grid td{border:1px solid #000;padding:2px 3px;text-align:center;} table.grid th{background:#f0f0f0;font-size:8px;}' +
+      'table.grid td.l{text-align:left;} table.grid td.n{text-align:right;} table.grid td.c{text-align:center;} td.b{font-weight:bold;background:#f7f7f7;} td.d{min-width:24px;} .mut{color:#444;font-weight:normal;}' +
+      '.soc{margin-top:14px;page-break-before:always;font-size:11px;line-height:1.5;} .soc h2{font-size:13px;text-align:center;} .soc .fld{border-bottom:1px solid #000;padding:0 6px;font-weight:bold;} .sig{margin-top:40px;} .tot td{font-weight:bold;background:#f7f7f7;}' +
+      '</style></head><body>' +
+      '<h1>Certified Payroll Form — Minnesota Department of Labor and Industry</h1>' +
+      '<table class="hdr"><tr>' +
+        '<td class="k">Contractor / subcontractor</td><td>' + esc(r.contractorName || '') + '<br>' + esc(r.contractorAddress || '') + '</td>' +
+        '<td class="k">Prime contractor</td><td>' + esc(r.primeName || '') + '<br>' + esc(r.primeAddress || '') + '</td>' +
+        '<td class="k">Payroll #</td><td>' + esc(r.payrollNo || '') + (r.isFinal ? ' (FINAL)' : '') + '</td></tr>' +
+      '<tr><td class="k">Contract/grant name & number</td><td>' + esc(r.contractName || '') + ' ' + esc(r.contractNumber || '') + '</td>' +
+        '<td class="k">Project name & location</td><td colspan="3">' + esc(r.projectName || '') + '</td></tr>' +
+      '<tr><td class="k">Pay period end date</td><td>' + esc(r.payPeriodEnd || '') + '</td>' +
+        '<td class="k">Contracting authority</td><td>' + esc(r.contractingAuthority || '') + '</td>' +
+        '<td class="k">Type of work</td><td>' + esc(r.typeOfWork || '') + '</td></tr></table>' +
+      '<table class="grid"><thead><tr>' +
+        '<th rowspan="2">Employee name,<br>address & ID #</th><th rowspan="2"># ex.</th><th rowspan="2">Labor code &<br>classification</th><th rowspan="2">OT/<br>ST</th>' +
+        dayHead + '<th rowspan="2">Total<br>hrs</th><th rowspan="2">Hrly<br>rate</th><th rowspan="2">Gross<br>this job</th><th rowspan="2">Gross<br>this pay<br>period</th>' +
+        '<th rowspan="2">FICA</th><th rowspan="2">Fed<br>tax</th><th rowspan="2">State<br>tax</th><th rowspan="2">Other</th><th rowspan="2">Other</th><th rowspan="2">Total<br>deduct.</th><th rowspan="2">Net<br>wages</th>' +
+      '</tr><tr></tr></thead><tbody>' + empRows +
+        '<tr class="tot"><td colspan="4" class="l">TOTALS</td><td colspan="7"></td><td class="n">' + totals.hrs.toFixed(2) + '</td><td></td><td class="n">' + money(totals.job) + '</td><td class="n">' + money(totals.gp) + '</td><td colspan="5"></td><td class="n">' + money(totals.ded) + '</td><td class="n">' + money(totals.net) + '</td></tr>' +
+      '</tbody></table>' +
+      '<div class="soc"><h2>Statement of Compliance — Minnesota Department of Labor and Industry</h2>' +
+        '<p>I, <span class="fld">' + esc(r.socName || '') + '</span> (name), <span class="fld">' + esc(r.socTitle || '') + '</span> (title), do hereby state:</p>' +
+        '<p>(1) That I pay or supervise the payment of the persons employed by <span class="fld">' + esc(r.socBusiness || r.contractorName || '') + '</span> on the <span class="fld">' + esc(r.projectName || '') + '</span> project; that during the payroll period commencing on the <span class="fld">' + esc(r.socCommence || '') + '</span> and ending the <span class="fld">' + esc(r.socEnd || '') + '</span>, all persons employed on said project have been paid the full weekly wages earned, that no rebates have been or will be made, and that no deductions have been made other than permissible deductions.</p>' +
+        '<p>(4) Fringe benefits: ' + fringeLine + '</p>' +
+        (r.fringeExceptions ? '<p>Exceptions: ' + esc(r.fringeExceptions) + '</p>' : '') +
+        (r.fringePrograms ? '<p>Benefit program details: ' + esc(r.fringePrograms) + '</p>' : '') +
+        '<div class="sig">Signature: ____________________________________ &nbsp;&nbsp;&nbsp; Date: <span class="fld">' + esc(r.socDate || '') + '</span><br><br>' +
+        'Name & title: <span class="fld">' + esc(r.socName || '') + (r.socTitle ? ', ' + esc(r.socTitle) : '') + '</span></div>' +
+        '<p style="font-size:8px;color:#444;margin-top:18px;">Pursuant to the Minnesota Government Data Practices Act, data on this form is public. Do not provide Social Security numbers. Willful falsification may subject the contractor to civil or criminal prosecution.</p>' +
+      '</div>' +
+      '<script>window.onload=function(){window.print();}<\/script></body></html>';
+    var w = window.open('', '_blank');
+    if (!w) { (window.bccNotify || alert)('Allow pop-ups to print the payroll form.', 'warn'); return; }
+    w.document.open(); w.document.write(doc); w.document.close();
+    if (window.bccAudit) window.bccAudit('cpr-print', { key: r.id, path:'/bookkeeping.html', meta:{ realmId: currentRealm, payrollNo: r.payrollNo } });
   }
 
   /* Tab bar wiring (elements are static; safe to bind now) */
