@@ -2339,6 +2339,23 @@ app.http('ai-extract-receipt', {
       const srcBlock = isPdf
         ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } }
         : { type: 'image', source: { type: 'base64', media_type: (/(png|jpe?g|webp|gif)/.test(mt) ? mt : 'image/jpeg'), data: b64 } };
+      // Realm-aware matching: feed the client's vendors + expense accounts so the
+      // model can pick the matching vendor Id and the best expense account Id.
+      let matchHint = '';
+      const realmId = (form.get('realmId') || '').toString();
+      if (realmId) {
+        try {
+          const ctx = await qboResolveAccess(request, realmId);
+          if (!ctx.err) {
+            const vendors = await ctx.queryAll('SELECT Id, DisplayName FROM Vendor WHERE Active = true');
+            const accts = await ctx.queryAll("SELECT Id, Name FROM Account WHERE Active = true AND AccountType IN ('Expense','Cost of Goods Sold','Other Expense')");
+            const vtxt = vendors.slice(0, 300).map(v => v.Id + ': ' + v.DisplayName).join('\n');
+            const atxt = accts.slice(0, 300).map(a => a.Id + ': ' + a.Name).join('\n');
+            matchHint = '\n\nExisting QuickBooks vendors (id: name):\n' + vtxt + '\n\nExpense accounts (id: name):\n' + atxt +
+              '\n\nIf the document vendor matches one of these vendors, set matchedVendorId to that exact id. Choose the single best-fitting expenseAccountId from the expense accounts above for categorizing this purchase.';
+          }
+        } catch (e) { /* matching is best-effort */ }
+      }
       const tool = {
         name: 'record_document',
         description: 'Record the structured data extracted from a receipt or invoice.',
@@ -2353,7 +2370,9 @@ app.http('ai-extract-receipt', {
             tax: { type: 'number' },
             total: { type: 'number' },
             lineItems: { type: 'array', items: { type: 'object', properties: { description: { type: 'string' }, amount: { type: 'number' }, quantity: { type: 'number' } } } },
-            suggestedCategory: { type: 'string', description: 'A likely expense category, e.g. Fuel, Office Supplies, Meals' }
+            suggestedCategory: { type: 'string', description: 'A likely expense category, e.g. Fuel, Office Supplies, Meals' },
+            matchedVendorId: { type: 'string', description: 'QuickBooks vendor Id if the document vendor matches one in the provided list; omit if no match' },
+            expenseAccountId: { type: 'string', description: 'Best-fit QuickBooks expense account Id from the provided list for categorizing this purchase; omit if unknown' }
           },
           required: ['docType', 'total']
         }
@@ -2364,7 +2383,7 @@ app.http('ai-extract-receipt', {
         headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
         body: JSON.stringify({
           model: model, max_tokens: 1024, tools: [tool], tool_choice: { type: 'tool', name: 'record_document' },
-          messages: [{ role: 'user', content: [srcBlock, { type: 'text', text: 'Extract the vendor, date (YYYY-MM-DD), subtotal, tax, total, currency, and individual line items from this document. Call record_document with the data.' }] }]
+          messages: [{ role: 'user', content: [srcBlock, { type: 'text', text: 'Extract the vendor, date (YYYY-MM-DD), subtotal, tax, total, currency, and individual line items from this document. Call record_document with the data.' + matchHint }] }]
         })
       });
       if (!r.ok) { const t = (await r.text().catch(() => '')).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'AI error ' + r.status, detail: t } }; }

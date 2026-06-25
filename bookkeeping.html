@@ -823,7 +823,11 @@
           '<label class="full">Apply to open invoice Id (optional)<input id="tx_invoiceId" placeholder="QBO invoice Id" /></label></div>';
       }
       html += '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;"><button class="btn btn-ghost" id="tx_cancel" type="button">Cancel</button><button class="btn btn-primary" id="tx_save" type="button">' + (edit ? 'Save changes' : 'Create') + '</button></div></div>';
-      host.innerHTML = html;
+      if (seed && seed.preview) {
+        host.innerHTML = '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;">' +
+          '<div style="flex:1 1 340px;min-width:300px;">' + html + '</div>' +
+          '<div style="flex:1 1 320px;min-width:280px;"><div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Scanned document</div>' + previewHtml(seed) + '</div></div>';
+      } else { host.innerHTML = html; }
       if (entity === 'invoice' || entity === 'bill') {
         var linesEl = document.getElementById('tx_lines');
         var draft = [];
@@ -942,29 +946,65 @@
   }
 
   /* ----- AI receipt/invoice capture ----- */
+  function isExpenseAcct(a) { return a && (a.classification === 'Expense' || /expense|cost of goods/i.test(a.type || '')); }
+  function previewHtml(seed) {
+    var src = seed.preview;
+    if (seed.previewType === 'pdf') return '<embed src="' + src + '" type="application/pdf" style="width:100%;height:560px;border:1px solid var(--chrome-mute);border-radius:8px;" /><div style="margin-top:6px;"><a href="' + src + '" target="_blank" rel="noopener" style="font-size:12px;color:var(--gold-deep);font-weight:600;">Open full size</a></div>';
+    return '<a href="' + src + '" target="_blank" rel="noopener"><img src="' + src + '" alt="scanned receipt" style="width:100%;border:1px solid var(--chrome-mute);border-radius:8px;display:block;" /></a>';
+  }
+  function createVendorAuto(name, ok, fail) {
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/write', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ entity: 'vendor', op: 'create', fields: { displayName: name } }) })
+      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+      .then(function (resp) { if (!resp.ok) throw new Error(resp.error || 'failed'); if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: currentRealm, entity: 'vendor', op: 'create', id: resp.id, auto: true } }); _qboRefs = null; loadQboRefs(function () { ok(resp.id); }); })
+      .catch(function (e) { fail(e.message); });
+  }
   function scanReceipt(file) {
     if (file.size > 12 * 1024 * 1024) { (window.bccNotify || alert)('File too large (max 12 MB).', 'warn'); return; }
     var host = document.getElementById('qboWriteForm');
     if (host) host.innerHTML = '<div style="padding:14px;color:var(--muted);">📷 Reading “' + esc(file.name) + '” with AI…</div>';
-    var fd = new FormData(); fd.append('file', file);
-    fetch('/api/ai/extract-receipt', { method: 'POST', credentials: 'include', body: fd })
-      .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
-      .then(function (resp) {
-        if (resp && resp.needsKey) { if (host) host.innerHTML = '<div style="padding:12px;background:#fbf6ec;border-radius:8px;font-size:13px;">AI capture isn’t configured yet. An admin needs to add an <strong>ANTHROPIC_API_KEY</strong> to the app settings (Azure portal → Static Web App → Configuration). Once added, scanning will auto-fill transactions.</div>'; return; }
-        if (!resp || !resp.ok) throw new Error((resp && resp.error) || 'extraction failed');
-        var d = resp.data || {};
-        loadQboRefs(function (refs) {
-          var vmatch = '';
-          var vn = (d.vendorName || '').toLowerCase().trim();
-          if (vn) { var hit = (refs.vendors || []).find(function (v) { return (v.name || '').toLowerCase() === vn || (v.name || '').toLowerCase().indexOf(vn) >= 0 || vn.indexOf((v.name || '').toLowerCase()) >= 0; }); if (hit) vmatch = hit.id; }
-          var lines = (d.lineItems && d.lineItems.length) ? d.lineItems.map(function (li) { return { desc: li.description || '', amount: li.amount != null ? li.amount : '' }; }) : [{ desc: d.suggestedCategory || (d.vendorName ? ('Purchase — ' + d.vendorName) : 'Expense'), amount: d.total != null ? d.total : '' }];
-          openTxnForm('bill', null, { party: vmatch, date: d.date || '', lines: lines });
-          var tot = (d.total != null ? ('$' + Number(d.total).toLocaleString()) : '');
-          if (vmatch) { if (window.bccNotifySaved) window.bccNotifySaved('Filled from ' + (d.docType || 'document') + (tot ? (' · ' + tot) : '') + '. Pick the expense account(s) and post.'); }
-          else { (window.bccNotify || alert)('Filled from receipt' + (tot ? (' · ' + tot) : '') + (d.vendorName ? ('. Vendor “' + d.vendorName + '” isn’t in QuickBooks — pick one or use + Vendor.') : '. Pick a vendor.'), 'info', 8000); }
-        });
-      })
-      .catch(function (e) { if (host) host.innerHTML = ''; (window.bccNotify || alert)('Could not read the document: ' + e.message, 'error', 7000); });
+    var reader = new FileReader();
+    reader.onload = function () {
+      var dataUrl = reader.result;
+      var previewType = /pdf/i.test(file.type || '') ? 'pdf' : 'image';
+      var fd = new FormData(); fd.append('file', file); fd.append('realmId', currentRealm);
+      fetch('/api/ai/extract-receipt', { method: 'POST', credentials: 'include', body: fd })
+        .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
+        .then(function (resp) {
+          if (resp && resp.needsKey) { if (host) host.innerHTML = '<div style="padding:12px;background:#fbf6ec;border-radius:8px;font-size:13px;">AI capture isn’t configured yet. An admin needs to add an <strong>ANTHROPIC_API_KEY</strong> in the app settings (Azure portal → Static Web App → Configuration). Once added, scanning auto-fills transactions.</div>'; return; }
+          if (!resp || !resp.ok) throw new Error((resp && resp.error) || 'extraction failed');
+          var d = resp.data || {};
+          loadQboRefs(function (refs) {
+            var accountId = d.expenseAccountId || '';
+            if (accountId && !(refs.accounts || []).some(function (a) { return String(a.id) === String(accountId); })) accountId = '';
+            if (!accountId) { var exp = (refs.accounts || []).filter(isExpenseAcct); if (exp.length) accountId = exp[0].id; }
+            var lines = (d.lineItems && d.lineItems.length)
+              ? d.lineItems.map(function (li) { return { desc: li.description || '', amount: (li.amount != null ? li.amount : ''), accountId: accountId }; })
+              : [{ desc: d.suggestedCategory || (d.vendorName ? ('Purchase — ' + d.vendorName) : 'Expense'), amount: (d.total != null ? d.total : ''), accountId: accountId }];
+            var seedBase = { date: d.date || '', lines: lines, preview: dataUrl, previewType: previewType };
+            var tot = (d.total != null ? (' · $' + Number(d.total).toLocaleString()) : '');
+            var vendorId = d.matchedVendorId || '';
+            if (vendorId && !(refs.vendors || []).some(function (v) { return String(v.id) === String(vendorId); })) vendorId = '';
+            if (vendorId) {
+              openTxnForm('bill', null, Object.assign({ party: vendorId }, seedBase));
+              if (window.bccNotifySaved) window.bccNotifySaved('Filled from ' + (d.docType || 'document') + tot + '. Review & post.');
+            } else if (d.vendorName) {
+              if (host) host.innerHTML = '<div style="padding:14px;color:var(--muted);">Creating vendor “' + esc(d.vendorName) + '”…</div>';
+              createVendorAuto(d.vendorName, function (newId) {
+                openTxnForm('bill', null, Object.assign({ party: newId || '' }, seedBase));
+                if (window.bccNotifySaved) window.bccNotifySaved('Filled from receipt' + tot + '. Created vendor “' + d.vendorName + '”. Review & post.');
+              }, function (err) {
+                openTxnForm('bill', null, seedBase);
+                (window.bccNotify || alert)('Filled from receipt' + tot + '. Couldn’t auto-create vendor (' + err + ') — pick one or use + Vendor.', 'warn', 8000);
+              });
+            } else {
+              openTxnForm('bill', null, seedBase);
+              (window.bccNotify || alert)('Filled from receipt' + tot + '. Pick a vendor.', 'info', 6000);
+            }
+          });
+        })
+        .catch(function (e) { if (host) host.innerHTML = ''; (window.bccNotify || alert)('Could not read the document: ' + e.message, 'error', 7000); });
+    };
+    reader.readAsDataURL(file);
   }
 
   /* ===== Per-client workspace (tabs) ===== */
