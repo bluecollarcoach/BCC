@@ -2211,7 +2211,15 @@ async function qboResolveAccess(request, realmId) {
     return r.json();
   };
   const queryAll = async (sql) => { const j = await apiGet('/query?query=' + encodeURIComponent(sql + ' MAXRESULTS 1000')); const qr = j.QueryResponse || {}; const k = Object.keys(qr).find(x => Array.isArray(qr[x])); return k ? qr[k] : []; };
-  return { p, comp, apiGet, apiPost, queryAll };
+  const apiUpload = async (path, formData) => {
+    // Multipart upload (e.g. QBO /upload). Let fetch set the multipart boundary;
+    // do NOT set Content-Type manually.
+    const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + '?minorversion=70';
+    const r = await fetch(u, { method: 'POST', headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' }, body: formData });
+    if (!r.ok) throw new Error('QBO ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 300));
+    return r.json();
+  };
+  return { p, comp, apiGet, apiPost, apiUpload, queryAll };
 }
 
 /** GET refs — dropdown data for the transaction forms (customers/vendors/items/accounts). */
@@ -2308,6 +2316,43 @@ app.http('qbo-write', {
       const created = res[cap] || {};
       return { jsonBody: { ok: true, id: created.Id, docNumber: created.DocNumber, syncToken: created.SyncToken, total: created.TotalAmt } };
     } catch (e) { context.error('qbo-write', e); return { status: 502, jsonBody: { ok: false, error: String(e.message || e) } }; }
+  })
+});
+
+/**
+ * POST /api/integrations/qbo/companies/{realmId}/attach  (multipart: file, entityType, entityId)
+ * Uploads a file to QuickBooks and links it to the given transaction via the
+ * Attachable upload API (/v3/company/{realm}/upload). Best-effort from the UI.
+ */
+app.http('qbo-attach', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'integrations/qbo/companies/{realmId}/attach',
+  handler: withAccessLog(async (request, context) => {
+    try {
+      const ctx = await qboResolveAccess(request, request.params.realmId);
+      if (ctx.err) return ctx.err;
+      const form = await request.formData();
+      const file = form.get('file');
+      const entityType = String(form.get('entityType') || '');
+      const entityId = String(form.get('entityId') || '');
+      if (!file || typeof file.arrayBuffer !== 'function') return badRequest('file required');
+      if (!entityType || !entityId) return badRequest('entityType and entityId required');
+      if (file.size > 25 * 1024 * 1024) return badRequest('file too large (max 25 MB)');
+      const buf = Buffer.from(await file.arrayBuffer());
+      const filename = String(file.name || 'attachment').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 120) || 'attachment';
+      const contentType = file.type || 'application/octet-stream';
+      const meta = { AttachableRef: [{ EntityRef: { type: entityType, value: entityId } }], FileName: filename, ContentType: contentType };
+      // QBO upload: two parts with matching index — JSON metadata + binary content.
+      const fd = new FormData();
+      fd.append('file_metadata_0', new Blob([JSON.stringify(meta)], { type: 'application/json' }), 'metadata.json');
+      fd.append('file_content_0', new Blob([buf], { type: contentType }), filename);
+      const res = await ctx.apiUpload('/upload', fd);
+      const item = (res && res.AttachableResponse && res.AttachableResponse[0]) || {};
+      if (item.Fault) return { status: 502, jsonBody: { ok: false, error: 'QBO attach fault', detail: JSON.stringify(item.Fault).slice(0, 300) } };
+      const att = item.Attachable || {};
+      return { jsonBody: { ok: true, id: att.Id, fileName: att.FileName } };
+    } catch (e) { context.error('qbo-attach', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
 

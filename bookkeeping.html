@@ -700,6 +700,12 @@
   }
   function toggleQboReports() {
     var box = document.getElementById('qboReports'), kbox = document.getElementById('qboKpis'), wbox = document.getElementById('qboWrite');
+    // If the client changed while a write form was open, discard it so a file/
+    // record meant for one client can never post to another (cross-client leak).
+    if (_txnFormRealm && _txnFormRealm !== currentRealm) {
+      var _wf = document.getElementById('qboWriteForm'); if (_wf) _wf.innerHTML = '';
+      _txnFile = null; _txnEdit = null; _txnFormRealm = null;
+    }
     if (currentRealm) {
       if (box) { box.style.display = ''; document.getElementById('qboReportsCo').textContent = '· ' + companyName(currentRealm); }
       if (kbox) { kbox.style.display = ''; document.getElementById('qboKpisCo').textContent = '· ' + companyName(currentRealm); }
@@ -774,7 +780,7 @@
   }
 
   /* ===== QuickBooks write: create/edit invoices, bills, payments ===== */
-  var _qboRefs = null, _qboRefsRealm = null, _txnEdit = null;
+  var _qboRefs = null, _qboRefsRealm = null, _txnEdit = null, _txnFile = null, _txnFormRealm = null;
   function loadQboRefs(cb) {
     if (_qboRefs && _qboRefsRealm === currentRealm) { cb(_qboRefs); return; }
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/refs', { credentials: 'include' })
@@ -796,6 +802,8 @@
   }
   function openTxnForm(entity, edit, seed) {
     _txnEdit = edit || null;
+    _txnFile = (seed && seed.file) || null;
+    _txnFormRealm = currentRealm;
     var host = document.getElementById('qboWriteForm'); if (!host) return;
     host.innerHTML = '<div style="color:var(--muted);">Loading QuickBooks lists…</div>';
     loadQboRefs(function (refs) {
@@ -812,7 +820,10 @@
           '<label>Date<input type="date" id="tx_date" value="' + esc(pre.TxnDate || (seed && seed.date) || today) + '" /></label>' +
           '<label>Due date<input type="date" id="tx_due" value="' + esc(pre.DueDate || '') + '" /></label></div>' +
           '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Line items</div><div id="tx_lines"></div>' +
-          '<button class="btn btn-ghost" id="tx_addline" type="button" style="margin-top:6px;font-size:12px;">+ Add line</button>';
+          '<button class="btn btn-ghost" id="tx_addline" type="button" style="margin-top:6px;font-size:12px;">+ Add line</button>' +
+          '<div style="margin-top:14px;"><div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Attachment</div>' +
+          '<label class="btn btn-ghost" for="tx_file" style="cursor:pointer;font-size:12px;">📎 Attach receipt / file</label> <span id="tx_fname" style="font-size:12px;color:var(--muted);"></span>' +
+          '<input type="file" id="tx_file" accept="image/*,application/pdf" style="display:none;" /></div>';
       } else {
         var bankAccts = (refs.accounts || []).filter(function (a) { return /bank|other current asset/i.test(a.type || ''); });
         html += '<div class="ws-form" style="margin-bottom:10px;">' +
@@ -844,11 +855,14 @@
         }
         paintLines();
         document.getElementById('tx_addline').onclick = function () { draft.push({}); paintLines(); };
+        var txFile = document.getElementById('tx_file'); var fnameEl = document.getElementById('tx_fname');
+        if (_txnFile && fnameEl) fnameEl.textContent = _txnFile.name + ' (will attach)';
+        if (txFile) { txFile.addEventListener('click', function () { this.value = ''; }); txFile.addEventListener('change', function () { var f = txFile.files && txFile.files[0]; if (f) { if (f.size > 25 * 1024 * 1024) { (window.bccNotify || alert)('File too large (max 25 MB).', 'warn'); txFile.value = ''; return; } _txnFile = f; if (fnameEl) fnameEl.textContent = f.name + ' (will attach)'; } }); }
         document.getElementById('tx_save').onclick = function () { submitTxn(entity, { party: document.getElementById('tx_party').value, date: document.getElementById('tx_date').value, due: document.getElementById('tx_due').value, lines: draft }); };
       } else {
         document.getElementById('tx_save').onclick = function () { submitTxn(entity, { party: document.getElementById('tx_party').value, amount: document.getElementById('tx_amount').value, date: document.getElementById('tx_date').value, deposit: document.getElementById('tx_deposit').value, invoiceId: document.getElementById('tx_invoiceId').value }); };
       }
-      document.getElementById('tx_cancel').onclick = function () { host.innerHTML = ''; _txnEdit = null; };
+      document.getElementById('tx_cancel').onclick = function () { host.innerHTML = ''; _txnEdit = null; _txnFile = null; _txnFormRealm = null; };
     });
   }
   function submitTxn(entity, g) {
@@ -868,7 +882,9 @@
         if (!resp.ok) throw new Error(resp.error || 'write failed');
         if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: currentRealm, entity: entity, op: verb, id: resp.id } });
         if (window.bccNotifySaved) window.bccNotifySaved(entity.charAt(0).toUpperCase() + entity.slice(1) + (verb === 'update' ? ' updated' : ' created') + (resp.docNumber ? (' #' + resp.docNumber) : '') + ' in QuickBooks.');
-        document.getElementById('qboWriteForm').innerHTML = ''; _txnEdit = null;
+        var attachFile = _txnFile; _txnFile = null;
+        if (attachFile && (entity === 'invoice' || entity === 'bill') && resp.id) attachToEntity(entity === 'invoice' ? 'Invoice' : 'Bill', resp.id, attachFile, resp.docNumber);
+        document.getElementById('qboWriteForm').innerHTML = ''; _txnEdit = null; _txnFormRealm = null;
         loadQboKpis();
         if (qboActiveReport) loadQboReport(qboActiveReport, document.querySelector('#qboReports button[data-rpt="' + qboActiveReport + '"]'));
       })
@@ -889,6 +905,7 @@
   var ACCOUNT_TYPES = ['Expense', 'Income', 'Bank', 'Accounts Receivable', 'Accounts Payable', 'Credit Card', 'Other Current Asset', 'Fixed Asset', 'Other Asset', 'Other Current Liability', 'Long Term Liability', 'Equity', 'Cost of Goods Sold', 'Other Income', 'Other Expense'];
   function openEntityForm(entity, onCreated) {
     var host = document.getElementById('qboWriteForm'); if (!host) return;
+    _txnFormRealm = currentRealm; _txnFile = null; _txnEdit = null;
     host.innerHTML = '<div style="color:var(--muted);">Loading…</div>';
     loadQboRefs(function (refs) {
       var html = '<div style="border:1px solid var(--chrome-mute);border-radius:10px;padding:14px;"><div style="font-weight:700;margin-bottom:10px;">New ' + esc(entity) + '</div><div class="ws-form">';
@@ -907,7 +924,7 @@
       }
       html += '</div><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;"><button class="btn btn-ghost" id="en_cancel" type="button">Cancel</button><button class="btn btn-primary" id="en_save" type="button">Create in QuickBooks</button></div></div>';
       host.innerHTML = html;
-      document.getElementById('en_cancel').onclick = function () { host.innerHTML = ''; };
+      document.getElementById('en_cancel').onclick = function () { host.innerHTML = ''; _txnFormRealm = null; };
       document.getElementById('en_save').onclick = function () { submitEntity(entity, onCreated); };
     });
   }
@@ -939,7 +956,7 @@
         if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: currentRealm, entity: entity, op: 'create', id: resp.id } });
         if (window.bccNotifySaved) window.bccNotifySaved(entity.charAt(0).toUpperCase() + entity.slice(1) + ' added to QuickBooks.');
         _qboRefs = null; // refresh dropdown cache so new record appears
-        document.getElementById('qboWriteForm').innerHTML = '';
+        document.getElementById('qboWriteForm').innerHTML = ''; _txnFormRealm = null;
         if (onCreated) loadQboRefs(function () { onCreated(resp.id); });
       })
       .catch(function (e) { btn.disabled = false; btn.textContent = ot; (window.bccNotify || alert)('QuickBooks rejected it: ' + e.message, 'error', 7000); });
@@ -968,6 +985,23 @@
       .then(function (resp) { if (!resp.ok) throw new Error(resp.error || 'failed'); if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: currentRealm, entity: 'vendor', op: 'create', id: resp.id, auto: true } }); _qboRefs = null; loadQboRefs(function () { ok(resp.id); }); })
       .catch(function (e) { fail(e.message); });
   }
+  // Attach a file to a posted QBO transaction (best-effort) + keep a copy in the
+  // client's Files (Blob). Never blocks the transaction that already posted.
+  function attachToEntity(cap, id, file, docNumber) {
+    if (window.bccNotify) window.bccNotify('Attaching “' + file.name + '” to QuickBooks…', 'info', 4000);
+    var fd = new FormData(); fd.append('file', file); fd.append('entityType', cap); fd.append('entityId', id);
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/attach', { method: 'POST', credentials: 'include', body: fd })
+      .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error(resp.error || 'attach failed');
+        if (window.bccNotifySaved) window.bccNotifySaved('Receipt attached to ' + cap + (docNumber ? (' #' + docNumber) : '') + '.');
+        if (window.bccAudit) window.bccAudit('qbo-attach', { path: '/bookkeeping.html', meta: { realmId: currentRealm, entity: cap, id: id } });
+      })
+      .catch(function (e) { if (window.bccNotify) window.bccNotify('Posted, but attaching the file to QuickBooks failed: ' + e.message, 'warn', 7000); });
+    // Keep a copy in the client's Files tab (Blob), best-effort, non-blocking.
+    var fd2 = new FormData(); fd2.append('file', file); fd2.append('folder', '/clients/' + currentRealm); fd2.append('tags', 'receipt,' + cap.toLowerCase() + '-' + id);
+    fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd2 }).catch(function () {});
+  }
   function scanReceipt(file) {
     if (file.size > 12 * 1024 * 1024) { (window.bccNotify || alert)('File too large (max 12 MB).', 'warn'); return; }
     var host = document.getElementById('qboWriteForm');
@@ -990,7 +1024,7 @@
             var lines = (d.lineItems && d.lineItems.length)
               ? d.lineItems.map(function (li) { return { desc: li.description || '', amount: (li.amount != null ? li.amount : ''), accountId: accountId }; })
               : [{ desc: d.suggestedCategory || (d.vendorName ? ('Purchase — ' + d.vendorName) : 'Expense'), amount: (d.total != null ? d.total : ''), accountId: accountId }];
-            var seedBase = { date: d.date || '', lines: lines, preview: dataUrl, previewType: previewType };
+            var seedBase = { date: d.date || '', lines: lines, preview: dataUrl, previewType: previewType, file: file };
             var tot = (d.total != null ? (' · $' + Number(d.total).toLocaleString()) : '');
             var vendorId = d.matchedVendorId || '';
             if (vendorId && !(refs.vendors || []).some(function (v) { return String(v.id) === String(vendorId); })) vendorId = '';
