@@ -276,7 +276,7 @@
     <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
       <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0;">New transaction <span style="color:var(--muted);font-weight:400;font-size:12px;">· posts to QuickBooks</span></h3>
       <div style="display:flex; gap:6px; flex-wrap:wrap;">
-        <button class="btn btn-primary" data-scan="1" type="button">📷 Scan receipt (AI)</button>
+        <label class="btn btn-primary" for="scanInput" style="cursor:pointer;display:inline-flex;align-items:center;">📷 Scan receipt (AI)</label>
         <button class="btn btn-ghost" data-tx="invoice" type="button">+ Invoice</button>
         <button class="btn btn-ghost" data-tx="bill" type="button">+ Bill / expense</button>
         <button class="btn btn-ghost" data-tx="payment" type="button">+ Payment</button>
@@ -286,7 +286,7 @@
         <button class="btn btn-ghost" data-add="account" type="button">+ Account</button>
       </div>
     </div>
-    <input type="file" id="scanInput" accept="image/*,application/pdf" capture="environment" style="display:none;" />
+    <input type="file" id="scanInput" accept="image/*,application/pdf" style="display:none;" />
     <div id="qboWriteForm" style="margin-top:12px;"></div>
   </div>
 
@@ -947,6 +947,16 @@
 
   /* ----- AI receipt/invoice capture ----- */
   function isExpenseAcct(a) { return a && (a.classification === 'Expense' || /expense|cost of goods/i.test(a.type || '')); }
+  function normName(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\b(llc|inc|co|company|the|corp|corporation|ltd|incorporated)\b/g, ' ').replace(/\s+/g, ' ').trim(); }
+  function fuzzyVendorMatch(name, vendors) {
+    var n = normName(name); if (!n) return '';
+    var list = vendors || [];
+    var hit = list.find(function (v) { return normName(v.name) === n; }); if (hit) return hit.id;            // exact (normalized)
+    hit = list.find(function (v) { var vn = normName(v.name); return vn && (vn.indexOf(n) >= 0 || n.indexOf(vn) >= 0); }); if (hit) return hit.id; // one contains the other
+    var nt = n.split(' ').filter(Boolean);
+    hit = list.find(function (v) { var vt = normName(v.name).split(' ').filter(Boolean); return vt[0] && nt[0] && vt[0] === nt[0] && (vt[1] || '') === (nt[1] || ''); }); if (hit) return hit.id; // first two tokens
+    return '';
+  }
   function previewHtml(seed) {
     var src = seed.preview;
     if (seed.previewType === 'pdf') return '<embed src="' + src + '" type="application/pdf" style="width:100%;height:560px;border:1px solid var(--chrome-mute);border-radius:8px;" /><div style="margin-top:6px;"><a href="' + src + '" target="_blank" rel="noopener" style="font-size:12px;color:var(--gold-deep);font-weight:600;">Open full size</a></div>';
@@ -984,9 +994,10 @@
             var tot = (d.total != null ? (' · $' + Number(d.total).toLocaleString()) : '');
             var vendorId = d.matchedVendorId || '';
             if (vendorId && !(refs.vendors || []).some(function (v) { return String(v.id) === String(vendorId); })) vendorId = '';
+            if (!vendorId && d.vendorName) vendorId = fuzzyVendorMatch(d.vendorName, refs.vendors); // reuse existing before creating
             if (vendorId) {
               openTxnForm('bill', null, Object.assign({ party: vendorId }, seedBase));
-              if (window.bccNotifySaved) window.bccNotifySaved('Filled from ' + (d.docType || 'document') + tot + '. Review & post.');
+              if (window.bccNotifySaved) window.bccNotifySaved('Filled from ' + (d.docType || 'document') + tot + ' · matched existing vendor. Review & post.');
             } else if (d.vendorName) {
               if (host) host.innerHTML = '<div style="padding:14px;color:var(--muted);">Creating vendor “' + esc(d.vendorName) + '”…</div>';
               createVendorAuto(d.vendorName, function (newId) {
@@ -1641,9 +1652,12 @@
     document.querySelectorAll('#qboWrite button[data-add]').forEach(function (b) {
       b.addEventListener('click', function () { openEntityForm(b.getAttribute('data-add')); });
     });
-    var scanBtn = document.querySelector('#qboWrite button[data-scan]'); var scanInput = document.getElementById('scanInput');
-    if (scanBtn && scanInput) {
-      scanBtn.addEventListener('click', function () { scanInput.value = ''; scanInput.click(); });
+    var scanInput = document.getElementById('scanInput');
+    if (scanInput) {
+      // The visible control is a <label for="scanInput">, so the OS picker opens
+      // natively on the first click. Reset value on each open so re-selecting the
+      // same file still fires change.
+      scanInput.addEventListener('click', function () { this.value = ''; });
       scanInput.addEventListener('change', function () { var f = scanInput.files && scanInput.files[0]; if (f) scanReceipt(f); });
     }
     ['qboMethod', 'qboPeriod', 'qboFrom', 'qboTo'].forEach(function (id) {
