@@ -238,6 +238,43 @@
   .fl-toolbar select { border:1px solid var(--chrome-mute); border-radius:8px; padding:8px 10px; font:inherit; font-size:13px; color:var(--ink); background:#fff; }
   .fl-count { font-size:12px; color:var(--muted); white-space:nowrap; margin-left:auto; }
   .fl-chip { display:inline-block; padding:1px 8px; border-radius:10px; background:var(--gold-fade); color:var(--gold-deep); font-size:11px; font-weight:700; margin:1px 2px 1px 0; }
+
+  /* In-app email client. */
+  .em-mbx { border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:13px; }
+  .em-mbx-on { background:var(--gold-fade); border:1px solid var(--chrome-mute); }
+  .em-mbx-off { background:var(--chrome); color:var(--muted); font-size:12.5px; }
+  .em-compose { border:1px solid var(--chrome-mute); border-radius:12px; padding:10px 14px; margin-bottom:16px; background:#fff; }
+  .em-compose-sum { cursor:pointer; font-weight:700; font-size:14px; color:var(--ink); list-style:none; }
+  .em-compose-sum::-webkit-details-marker { display:none; }
+  .em-toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+  .em-toolbar input[type=search] { flex:1 1 200px; min-width:150px; border:1px solid var(--chrome-mute); border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; }
+  .em-toolbar select { border:1px solid var(--chrome-mute); border-radius:8px; padding:8px 10px; font:inherit; font-size:13px; background:#fff; color:var(--ink); }
+  .em-row { display:flex; gap:10px; align-items:flex-start; padding:12px 10px; border-bottom:1px solid #f1f0ee; cursor:pointer; border-radius:6px; }
+  .em-row:hover { background:var(--chrome); }
+  .em-dot { width:8px; height:8px; border-radius:50%; background:transparent; margin-top:6px; flex-shrink:0; }
+  .em-row.em-unread .em-dot { background:var(--gold-deep); box-shadow:0 0 0 3px var(--gold-fade); }
+  .em-subj { font-size:14px; font-weight:600; color:var(--ink); }
+  .em-row.em-unread .em-subj { font-weight:800; }
+  .em-from { font-size:12px; color:var(--muted); margin-top:1px; }
+  .em-prev { font-size:12.5px; color:var(--ink); margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .em-meta-row { margin-top:5px; display:flex; gap:5px; align-items:center; flex-wrap:wrap; }
+  .em-badge { display:inline-block; font-size:11px; font-weight:700; color:var(--muted); background:var(--chrome); border-radius:10px; padding:1px 8px; }
+  .em-badge.em-assign { background:#eef5ff; color:#2f6fd6; }
+  .em-readers { display:flex; flex-shrink:0; align-items:center; padding-left:6px; }
+  .em-av { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; border-radius:50%; background:var(--gold-deep); color:#fff; font-size:10px; font-weight:800; margin-left:-6px; border:2px solid #fff; }
+  .em-modal-ov { position:fixed; inset:0; background:rgba(15,23,42,0.5); z-index:200; display:flex; align-items:flex-start; justify-content:center; padding:24px 12px; overflow-y:auto; }
+  .em-modal { background:#fff; border-radius:14px; width:100%; max-width:760px; box-shadow:0 20px 60px rgba(0,0,0,0.3); overflow:hidden; }
+  .em-modal-head { display:flex; gap:10px; align-items:flex-start; padding:16px 18px; border-bottom:1px solid var(--chrome-mute); }
+  .em-modal-subj { font-size:16px; font-weight:800; color:var(--ink); }
+  .em-modal-from { font-size:12.5px; color:var(--muted); margin-top:3px; line-height:1.5; }
+  .em-modal-actions { display:flex; gap:6px; align-items:center; flex-wrap:wrap; padding:10px 18px; border-bottom:1px solid var(--chrome-mute); background:var(--chrome); }
+  .em-mini-sel { border:1px solid var(--chrome-mute); border-radius:8px; padding:6px 8px; font:inherit; font-size:12.5px; background:#fff; }
+  .em-modal-body { padding:14px 18px; }
+  .em-att { font-size:12.5px; color:var(--muted); margin-bottom:8px; }
+  .em-body-frame { width:100%; height:440px; border:1px solid var(--chrome-mute); border-radius:8px; background:#fff; }
+  .em-reply { padding:14px 18px; border-top:1px solid var(--chrome-mute); background:var(--chrome); }
+  .em-reply textarea { width:100%; border:1px solid var(--chrome-mute); border-radius:8px; padding:10px; font:inherit; font-size:14px; }
+  @media (max-width:680px) { .em-modal-body { padding:10px; } .em-body-frame { height:360px; } }
 </style>
 <script src="bcc-api.js" defer></script>
 </head>
@@ -1330,6 +1367,7 @@
     }
   }
   function renderWorkspace() {
+    if (typeof emCloseModal === 'function') emCloseModal(); // never leave an email reader open across a realm/section change
     var tabbar = document.getElementById('wsTabs');
     if (currentRealm !== _wsLastRealm) { currentTab = 'overview'; _wsLastRealm = currentRealm; }
     if (tabbar) tabbar.style.display = currentRealm ? '' : 'none';
@@ -1816,110 +1854,275 @@
   function emailPrefix() { return 'bcc-email-' + currentRealm + '-'; }
   function allEmails() { var out = []; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (!k || k.indexOf(emailPrefix()) !== 0) continue; try { var m = JSON.parse(localStorage.getItem(k)); if (m && m.id) out.push(m); } catch (e) {} } return out; }
   function parseAddrs(s) { return String(s || '').split(/[\s,;]+/).map(function (x) { return x.trim(); }).filter(function (x) { return x.indexOf('@') > 0; }); }
+  /* ============ Email — in-app shared-mailbox client ============
+   * Reads/sends through the client's dedicated shared mailbox (Graph, app-only),
+   * with collaboration metadata (per-user read, who replied, tags, assignment,
+   * archive) stored server-side per message. Full read + reply happen in-app. */
+  var _clientMailbox = null;
+  var _emMeta = {};          // { msgId: {tags,assignedTo,archived,readBy,repliedBy} }
+  var _emMsgs = [];          // loaded mailbox messages
+  var _emFilter = 'all';     // all | unread | mine | tagged | archived
+  var _emSearch = '';
+  var _emLoadedFor = null;   // realm whose messages are cached in _emMsgs
+  function suggestMailbox() { var n = companyName(currentRealm) || ''; var local = n.toLowerCase().replace(/[^a-z0-9]+/g, ''); return local ? (local + '@bluecollarcoach.us') : ''; }
+  function mailboxActive() { return !!(_clientMailbox && _clientMailbox.mailbox && _clientMailbox.enabled !== false); }
+  function emSigKey() { return 'bcc-emailsig-' + (myUpn().replace(/[^a-z0-9]+/g, '-') || 'x'); }
+  function getSig() { try { var d = JSON.parse(localStorage.getItem(emSigKey()) || 'null'); return (d && d.sig) || ''; } catch (e) { return ''; } }
+  function setSig(sig) { try { localStorage.setItem(emSigKey(), JSON.stringify({ sig: sig, upn: myUpn(), updatedAt: nowIso() })); } catch (e) {} }
+  function emPeople() { return (window.bccPeopleFull || []).map(function (p) { return { upn: (p.upn || p.mail || '').toLowerCase(), name: p.displayName || p.upn || p.mail }; }).filter(function (p) { return p.upn; }); }
+  function emName(upn) { return (window.bccDisplayName && window.bccDisplayName(upn)) || upn || ''; }
+  function emInitials(upn) { var n = emName(upn) || upn || ''; var parts = n.replace(/@.*/, '').split(/[.\s_-]+/).filter(Boolean); return ((parts[0] || '').charAt(0) + (parts[1] || '').charAt(0)).toUpperCase() || (upn || '?').charAt(0).toUpperCase(); }
+  function metaFor(id) { return _emMeta[id] || { tags: [], assignedTo: '', archived: false, readBy: {}, repliedBy: [] }; }
+  function readByMe(id) { var m = metaFor(id); return !!(m.readBy && m.readBy[myUpn()]); }
+
   function renderEmail() {
     var body = document.getElementById('email-body'); if (!body) return;
     var info = {}; try { info = JSON.parse(localStorage.getItem('bcc-client-info-' + currentRealm)) || {}; } catch (e) {}
-    var compose = '<div class="ws-form" style="margin-bottom:14px;">' +
-      '<label class="full">To (comma-separated)<input id="em_to" value="' + esc(info.email || '') + '" placeholder="client@example.com, second@example.com" /></label>' +
-      '<label class="full">CC (optional)<input id="em_cc" placeholder="cc@example.com" /></label>' +
-      '<label class="full">Subject<input id="em_subject" /></label>' +
-      '<label class="full">Message<textarea id="em_body" rows="7"></textarea></label>' +
-      '<div class="full"><button class="btn btn-primary" id="em_send" type="button">Send email</button> <span id="em_status" style="font-size:12px;color:var(--muted);"></span></div></div>';
-    var sent = allEmails().sort(function (a, b) { return (b.sentAt || '').localeCompare(a.sentAt || ''); });
-    var hist = '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:6px 0 8px;">Sent history</div>' +
-      (sent.length ? sent.map(function (m) {
-        var when = m.sentAt ? new Date(m.sentAt).toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }) : '';
-        var by = (window.bccDisplayName && window.bccDisplayName(m.sentBy)) || m.sentBy || '';
-        return '<div class="ws-row" style="align-items:flex-start;"><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:14px;">' + esc(m.subject || '(no subject)') + '</div>' +
-          '<div style="font-size:12px;color:var(--muted);">To: ' + esc((m.to || []).join(', ')) + (m.cc && m.cc.length ? ' · Cc: ' + esc(m.cc.join(', ')) : '') + '</div>' +
-          '<div style="font-size:12px;color:var(--muted);">' + esc(when) + ' · ' + esc(by) + '</div>' +
-          (m.bodyText ? '<div style="font-size:12.5px;color:var(--ink);margin-top:4px;white-space:pre-wrap;max-height:90px;overflow:auto;">' + esc(m.bodyText) + '</div>' : '') +
-          '</div><button class="btn btn-ghost" data-emdel="' + esc(m.id) + '" type="button" style="font-size:11px;min-height:28px;">Delete</button></div>';
-      }).join('') : '<div style="color:var(--muted);padding:8px 0;">No emails sent yet for this client.</div>');
-    var inbox = '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:18px 0 8px;">Inbox · your correspondence with this client</div>' +
-      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;"><input id="em_search" value="' + esc(info.email || '') + '" placeholder="search address or keyword" style="flex:1;min-width:200px;border:1px solid var(--chrome-mute);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;" /><button class="btn btn-ghost" id="em_refresh" type="button">Refresh inbox</button></div>' +
-      '<div id="em_inbox"><div style="color:var(--muted);">' + (info.email ? 'Loading messages…' : 'Add the client’s email in Client info, or type a search above, then Refresh.') + '</div></div>';
-    body.innerHTML = '<div id="em_mailbox"></div>' + compose + hist + inbox;
+    body.innerHTML =
+      '<div id="em_mailbox"></div>' +
+      '<details class="em-compose" id="em_compose"><summary class="em-compose-sum">✉️ Compose new email</summary>' +
+        '<div class="ws-form" style="margin-top:12px;">' +
+          '<label class="full">To (comma-separated)<input id="em_to" autocomplete="off" value="' + esc(info.email || '') + '" placeholder="client@example.com" /></label>' +
+          '<label class="full">CC (optional)<input id="em_cc" autocomplete="off" placeholder="cc@example.com" /></label>' +
+          '<label class="full">Subject<input id="em_subject" autocomplete="off" /></label>' +
+          '<label class="full">Message<textarea id="em_body" rows="7"></textarea></label>' +
+          '<div class="full" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><button class="btn btn-primary" id="em_send" type="button">Send email</button><button class="btn btn-ghost" id="em_sig" type="button">✎ My signature</button><span id="em_status" style="font-size:12px;color:var(--muted);"></span></div>' +
+        '</div>' +
+      '</details>' +
+      '<div class="em-toolbar">' +
+        '<input id="em_search" type="search" autocomplete="off" placeholder="🔍 Search mail…" />' +
+        '<select id="em_filter"><option value="all">All mail</option><option value="unread">Unread by me</option><option value="mine">Assigned to me</option><option value="tagged">Tagged</option><option value="archived">Archived</option></select>' +
+        '<button class="btn btn-ghost" id="em_refresh" type="button" style="font-size:12px;">↻ Refresh</button>' +
+        '<span id="em_count" class="fl-count"></span>' +
+      '</div>' +
+      '<div id="em_list"><div style="color:var(--muted);">Loading mail…</div></div>';
     document.getElementById('em_send').onclick = sendClientEmail;
-    document.getElementById('em_refresh').onclick = loadInbox;
-    document.getElementById('em_search').addEventListener('keydown', function (e) { if (e.key === 'Enter') loadInbox(); });
-    body.querySelectorAll('[data-emdel]').forEach(function (b) { b.onclick = function () { if (!confirm('Delete this logged email?')) return; localStorage.removeItem(b.getAttribute('data-emdel')); renderEmail(); }; });
-    loadClientMailbox(info);
+    document.getElementById('em_sig').onclick = openSigEditor;
+    document.getElementById('em_refresh').onclick = function () { loadInbox(true); };
+    var sb = document.getElementById('em_search'); sb.value = _emSearch; sb.addEventListener('input', function () { _emSearch = this.value; renderEmailList(); });
+    var ff = document.getElementById('em_filter'); ff.value = _emFilter; ff.addEventListener('change', function () { _emFilter = this.value; renderEmailList(); });
+    if (_emLoadedFor !== currentRealm) _emMsgs = []; // drop the previous client's cached mail
+    _clientMailbox = null;                            // unknown until the per-client config resolves
+    loadEmailMeta();
+    // Load the mailbox config FIRST, then the inbox — so inbox routing uses the
+    // RIGHT client mailbox (mailboxActive() depends on _clientMailbox).
+    loadClientMailbox(info, function () {
+      if (_emLoadedFor === currentRealm && _emMsgs.length) renderEmailList();
+      else { _emLoadedFor = currentRealm; loadInbox(false); }
+    });
   }
-  var _inboxLoadedFor = null;
-  var _clientMailbox = null;
-  function suggestMailbox() { var n = companyName(currentRealm) || ''; var local = n.toLowerCase().replace(/[^a-z0-9]+/g, ''); return local ? (local + '@bluecollarcoach.us') : ''; }
-  function loadClientMailbox(info) {
+
+  function loadClientMailbox(info, done) {
+    var realmAt = currentRealm;
     fetch('/api/integrations/msgraph/client-mailbox/' + encodeURIComponent(currentRealm), { credentials: 'include' })
       .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
-      .then(function (cfg) { _clientMailbox = (cfg && cfg.ok) ? { mailbox: cfg.mailbox, enabled: cfg.enabled } : { mailbox: '', enabled: false }; renderMailboxSection(info); maybeAutoInbox(info); })
-      .catch(function () { _clientMailbox = { mailbox: '', enabled: false }; renderMailboxSection(info); maybeAutoInbox(info); });
-  }
-  function mailboxActive() { return !!(_clientMailbox && _clientMailbox.mailbox && _clientMailbox.enabled !== false); }
-  function maybeAutoInbox(info) {
-    var active = mailboxActive();
-    if (active) { var s = document.getElementById('em_search'); if (s) s.value = ''; }
-    if ((active || info.email) && _inboxLoadedFor !== currentRealm) { _inboxLoadedFor = currentRealm; loadInbox(); }
+      .then(function (cfg) { if (currentRealm !== realmAt) return; _clientMailbox = (cfg && cfg.ok) ? { mailbox: cfg.mailbox, enabled: cfg.enabled } : { mailbox: '', enabled: false }; renderMailboxSection(info); if (done) done(); })
+      .catch(function () { if (currentRealm !== realmAt) return; _clientMailbox = { mailbox: '', enabled: false }; renderMailboxSection(info); if (done) done(); });
   }
   function renderMailboxSection(info) {
     var el = document.getElementById('em_mailbox'); if (!el) return;
     var cm = _clientMailbox || {};
-    var fromWho = mailboxActive() ? cm.mailbox : ((window.bccUser && window.bccUser.userDetails) || 'your account');
-    var fromLine = '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Sending as: <strong>' + esc(fromWho) + '</strong></div>';
     if (mailboxActive()) {
-      el.innerHTML = '<div style="background:var(--gold-fade);border:1px solid var(--chrome-mute);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;">📬 Dedicated client mailbox: <strong>' + esc(cm.mailbox) + '</strong>. Sends and the inbox below use this address.' + (isAdmin ? ' <button class="btn btn-ghost" id="cm_change" type="button" style="font-size:11px;min-height:26px;">Change</button>' : '') + '</div>' + fromLine;
+      el.innerHTML = '<div class="em-mbx em-mbx-on">📬 Sending &amp; reading as <strong>' + esc(cm.mailbox) + '</strong>' + (isAdmin ? ' <button class="btn btn-ghost" id="cm_change" type="button" style="font-size:11px;min-height:26px;">Change</button>' : '') + '</div>';
       var cc = document.getElementById('cm_change'); if (cc) cc.onclick = function () { openMailboxSetup(info); };
       return;
     }
-    if (isAdmin) { el.innerHTML = '<div id="cm_setupwrap" style="background:var(--chrome);border-radius:8px;padding:12px;margin-bottom:12px;"></div>'; openMailboxSetup(info); }
-    else { el.innerHTML = '<div style="background:var(--chrome);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12.5px;color:var(--muted);">No dedicated client mailbox set — emails send from your account. Ask an admin to set one up.</div>' + fromLine; }
+    if (isAdmin) { el.innerHTML = '<div id="cm_setupwrap" class="em-mbx em-mbx-off"></div>'; openMailboxSetup(info); }
+    else { el.innerHTML = '<div class="em-mbx em-mbx-off">No dedicated mailbox for this client — sending from your account. Ask an admin to set one up.</div>'; }
   }
   function openMailboxSetup(info) {
     var wrap = document.getElementById('cm_setupwrap') || document.getElementById('em_mailbox'); if (!wrap) return;
-    var cm = _clientMailbox || {}; var sug = cm.mailbox || suggestMailbox();
+    var cm = _clientMailbox || {};
+    // value = the SAVED mailbox only (never the suggestion) so there is no
+    // pre-selected text to fight with as you type; the suggestion is a placeholder.
     wrap.innerHTML = '<div style="font-weight:700;font-size:13.5px;margin-bottom:6px;">Client mailbox setup</div>' +
-      '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">First create a <strong>shared mailbox</strong> with this address in the Microsoft 365 admin center (free — no license). Then save it here; the app will send from and read this mailbox for this client.</div>' +
-      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;"><input id="cm_addr" value="' + esc(sug) + '" placeholder="mikesrepair@bluecollarcoach.us" style="flex:1;min-width:220px;border:1px solid var(--chrome-mute);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;" />' +
+      '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">Create a <strong>shared mailbox</strong> with this address in the Microsoft 365 admin center (free), then save it here.</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;"><input id="cm_addr" autocomplete="off" spellcheck="false" value="' + esc(cm.mailbox || '') + '" placeholder="' + esc(suggestMailbox() || 'mailbox@bluecollarcoach.us') + '" style="flex:1;min-width:220px;border:1px solid var(--chrome-mute);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;" />' +
       '<button class="btn btn-primary" id="cm_save" type="button">Save mailbox</button>' + (cm.mailbox ? '<button class="btn btn-ghost" id="cm_clear" type="button">Remove</button>' : '') + '</div>' +
       '<div id="cm_status" style="font-size:12px;color:var(--muted);margin-top:6px;"></div>';
-    document.getElementById('cm_save').onclick = function () { saveMailbox(document.getElementById('cm_addr').value.trim(), true, info); };
+    document.getElementById('cm_save').onclick = function () { saveMailbox(document.getElementById('cm_addr').value.trim().toLowerCase(), true, info); };
     var clr = document.getElementById('cm_clear'); if (clr) clr.onclick = function () { saveMailbox('', false, info); };
   }
   function saveMailbox(mailbox, enabled, info) {
     var st = document.getElementById('cm_status'); if (st) st.textContent = 'Saving…';
     fetch('/api/integrations/msgraph/client-mailbox/' + encodeURIComponent(currentRealm), { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mailbox: mailbox, enabled: enabled }) })
       .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
-      .then(function (resp) { if (!resp.ok) throw new Error(resp.error || 'save failed'); _clientMailbox = { mailbox: resp.mailbox, enabled: resp.enabled }; if (window.bccAudit) window.bccAudit('client-mailbox-set', { path: '/bookkeeping.html', meta: { realmId: currentRealm, mailbox: resp.mailbox, enabled: resp.enabled } }); _inboxLoadedFor = null; renderEmail(); })
+      .then(function (resp) { if (!resp.ok) throw new Error(resp.error || 'save failed'); _clientMailbox = { mailbox: resp.mailbox, enabled: resp.enabled }; if (window.bccAudit) window.bccAudit('client-mailbox-set', { path: '/bookkeeping.html', meta: { realmId: currentRealm, mailbox: resp.mailbox, enabled: resp.enabled } }); _emLoadedFor = null; renderEmail(); })
       .catch(function (e) { if (st) st.textContent = 'Save failed: ' + e.message; });
   }
-  function loadInbox() {
-    var box = document.getElementById('em_inbox'); if (!box) return;
-    var q = (document.getElementById('em_search') || {}).value || '';
-    box.innerHTML = '<div style="color:var(--muted);">Loading…</div>';
+
+  function loadEmailMeta() {
+    var realmAt = currentRealm;
+    fetch('/api/bookkeeping/email-meta/' + encodeURIComponent(currentRealm), { credentials: 'include' })
+      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+      .then(function (resp) { if (currentRealm !== realmAt) return; _emMeta = (resp && resp.ok && resp.msgs) || {}; renderEmailList(); })
+      .catch(function () {});
+  }
+  function emMetaOp(messageId, op, value) {
+    return fetch('/api/bookkeeping/email-meta/' + encodeURIComponent(currentRealm), { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ messageId: messageId, op: op, value: value }) })
+      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+      .then(function (resp) { if (resp && resp.ok && resp.msg) { _emMeta[messageId] = resp.msg; renderEmailList(); } return resp; });
+  }
+
+  function loadInbox(force) {
+    var list = document.getElementById('em_list'); if (!list) return;
+    if (!force && _emLoadedFor === currentRealm && _emMsgs.length) { renderEmailList(); return; }
+    list.innerHTML = '<div style="color:var(--muted);">Loading mail…</div>';
+    var realmAt = currentRealm;
     var rid = mailboxActive() ? ('&realmId=' + encodeURIComponent(currentRealm)) : '';
-    fetch('/api/integrations/msgraph/messages?top=25&q=' + encodeURIComponent(q.trim()) + rid, { credentials: 'include' })
+    fetch('/api/integrations/msgraph/messages?top=50' + rid, { credentials: 'include' })
       .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
       .then(function (resp) {
-        if (!resp || !resp.ok) { box.innerHTML = '<div style="color:var(--burgundy);">Inbox unavailable: ' + esc((resp && resp.error) || 'error') + '</div>'; return; }
-        var msgs = resp.messages || [];
-        if (!msgs.length) { box.innerHTML = '<div style="color:var(--muted);padding:8px 0;">No messages found' + (q.trim() ? ' for "' + esc(q.trim()) + '"' : '') + '.</div>'; return; }
-        box.innerHTML = msgs.map(function (m) {
-          var when = m.received ? new Date(m.received).toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }) : '';
-          return '<div class="ws-row" style="align-items:flex-start;' + (!m.isRead ? 'background:var(--gold-fade);' : '') + 'border-radius:6px;padding-left:6px;"><div style="flex:1;min-width:0;">' +
-            '<div style="font-weight:' + (!m.isRead ? '800' : '600') + ';font-size:14px;">' + esc(m.subject) + (m.hasAttachments ? ' 📎' : '') + '</div>' +
-            '<div style="font-size:12px;color:var(--muted);">' + esc(m.fromName || m.from) + ' · ' + esc(when) + '</div>' +
-            '<div style="font-size:12.5px;color:var(--ink);margin-top:3px;">' + esc((m.preview || '').slice(0, 180)) + '</div>' +
-            '</div>' + (m.webLink ? '<a href="' + esc(m.webLink) + '" target="_blank" rel="noopener" class="btn btn-ghost" style="font-size:11px;min-height:28px;text-decoration:none;">Open</a>' : '') + '</div>';
-        }).join('');
+        if (currentRealm !== realmAt) return;
+        if (!resp || !resp.ok) { list.innerHTML = '<div style="color:var(--burgundy);">Mailbox unavailable: ' + esc((resp && resp.error) || 'error') + '</div>'; return; }
+        _emMsgs = resp.messages || []; _emLoadedFor = currentRealm; renderEmailList();
       })
-      .catch(function () { box.innerHTML = '<div style="color:var(--burgundy);">Could not load inbox.</div>'; });
+      .catch(function () { if (currentRealm === realmAt) list.innerHTML = '<div style="color:var(--burgundy);">Could not load mail.</div>'; });
   }
+  function renderEmailList() {
+    var list = document.getElementById('em_list'); if (!list) return;
+    var cnt = document.getElementById('em_count');
+    var q = (_emSearch || '').trim().toLowerCase();
+    var rows = _emMsgs.filter(function (m) {
+      var mt = metaFor(m.id);
+      if (_emFilter === 'archived') { if (!mt.archived) return false; }
+      else if (mt.archived) return false;
+      if (_emFilter === 'unread' && readByMe(m.id)) return false;
+      if (_emFilter === 'mine' && mt.assignedTo !== myUpn()) return false;
+      if (_emFilter === 'tagged' && !(mt.tags && mt.tags.length)) return false;
+      if (q) { var hay = (m.subject + ' ' + (m.fromName || '') + ' ' + (m.from || '') + ' ' + (m.preview || '') + ' ' + ((mt.tags || []).join(' '))).toLowerCase(); if (hay.indexOf(q) < 0) return false; }
+      return true;
+    });
+    if (cnt) cnt.textContent = rows.length + (rows.length === 1 ? ' message' : ' messages');
+    if (!rows.length) { list.innerHTML = '<div style="color:var(--muted);padding:10px 0;">No messages' + (q || _emFilter !== 'all' ? ' match this view' : ' yet') + '.</div>'; return; }
+    list.innerHTML = rows.map(function (m) {
+      var mt = metaFor(m.id);
+      var unread = !readByMe(m.id);
+      var when = m.received ? new Date(m.received).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+      var tags = (mt.tags || []).map(function (t) { return '<span class="fl-chip">' + esc(t) + '</span>'; }).join(' ');
+      var assignee = mt.assignedTo ? '<span class="em-badge em-assign" title="Assigned to ' + esc(emName(mt.assignedTo)) + '">👤 ' + esc(emName(mt.assignedTo)) + '</span>' : '';
+      var readers = Object.keys(mt.readBy || {});
+      var readBy = readers.length ? '<span class="em-readers" title="Read by ' + esc(readers.map(emName).join(', ')) + '">' + readers.slice(0, 4).map(function (u) { return '<span class="em-av">' + esc(emInitials(u)) + '</span>'; }).join('') + '</span>' : '';
+      var replied = (mt.repliedBy && mt.repliedBy.length) ? '<span class="em-badge" title="Replied by ' + esc(mt.repliedBy.map(function (x) { return emName(x.upn); }).join(', ')) + '">↩ replied</span>' : '';
+      return '<div class="em-row' + (unread ? ' em-unread' : '') + '" data-emid="' + esc(m.id) + '">' +
+        '<div class="em-dot"></div>' +
+        '<div style="flex:1;min-width:0;">' +
+          '<div class="em-subj">' + esc(m.subject) + (m.hasAttachments ? ' 📎' : '') + '</div>' +
+          '<div class="em-from">' + esc(m.fromName || m.from) + ' · ' + esc(when) + '</div>' +
+          '<div class="em-prev">' + esc((m.preview || '').slice(0, 160)) + '</div>' +
+          (tags || assignee || replied ? '<div class="em-meta-row">' + tags + ' ' + assignee + ' ' + replied + '</div>' : '') +
+        '</div>' + readBy + '</div>';
+    }).join('');
+    list.querySelectorAll('[data-emid]').forEach(function (r) { r.onclick = function () { openEmail(r.getAttribute('data-emid')); }; });
+  }
+
+  /* ---- Reader / reply modal ---- */
+  var _emEsc = null;
+  function emCloseModal() { var m = document.getElementById('em_modal'); if (m) m.remove(); if (_emEsc) { document.removeEventListener('keydown', _emEsc); _emEsc = null; } }
+  function emWireModal(ov) {
+    document.body.appendChild(ov);
+    ov.addEventListener('click', function (e) { if (e.target === ov) emCloseModal(); });
+    _emEsc = function (e) { if (e.key === 'Escape') emCloseModal(); };
+    document.addEventListener('keydown', _emEsc);
+  }
+  function openEmail(id) {
+    var realmAt = currentRealm;
+    var msg = _emMsgs.filter(function (x) { return x.id === id; })[0] || { id: id, subject: '' };
+    var ov = document.createElement('div'); ov.id = 'em_modal'; ov.className = 'em-modal-ov';
+    ov.innerHTML = '<div class="em-modal"><div class="em-modal-head"><div style="flex:1;min-width:0;"><div class="em-modal-subj">' + esc(msg.subject) + '</div><div class="em-modal-from" id="em_m_from">' + esc(msg.fromName || msg.from || '') + '</div></div><button class="btn btn-ghost" id="em_m_close" type="button" style="font-size:18px;min-height:34px;width:38px;">×</button></div>' +
+      '<div class="em-modal-actions" id="em_m_actions"></div>' +
+      '<div id="em_m_body" class="em-modal-body"><div style="color:var(--muted);padding:20px;">Loading message…</div></div>' +
+      '<div id="em_m_reply"></div></div>';
+    emWireModal(ov);
+    document.getElementById('em_m_close').onclick = emCloseModal;
+    // mark read by me + render the action bar from current meta
+    emMetaOp(id, 'read').then(function () { renderEmailActions(id); });
+    renderEmailActions(id);
+    var rid = mailboxActive() ? ('?realmId=' + encodeURIComponent(currentRealm)) : '';
+    fetch('/api/integrations/msgraph/message/' + encodeURIComponent(id) + rid, { credentials: 'include' })
+      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+      .then(function (resp) {
+        if (currentRealm !== realmAt) return; // user switched clients mid-load — drop stale response
+        var bodyEl = document.getElementById('em_m_body'); if (!bodyEl) return;
+        if (!resp || !resp.ok) { bodyEl.innerHTML = '<div style="color:var(--burgundy);padding:20px;">Could not load this message.</div>'; return; }
+        var m = resp.message;
+        var fromEl = document.getElementById('em_m_from');
+        if (fromEl) fromEl.innerHTML = esc(m.fromName ? (m.fromName + ' <' + m.from + '>') : m.from) + '<br><span style="color:var(--muted);">To: ' + esc((m.to || []).join(', ')) + (m.cc && m.cc.length ? ' · Cc: ' + esc(m.cc.join(', ')) : '') + '</span>';
+        var att = (m.attachments && m.attachments.length) ? '<div class="em-att">📎 ' + m.attachments.map(function (a) { return esc(a.name); }).join(', ') + '</div>' : '';
+        bodyEl.innerHTML = att;
+        var ifr = document.createElement('iframe');
+        ifr.className = 'em-body-frame';
+        ifr.setAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox'); // NO allow-scripts: neutralizes any JS in the email
+        var head = '<base target="_blank"><meta charset="utf-8"><style>body{font:14px/1.55 Inter,system-ui,Arial,sans-serif;color:#1a1a1a;margin:12px;word-wrap:break-word;}img{max-width:100%;height:auto;}</style>';
+        ifr.srcdoc = head + (m.bodyType === 'html' ? (m.bodyContent || '') : ('<pre style="white-space:pre-wrap;font:inherit;">' + esc(m.bodyContent || '') + '</pre>'));
+        bodyEl.appendChild(ifr);
+      })
+      .catch(function () { var b = document.getElementById('em_m_body'); if (b) b.innerHTML = '<div style="color:var(--burgundy);padding:20px;">Could not load this message.</div>'; });
+  }
+  function renderEmailActions(id) {
+    var bar = document.getElementById('em_m_actions'); if (!bar) return;
+    var mt = metaFor(id);
+    var people = emPeople();
+    var assignOpts = '<option value="">— Assign to —</option>' + people.map(function (p) { return '<option value="' + esc(p.upn) + '"' + (mt.assignedTo === p.upn ? ' selected' : '') + '>' + esc(p.name) + '</option>'; }).join('');
+    bar.innerHTML =
+      '<button class="btn btn-primary" id="em_a_reply" type="button">↩ Reply</button>' +
+      '<button class="btn btn-ghost" id="em_a_replyall" type="button">↩ Reply all</button>' +
+      '<select id="em_a_assign" class="em-mini-sel">' + assignOpts + '</select>' +
+      '<button class="btn btn-ghost" id="em_a_tag" type="button">🏷 Tag</button>' +
+      '<button class="btn btn-ghost" id="em_a_archive" type="button">' + (mt.archived ? '📂 Unarchive' : '🗄 Archive') + '</button>' +
+      '<button class="btn btn-ghost" id="em_a_unread" type="button">Mark unread</button>' +
+      (mt.tags && mt.tags.length ? '<div style="flex-basis:100%;margin-top:4px;">' + mt.tags.map(function (t) { return '<span class="fl-chip" style="cursor:pointer;" data-untag="' + esc(t) + '" title="Remove tag">' + esc(t) + ' ✕</span>'; }).join(' ') + '</div>' : '');
+    document.getElementById('em_a_reply').onclick = function () { openReply(id, false); };
+    document.getElementById('em_a_replyall').onclick = function () { openReply(id, true); };
+    document.getElementById('em_a_assign').onchange = function () { emMetaOp(id, 'assign', this.value).then(function () { renderEmailActions(id); }); };
+    document.getElementById('em_a_tag').onclick = function () { var t = prompt('Add a tag / category:'); if (t && t.trim()) emMetaOp(id, 'tagAdd', t.trim()).then(function () { renderEmailActions(id); }); };
+    document.getElementById('em_a_archive').onclick = function () { emMetaOp(id, 'archive', !mt.archived).then(function () { renderEmailActions(id); }); };
+    document.getElementById('em_a_unread').onclick = function () { emMetaOp(id, 'unread').then(emCloseModal); };
+    bar.querySelectorAll('[data-untag]').forEach(function (c) { c.onclick = function () { emMetaOp(id, 'tagRemove', c.getAttribute('data-untag')).then(function () { renderEmailActions(id); }); }; });
+  }
+  function openReply(id, replyAll) {
+    var box = document.getElementById('em_m_reply'); if (!box) return;
+    var sig = getSig();
+    box.innerHTML = '<div class="em-reply"><div style="font-weight:700;font-size:12.5px;margin-bottom:6px;">' + (replyAll ? 'Reply all' : 'Reply') + '</div>' +
+      '<textarea id="em_r_body" rows="6" placeholder="Write your reply…">' + (sig ? ('\n\n' + esc(sig)) : '') + '</textarea>' +
+      '<div style="display:flex;gap:8px;align-items:center;margin-top:8px;"><button class="btn btn-primary" id="em_r_send" type="button">Send reply</button><button class="btn btn-ghost" id="em_r_cancel" type="button">Cancel</button><span id="em_r_status" style="font-size:12px;color:var(--muted);"></span></div></div>';
+    document.getElementById('em_r_cancel').onclick = function () { box.innerHTML = ''; };
+    var ta = document.getElementById('em_r_body'); ta.focus(); ta.setSelectionRange(0, 0);
+    document.getElementById('em_r_send').onclick = function () {
+      var btn = this, txt = document.getElementById('em_r_body').value, st = document.getElementById('em_r_status');
+      btn.disabled = true; st.textContent = 'Sending…';
+      var html = esc(txt).replace(/\n/g, '<br>');
+      fetch('/api/integrations/msgraph/reply', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ realmId: mailboxActive() ? currentRealm : undefined, messageId: id, body: html, replyAll: !!replyAll }) })
+        .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
+        .then(function (resp) {
+          if (resp && resp.ok === false) throw new Error(resp.error || 'reply failed');
+          emMetaOp(id, 'replied');
+          if (window.bccAudit) window.bccAudit('client-email-send', { path: '/bookkeeping.html', meta: { realmId: currentRealm, kind: 'reply' } });
+          if (window.bccNotifySaved) window.bccNotifySaved('Reply sent.');
+          emCloseModal();
+        })
+        .catch(function (e) { btn.disabled = false; st.textContent = 'Failed: ' + e.message; });
+    };
+  }
+
+  function openSigEditor() {
+    var ov = document.createElement('div'); ov.id = 'em_modal'; ov.className = 'em-modal-ov';
+    ov.innerHTML = '<div class="em-modal" style="max-width:560px;"><div class="em-modal-head"><div class="em-modal-subj">My email signature</div><button class="btn btn-ghost" id="sig_close" type="button" style="font-size:18px;min-height:34px;width:38px;">×</button></div>' +
+      '<div style="padding:16px;"><div style="font-size:12.5px;color:var(--muted);margin-bottom:8px;">Appended to your emails &amp; replies (just for you).</div>' +
+      '<textarea id="sig_body" rows="6" style="width:100%;border:1px solid var(--chrome-mute);border-radius:8px;padding:10px;font:inherit;font-size:14px;">' + esc(getSig()) + '</textarea>' +
+      '<div style="margin-top:10px;"><button class="btn btn-primary" id="sig_save" type="button">Save signature</button> <span id="sig_status" style="font-size:12px;color:var(--muted);"></span></div></div></div>';
+    emWireModal(ov);
+    document.getElementById('sig_close').onclick = emCloseModal;
+    document.getElementById('sig_save').onclick = function () { setSig(document.getElementById('sig_body').value); var s = document.getElementById('sig_status'); if (s) s.textContent = 'Saved'; if (window.bccNotifySaved) window.bccNotifySaved('Signature saved.'); };
+  }
+
   function sendClientEmail() {
     var to = parseAddrs(document.getElementById('em_to').value); if (!to.length) { (window.bccNotify || alert)('Add at least one valid recipient.', 'warn'); return; }
     var cc = parseAddrs(document.getElementById('em_cc').value);
     var subject = document.getElementById('em_subject').value.trim() || '(no subject)';
     var bodyText = document.getElementById('em_body').value;
-    var html = esc(bodyText).replace(/\n/g, '<br>');
+    var sig = getSig(); var full = bodyText + (sig ? ('\n\n' + sig) : '');
+    var html = esc(full).replace(/\n/g, '<br>');
     var btn = document.getElementById('em_send'), st = document.getElementById('em_status'); var ot = btn.textContent; btn.disabled = true; btn.textContent = 'Sending…'; st.textContent = '';
     var payload = { to: to, subject: subject, bodyHtml: html }; if (cc.length) payload.cc = cc;
     var usingMailbox = mailboxActive(); if (usingMailbox) payload.realmId = currentRealm;
@@ -1931,7 +2134,10 @@
         localStorage.setItem(id, JSON.stringify({ id: id, tenantId: 'blue-collar-coach', docType: 'client-email', realmId: currentRealm, from: (usingMailbox && _clientMailbox ? _clientMailbox.mailbox : myUpn()), to: to, cc: cc, subject: subject, bodyText: bodyText, sentAt: nowIso(), sentBy: myUpn(), status: 'sent' }));
         if (window.bccAudit) window.bccAudit('client-email-send', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm, recipients: to.length } });
         if (window.bccNotifySaved) window.bccNotifySaved('Email sent.');
-        renderEmail();
+        btn.disabled = false; btn.textContent = ot;
+        document.getElementById('em_subject').value = ''; document.getElementById('em_body').value = '';
+        var comp = document.getElementById('em_compose'); if (comp) comp.open = false;
+        setTimeout(function () { loadInbox(true); }, 1500);
       })
       .catch(function (e) { st.textContent = 'Send failed: ' + e.message; btn.disabled = false; btn.textContent = ot; });
   }

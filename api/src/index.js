@@ -45,7 +45,7 @@ const ADMIN_KEYS      = new Set(['bcc-admin-config-v1']); // writable only by us
 // tokens (bcc-qbo-company-*, bcc-clientdrive-*), per-client mailbox config, and
 // server-only time. The generic /api/data path must NEVER create, overwrite, or
 // delete these (they each have an admin/allow-list-gated endpoint of their own).
-const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-'];
+const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-emailmeta-'];
 function isProtectedServerKey(k) { return PROTECTED_KEY_PREFIXES.some(pre => String(k || '').startsWith(pre)); }
 
 // Email-domain allowlist used by /api/users when filtering the Graph tenant
@@ -2246,6 +2246,127 @@ app.http('msgraph-messages', {
     } catch (e) {
       return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } };
     }
+  })
+});
+
+/**
+ * GET /api/integrations/msgraph/message/{id}?realmId=
+ * Full single message (HTML body + headers + attachment list) so a bookkeeper can
+ * read it entirely in-app. Access-gated + routed to the client mailbox.
+ */
+app.http('msgraph-message-get', {
+  methods: ['GET'], authLevel: 'anonymous', route: 'integrations/msgraph/message/{id}',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    try {
+      const u = new URL(request.url); const realmId = u.searchParams.get('realmId');
+      let upn;
+      if (realmId) {
+        const rc = await resolveClientMailbox(p, realmId); if (rc.err) return rc.err;
+        if (!rc.cfg || !rc.cfg.mailbox || rc.cfg.enabled === false) return badRequest('no client mailbox configured');
+        upn = encodeURIComponent(rc.cfg.mailbox);
+      } else { upn = encodeURIComponent(p.userDetails || p.userId); }
+      const access = await getGraphToken();
+      const id = encodeURIComponent(request.params.id);
+      const sel = 'id,subject,from,toRecipients,ccRecipients,receivedDateTime,body,isRead,webLink,hasAttachments,conversationId';
+      const r = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + id + '?$select=' + sel, { headers: { Authorization: 'Bearer ' + access } });
+      if (!r.ok) { const detail = (await r.text()).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')', detail } }; }
+      const m = await r.json();
+      let attachments = [];
+      if (m.hasAttachments) {
+        try {
+          const ar = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + id + '/attachments?$select=id,name,contentType,size', { headers: { Authorization: 'Bearer ' + access } });
+          if (ar.ok) { const aj = await ar.json(); attachments = (aj.value || []).map(a => ({ id: a.id, name: a.name, contentType: a.contentType, size: a.size })); }
+        } catch (_) {}
+      }
+      return { jsonBody: { ok: true, message: {
+        id: m.id, subject: m.subject || '(no subject)',
+        from: (m.from && m.from.emailAddress && m.from.emailAddress.address) || '',
+        fromName: (m.from && m.from.emailAddress && m.from.emailAddress.name) || '',
+        to: (m.toRecipients || []).map(x => x.emailAddress && x.emailAddress.address).filter(Boolean),
+        cc: (m.ccRecipients || []).map(x => x.emailAddress && x.emailAddress.address).filter(Boolean),
+        received: m.receivedDateTime || '', isRead: !!m.isRead, webLink: m.webLink || '',
+        bodyType: (m.body && m.body.contentType) || 'text', bodyContent: (m.body && m.body.content) || '',
+        hasAttachments: !!m.hasAttachments, attachments
+      } } };
+    } catch (e) { context.error('msgraph-message-get', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+
+/**
+ * POST /api/integrations/msgraph/reply  { realmId, messageId, body, replyAll }
+ * Replies in-thread from the client mailbox (no Outlook needed). Access-gated.
+ */
+app.http('msgraph-reply', {
+  methods: ['POST'], authLevel: 'anonymous', route: 'integrations/msgraph/reply',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    try {
+      const b = await request.json().catch(() => ({}));
+      const messageId = String(b.messageId || ''); if (!messageId) return badRequest('messageId required');
+      let upn;
+      if (b.realmId) {
+        const rc = await resolveClientMailbox(p, String(b.realmId)); if (rc.err) return rc.err;
+        if (!rc.cfg || !rc.cfg.mailbox || rc.cfg.enabled === false) return badRequest('no client mailbox configured');
+        upn = encodeURIComponent(rc.cfg.mailbox);
+      } else { upn = encodeURIComponent(p.userDetails || p.userId); }
+      const access = await getGraphToken();
+      const action = b.replyAll ? 'replyAll' : 'reply';
+      const r = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + encodeURIComponent(messageId) + '/' + action, {
+        method: 'POST', headers: { Authorization: 'Bearer ' + access, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ comment: String(b.body || '') })
+      });
+      if (!r.ok && r.status !== 202) { const detail = (await r.text()).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')', detail } }; }
+      return { jsonBody: { ok: true } };
+    } catch (e) { context.error('msgraph-reply', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+
+/**
+ * Per-client email COLLABORATION metadata (who-read / who-replied / tags /
+ * assignment / archive), keyed by Graph message id. Stored server-side as
+ * bcc-emailmeta-<realm> (a map). Access-gated; optimistic-concurrency on write.
+ *   GET  /api/bookkeeping/email-meta/{realmId}            -> { ok, msgs }
+ *   POST /api/bookkeeping/email-meta/{realmId}  { messageId, op, value }
+ */
+app.http('email-meta', {
+  methods: ['GET', 'POST'], authLevel: 'anonymous', route: 'bookkeeping/email-meta/{realmId}',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    const realmId = request.params.realmId;
+    const rc = await resolveClientMailbox(p, realmId); if (rc.err) return rc.err;
+    const c = container(); const id = 'bcc-emailmeta-' + realmId;
+    const who = String(p.userDetails || p.userId || '').toLowerCase();
+    if (request.method === 'GET') {
+      const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      return { jsonBody: { ok: true, msgs: (doc && doc.msgs) || {} } };
+    }
+    const b = await request.json().catch(() => ({}));
+    const messageId = String(b.messageId || ''); const op = String(b.op || '');
+    if (!messageId || !op) return badRequest('messageId and op required');
+    const now = new Date().toISOString();
+    // read-modify-write with one optimistic retry on a concurrent change.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const existing = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      const doc = existing || { id, tenantId: BCC_TENANT_ID, docType: 'email-meta', realmId, msgs: {} };
+      if (!doc.msgs) doc.msgs = {};
+      const m = doc.msgs[messageId] || (doc.msgs[messageId] = { tags: [], assignedTo: '', archived: false, readBy: {}, repliedBy: [] });
+      if (op === 'read') { m.readBy = m.readBy || {}; if (!m.readBy[who]) m.readBy[who] = now; }
+      else if (op === 'unread') { if (m.readBy) delete m.readBy[who]; }
+      else if (op === 'replied') { m.repliedBy = m.repliedBy || []; m.repliedBy.push({ upn: who, at: now }); }
+      else if (op === 'tagAdd') { const t = String(b.value || '').trim(); if (t) { m.tags = m.tags || []; if (m.tags.map(x => x.toLowerCase()).indexOf(t.toLowerCase()) < 0) m.tags.push(t); } }
+      else if (op === 'tagRemove') { const t = String(b.value || '').toLowerCase(); m.tags = (m.tags || []).filter(x => x.toLowerCase() !== t); }
+      else if (op === 'assign') { m.assignedTo = String(b.value || '').toLowerCase(); }
+      else if (op === 'archive') { m.archived = !!b.value; }
+      else return badRequest('unknown op');
+      doc.updatedAt = now;
+      try {
+        if (existing && existing._etag) await c.item(id, BCC_TENANT_ID).replace(doc, { accessCondition: { type: 'IfMatch', condition: existing._etag } });
+        else await c.items.create(doc);
+        return { jsonBody: { ok: true, msg: doc.msgs[messageId] } };
+      } catch (e) { if ((e.code === 412 || e.code === 409) && attempt === 0) continue; throw e; }
+    }
+    return { status: 409, jsonBody: { ok: false, error: 'conflict, retry' } };
   })
 });
 
