@@ -231,6 +231,13 @@
   /* Clickable "Bookkeeping" wordmark / title → back to home. */
   .bk-home { transition:color .12s ease; }
   .bk-home:hover { color:var(--gold-deep); text-decoration:underline; }
+
+  /* Internal-files search / filter / sort toolbar. */
+  .fl-toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+  .fl-toolbar input[type=search] { flex:1 1 200px; min-width:150px; border:1px solid var(--chrome-mute); border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; }
+  .fl-toolbar select { border:1px solid var(--chrome-mute); border-radius:8px; padding:8px 10px; font:inherit; font-size:13px; color:var(--ink); background:#fff; }
+  .fl-count { font-size:12px; color:var(--muted); white-space:nowrap; margin-left:auto; }
+  .fl-chip { display:inline-block; padding:1px 8px; border-radius:10px; background:var(--gold-fade); color:var(--gold-deep); font-size:11px; font-weight:700; margin:1px 2px 1px 0; }
 </style>
 <script src="bcc-api.js" defer></script>
 </head>
@@ -1608,11 +1615,20 @@
           '<span class="fs-pill fs-pill-priv">🔒 Private to BCC</span>' +
         '</div>' +
         '<div class="fs-body">' +
-          '<div class="ws-form" style="margin-bottom:12px;"><label class="full">Upload a private file<input type="file" id="fl_file" /></label><label class="full">Tags (comma-separated)<input id="fl_tags" placeholder="e.g. w-9, contract, bank-statement" /></label><div class="full"><button class="btn btn-primary" id="fl_up" type="button">Upload to internal</button> <span id="fl_status" style="font-size:12px;color:var(--muted);"></span></div></div>' +
+          '<div class="ws-form" style="margin-bottom:14px;"><label class="full">Upload a private file<input type="file" id="fl_file" /></label><label class="full">Categories / tags (comma-separated)<input id="fl_tags" list="fl_taglist" placeholder="e.g. w-9, contract, bank-statement" /><datalist id="fl_taglist"></datalist></label><div class="full"><button class="btn btn-primary" id="fl_up" type="button">Upload to internal</button> <span id="fl_status" style="font-size:12px;color:var(--muted);"></span></div></div>' +
+          '<div id="fl_toolbar" class="fl-toolbar" style="display:none;">' +
+            '<input id="fl_search" type="search" placeholder="🔍 Search files & tags…" />' +
+            '<select id="fl_tagfilter"><option value="">All categories</option></select>' +
+            '<select id="fl_sort"><option value="new">Newest first</option><option value="old">Oldest first</option><option value="az">Name A–Z</option><option value="za">Name Z–A</option><option value="big">Largest</option><option value="small">Smallest</option></select>' +
+            '<span id="fl_count" class="fl-count"></span>' +
+          '</div>' +
           '<div id="fl_list"><div style="color:var(--muted);">Loading files…</div></div>' +
         '</div>' +
       '</div>';
     document.getElementById('fl_up').onclick = uploadFile;
+    ['fl_search', 'fl_tagfilter', 'fl_sort'].forEach(function (id) {
+      var el = document.getElementById(id); if (el) el.addEventListener(id === 'fl_search' ? 'input' : 'change', renderIntFiles);
+    });
     loadFiles();
     loadDrive();
   }
@@ -1703,19 +1719,63 @@
       .then(function (resp) { if (!resp.ok) throw new Error(resp.error || 'upload failed'); if (window.bccNotifySaved) window.bccNotifySaved('Uploaded to the shared drive.'); loadDriveFiles(); })
       .catch(function (e) { (window.bccNotify || alert)('Upload failed: ' + e.message, 'error', 7000); });
   }
+  var _intFiles = [];
+  function fileTags(it) { return String(it.tags || '').split(',').map(function (t) { return t.trim(); }).filter(Boolean); }
   function loadFiles() {
     var list = document.getElementById('fl_list'); if (!list) return;
+    var realmAt = currentRealm;
     fetch('/api/documents', { credentials: 'include' }).then(function (r) { return r.ok ? r.json() : { items: [] }; }).then(function (d) {
+      if (currentRealm !== realmAt) return;
       var folder = clientFolder();
-      var items = ((d && d.items) || []).filter(function (it) { return (it.folder || '') === folder; }).sort(function (a, b) { return (b.createdAt || '').localeCompare(a.createdAt || ''); });
-      if (!items.length) { list.innerHTML = '<div style="color:var(--muted);padding:8px 0;">No files yet for this client.</div>'; return; }
-      list.innerHTML = '<table><thead><tr><th>Name</th><th>Tags</th><th class="num">Size</th><th>Uploaded</th><th></th></tr></thead><tbody>' + items.map(function (it) {
-        var kb = it.sizeBytes ? Math.max(1, Math.round(it.sizeBytes / 1024)) : 0;
-        var when = it.createdAt ? new Date(it.createdAt).toLocaleDateString([], { month:'short', day:'numeric', year:'numeric' }) : '';
-        return '<tr><td><a href="/api/documents/' + encodeURIComponent(it.id) + '/download" style="color:var(--gold-deep);font-weight:600;">' + esc(it.name) + '</a></td><td style="font-size:12px;color:var(--muted);">' + esc(it.tags || '') + '</td><td class="num">' + kb + ' KB</td><td style="font-size:12px;color:var(--muted);">' + esc(when) + '</td><td style="text-align:right;"><button class="btn btn-ghost" data-fdel="' + esc(it.id) + '" type="button" style="font-size:11px;min-height:28px;">Delete</button></td></tr>';
-      }).join('') + '</tbody></table>';
-      list.querySelectorAll('[data-fdel]').forEach(function (b) { b.onclick = function () { delFile(b.getAttribute('data-fdel')); }; });
+      _intFiles = ((d && d.items) || []).filter(function (it) { return (it.folder || '') === folder; });
+      // Distinct categories/tags across this client's files → filter dropdown + upload autocomplete.
+      var seen = {}, tags = [];
+      _intFiles.forEach(function (it) { fileTags(it).forEach(function (t) { var k = t.toLowerCase(); if (!seen[k]) { seen[k] = 1; tags.push(t); } }); });
+      tags.sort(function (a, b) { return a.toLowerCase().localeCompare(b.toLowerCase()); });
+      var sel = document.getElementById('fl_tagfilter');
+      if (sel) { var keep = sel.value; sel.innerHTML = '<option value="">All categories</option>' + tags.map(function (t) { return '<option value="' + esc(t.toLowerCase()) + '">' + esc(t) + '</option>'; }).join(''); if (tags.some(function (t) { return t.toLowerCase() === keep; })) sel.value = keep; }
+      var dl = document.getElementById('fl_taglist'); if (dl) dl.innerHTML = tags.map(function (t) { return '<option value="' + esc(t) + '">'; }).join('');
+      renderIntFiles();
     }).catch(function () { list.innerHTML = '<div style="color:var(--burgundy);">Could not load files.</div>'; });
+  }
+  function renderIntFiles() {
+    var list = document.getElementById('fl_list'); if (!list) return;
+    var bar = document.getElementById('fl_toolbar');
+    var countEl = document.getElementById('fl_count');
+    if (!_intFiles.length) {
+      if (bar) bar.style.display = 'none';
+      list.innerHTML = '<div style="color:var(--muted);padding:8px 0;">No files yet for this client. Upload one above.</div>';
+      return;
+    }
+    if (bar) bar.style.display = 'flex';
+    var q = (document.getElementById('fl_search') || {}).value || '';
+    var tag = (document.getElementById('fl_tagfilter') || {}).value || '';
+    var sort = (document.getElementById('fl_sort') || {}).value || 'new';
+    q = q.trim().toLowerCase();
+    var rows = _intFiles.filter(function (it) {
+      if (tag && fileTags(it).map(function (t) { return t.toLowerCase(); }).indexOf(tag) < 0) return false;
+      if (q) { var hay = (String(it.name || '') + ' ' + String(it.tags || '')).toLowerCase(); if (hay.indexOf(q) < 0) return false; }
+      return true;
+    });
+    rows.sort(function (a, b) {
+      switch (sort) {
+        case 'old': return (a.createdAt || '').localeCompare(b.createdAt || '');
+        case 'az': return String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' });
+        case 'za': return String(b.name || '').localeCompare(String(a.name || ''), undefined, { sensitivity: 'base' });
+        case 'big': return (b.sizeBytes || 0) - (a.sizeBytes || 0);
+        case 'small': return (a.sizeBytes || 0) - (b.sizeBytes || 0);
+        default: return (b.createdAt || '').localeCompare(a.createdAt || '');
+      }
+    });
+    if (countEl) countEl.textContent = rows.length + (rows.length === 1 ? ' file' : ' files') + (rows.length !== _intFiles.length ? (' of ' + _intFiles.length) : '');
+    if (!rows.length) { list.innerHTML = '<div style="color:var(--muted);padding:8px 0;">No files match your search/filter.</div>'; return; }
+    list.innerHTML = '<table><thead><tr><th>Name</th><th>Categories</th><th class="num">Size</th><th>Uploaded</th><th></th></tr></thead><tbody>' + rows.map(function (it) {
+      var kb = it.sizeBytes ? Math.max(1, Math.round(it.sizeBytes / 1024)) : 0;
+      var when = it.createdAt ? new Date(it.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+      var chips = fileTags(it).map(function (t) { return '<span class="fl-chip">' + esc(t) + '</span>'; }).join(' ');
+      return '<tr><td><a class="fs-file" href="/api/documents/' + encodeURIComponent(it.id) + '/download">' + esc(it.name) + '</a></td><td>' + (chips || '<span style="color:var(--muted);font-size:12px;">—</span>') + '</td><td class="num">' + kb + ' KB</td><td style="font-size:12px;color:var(--muted);white-space:nowrap;">' + esc(when) + '</td><td style="text-align:right;"><button class="btn btn-ghost" data-fdel="' + esc(it.id) + '" type="button" style="font-size:11px;min-height:28px;">Delete</button></td></tr>';
+    }).join('') + '</tbody></table>';
+    list.querySelectorAll('[data-fdel]').forEach(function (b) { b.onclick = function () { delFile(b.getAttribute('data-fdel')); }; });
   }
   function uploadFile() {
     var fi = document.getElementById('fl_file'); var f = fi.files[0]; if (!f) { (window.bccNotify || alert)('Pick a file first.', 'warn'); return; }
@@ -2276,7 +2336,7 @@
           if (dr === 'connected') { if (window.bccNotifySaved) window.bccNotifySaved('Shared drive connected.'); }
           else if (window.bccNotify) window.bccNotify('Drive connect failed: ' + (dq.get('detail') || ''), 'warn', 7000);
           var rid = dq.get('realmId');
-          if (rid) { currentRealm = rid; currentTab = 'files'; renderAll(); }
+          if (rid) { currentRealm = rid; renderAll(); setSection('files'); } // setSection AFTER renderAll so the realm-change tab reset doesn't clobber it
         }
       } catch (_) {}
     });

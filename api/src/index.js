@@ -41,6 +41,12 @@ const COSMOS_DB       = process.env.COSMOS_DB || 'bcc-connect';
 const COSMOS_CONTAINER = process.env.COSMOS_CONTAINER || 'data';
 const BCC_TENANT_ID    = process.env.BCC_TENANT_ID || 'blue-collar-coach';
 const ADMIN_KEYS      = new Set(['bcc-admin-config-v1']); // writable only by users with 'administrator' role
+// Docs managed exclusively by dedicated, access-gated endpoints — OAuth refresh
+// tokens (bcc-qbo-company-*, bcc-clientdrive-*), per-client mailbox config, and
+// server-only time. The generic /api/data path must NEVER create, overwrite, or
+// delete these (they each have an admin/allow-list-gated endpoint of their own).
+const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-'];
+function isProtectedServerKey(k) { return PROTECTED_KEY_PREFIXES.some(pre => String(k || '').startsWith(pre)); }
 
 // Email-domain allowlist used by /api/users when filtering the Graph tenant
 // directory down to BCC employees (drops guests / external members so they
@@ -309,6 +315,7 @@ app.http('data', {
         let touchesIntegration = false;
         for (const it of items) {
           if (!isPcKey(it.key)) return badRequest('invalid key: ' + it.key);
+          if (isProtectedServerKey(it.key)) return forbidden('this record is managed by a secure endpoint and cannot be written here');
           if (ADMIN_KEYS.has(it.key)) touchesAdminKey = true;
           if (it.key.startsWith('bcc-integration-')) touchesIntegration = true;
         }
@@ -344,7 +351,9 @@ app.http('data', {
       if (method === 'DELETE') {
         if (!key) return badRequest('key required');
         if (!isPcKey(key)) return badRequest('invalid key');
+        if (isProtectedServerKey(key)) return forbidden('this record is managed by a secure endpoint and cannot be deleted here');
         if (ADMIN_KEYS.has(key) && !(await isAppAdmin(p))) return forbidden();
+        if (key.startsWith('bcc-integration-') && !(await isAppAdmin(p))) return forbidden('only administrators may delete integration credentials');
         try { await c.item(key, BCC_TENANT_ID).delete(); } catch (e) { if (e.code !== 404) throw e; }
         if (ADMIN_KEYS.has(key)) invalidateAdminCfgCache();
         return { status: 204 };
@@ -569,6 +578,10 @@ app.http('audit', {
       // (server-side HTTP request log) rows for this tenant, so the
       // activity log table can show the full picture in one view.
       if (!domainAllowed(p)) return domainBlocked();
+      // Firm-wide activity (every user's actions, IPs, paths) is admin-only — the
+      // client-side passphrase is not a server-side control. Per-client activity
+      // for bookkeepers goes through the access-gated /api/audit/client/{realmId}.
+      if (!(await isAppAdmin(p))) return forbidden('admin only');
       const url = new URL(request.url);
       const limit = Math.max(1, Math.min(parseInt(url.searchParams.get('limit') || '500', 10) || 500, 2000));
       const since = url.searchParams.get('since');
@@ -1167,6 +1180,26 @@ function driveVerifyState(state, uid) {
     return realmId;
   } catch (e) { return null; }
 }
+// Generic tamper-proof OAuth state for the QBO + MS Graph callbacks: HMAC-sign a
+// small JSON payload ({upn,env,t}) so a callback can't be forged or replayed and
+// the saved token is bound to the user who started the flow.
+function signOAuthState(obj) {
+  const body = Buffer.from(JSON.stringify(obj)).toString('base64url');
+  const sig = crypto.createHmac('sha256', driveStateSecret()).update(body).digest('base64url').slice(0, 24);
+  return body + '.' + sig;
+}
+function verifyOAuthState(state) {
+  try {
+    const s = String(state || ''); const i = s.lastIndexOf('.');
+    if (i < 1) return null;
+    const body = s.slice(0, i), sig = s.slice(i + 1);
+    const expect = crypto.createHmac('sha256', driveStateSecret()).update(body).digest('base64url').slice(0, 24);
+    if (!sig || sig.length !== expect.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expect))) return null;
+    const obj = JSON.parse(Buffer.from(body, 'base64url').toString());
+    if (!obj || !obj.t || (Date.now() - Number(obj.t)) > 15 * 60 * 1000) return null;
+    return obj;
+  } catch (e) { return null; }
+}
 function driveBack(realmId, msg) { return { status: 302, headers: { Location: '/bookkeeping.html?drive=' + (msg ? 'error' : 'connected') + (realmId ? ('&realmId=' + encodeURIComponent(realmId)) : '') + (msg ? ('&detail=' + encodeURIComponent(String(msg).slice(0, 120))) : '') } }; }
 async function driveAppCreds(provider) {
   if (provider === 'google') { const f = await getIntegrationFields('google-drive'); const id = f.clientId || f.client_id, secret = f.clientSecret || f.client_secret; return { provider, clientId: id, clientSecret: secret, ok: !!(id && secret) }; }
@@ -1450,6 +1483,7 @@ app.http('integrations-test', {
     if (!p) return unauthorized();
     if (!domainAllowed(p)) return domainBlocked();
     const channel = String(request.params.channel || '').toLowerCase();
+    if (!(await isAppAdmin(p))) return forbidden('admin only');
 
     try {
       const fields = await getIntegrationFields(channel);
@@ -1624,6 +1658,7 @@ app.http('integrations-notify', {
     if (!domainAllowed(p)) return domainBlocked();
     const channel = String(request.params.channel || '').toLowerCase();
     if (channel !== 'slack' && channel !== 'teams') return badRequest('only slack and teams supported');
+    if (!(await isAppAdmin(p))) return forbidden('admin only');
 
     try {
       const fields = await getIntegrationFields(channel);
@@ -1721,8 +1756,11 @@ app.http('integrations-qbo-sync', {
       const out = [];
 
       for (const comp of companyDocs) {
-        const env = comp.environment === 'production' ? 'production'
-                  : (fields.environment === 'production' ? 'production' : 'sandbox');
+        // comp.environment is authoritative (stamped at connect time). The shared
+        // connector field must NOT override a company upward to production —
+        // otherwise flipping the connector to production re-points existing
+        // sandbox companies at live books with a sandbox token.
+        const env = comp.environment === 'production' ? 'production' : 'sandbox';
         const base = env === 'production' ? 'https://quickbooks.api.intuit.com' : 'https://sandbox-quickbooks.api.intuit.com';
 
         // refresh token → access token (per company)
@@ -1734,7 +1772,14 @@ app.http('integrations-qbo-sync', {
         if (!tokR.ok) { out.push({ realmId: comp.realmId, companyName: comp.companyName, error: 'token refresh failed (' + tokR.status + ')' }); continue; }
         const tok = await tokR.json();
         const accessToken = tok.access_token;
-        if (tok.refresh_token && tok.refresh_token !== comp.refreshToken) comp.refreshToken = tok.refresh_token; // rotation
+        if (tok.refresh_token && tok.refresh_token !== comp.refreshToken) {
+          // Persist the rotated token NOW — before the 12 report calls below — so a
+          // later throw can't lose it (Intuit has already invalidated the old one).
+          comp.refreshToken = tok.refresh_token;
+          comp.updatedAt = new Date().toISOString();
+          try { await c.items.upsert(comp); }
+          catch (e) { console.error('qbo-sync refresh-token persist FAILED for realm ' + comp.realmId + ':', e && e.message || e); }
+        }
 
         // last 12 calendar months of P&L
         const periods = [];
@@ -1891,8 +1936,8 @@ app.http('msgraph-connect', {
     const tenantId = process.env.AZURE_TENANT_ID;
     const origin = publicOrigin(request);
     const redirectUri = origin + '/api/integrations/msgraph/callback';
-    // state = base64-encoded upn so the callback knows who to attach the token to
-    const state = Buffer.from(JSON.stringify({ upn: p.userDetails || p.userId, t: Date.now() })).toString('base64url');
+    // Signed state binds the saved token to the user who started the flow.
+    const state = signOAuthState({ upn: p.userDetails || p.userId, t: Date.now() });
     const authUrl = msGraphTenantAuthUrl(tenantId) + '/oauth2/v2.0/authorize?' + new URLSearchParams({
       client_id: clientId,
       response_type: 'code',
@@ -1915,12 +1960,21 @@ app.http('msgraph-callback', {
     const code = url.searchParams.get('code');
     const state = url.searchParams.get('state');
     const err = url.searchParams.get('error');
+    const p = principal(request);
     if (err) return { status: 302, headers: { Location: '/admin.html?msgraph=' + encodeURIComponent(err) } };
     if (!code || !state) return { status: 400, jsonBody: { error: 'missing code or state' } };
     try {
-      let stateObj = {};
-      try { stateObj = JSON.parse(Buffer.from(state, 'base64url').toString('utf8')); } catch (_) {}
-      const upn = stateObj.upn || (principal(request) && principal(request).userDetails) || '';
+      // Require a valid HMAC-signed state; bind the saved token to the UPN carried
+      // in that tamper-proof state (an attacker can no longer choose the UPN). The
+      // principal cookie is enforced only when present on the redirect.
+      const st = verifyOAuthState(state);
+      if (!st || !st.upn) {
+        return { status: 302, headers: { Location: '/admin.html?msgraph=error&detail=' + encodeURIComponent('invalid or expired sign-in — start the connect again') } };
+      }
+      if (p && (!domainAllowed(p) || String(st.upn).toLowerCase() !== String(p.userDetails || p.userId || '').toLowerCase())) {
+        return { status: 302, headers: { Location: '/admin.html?msgraph=error&detail=' + encodeURIComponent('sign-in mismatch — start the connect again') } };
+      }
+      const upn = st.upn;
       const redirectUri = publicOrigin(request) + '/api/integrations/msgraph/callback';
       const tok = await exchangeGraphCode(code, redirectUri);
       if (!tok.refresh_token) throw new Error('Microsoft did not return a refresh_token (did the app reg request offline_access?)');
@@ -2282,7 +2336,7 @@ app.http('qbo-connect', {
       const origin = publicOrigin(request);
       const redirectUri = origin + '/api/integrations/qbo/callback';
       const env = fields.environment === 'production' ? 'production' : 'sandbox';
-      const state = Buffer.from(JSON.stringify({ upn: p.userDetails || p.userId, env, t: Date.now() })).toString('base64url');
+      const state = signOAuthState({ upn: p.userDetails || p.userId, env, t: Date.now() });
       const authUrl = 'https://appcenter.intuit.com/connect/oauth2?' + new URLSearchParams({
         client_id: fields.clientId,
         response_type: 'code',
@@ -2315,6 +2369,7 @@ app.http('qbo-callback', {
     const realmId = url.searchParams.get('realmId');
     const state = url.searchParams.get('state');
     const err = url.searchParams.get('error');
+    const p = principal(request);
     // Breadcrumb: prove the callback was reached + what Intuit sent back.
     try {
       await container().items.upsert({ id: 'bcc-qbo-debug-callback', tenantId: BCC_TENANT_ID, docType: 'qbo-debug',
@@ -2323,6 +2378,15 @@ app.http('qbo-callback', {
     } catch (_) {}
     if (err) return { status: 302, headers: { Location: '/bookkeeping.html?qbo=' + encodeURIComponent(err) } };
     if (!code || !realmId) return { status: 400, jsonBody: { error: 'missing code or realmId' } };
+    // A valid HMAC-signed state is REQUIRED (can't be forged/replayed; expires in
+    // 15 min; carries the firm UPN that started the connect). The principal cookie
+    // may or may not ride along on the Intuit redirect, so we enforce it only when
+    // present rather than hard-failing a known-good flow.
+    const st = verifyOAuthState(state);
+    if (!st || !st.upn) return { status: 302, headers: { Location: '/bookkeeping.html?qbo=error&detail=' + encodeURIComponent('invalid or expired sign-in — start the connect again') } };
+    if (p && (!domainAllowed(p) || String(st.upn).toLowerCase() !== String(p.userDetails || p.userId || '').toLowerCase())) {
+      return { status: 302, headers: { Location: '/bookkeeping.html?qbo=error&detail=' + encodeURIComponent('sign-in mismatch — start the connect again') } };
+    }
     try {
       const fields = await getIntegrationFields('qbo');
       if (!fields.clientId || !fields.clientSecret) throw new Error('QBO clientId/clientSecret missing on the integration doc');
@@ -2342,7 +2406,10 @@ app.http('qbo-callback', {
       if (!r.ok) throw new Error('Intuit token exchange ' + r.status + ' (redirect_uri=' + redirectUri + '): ' + tokText.slice(0, 300));
       const tok = JSON.parse(tokText);
 
-      const env = fields.environment === 'production' ? 'production' : 'sandbox';
+      // Use the environment chosen at connect time (carried in the signed state),
+      // so this company is permanently stamped with that env regardless of later
+      // changes to the shared connector field.
+      const env = st.env === 'production' ? 'production' : 'sandbox';
       const apiBase = env === 'production' ? 'https://quickbooks.api.intuit.com' : 'https://sandbox-quickbooks.api.intuit.com';
       // Best-effort: fetch the company's display name so the UI lists it nicely.
       let companyName = '';
@@ -2499,8 +2566,16 @@ async function qboAccessForCompany(comp, fields) {
   });
   if (!r.ok) throw new Error('QBO token refresh ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 200));
   const tok = await r.json();
-  if (tok.refresh_token && tok.refresh_token !== comp.refreshToken) { comp.refreshToken = tok.refresh_token; try { await container().items.upsert(comp); } catch (_) {} }
-  const env = comp.environment === 'production' ? 'production' : (fields.environment === 'production' ? 'production' : 'sandbox');
+  if (tok.refresh_token && tok.refresh_token !== comp.refreshToken) {
+    comp.refreshToken = tok.refresh_token;
+    // Persist the rotated token; if this write fails, the OLD token is already
+    // invalidated by Intuit, so surface it loudly rather than silently bricking.
+    try { await container().items.upsert(comp); }
+    catch (e) { console.error('QBO refresh-token persist FAILED for realm ' + comp.realmId + ' — connection may need reauth:', e && e.message || e); }
+  }
+  // comp.environment is authoritative — never let the shared connector field
+  // override a sandbox company up to production (or vice-versa).
+  const env = comp.environment === 'production' ? 'production' : 'sandbox';
   const base = env === 'production' ? 'https://quickbooks.api.intuit.com' : 'https://sandbox-quickbooks.api.intuit.com';
   return { accessToken: tok.access_token, base };
 }
@@ -2742,6 +2817,11 @@ app.http('qbo-write', {
       }
       if (b.op === 'update') {
         if (!b.id || !b.syncToken) return badRequest('id and syncToken required for update');
+        // NOTE: with sparse:true QBO leaves omitted fields untouched, BUT if Line
+        // is present it FULLY REPLACES the existing lines. The edit UI prefills the
+        // complete current line set (via qbo-entity) so the resubmit carries them
+        // all; the >=1-line guard above prevents an accidental blank, and the
+        // client confirm dialog shows the resulting total before posting.
         payload.Id = String(b.id); payload.SyncToken = String(b.syncToken); payload.sparse = true;
       }
       const res = await ctx.apiPost('/' + entity, payload);
