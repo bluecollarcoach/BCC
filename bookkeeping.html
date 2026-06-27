@@ -203,6 +203,34 @@
   .ov-action:hover { border-color:var(--gold); background:var(--gold-fade); }
   .ov-action .ic { font-size:22px; }
   .ov-action .sub { display:block; font-size:11.5px; font-weight:500; color:var(--muted); margin-top:2px; }
+
+  /* Files: clearly separate the CLIENT's shared cloud drive from INTERNAL BCC files. */
+  .fs-block { border:1px solid var(--chrome-mute); border-radius:14px; overflow:hidden; margin-bottom:20px; background:#fff; }
+  .fs-client   { border-left:5px solid #2f6fd6; }   /* external — lives in the client's cloud */
+  .fs-internal { border-left:5px solid #64748b; }   /* private — stays inside BCC */
+  .fs-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:14px 16px; border-bottom:1px solid var(--chrome-mute); }
+  .fs-head-client   { background:linear-gradient(135deg,#eef5ff,#f8fbff); }
+  .fs-head-internal { background:linear-gradient(135deg,#f3f5f8,#fafbfc); }
+  .fs-title { font-size:15px; font-weight:800; color:var(--ink); display:flex; align-items:center; gap:8px; }
+  .fs-sub { font-size:12px; color:var(--muted); margin-top:3px; max-width:60ch; line-height:1.45; }
+  .fs-body { padding:14px 16px; }
+  .fs-conn { display:inline-flex; align-items:center; gap:7px; background:#e8f7ee; color:#0f7a3d; border:1px solid #bce6cd; border-radius:999px; padding:6px 12px; font-size:12.5px; font-weight:700; white-space:nowrap; max-width:100%; overflow:hidden; }
+  .fs-conn .fs-dot { width:8px; height:8px; border-radius:50%; background:#1aa153; box-shadow:0 0 0 3px rgba(26,161,83,0.18); flex-shrink:0; }
+  .fs-conn strong { font-weight:800; overflow:hidden; text-overflow:ellipsis; }
+  .fs-pill { display:inline-flex; align-items:center; gap:6px; border-radius:999px; padding:5px 11px; font-size:12px; font-weight:700; white-space:nowrap; }
+  .fs-pill-priv { background:#eef0f3; color:#475569; border:1px solid #d8dde4; }
+  .fs-pill-off  { background:#fdeeee; color:#a32525; border:1px solid #f3cccc; }
+  .fs-crumbs button { background:none; border:none; color:#2f6fd6; font-weight:700; cursor:pointer; padding:0; font:inherit; }
+  .fs-crumbs button:hover { text-decoration:underline; }
+  .fs-file { color:var(--gold-deep); font-weight:600; text-decoration:none; }
+  .fs-file:hover { text-decoration:underline; }
+  .fs-folder { background:none; border:none; cursor:pointer; font:inherit; font-size:14px; font-weight:600; color:var(--ink); padding:0; text-align:left; }
+  .fs-folder:hover { color:#2f6fd6; }
+  @media (max-width:680px){ .fs-head { flex-direction:column; } }
+
+  /* Clickable "Bookkeeping" wordmark / title → back to home. */
+  .bk-home { transition:color .12s ease; }
+  .bk-home:hover { color:var(--gold-deep); text-decoration:underline; }
 </style>
 <script src="bcc-api.js" defer></script>
 </head>
@@ -212,14 +240,14 @@
     <img src="bcc-logo.png" alt="Blue Collar Coach" />
     <span class="wordmark">BLUE COLLAR <span class="light">COACH</span></span>
   </a>
-  <span class="module">Bookkeeping</span>
+  <span class="module bk-home" id="bkHomeModule" role="button" tabindex="0" title="Back to the bookkeeping home" style="cursor:pointer;">Bookkeeping</span>
   <span style="flex:1;"></span>
 </header>
 
 <div class="page">
   <div class="page-head">
     <div>
-      <h1>Bookkeeping</h1>
+      <h1 class="bk-home" id="bkHomeH1" role="button" tabindex="0" title="Back to the bookkeeping home" style="cursor:pointer;">Bookkeeping</h1>
       <div class="sub" id="subline">Monthly P&amp;L snapshot. Numbers come from the QBO connector once it's configured.</div>
     </div>
     <div style="display:flex; gap:8px; flex-wrap:wrap;">
@@ -1572,9 +1600,18 @@
   function renderFiles() {
     var body = document.getElementById('files-body'); if (!body) return;
     body.innerHTML =
-      '<div id="drive-area" style="margin-bottom:20px;"></div>' +
-      '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Internal files <span style="font-weight:500;text-transform:none;letter-spacing:0;">· stored securely in BCC</span></div>' +
-      '<div class="ws-form" style="margin-bottom:12px;"><label class="full">Upload a file for this client<input type="file" id="fl_file" /></label><label class="full">Tags (comma-separated)<input id="fl_tags" placeholder="e.g. w-9, contract, bank-statement" /></label><div class="full"><button class="btn btn-primary" id="fl_up" type="button">Upload</button> <span id="fl_status" style="font-size:12px;color:var(--muted);"></span></div></div><div id="fl_list"><div style="color:var(--muted);">Loading files…</div></div>';
+      '<div id="drive-area"></div>' +
+      '<div class="fs-block fs-internal">' +
+        '<div class="fs-head fs-head-internal">' +
+          '<div><div class="fs-title">🔒 Internal BCC files</div>' +
+            '<div class="fs-sub">Private to Blue Collar Coach — the client cannot see these. Use this for working papers, internal copies, and anything not meant to be shared.</div></div>' +
+          '<span class="fs-pill fs-pill-priv">🔒 Private to BCC</span>' +
+        '</div>' +
+        '<div class="fs-body">' +
+          '<div class="ws-form" style="margin-bottom:12px;"><label class="full">Upload a private file<input type="file" id="fl_file" /></label><label class="full">Tags (comma-separated)<input id="fl_tags" placeholder="e.g. w-9, contract, bank-statement" /></label><div class="full"><button class="btn btn-primary" id="fl_up" type="button">Upload to internal</button> <span id="fl_status" style="font-size:12px;color:var(--muted);"></span></div></div>' +
+          '<div id="fl_list"><div style="color:var(--muted);">Loading files…</div></div>' +
+        '</div>' +
+      '</div>';
     document.getElementById('fl_up').onclick = uploadFile;
     loadFiles();
     loadDrive();
@@ -1596,9 +1633,13 @@
           if (s.googleConfigured) btns += '<a class="btn btn-primary" style="text-decoration:none;" href="/api/integrations/google-drive/connect?realmId=' + encodeURIComponent(currentRealm) + '">Connect Google Drive</a> ';
           if (s.onedriveConfigured) btns += '<a class="btn btn-ghost" style="text-decoration:none;" href="/api/integrations/onedrive/connect?realmId=' + encodeURIComponent(currentRealm) + '">Connect OneDrive</a>';
           if (!s.googleConfigured && !s.onedriveConfigured) btns = '<span style="color:var(--muted);font-size:12.5px;">No drive provider is configured yet — an admin adds Google Drive credentials in <a href="admin.html" style="color:var(--gold-deep);font-weight:600;">Admin → Integrations</a> (OneDrive is configured centrally).</span>';
-          area.innerHTML = '<div style="background:var(--gold-fade);border:1px solid var(--chrome-mute);border-radius:10px;padding:14px;">' +
-            '<div style="font-weight:700;font-size:14px;margin-bottom:4px;">📁 Shared client drive</div>' +
-            '<div style="font-size:12.5px;color:var(--muted);margin-bottom:10px;">Link this client&rsquo;s Google Drive or OneDrive — using the login they set up for us — to work with the files you share with them.</div>' + btns + '</div>';
+          area.innerHTML = '<div class="fs-block fs-client">' +
+            '<div class="fs-head fs-head-client">' +
+              '<div><div class="fs-title">☁️ Client&rsquo;s shared drive</div>' +
+                '<div class="fs-sub">Link the client&rsquo;s own Google Drive or OneDrive — using the login they set up for us — to work with the files you share with them. Anything here lives in the client&rsquo;s cloud and is visible to them.</div></div>' +
+              '<span class="fs-pill fs-pill-off">○ Not connected</span>' +
+            '</div>' +
+            '<div class="fs-body">' + btns + '</div></div>';
           return;
         }
         _driveProvider = s.provider; _driveAccount = s.account || ''; _driveStack = []; _driveFolder = '';
@@ -1608,16 +1649,23 @@
   }
   function renderDriveBrowser() {
     var area = document.getElementById('drive-area'); if (!area) return;
-    var crumbs = '<button type="button" data-crumb="-1" style="background:none;border:none;color:var(--gold-deep);font-weight:600;cursor:pointer;padding:0;font:inherit;">Home</button>' +
-      _driveStack.map(function (f, i) { return ' <span style="color:var(--muted);">/</span> <button type="button" data-crumb="' + i + '" style="background:none;border:none;color:var(--gold-deep);font-weight:600;cursor:pointer;padding:0;font:inherit;">' + esc(f.name) + '</button>'; }).join('');
-    area.innerHTML = '<div style="border:1px solid var(--chrome-mute);border-radius:10px;padding:14px;">' +
-      '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">' +
-        '<div style="font-weight:700;font-size:14px;">📁 Shared drive <span style="font-weight:400;color:var(--muted);font-size:12px;">· ' + esc(_driveProvider === 'google' ? 'Google Drive' : 'OneDrive') + (_driveAccount ? (' · ' + esc(_driveAccount)) : '') + '</span></div>' +
-        '<div style="display:flex;gap:6px;flex-wrap:wrap;"><label class="btn btn-ghost" for="drv_file" style="cursor:pointer;font-size:12px;">⬆ Upload here</label><button class="btn btn-ghost" id="drv_disc" type="button" style="font-size:12px;">Disconnect</button></div>' +
+    var provName = _driveProvider === 'google' ? 'Google Drive' : 'OneDrive';
+    var crumbs = '<button type="button" data-crumb="-1">Home</button>' +
+      _driveStack.map(function (f, i) { return ' <span style="color:var(--muted);">/</span> <button type="button" data-crumb="' + i + '">' + esc(f.name) + '</button>'; }).join('');
+    area.innerHTML = '<div class="fs-block fs-client">' +
+      '<div class="fs-head fs-head-client">' +
+        '<div><div class="fs-title">☁️ Client&rsquo;s shared drive</div>' +
+          '<div class="fs-sub">Files shared between you and the client — they can see everything in here.</div></div>' +
+        '<span class="fs-conn" title="Connected ' + esc(provName) + ' account"><span class="fs-dot"></span>Connected · ' + esc(provName) + ' · <strong>' + esc(_driveAccount || '(account)') + '</strong></span>' +
       '</div>' +
-      '<input type="file" id="drv_file" style="display:none;" />' +
-      '<div style="font-size:12.5px;margin-bottom:8px;">' + crumbs + '</div>' +
-      '<div id="drv_list"><div style="color:var(--muted);">Loading…</div></div></div>';
+      '<div class="fs-body">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px;">' +
+          '<div class="fs-crumbs" style="font-size:13px;">' + crumbs + '</div>' +
+          '<div style="display:flex;gap:6px;flex-wrap:wrap;"><label class="btn btn-ghost" for="drv_file" style="cursor:pointer;font-size:12px;">⬆ Upload here</label><button class="btn btn-ghost" id="drv_disc" type="button" style="font-size:12px;">Disconnect</button></div>' +
+        '</div>' +
+        '<input type="file" id="drv_file" style="display:none;" />' +
+        '<div id="drv_list"><div style="color:var(--muted);">Loading…</div></div>' +
+      '</div></div>';
     area.querySelectorAll('[data-crumb]').forEach(function (b) {
       b.onclick = function () { var i = +b.getAttribute('data-crumb'); if (i < 0) { _driveStack = []; _driveFolder = ''; } else { _driveStack = _driveStack.slice(0, i + 1); _driveFolder = _driveStack[i].id; } renderDriveBrowser(); };
     });
@@ -1638,9 +1686,9 @@
         var items = resp.items || [];
         if (!items.length) { list.innerHTML = '<div style="color:var(--muted);padding:8px 0;">This folder is empty.</div>'; return; }
         list.innerHTML = '<table><tbody>' + items.map(function (it) {
-          if (it.folder) return '<tr><td><button type="button" data-folder="' + esc(it.id) + '" data-fname="' + esc(it.name) + '" style="background:none;border:none;cursor:pointer;font:inherit;font-size:14px;font-weight:600;color:var(--ink);padding:0;text-align:left;">📁 ' + esc(it.name) + '</button></td><td></td></tr>';
+          if (it.folder) return '<tr><td><button type="button" class="fs-folder" data-folder="' + esc(it.id) + '" data-fname="' + esc(it.name) + '">📁 ' + esc(it.name) + '</button></td><td></td></tr>';
           var kb = it.size ? (Math.max(1, Math.round(it.size / 1024)) + ' KB') : '';
-          return '<tr><td><a href="/api/integrations/drive/' + encodeURIComponent(currentRealm) + '/download/' + encodeURIComponent(it.id) + '?name=' + encodeURIComponent(it.name) + '" style="color:var(--gold-deep);font-weight:600;">📄 ' + esc(it.name) + '</a></td><td style="text-align:right;color:var(--muted);font-size:12px;">' + esc(kb) + '</td></tr>';
+          return '<tr><td><a class="fs-file" href="/api/integrations/drive/' + encodeURIComponent(currentRealm) + '/download/' + encodeURIComponent(it.id) + '?name=' + encodeURIComponent(it.name) + '">📄 ' + esc(it.name) + '</a></td><td style="text-align:right;color:var(--muted);font-size:12px;">' + esc(kb) + '</td></tr>';
         }).join('') + '</tbody></table>';
         list.querySelectorAll('[data-folder]').forEach(function (b) { b.onclick = function () { _driveStack.push({ id: b.getAttribute('data-folder'), name: b.getAttribute('data-fname') }); _driveFolder = b.getAttribute('data-folder'); renderDriveBrowser(); }; });
       })
@@ -2090,12 +2138,30 @@
     if (window.bccAudit) window.bccAudit('cpr-print', { key: r.id, path:'/bookkeeping.html', meta:{ realmId: currentRealm, payrollNo: r.payrollNo } });
   }
 
+  /* Return to the main bookkeeping page (work queue root) from anywhere. */
+  function goBookkeepingHome() {
+    if (typeof closeWsDrawer === 'function') closeWsDrawer();
+    currentRealm = '';
+    managementMode = false;
+    if (typeof accessEditRealm !== 'undefined') accessEditRealm = null;
+    var cf = document.getElementById('companyFilter'); if (cf) cf.value = '';
+    renderAll();
+    window.scrollTo(0, 0);
+  }
+
   /* Workspace header wiring (elements are static; safe to bind now) */
   (function wireWs() {
     var menu = document.getElementById('wsMenuBtn');
     if (menu) menu.addEventListener('click', openWsDrawer);
     var back = document.getElementById('wsBack');
     if (back) back.addEventListener('click', function () { closeWsDrawer(); currentRealm = ''; var cf = document.getElementById('companyFilter'); if (cf) cf.value = ''; renderAll(); });
+    // Clicking the "Bookkeeping" wordmark (topbar) or page title returns home.
+    ['bkHomeModule', 'bkHomeH1'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('click', goBookkeepingHome);
+      el.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goBookkeepingHome(); } });
+    });
   })();
 
   /* ===== Auto time tracking (bookkeepers only) =====
@@ -2160,7 +2226,7 @@
       var tb = document.querySelector('.toolbar'); if (tb) tb.style.display = mgmt ? '' : 'none';
       var ls = document.querySelector('.list'); if (ls) ls.style.display = '';
     }
-    var cb = document.getElementById('connectBtn'); if (cb) cb.style.display = (atRoot && canManage()) ? '' : 'none'; // available from the work queue too, so managers can add companies at will
+    var cb = document.getElementById('connectBtn'); if (cb) cb.style.display = mgmt ? '' : 'none'; // adding companies lives in the Management dashboard, not the main work queue
     var sb = document.getElementById('syncBtn'); if (sb) sb.style.display = (mgmt || currentRealm) ? '' : 'none'; // Sync is useful per-client too
     ['newBtn', 'printBtn'].forEach(function (id) { var b = document.getElementById(id); if (b) b.style.display = mgmt ? '' : 'none'; }); // manual entry + print are management-only
     var mb = document.getElementById('mgmtBtn');
