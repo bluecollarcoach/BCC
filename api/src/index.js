@@ -1464,11 +1464,12 @@ async function getIntegrationFields(channel) {
     // Two write paths produce two doc shapes:
     //   1) UI save via /api/data PUT  -> { id, tenantId, data: { fields, status, ... }, updatedAt, updatedBy }
     //   2) OAuth callback upserts     -> { id, tenantId, docType, channel, fields, status, ... }
-    // Read both so the Connect flow doesn't return empty fields after a UI save.
-    const fields = (resource && (
-      resource.fields ||
-      (resource.data && resource.data.fields)
-    )) || {};
+    // Read both, and prefer whichever actually HAS keys — the OAuth callback can
+    // leave an empty top-level `fields: {}` that would otherwise shadow the real
+    // credentials saved under .data.fields (an empty object is truthy).
+    const top = resource && resource.fields;
+    const nested = resource && resource.data && resource.data.fields;
+    const fields = (top && Object.keys(top).length ? top : null) || nested || top || {};
     _intCache.byChannel.set(channel, fields);
     _intCache.until = Date.now() + 60 * 1000;
     return fields;
@@ -2568,11 +2569,13 @@ app.http('qbo-callback', {
       comp.updatedAt = new Date().toISOString();
       await c.items.upsert(comp);
 
-      // Mark the shared integration row connected (keeps clientId/secret/env).
+      // Mark the shared integration row connected — WITHOUT clobbering the saved
+      // credentials. If creds live under .data.fields (the UI-save shape), do not
+      // create an empty top-level `fields: {}` that would shadow them.
       const id = 'bcc-integration-qbo';
       const doc = await c.item(id, BCC_TENANT_ID).read().then(rr => rr.resource).catch(() => null);
-      const rec = doc || { id, tenantId: BCC_TENANT_ID, docType: 'integration', channel: 'qbo', fields: {} };
-      rec.fields = rec.fields || {};
+      const rec = doc || { id, tenantId: BCC_TENANT_ID, docType: 'integration', channel: 'qbo', data: { fields: {} } };
+      if (rec.fields && Object.keys(rec.fields).length === 0) delete rec.fields; // drop a stale empty top-level fields
       rec.status = 'connected';
       rec.lastTest = { ok: true, at: new Date().toISOString() };
       rec.updatedAt = new Date().toISOString();
