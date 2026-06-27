@@ -1339,9 +1339,31 @@
     }).join('') : '<div style="color:var(--muted);padding:12px 0;">No open to-dos for this client. 🎉</div>';
     body.innerHTML = actions +
       '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:4px 0 6px;"><div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;">Open to-dos' + (open.length ? ' (' + open.length + ')' : '') + '</div><button class="btn btn-ghost" data-ov="tasks" type="button" style="font-size:12px;">Manage tasks →</button></div>' +
-      list;
+      list +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:18px 0 6px;"><div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;">Recent activity</div><button class="btn btn-ghost" data-ov="activity" type="button" style="font-size:12px;">View all →</button></div>' +
+      '<div id="ov-activity"><div style="color:var(--muted);font-size:13px;padding:6px 0;">Loading…</div></div>';
     body.querySelectorAll('[data-ov]').forEach(function (b) { b.addEventListener('click', function () { setSection(b.getAttribute('data-ov')); }); });
     body.querySelectorAll('[data-ovdone]').forEach(function (cb) { cb.addEventListener('change', function () { toggleTask(cb.getAttribute('data-ovdone'), true); renderOverview(); updateDrawer(); }); });
+    loadOverviewActivity();
+  }
+  function relTime(d) { var s = Math.floor((Date.now() - d.getTime()) / 1000); if (s < 60) return 'just now'; if (s < 3600) return Math.floor(s / 60) + 'm ago'; if (s < 86400) return Math.floor(s / 3600) + 'h ago'; return Math.floor(s / 86400) + 'd ago'; }
+  function loadOverviewActivity() {
+    var box = document.getElementById('ov-activity'); if (!box) return;
+    var realmAtFetch = currentRealm;
+    fetch('/api/audit/client/' + encodeURIComponent(currentRealm) + '?days=7', { credentials: 'include' })
+      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+      .then(function (resp) {
+        if (currentRealm !== realmAtFetch) return; // client changed mid-fetch
+        if (!box || !resp || !resp.ok) { if (box) box.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:6px 0;">—</div>'; return; }
+        var rows = (resp.rows || []).slice(0, 5);
+        if (!rows.length) { box.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:6px 0;">No recent changes.</div>'; return; }
+        box.innerHTML = rows.map(function (a) {
+          var d = new Date(a.ts); var who = (window.bccDisplayName && window.bccDisplayName(a.user)) || a.user || '';
+          return '<div class="ws-row" style="padding:7px 0;"><span aria-hidden="true" style="width:22px;text-align:center;flex-shrink:0;">' + actIcon(a.action) + '</span>' +
+            '<div style="flex:1;min-width:0;"><span style="font-size:13.5px;">' + esc(actDesc(a)) + '</span> <span style="font-size:11.5px;color:var(--muted);">· ' + esc(who) + ' · ' + esc(relTime(d)) + '</span></div></div>';
+        }).join('');
+      })
+      .catch(function () { if (box) box.innerHTML = ''; });
   }
 
   /* ---- Activity (recent changes to this client, from the audit log) ---- */
@@ -2058,7 +2080,7 @@
       var tb = document.querySelector('.toolbar'); if (tb) tb.style.display = mgmt ? '' : 'none';
       var ls = document.querySelector('.list'); if (ls) ls.style.display = '';
     }
-    var cb = document.getElementById('connectBtn'); if (cb) cb.style.display = mgmt ? '' : 'none';
+    var cb = document.getElementById('connectBtn'); if (cb) cb.style.display = (atRoot && canManage()) ? '' : 'none'; // available from the work queue too, so managers can add companies at will
     var sb = document.getElementById('syncBtn'); if (sb) sb.style.display = (mgmt || currentRealm) ? '' : 'none'; // Sync is useful per-client too
     ['newBtn', 'printBtn'].forEach(function (id) { var b = document.getElementById(id); if (b) b.style.display = mgmt ? '' : 'none'; }); // manual entry + print are management-only
     var mb = document.getElementById('mgmtBtn');
