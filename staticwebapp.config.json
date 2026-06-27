@@ -23,6 +23,12 @@
     { "route": "/bcc-brand.css", "allowedRoles": ["anonymous", "authenticated"] },
     { "route": "/bcc-logo*.png", "allowedRoles": ["anonymous", "authenticated"] },
 
+    { "route": "/privacy.html", "allowedRoles": ["anonymous", "authenticated"] },
+    { "route": "/eula.html",    "allowedRoles": ["anonymous", "authenticated"] },
+    { "route": "/privacy", "rewrite": "/privacy.html", "allowedRoles": ["anonymous", "authenticated"] },
+    { "route": "/eula",    "rewrite": "/eula.html",    "allowedRoles": ["anonymous", "authenticated"] },
+    { "route": "/terms",   "rewrite": "/eula.html",    "allowedRoles": ["anonymous", "authenticated"] },
+
     { "route": "/api/data/*",  "allowedRoles": ["authenticated"] },
     { "route": "/api/profile", "allowedRoles": ["anonymous", "authenticated"] },
 
