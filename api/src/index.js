@@ -1160,7 +1160,10 @@ app.http('bookkeeping-time-report', {
  * secret); Microsoft via ONEDRIVE_CLIENT_ID/SECRET + ONEDRIVE_TENANT app settings
  * (a dedicated multi-tenant Entra app). All token secrets stay server-side.
  */
-const MS_DRIVE_SCOPE = 'offline_access Files.ReadWrite User.Read';
+// Files.ReadWrite.All (not just Files.ReadWrite) so we can read folders the client
+// SHARED with the connected account (Files.ReadWrite only covers the account's own
+// OneDrive). Tenant-consented for the firm's accounts.
+const MS_DRIVE_SCOPE = 'offline_access Files.ReadWrite.All User.Read';
 // The Google provider key is 'google' but its route segment is 'google-drive';
 // the redirect_uri MUST match the registered callback route, so map it.
 function driveRouteSeg(provider) { return provider === 'google' ? 'google-drive' : provider; }
@@ -1328,7 +1331,7 @@ app.http('drive-set-root', {
       let root;
       if (dt.doc.provider === 'onedrive') {
         const r = await fetch('https://graph.microsoft.com/v1.0/shares/' + msShareId(link) + '/driveItem?$select=id,name,parentReference,folder', { headers: { Authorization: 'Bearer ' + dt.at } });
-        if (!r.ok) return { status: 400, jsonBody: { ok: false, error: 'Could not open that link (' + r.status + '). Make sure it was shared with ' + (dt.doc.account || 'this account') + ' and points to a folder.' } };
+        if (!r.ok) { let dtl = ''; try { const j = JSON.parse(await r.text()); dtl = (j.error && (j.error.message || j.error.code)) || ''; } catch (_) {} return { status: 400, jsonBody: { ok: false, error: 'Could not open that link (' + r.status + ')' + (dtl ? ': ' + dtl : '') + '. Make sure it was shared with ' + (dt.doc.account || 'this account') + ' and points to a folder.' } }; }
         const di = await r.json();
         if (!di.folder) return badRequest('that link points to a file, not a folder');
         if (!di.parentReference || !di.parentReference.driveId) return badRequest('could not resolve that folder');
@@ -1337,7 +1340,7 @@ app.http('drive-set-root', {
         const fid = googleFolderId(link);
         if (!fid) return badRequest('could not find a folder id in that link');
         const r = await fetch('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fid) + '?fields=id,name,mimeType&supportsAllDrives=true', { headers: { Authorization: 'Bearer ' + dt.at } });
-        if (!r.ok) return { status: 400, jsonBody: { ok: false, error: 'Could not open that folder (' + r.status + '). Make sure it is shared with ' + (dt.doc.account || 'this account') + '.' } };
+        if (!r.ok) { let dtl = ''; try { const j = JSON.parse(await r.text()); dtl = (j.error && (j.error.message)) || ''; } catch (_) {} return { status: 400, jsonBody: { ok: false, error: 'Could not open that folder (' + r.status + ')' + (dtl ? ': ' + dtl : '') + '. Make sure it is shared with ' + (dt.doc.account || 'this account') + '.' } }; }
         const f = await r.json();
         if (f.mimeType !== 'application/vnd.google-apps.folder') return badRequest('that link is not a folder');
         root = { folderId: f.id, name: f.name || 'Shared folder' };
