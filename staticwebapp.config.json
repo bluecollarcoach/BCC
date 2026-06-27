@@ -32,6 +32,8 @@
     { "route": "/api/integrations/linkedin/callback",   "allowedRoles": ["anonymous", "authenticated"] },
     { "route": "/api/integrations/meta/callback",       "allowedRoles": ["anonymous", "authenticated"] },
     { "route": "/api/integrations/mailchimp/callback",  "allowedRoles": ["anonymous", "authenticated"] },
+    { "route": "/api/integrations/google-drive/callback", "allowedRoles": ["anonymous", "authenticated"] },
+    { "route": "/api/integrations/onedrive/callback",     "allowedRoles": ["anonymous", "authenticated"] },
 
     { "route": "/api/cron/reminders", "allowedRoles": ["anonymous", "authenticated"] },
 

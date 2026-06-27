@@ -983,6 +983,15 @@
       ]
     },
     {
+      channel: 'google-drive',
+      name: 'Google Drive (client drives)',
+      blurb: 'Lets bookkeepers link each client’s Google Drive from the client’s Files tab. In console.cloud.google.com → APIs & Services: enable the Google Drive API, then create an OAuth Client (type: Web application) and add the redirect URI in the hint below. Paste the Client ID/Secret here and Save.',
+      fields: [
+        { key: 'clientId',     label: 'OAuth Client ID',     type: 'text',     secret: false },
+        { key: 'clientSecret', label: 'OAuth Client Secret', type: 'password', secret: true, hint: 'Authorized redirect URI: https://connect.bluecollarcoach.us/api/integrations/google-drive/callback (also add the *.azurestaticapps.net host).' }
+      ]
+    },
+    {
       channel: 'meta',
       name: 'Meta (Facebook + Instagram)',
       blurb: 'Pages, Instagram Business, and Ads insights via Graph API. Create a Business app at developers.facebook.com, request ads_read + business_management + pages_read_engagement, then click Connect.',

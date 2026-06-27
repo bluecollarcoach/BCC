@@ -10,6 +10,7 @@
 
 const { app } = require('@azure/functions');
 const { CosmosClient } = require('@azure/cosmos');
+const crypto = require('crypto');
 
 /* ============ web-push (lazy require) ============
  * web-push is an optional dependency: if VAPID env vars aren't set
@@ -154,6 +155,19 @@ function badRequest(msg) { return { status: 400, jsonBody: { error: msg } }; }
 function unauthorized()  { return { status: 401, jsonBody: { error: 'unauthenticated' } }; }
 function forbidden(msg)  { return { status: 403, jsonBody: { error: msg || 'forbidden' } }; }
 function domainBlocked() { return { status: 403, jsonBody: { error: 'domain_not_allowed', detail: 'sign in with an @bluecollarcoach.us account' } }; }
+// Strip credential-looking fields from an integration doc for non-admins, while
+// keeping non-secret status flags (e.g. status:'connected') so UI badges still work.
+const SECRET_FIELD_RE = /secret|token|password|connection|webhook|privatekey|apikey|(^|[^a-z])key([^a-z]|$)/i;
+function redactIntegrationData(data) {
+  if (!data || typeof data !== 'object') return data;
+  const out = Object.assign({}, data);
+  if (out.fields && typeof out.fields === 'object') {
+    const f = {};
+    for (const k of Object.keys(out.fields)) f[k] = SECRET_FIELD_RE.test(k) ? '' : out.fields[k];
+    out.fields = f;
+  }
+  return out;
+}
 
 function getClientIp(req) {
   const xff = req.headers.get('x-forwarded-for') || '';
@@ -255,9 +269,12 @@ app.http('data', {
       if (method === 'GET') {
         if (key) {
           if (!isPcKey(key)) return badRequest('invalid key');
+          // Integration docs hold OAuth client secrets / tokens — redact for non-admins.
+          const keyRedact = key.startsWith('bcc-integration-') && !(await isAppAdmin(p));
           try {
             const { resource } = await c.item(key, BCC_TENANT_ID).read();
-            return { jsonBody: { key, data: resource ? resource.data : null, updatedAt: resource && resource.updatedAt, updatedBy: resource && resource.updatedBy } };
+            const data = resource ? (keyRedact ? redactIntegrationData(resource.data) : resource.data) : null;
+            return { jsonBody: { key, data, updatedAt: resource && resource.updatedAt, updatedBy: resource && resource.updatedBy } };
           } catch (e) {
             if (e.code === 404) return { jsonBody: { key, data: null } };
             throw e;
@@ -266,11 +283,18 @@ app.http('data', {
         const q = {
           // Exclude server-only time docs so their ids (which encode who worked
           // which client on which day) aren't shipped to every signed-in user.
-          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND (NOT IS_DEFINED(c.docType) OR c.docType != "bk-time")',
+          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "client-drive"))',
           parameters: [{ name: '@t', value: BCC_TENANT_ID }]
         };
         const { resources } = await c.items.query(q).fetchAll();
-        return { jsonBody: { items: resources.map(r => ({ key: r.id, data: r.data, updatedAt: r.updatedAt, updatedBy: r.updatedBy })) } };
+        // Integration docs hold secrets — redact credential fields for non-admins
+        // (status flags stay so connection badges keep working).
+        const dataAdmin = await isAppAdmin(p);
+        const items = resources.map(r => {
+          const isInt = String(r.id).startsWith('bcc-integration-');
+          return { key: r.id, data: (isInt && !dataAdmin) ? redactIntegrationData(r.data) : r.data, updatedAt: r.updatedAt, updatedBy: r.updatedBy };
+        });
+        return { jsonBody: { items } };
       }
 
       if (method === 'PUT') {
@@ -290,6 +314,9 @@ app.http('data', {
         }
         if (touchesAdminKey && !(await isAppAdmin(p))) {
           return forbidden('only administrators may write admin config');
+        }
+        if (touchesIntegration && !(await isAppAdmin(p))) {
+          return forbidden('only administrators may write integration credentials');
         }
         const now = new Date().toISOString();
         const who = p.userDetails || p.userId || 'unknown';
@@ -1101,6 +1128,228 @@ app.http('bookkeeping-time-report', {
       const users = Object.keys(byUser).map(k => byUser[k]).sort((a, b) => b.seconds - a.seconds);
       return { jsonBody: { ok: true, from, to, companies, users } };
     } catch (err) { context.error('bookkeeping-time-report', err); return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } }; }
+  })
+});
+
+/* ============ Per-client cloud drive linking (Google Drive / OneDrive) ============
+ * Each client can link the firm to THEIR drive (a login the client provisions for
+ * us). We store a per-client OAuth refresh token (bcc-clientdrive-<realmId>) and
+ * browse / download / upload the shared files inside the bookkeeping Files section.
+ * Firm OAuth app creds: Google via Admin → Integrations (google-drive clientId/
+ * secret); Microsoft via ONEDRIVE_CLIENT_ID/SECRET + ONEDRIVE_TENANT app settings
+ * (a dedicated multi-tenant Entra app). All token secrets stay server-side.
+ */
+const MS_DRIVE_SCOPE = 'offline_access Files.ReadWrite User.Read';
+function driveRedirect(request, provider) { return publicOrigin(request) + '/api/integrations/' + provider + '/callback'; }
+function driveStateSecret() { return process.env.CRON_SECRET || process.env.AZURE_CLIENT_SECRET || process.env.COSMOS_KEY || 'bcc-drive-state'; }
+// Sign the OAuth state so it carries the realmId + the initiating user, tamper-proof.
+function driveSignState(realmId, uid) {
+  const payload = String(realmId) + '.' + Buffer.from(String(uid || '')).toString('base64url') + '.' + Date.now();
+  const sig = crypto.createHmac('sha256', driveStateSecret()).update(payload).digest('base64url').slice(0, 24);
+  return Buffer.from(payload + '.' + sig).toString('base64url');
+}
+function driveVerifyState(state, uid) {
+  try {
+    const parts = Buffer.from(String(state || ''), 'base64url').toString().split('.');
+    if (parts.length < 4) return null;
+    const sig = parts.pop();
+    const payload = parts.join('.');
+    const expect = crypto.createHmac('sha256', driveStateSecret()).update(payload).digest('base64url').slice(0, 24);
+    if (!sig || sig.length !== expect.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expect))) return null;
+    const realmId = parts[0];
+    const stateUid = Buffer.from(parts[1], 'base64url').toString();
+    const ts = Number(parts[2]);
+    if (!realmId || !ts || (Date.now() - ts) > 15 * 60 * 1000) return null;
+    if (uid && stateUid && String(uid).toLowerCase() !== stateUid.toLowerCase()) return null;
+    return realmId;
+  } catch (e) { return null; }
+}
+function driveBack(realmId, msg) { return { status: 302, headers: { Location: '/bookkeeping.html?drive=' + (msg ? 'error' : 'connected') + (realmId ? ('&realmId=' + encodeURIComponent(realmId)) : '') + (msg ? ('&detail=' + encodeURIComponent(String(msg).slice(0, 120))) : '') } }; }
+async function driveAppCreds(provider) {
+  if (provider === 'google') { const f = await getIntegrationFields('google-drive'); const id = f.clientId || f.client_id, secret = f.clientSecret || f.client_secret; return { provider, clientId: id, clientSecret: secret, ok: !!(id && secret) }; }
+  if (provider === 'onedrive') { return { provider, clientId: process.env.ONEDRIVE_CLIENT_ID, clientSecret: process.env.ONEDRIVE_CLIENT_SECRET, tenant: process.env.ONEDRIVE_TENANT || 'common', ok: !!(process.env.ONEDRIVE_CLIENT_ID && process.env.ONEDRIVE_CLIENT_SECRET) }; }
+  return { provider, ok: false };
+}
+async function driveClientAccess(p, realmId) {
+  const c = container();
+  const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+  if (!(await isAppAdmin(p))) {
+    const who = String(p.userDetails || p.userId || '').toLowerCase();
+    const allow = ((comp && comp.allowedUserUpns) || []).map(u => String(u).toLowerCase());
+    if (!comp || comp.enabled === false || (allow.length && allow.indexOf(who) < 0)) return { err: { status: 403, jsonBody: { ok: false, error: 'no access to this client' } } };
+  }
+  return { comp };
+}
+function driveTokenUrl(creds) { return creds.provider === 'google' ? 'https://oauth2.googleapis.com/token' : ('https://login.microsoftonline.com/' + creds.tenant + '/oauth2/v2.0/token'); }
+async function driveExchangeCode(creds, code, redirect) {
+  const params = { client_id: creds.clientId, client_secret: creds.clientSecret, redirect_uri: redirect, code, grant_type: 'authorization_code' };
+  if (creds.provider === 'onedrive') params.scope = MS_DRIVE_SCOPE;
+  const r = await fetch(driveTokenUrl(creds), { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(params).toString() });
+  if (!r.ok) throw new Error('token exchange ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 160));
+  return r.json();
+}
+async function driveAccessToken(doc, creds) {
+  const params = { client_id: creds.clientId, client_secret: creds.clientSecret, refresh_token: doc.refreshToken, grant_type: 'refresh_token' };
+  if (creds.provider === 'onedrive') params.scope = MS_DRIVE_SCOPE;
+  const r = await fetch(driveTokenUrl(creds), { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(params).toString() });
+  if (!r.ok) throw new Error('token refresh ' + r.status);
+  const j = await r.json();
+  if (j.refresh_token && j.refresh_token !== doc.refreshToken) { doc.refreshToken = j.refresh_token; try { await container().items.upsert(doc); } catch (_) {} }
+  return j.access_token;
+}
+function driveConnectHandler(provider) {
+  return async (request, context) => {
+    const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    const realmId = new URL(request.url).searchParams.get('realmId');
+    if (!realmId) return driveBack(null, 'missing client');
+    const acc = await driveClientAccess(p, realmId); if (acc.err) return driveBack(realmId, 'no access to this client');
+    const creds = await driveAppCreds(provider); if (!creds.ok) return driveBack(realmId, (provider === 'google' ? 'Google Drive' : 'OneDrive') + ' app not configured yet');
+    const redirect = driveRedirect(request, provider);
+    const state = driveSignState(realmId, p.userDetails || p.userId || '');
+    let url;
+    if (provider === 'google') url = 'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams({ client_id: creds.clientId, redirect_uri: redirect, response_type: 'code', scope: 'https://www.googleapis.com/auth/drive openid email', access_type: 'offline', prompt: 'consent', state }).toString();
+    else url = 'https://login.microsoftonline.com/' + creds.tenant + '/oauth2/v2.0/authorize?' + new URLSearchParams({ client_id: creds.clientId, redirect_uri: redirect, response_type: 'code', response_mode: 'query', scope: MS_DRIVE_SCOPE, prompt: 'select_account', state }).toString();
+    return { status: 302, headers: { Location: url } };
+  };
+}
+function driveCallbackHandler(provider) {
+  return async (request, context) => {
+    const p = principal(request);
+    const u = new URL(request.url);
+    const code = u.searchParams.get('code'); const rawState = u.searchParams.get('state'); const oerr = u.searchParams.get('error');
+    try {
+      if (oerr) return driveBack(null, oerr);
+      if (!p || !domainAllowed(p)) return driveBack(null, 'sign in first');
+      const realmId = driveVerifyState(rawState, p.userDetails || p.userId || '');
+      if (!code || !realmId) return driveBack(null, 'invalid or expired sign-in — try again');
+      const acc = await driveClientAccess(p, realmId); if (acc.err) return driveBack(realmId, 'no access to this client');
+      const creds = await driveAppCreds(provider); if (!creds.ok) return driveBack(realmId, 'app not configured');
+      const tok = await driveExchangeCode(creds, code, driveRedirect(request, provider));
+      if (!tok.refresh_token) return driveBack(realmId, 'no refresh token returned — re-consent');
+      let account = '';
+      try {
+        if (provider === 'google') { const ui = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: 'Bearer ' + tok.access_token } }).then(r => r.json()); account = ui.email || ''; }
+        else { const me = await fetch('https://graph.microsoft.com/v1.0/me', { headers: { Authorization: 'Bearer ' + tok.access_token } }).then(r => r.json()); account = me.userPrincipalName || me.mail || ''; }
+      } catch (_) {}
+      await container().items.upsert({ id: 'bcc-clientdrive-' + realmId, tenantId: BCC_TENANT_ID, docType: 'client-drive', realmId, provider, account, refreshToken: tok.refresh_token, connectedAt: new Date().toISOString(), connectedBy: String(p.userDetails || p.userId || '').toLowerCase() });
+      return driveBack(realmId, null);
+    } catch (e) { context.error('drive-callback', e); return driveBack(null, String(e && e.message || e)); }
+  };
+}
+app.http('google-drive-connect',  { methods: ['GET'], authLevel: 'anonymous', route: 'integrations/google-drive/connect',  handler: withAccessLog(driveConnectHandler('google')) });
+app.http('google-drive-callback', { methods: ['GET'], authLevel: 'anonymous', route: 'integrations/google-drive/callback', handler: withAccessLog(driveCallbackHandler('google')) });
+app.http('onedrive-connect',      { methods: ['GET'], authLevel: 'anonymous', route: 'integrations/onedrive/connect',      handler: withAccessLog(driveConnectHandler('onedrive')) });
+app.http('onedrive-callback',     { methods: ['GET'], authLevel: 'anonymous', route: 'integrations/onedrive/callback',     handler: withAccessLog(driveCallbackHandler('onedrive')) });
+
+// Status (+ DELETE to disconnect). connected/provider/account + whether each app is configured.
+app.http('drive-status', {
+  methods: ['GET', 'DELETE'], authLevel: 'anonymous', route: 'integrations/drive/{realmId}',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    const realmId = request.params.realmId;
+    const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
+    const c = container(); const id = 'bcc-clientdrive-' + realmId;
+    if (request.method === 'DELETE') { try { await c.item(id, BCC_TENANT_ID).delete(); } catch (e) { if (e.code !== 404) throw e; } return { jsonBody: { ok: true, connected: false } }; }
+    const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+    return { jsonBody: { ok: true, connected: !!doc, provider: doc ? doc.provider : null, account: doc ? doc.account : null, googleConfigured: (await driveAppCreds('google')).ok, onedriveConfigured: (await driveAppCreds('onedrive')).ok } };
+  })
+});
+
+async function driveDocAndToken(realmId) {
+  const c = container();
+  const doc = await c.item('bcc-clientdrive-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+  if (!doc) return { err: { status: 400, jsonBody: { ok: false, error: 'not connected' } } };
+  const creds = await driveAppCreds(doc.provider);
+  if (!creds.ok) return { err: { status: 400, jsonBody: { ok: false, error: 'app not configured' } } };
+  const at = await driveAccessToken(doc, creds);
+  return { doc, at };
+}
+
+// List files in the client's drive (root or a folder).
+app.http('drive-files', {
+  methods: ['GET'], authLevel: 'anonymous', route: 'integrations/drive/{realmId}/files',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    const realmId = request.params.realmId;
+    const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
+    try {
+      const dt = await driveDocAndToken(realmId); if (dt.err) return dt.err;
+      const folderId = new URL(request.url).searchParams.get('folderId') || '';
+      let items = [];
+      if (dt.doc.provider === 'google') {
+        const q = encodeURIComponent("'" + (folderId || 'root') + "' in parents and trashed=false");
+        const r = await fetch('https://www.googleapis.com/drive/v3/files?q=' + q + '&fields=files(id,name,mimeType,modifiedTime,size,webViewLink)&pageSize=300&orderBy=folder,name&supportsAllDrives=true&includeItemsFromAllDrives=true', { headers: { Authorization: 'Bearer ' + dt.at } });
+        if (!r.ok) throw new Error('Google Drive ' + r.status);
+        const j = await r.json();
+        items = (j.files || []).map(f => ({ id: f.id, name: f.name, folder: f.mimeType === 'application/vnd.google-apps.folder', size: f.size ? Number(f.size) : null, modified: f.modifiedTime || null, webUrl: f.webViewLink || null }));
+      } else {
+        const path = folderId ? ('/items/' + encodeURIComponent(folderId) + '/children') : '/root/children';
+        const r = await fetch('https://graph.microsoft.com/v1.0/me/drive' + path + '?$top=300&$select=id,name,folder,size,lastModifiedDateTime,webUrl', { headers: { Authorization: 'Bearer ' + dt.at } });
+        if (!r.ok) throw new Error('OneDrive ' + r.status);
+        const j = await r.json();
+        items = (j.value || []).map(f => ({ id: f.id, name: f.name, folder: !!f.folder, size: f.size || null, modified: f.lastModifiedDateTime || null, webUrl: f.webUrl || null }));
+      }
+      items.sort((a, b) => ((b.folder ? 1 : 0) - (a.folder ? 1 : 0)) || String(a.name).localeCompare(b.name));
+      return { jsonBody: { ok: true, provider: dt.doc.provider, account: dt.doc.account, folderId, items } };
+    } catch (e) { context.error('drive-files', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+
+// Download a file (proxied with the firm's token; client passes ?name= for the filename).
+app.http('drive-download', {
+  methods: ['GET'], authLevel: 'anonymous', route: 'integrations/drive/{realmId}/download/{fileId}',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    const realmId = request.params.realmId, fileId = request.params.fileId;
+    const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
+    try {
+      const dt = await driveDocAndToken(realmId); if (dt.err) return dt.err;
+      const mediaUrl = dt.doc.provider === 'google'
+        ? ('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fileId) + '?alt=media&supportsAllDrives=true')
+        : ('https://graph.microsoft.com/v1.0/me/drive/items/' + encodeURIComponent(fileId) + '/content');
+      const r = await fetch(mediaUrl, { headers: { Authorization: 'Bearer ' + dt.at } });
+      if (!r.ok) return { status: 502, jsonBody: { ok: false, error: 'download failed (' + r.status + ')' } };
+      const buf = Buffer.from(await r.arrayBuffer());
+      const name = (new URL(request.url).searchParams.get('name') || 'download').replace(/[^a-zA-Z0-9._ -]+/g, '_').slice(0, 120);
+      return { status: 200, headers: { 'Content-Type': r.headers.get('content-type') || 'application/octet-stream', 'Content-Disposition': 'attachment; filename="' + name + '"' }, body: buf };
+    } catch (e) { context.error('drive-download', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+
+// Upload a file into the client's drive (root or a folder). Read-write.
+app.http('drive-upload', {
+  methods: ['POST'], authLevel: 'anonymous', route: 'integrations/drive/{realmId}/upload',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    const realmId = request.params.realmId;
+    const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
+    try {
+      const dt = await driveDocAndToken(realmId); if (dt.err) return dt.err;
+      const form = await request.formData();
+      const file = form.get('file'); const folderId = String(form.get('folderId') || '');
+      if (!file || typeof file.arrayBuffer !== 'function') return badRequest('file required');
+      if (file.size > 4 * 1024 * 1024) return badRequest('file too large (max 4 MB for now)');
+      const buf = Buffer.from(await file.arrayBuffer());
+      const name = String(file.name || 'upload'); const ct = file.type || 'application/octet-stream';
+      if (dt.doc.provider === 'google') {
+        const boundary = 'bcc' + Date.now().toString(36);
+        const meta = { name }; if (folderId) meta.parents = [folderId];
+        const body = Buffer.concat([
+          Buffer.from('--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + JSON.stringify(meta) + '\r\n'),
+          Buffer.from('--' + boundary + '\r\nContent-Type: ' + ct + '\r\n\r\n'),
+          buf,
+          Buffer.from('\r\n--' + boundary + '--')
+        ]);
+        const r = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true', { method: 'POST', headers: { Authorization: 'Bearer ' + dt.at, 'Content-Type': 'multipart/related; boundary=' + boundary }, body });
+        if (!r.ok) throw new Error('Google upload ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 160));
+      } else {
+        const safe = name.replace(/[#%?:*<>|"\\]+/g, '_');
+        const path = folderId ? ('/items/' + encodeURIComponent(folderId) + ':/' + encodeURIComponent(safe) + ':/content') : ('/root:/' + encodeURIComponent(safe) + ':/content');
+        const r = await fetch('https://graph.microsoft.com/v1.0/me/drive' + path, { method: 'PUT', headers: { Authorization: 'Bearer ' + dt.at, 'Content-Type': ct }, body: buf });
+        if (!r.ok) throw new Error('OneDrive upload ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 160));
+      }
+      return { jsonBody: { ok: true } };
+    } catch (e) { context.error('drive-upload', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
 

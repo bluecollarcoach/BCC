@@ -1571,9 +1571,89 @@
   function clientFolder() { return '/clients/' + currentRealm; }
   function renderFiles() {
     var body = document.getElementById('files-body'); if (!body) return;
-    body.innerHTML = '<div class="ws-form" style="margin-bottom:12px;"><label class="full">Upload a file for this client<input type="file" id="fl_file" /></label><label class="full">Tags (comma-separated)<input id="fl_tags" placeholder="e.g. w-9, contract, bank-statement" /></label><div class="full"><button class="btn btn-primary" id="fl_up" type="button">Upload</button> <span id="fl_status" style="font-size:12px;color:var(--muted);"></span></div></div><div id="fl_list"><div style="color:var(--muted);">Loading files…</div></div>';
+    body.innerHTML =
+      '<div id="drive-area" style="margin-bottom:20px;"></div>' +
+      '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Internal files <span style="font-weight:500;text-transform:none;letter-spacing:0;">· stored securely in BCC</span></div>' +
+      '<div class="ws-form" style="margin-bottom:12px;"><label class="full">Upload a file for this client<input type="file" id="fl_file" /></label><label class="full">Tags (comma-separated)<input id="fl_tags" placeholder="e.g. w-9, contract, bank-statement" /></label><div class="full"><button class="btn btn-primary" id="fl_up" type="button">Upload</button> <span id="fl_status" style="font-size:12px;color:var(--muted);"></span></div></div><div id="fl_list"><div style="color:var(--muted);">Loading files…</div></div>';
     document.getElementById('fl_up').onclick = uploadFile;
     loadFiles();
+    loadDrive();
+  }
+
+  /* ---- Shared client drive (Google Drive / OneDrive) ---- */
+  var _driveProvider = '', _driveAccount = '', _driveFolder = '', _driveStack = [];
+  function loadDrive() {
+    var area = document.getElementById('drive-area'); if (!area) return;
+    var realmAt = currentRealm;
+    area.innerHTML = '<div style="color:var(--muted);font-size:13px;">Checking shared drive…</div>';
+    fetch('/api/integrations/drive/' + encodeURIComponent(currentRealm), { credentials: 'include' })
+      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+      .then(function (s) {
+        if (currentRealm !== realmAt || !area) return;
+        if (!s || !s.ok) { area.innerHTML = ''; return; }
+        if (!s.connected) {
+          var btns = '';
+          if (s.googleConfigured) btns += '<a class="btn btn-primary" style="text-decoration:none;" href="/api/integrations/google-drive/connect?realmId=' + encodeURIComponent(currentRealm) + '">Connect Google Drive</a> ';
+          if (s.onedriveConfigured) btns += '<a class="btn btn-ghost" style="text-decoration:none;" href="/api/integrations/onedrive/connect?realmId=' + encodeURIComponent(currentRealm) + '">Connect OneDrive</a>';
+          if (!s.googleConfigured && !s.onedriveConfigured) btns = '<span style="color:var(--muted);font-size:12.5px;">No drive provider is configured yet — an admin adds Google Drive credentials in <a href="admin.html" style="color:var(--gold-deep);font-weight:600;">Admin → Integrations</a> (OneDrive is configured centrally).</span>';
+          area.innerHTML = '<div style="background:var(--gold-fade);border:1px solid var(--chrome-mute);border-radius:10px;padding:14px;">' +
+            '<div style="font-weight:700;font-size:14px;margin-bottom:4px;">📁 Shared client drive</div>' +
+            '<div style="font-size:12.5px;color:var(--muted);margin-bottom:10px;">Link this client&rsquo;s Google Drive or OneDrive — using the login they set up for us — to work with the files you share with them.</div>' + btns + '</div>';
+          return;
+        }
+        _driveProvider = s.provider; _driveAccount = s.account || ''; _driveStack = []; _driveFolder = '';
+        renderDriveBrowser();
+      })
+      .catch(function () { if (area) area.innerHTML = ''; });
+  }
+  function renderDriveBrowser() {
+    var area = document.getElementById('drive-area'); if (!area) return;
+    var crumbs = '<button type="button" data-crumb="-1" style="background:none;border:none;color:var(--gold-deep);font-weight:600;cursor:pointer;padding:0;font:inherit;">Home</button>' +
+      _driveStack.map(function (f, i) { return ' <span style="color:var(--muted);">/</span> <button type="button" data-crumb="' + i + '" style="background:none;border:none;color:var(--gold-deep);font-weight:600;cursor:pointer;padding:0;font:inherit;">' + esc(f.name) + '</button>'; }).join('');
+    area.innerHTML = '<div style="border:1px solid var(--chrome-mute);border-radius:10px;padding:14px;">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">' +
+        '<div style="font-weight:700;font-size:14px;">📁 Shared drive <span style="font-weight:400;color:var(--muted);font-size:12px;">· ' + esc(_driveProvider === 'google' ? 'Google Drive' : 'OneDrive') + (_driveAccount ? (' · ' + esc(_driveAccount)) : '') + '</span></div>' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;"><label class="btn btn-ghost" for="drv_file" style="cursor:pointer;font-size:12px;">⬆ Upload here</label><button class="btn btn-ghost" id="drv_disc" type="button" style="font-size:12px;">Disconnect</button></div>' +
+      '</div>' +
+      '<input type="file" id="drv_file" style="display:none;" />' +
+      '<div style="font-size:12.5px;margin-bottom:8px;">' + crumbs + '</div>' +
+      '<div id="drv_list"><div style="color:var(--muted);">Loading…</div></div></div>';
+    area.querySelectorAll('[data-crumb]').forEach(function (b) {
+      b.onclick = function () { var i = +b.getAttribute('data-crumb'); if (i < 0) { _driveStack = []; _driveFolder = ''; } else { _driveStack = _driveStack.slice(0, i + 1); _driveFolder = _driveStack[i].id; } renderDriveBrowser(); };
+    });
+    document.getElementById('drv_disc').onclick = function () {
+      if (!confirm('Disconnect the shared drive for this client?')) return;
+      fetch('/api/integrations/drive/' + encodeURIComponent(currentRealm), { method: 'DELETE', credentials: 'include' }).then(function () { loadDrive(); }).catch(function () { loadDrive(); });
+    };
+    var df = document.getElementById('drv_file'); df.onchange = function () { var f = df.files && df.files[0]; if (f) driveUpload(f); };
+    loadDriveFiles();
+  }
+  function loadDriveFiles() {
+    var list = document.getElementById('drv_list'); if (!list) return;
+    list.innerHTML = '<div style="color:var(--muted);">Loading…</div>';
+    fetch('/api/integrations/drive/' + encodeURIComponent(currentRealm) + '/files?folderId=' + encodeURIComponent(_driveFolder), { credentials: 'include' })
+      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+      .then(function (resp) {
+        if (!resp || !resp.ok) { list.innerHTML = '<div style="color:var(--burgundy);font-size:13px;">' + esc((resp && resp.error) || 'Could not load drive') + '</div>'; return; }
+        var items = resp.items || [];
+        if (!items.length) { list.innerHTML = '<div style="color:var(--muted);padding:8px 0;">This folder is empty.</div>'; return; }
+        list.innerHTML = '<table><tbody>' + items.map(function (it) {
+          if (it.folder) return '<tr><td><button type="button" data-folder="' + esc(it.id) + '" data-fname="' + esc(it.name) + '" style="background:none;border:none;cursor:pointer;font:inherit;font-size:14px;font-weight:600;color:var(--ink);padding:0;text-align:left;">📁 ' + esc(it.name) + '</button></td><td></td></tr>';
+          var kb = it.size ? (Math.max(1, Math.round(it.size / 1024)) + ' KB') : '';
+          return '<tr><td><a href="/api/integrations/drive/' + encodeURIComponent(currentRealm) + '/download/' + encodeURIComponent(it.id) + '?name=' + encodeURIComponent(it.name) + '" style="color:var(--gold-deep);font-weight:600;">📄 ' + esc(it.name) + '</a></td><td style="text-align:right;color:var(--muted);font-size:12px;">' + esc(kb) + '</td></tr>';
+        }).join('') + '</tbody></table>';
+        list.querySelectorAll('[data-folder]').forEach(function (b) { b.onclick = function () { _driveStack.push({ id: b.getAttribute('data-folder'), name: b.getAttribute('data-fname') }); _driveFolder = b.getAttribute('data-folder'); renderDriveBrowser(); }; });
+      })
+      .catch(function () { list.innerHTML = '<div style="color:var(--burgundy);font-size:13px;">Could not load drive.</div>'; });
+  }
+  function driveUpload(file) {
+    if (file.size > 4 * 1024 * 1024) { (window.bccNotify || alert)('File too large (max 4 MB for the shared drive).', 'warn'); return; }
+    var fd = new FormData(); fd.append('file', file); if (_driveFolder) fd.append('folderId', _driveFolder);
+    if (window.bccNotify) window.bccNotify('Uploading to the client drive…', 'info', 4000);
+    fetch('/api/integrations/drive/' + encodeURIComponent(currentRealm) + '/upload', { method: 'POST', credentials: 'include', body: fd })
+      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+      .then(function (resp) { if (!resp.ok) throw new Error(resp.error || 'upload failed'); if (window.bccNotifySaved) window.bccNotifySaved('Uploaded to the shared drive.'); loadDriveFiles(); })
+      .catch(function (e) { (window.bccNotify || alert)('Upload failed: ' + e.message, 'error', 7000); });
   }
   function loadFiles() {
     var list = document.getElementById('fl_list'); if (!list) return;
@@ -2121,7 +2201,19 @@
       if (qs.get('qbo') === 'connected' && window.bccNotifySaved) window.bccNotifySaved('QuickBooks connected: ' + (qs.get('company') || 'company'));
       else if (qs.get('qbo') === 'error' && window.bccNotify) window.bccNotify('QuickBooks connect failed: ' + (qs.get('detail') || ''), 'warn');
     } catch (_) {}
-    loadCompanies().then(renderAll);
+    loadCompanies().then(function () {
+      renderAll();
+      try {
+        var dq = new URLSearchParams(location.search);
+        var dr = dq.get('drive');
+        if (dr) {
+          if (dr === 'connected') { if (window.bccNotifySaved) window.bccNotifySaved('Shared drive connected.'); }
+          else if (window.bccNotify) window.bccNotify('Drive connect failed: ' + (dq.get('detail') || ''), 'warn', 7000);
+          var rid = dq.get('realmId');
+          if (rid) { currentRealm = rid; currentTab = 'files'; renderAll(); }
+        }
+      } catch (_) {}
+    });
     bkStart(); // auto time-tracking for bookkeepers
   }
   // localStorage→Cosmos sync can land after init; re-render the data views (not the company list).
