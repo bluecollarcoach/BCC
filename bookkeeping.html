@@ -157,6 +157,7 @@
       <div class="sub" id="subline">Monthly P&amp;L snapshot. Numbers come from the QBO connector once it's configured.</div>
     </div>
     <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <button class="btn btn-ghost" id="mgmtBtn" type="button" style="display:none;">Management dashboard →</button>
       <button class="btn btn-primary" id="connectBtn" type="button">+ Connect a company</button>
       <button class="btn btn-ghost" id="syncBtn" type="button">Sync all from QBO</button>
       <button class="btn btn-ghost" id="newBtn" type="button">+ Manual entry</button>
@@ -353,6 +354,7 @@
   var isAdmin = false;        // admins can toggle companies on/off + assign users
   var usersDir = [];          // [{upn, displayName}] for the per-user access picker
   var accessEditRealm = null; // realm whose access editor is open (admin)
+  var managementMode = false; // root view: false = bookkeeper work queue, true = firm-wide management dashboard (access-controlled)
 
   function nowIso() { return new Date().toISOString(); }
   function esc(s) { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
@@ -445,6 +447,9 @@
   function renderKpis() {
     var ids = ['kpiRev','kpiExp','kpiNet','kpiYtd'];
     if (!currentRealm) {
+      // Firm-wide totals are management-only — don't even compute/write them to
+      // the DOM for non-managers (gate the data, not just the visibility).
+      if (!(managementMode && canManage())) { ids.forEach(function (k) { document.getElementById(k).textContent = '—'; }); return; }
       // All companies: firm-wide totals from each company's latest month.
       var map = latestByCompany();
       var realms = Object.keys(map);
@@ -489,11 +494,73 @@
     var tr = document.querySelector('.list thead tr');
     if (tr) tr.innerHTML = cols.map(function (c) { return '<th' + (c.num ? ' class="num"' : '') + '>' + esc(c.label) + '</th>'; }).join('');
   }
+  // Who can see the firm-wide management dashboard (overall KPIs/snapshot +
+  // admin controls). Global admins, or members explicitly granted 'admin' on
+  // the bookkeeping app.
+  function canManage() {
+    if (isAdmin) return true;
+    try { return !!(window.bccGetAppPermission && window.bccGetAppPermission('bookkeeping') === 'admin'); } catch (e) { return false; }
+  }
+  // Count open (not-done) to-dos per client in a SINGLE localStorage pass,
+  // keyed by realmId (keys look like 'bcc-task-<realm>-<id>'; realmId is numeric
+  // so it never contains a '-').
+  function buildTaskMap() {
+    var map = {}, today = new Date().toISOString().slice(0, 10);
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i); if (!k || k.indexOf('bcc-task-') !== 0) continue;
+      var rest = k.slice(9), dash = rest.indexOf('-'); if (dash < 0) continue;
+      var realm = rest.slice(0, dash);
+      var t; try { t = JSON.parse(localStorage.getItem(k)); } catch (e) { continue; }
+      if (t && t.status !== 'done') { var info = map[realm] || (map[realm] = { count: 0, overdue: false }); info.count++; if (t.dueDate && t.dueDate < today) info.overdue = true; }
+    }
+    return map;
+  }
+  // The working bookkeeper's landing: their client queue, to-dos first.
+  function renderWorkList() {
+    var yf = document.getElementById('yearFilter'); if (yf) yf.style.display = 'none';
+    setHead([{ label: 'Client' }, { label: 'To-dos' }, { label: 'Last sync' }, { label: '' }]);
+    document.getElementById('periodCount').textContent = companies.length + ' client' + (companies.length === 1 ? '' : 's');
+    if (!companies.length) {
+      rowsEl.innerHTML = ''; emptyEl.hidden = false;
+      emptyEl.querySelector('.big').textContent = 'No clients assigned to you yet.';
+      var sub = emptyEl.querySelector('div:last-child');
+      if (sub) sub.innerHTML = canManage() ? 'Open <strong>Management dashboard</strong> → <strong>+ Connect a company</strong> to link a client’s QuickBooks.' : 'Ask an admin to give you access to a client.';
+      return;
+    }
+    emptyEl.hidden = true;
+    var taskMap = buildTaskMap();
+    var ti = function (realm) { return taskMap[realm] || { count: 0, overdue: false }; };
+    var sorted = companies.slice().sort(function (a, b) {
+      var ta = ti(a.realmId), tb = ti(b.realmId);
+      var sa = ta.overdue ? 2 : (ta.count > 0 ? 1 : 0), sb = tb.overdue ? 2 : (tb.count > 0 ? 1 : 0);
+      if (sa !== sb) return sb - sa;
+      return (a.companyName || '').localeCompare(b.companyName || '');
+    });
+    rowsEl.innerHTML = sorted.map(function (c) {
+      var t = ti(c.realmId);
+      var ls = c.lastSyncAt ? new Date(c.lastSyncAt).toLocaleDateString([], { month: 'short', day: 'numeric' }) : 'never';
+      var bell = t.count > 0
+        ? '<span style="display:inline-flex;align-items:center;gap:5px;font-weight:700;font-size:12.5px;color:' + (t.overdue ? 'var(--burgundy)' : 'var(--gold-deep)') + ';">🔔 ' + t.count + ' to-do' + (t.count === 1 ? '' : 's') + (t.overdue ? ' · overdue' : '') + '</span>'
+        : '<span style="color:var(--muted);font-size:12.5px;">—</span>';
+      return '<tr data-realm="' + esc(c.realmId) + '" style="cursor:pointer;">' +
+        '<td data-label="Client"><strong style="font-size:14px;">' + esc(c.companyName || ('Company ' + c.realmId)) + '</strong></td>' +
+        '<td data-label="To-dos">' + bell + '</td>' +
+        '<td data-label="Last sync" style="color:var(--muted);font-size:12.5px;">' + esc(ls) + '</td>' +
+        '<td style="text-align:right;"><span style="color:var(--gold-deep);font-weight:700;font-size:12px;">Open →</span></td></tr>';
+    }).join('');
+    rowsEl.querySelectorAll('tr[data-realm]').forEach(function (tr) {
+      tr.addEventListener('click', function () { currentRealm = tr.dataset.realm; document.getElementById('companyFilter').value = currentRealm; accessEditRealm = null; renderAll(); });
+    });
+  }
+
   function renderTable() {
     var yf = document.getElementById('yearFilter');
 
     if (!currentRealm) {
-      // ── All companies: one summary row per connected company ──
+      // Working bookkeepers get the client queue; the firm-wide financial
+      // summary lives behind the access-controlled management dashboard.
+      if (!(managementMode && canManage())) { renderWorkList(); return; }
+      // ── Management: one financial-summary row per connected company ──
       yf.style.display = 'none';
       var cols = [{label:'Company'},{label:'Latest period'},{label:'Revenue',num:true},{label:'Expenses',num:true},{label:'Net',num:true},{label:'Last sync'}];
       if (isAdmin) cols.push({label:'Enabled'}, {label:'Access'});
@@ -600,6 +667,8 @@
     if (rows.length === 0) {
       rowsEl.innerHTML = ''; emptyEl.hidden = false;
       emptyEl.querySelector('.big').textContent = all.length === 0 ? 'No periods yet — hit "Sync all from QBO".' : 'No periods for that year.';
+      var esub = emptyEl.querySelector('div:last-child'); // reset so stale copy from another view doesn't linger
+      if (esub) esub.innerHTML = all.length === 0 ? 'Use <strong>Sync</strong> once QuickBooks is connected, or add a period with <strong>+ Manual entry</strong>.' : 'Pick a different year, or sync more history.';
       return;
     }
     emptyEl.hidden = true;
@@ -679,6 +748,7 @@
   });
 
   document.getElementById('printBtn').addEventListener('click', function () { window.print(); });
+  document.getElementById('mgmtBtn').addEventListener('click', function () { if (!canManage()) return; managementMode = !managementMode; accessEditRealm = null; renderAll(); });
   document.getElementById('yearFilter').addEventListener('change', renderTable);
   document.getElementById('companyFilter').addEventListener('change', function () { currentRealm = this.value; renderAll(); });
 
@@ -1672,7 +1742,25 @@
   })();
 
   /* ===== Init ===== */
-  function renderAll() { fillCompanyFilter(); renderStatus(); renderKpis(); renderTable(); toggleQboReports(); renderWorkspace(); }
+  // Show/hide chrome per view: working queue (root, no mgmt), management
+  // dashboard (root + authorized), or a single client. Runs last in renderAll
+  // so it has the final say over visibility.
+  function applyChrome() {
+    var atRoot = !currentRealm;
+    var mgmt = atRoot && managementMode && canManage();
+    var pan = document.getElementById('panel'); if (pan) pan.classList.remove('open'); // never leave the add-period panel stuck across views
+    if (atRoot) {
+      var fk = document.getElementById('finKpi'); if (fk) fk.style.display = mgmt ? '' : 'none';
+      var tb = document.querySelector('.toolbar'); if (tb) tb.style.display = mgmt ? '' : 'none';
+      var ls = document.querySelector('.list'); if (ls) ls.style.display = '';
+    }
+    var cb = document.getElementById('connectBtn'); if (cb) cb.style.display = mgmt ? '' : 'none';
+    ['syncBtn', 'newBtn', 'printBtn'].forEach(function (id) { var b = document.getElementById(id); if (b) b.style.display = (mgmt || currentRealm) ? '' : 'none'; });
+    var mb = document.getElementById('mgmtBtn');
+    if (mb) { mb.style.display = (atRoot && canManage()) ? '' : 'none'; mb.textContent = managementMode ? '← Working view' : 'Management dashboard →'; }
+    var sub = document.getElementById('subline'); if (sub) sub.textContent = currentRealm ? '' : (mgmt ? 'Firm-wide snapshot across all companies.' : 'Your client work queue — open a company to do the books.');
+  }
+  function renderAll() { fillCompanyFilter(); renderStatus(); renderKpis(); renderTable(); toggleQboReports(); renderWorkspace(); applyChrome(); }
   function init() {
     yearFilter = document.getElementById('yearFilter');
     rowsEl = document.getElementById('rows');

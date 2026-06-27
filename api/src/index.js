@@ -1268,17 +1268,32 @@ app.http('integrations-qbo-sync', {
       const c = container();
       const body = await request.json().catch(() => ({}));
 
+      // Authorization: financial data is scoped per-company exactly like the
+      // company list (admins see all; others only companies that are enabled
+      // and either open to everyone or explicitly shared with them). This makes
+      // the firm-wide financials access-controlled at the DATA layer, not just
+      // the UI — a non-manager can never pull another client's books.
+      const admin = await isAppAdmin(p);
+      const who = String(p.userDetails || p.userId || '').toLowerCase();
+      const callerCanSee = (comp) => {
+        if (admin) return true;
+        if (!comp || comp.enabled === false) return false;
+        const allow = (comp.allowedUserUpns || []).map(u => String(u).toLowerCase());
+        return allow.length === 0 || allow.indexOf(who) >= 0;
+      };
+
       // Which companies to sync — one (body.realmId) or every connected company.
       let companyDocs;
       if (body && body.realmId) {
         const d = await c.item('bcc-qbo-company-' + body.realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+        if (d && !callerCanSee(d)) return { status: 403, jsonBody: { ok: false, error: 'no access to this company' } };
         companyDocs = d ? [d] : [];
       } else {
         const { resources } = await c.items.query({
           query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="qbo-company"',
           parameters: [{ name: '@t', value: BCC_TENANT_ID }]
         }).fetchAll();
-        companyDocs = resources;
+        companyDocs = resources.filter(callerCanSee);
       }
       if (!companyDocs.length) {
         return { status: 400, jsonBody: { ok: false, error: 'No QBO companies connected yet. Click "Connect a company" first.' } };
