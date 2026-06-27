@@ -37,8 +37,8 @@
   .page-head h1 { font-family:'Source Serif 4', Georgia, serif; font-size:26px; margin:0; }
   .page-head .sub { color:var(--muted); font-size:13px; margin-top:4px; }
   .btn { min-height:38px; border:0; border-radius:8px; padding:0 14px; font:inherit; font-weight:700; font-size:13px; cursor:pointer; }
-  .btn-primary { background:var(--gold); color:#fff; }
-  .btn-primary:hover { background:var(--gold-deep); }
+  .btn-primary { background:var(--gold-deep); color:#fff; }
+  .btn-primary:hover { background:#876d3a; }
   .btn-ghost { background:transparent; color:var(--ink); border:1px solid var(--chrome-mute); }
   .btn-ghost:hover { background:var(--chrome-mute); }
 
@@ -107,12 +107,33 @@
   @media (max-width:700px) {
     .page { padding:14px 14px 60px; }
     .page-head h1 { font-size:22px; }
-    table, thead, tbody, tr, td { display:block; }
-    thead { display:none; }
-    tbody tr { background:#fff; border:1px solid var(--chrome-mute); border-radius:10px; padding:10px; margin-bottom:10px; }
-    tbody td { padding:4px 0; border:0; font-size:14px; }
-    tbody td:before { content:attr(data-label); display:block; font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:1px; font-weight:700; margin-bottom:2px; }
-    tbody td.num { text-align:left; }
+    /* Card-ify ONLY the period/work-queue/management table (its cells carry data-label). */
+    .list table, .list thead, .list tbody, .list tr, .list td { display:block; }
+    .list thead { display:none; }
+    .list tbody tr { background:#fff; border:1px solid var(--chrome-mute); border-radius:10px; padding:10px; margin-bottom:10px; }
+    .list tbody td { padding:4px 0; border:0; font-size:14px; }
+    .list tbody td:before { content:attr(data-label); display:block; font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:1px; font-weight:700; margin-bottom:2px; }
+    .list tbody td:not([data-label]):before { content:none; }
+    .list tbody td.num { text-align:left; }
+    /* Every other dynamic table stays a real table and pans horizontally. */
+    #qboReportOut, #files-body, #time-body, #payroll-body, #email-body { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+    #qboReportOut table, #time-body table, #files-body table { min-width:540px; }
+    /* No iOS zoom-on-focus; comfortable touch targets. */
+    input, select, textarea { font-size:16px; }
+    .btn { min-height:44px; }
+    .ws-row .btn, .list .btn, #qboReportOut .btn, #files-body .btn, #time-body .btn, #email-body .btn, #payroll-body .btn { min-height:38px !important; padding:0 12px; }
+    input[type=checkbox] { width:24px; height:24px; }
+    .ws-row { padding:12px 0; gap:12px; }
+  }
+  @media (max-width:560px) {
+    header.topbar { padding:10px 12px; gap:10px; }
+    header.topbar .module { display:none; }
+    header.topbar .wordmark { letter-spacing:.5px; font-size:12px; }
+    .page-head { flex-direction:column; align-items:stretch; }
+    .page-head > div:last-child { display:grid; grid-template-columns:1fr 1fr; gap:8px; width:100%; }
+    .page-head .btn { width:100%; }
+    .toolbar { flex-direction:column; align-items:stretch; }
+    .toolbar select { min-width:0; width:100%; }
   }
   @media print {
     header.topbar, .toolbar, .status-bar, .panel, .btn { display:none !important; }
@@ -137,6 +158,51 @@
   .ws-row { display:flex; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid var(--chrome-mute); }
   .ws-row:last-child { border-bottom:none; }
   .task-done { text-decoration:line-through; color:var(--muted); }
+
+  /* Card surface — workspace panels use class="card" (was undefined → unstyled). */
+  .card { background:#fff; border:1px solid var(--chrome-mute); border-radius:12px; padding:18px; }
+  .card > h3 { font-family:'Source Serif 4', Georgia, serif; font-size:16px; margin:0 0 12px; }
+  @media (max-width:700px) { .card { padding:14px; } }
+
+  /* Visible keyboard focus everywhere. */
+  .btn:focus-visible, button:focus-visible, a:focus-visible,
+  input:focus-visible, select:focus-visible, textarea:focus-visible {
+    outline:3px solid var(--gold-deep); outline-offset:2px; border-radius:6px;
+  }
+
+  /* Scan-receipt review: form beside the scanned image, stacks on phones. */
+  .scan-split { display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; }
+  .scan-pane { flex:1 1 340px; min-width:0; }
+  @media (max-width:720px) { .scan-split { flex-direction:column; } .scan-pane.scan-preview { order:-1; } .scan-split embed { height:340px !important; } }
+  @media (max-width:680px) {
+    .ws-row [data-l='itemId'], .ws-row [data-l='accountId'] { min-width:0 !important; flex:1 1 100%; }
+    .ws-row [data-l='desc'] { min-width:0 !important; flex:1 1 60%; }
+    .ws-row [data-l='amount'] { width:auto !important; flex:1 1 30%; }
+  }
+
+  /* Per-client section nav: a labelled menu button + a slide-out drawer. */
+  .ws-menu-btn { display:inline-flex; align-items:center; gap:8px; }
+  .ws-drawer-backdrop { display:none; position:fixed; inset:0; background:rgba(15,23,42,0.45); z-index:120; }
+  .ws-drawer-backdrop.open { display:block; }
+  .ws-drawer { position:fixed; top:0; left:0; bottom:0; width:288px; max-width:86vw; background:#fff; z-index:121; transform:translateX(-100%); transition:transform .2s ease; box-shadow:6px 0 24px rgba(0,0,0,0.18); display:flex; flex-direction:column; overflow-y:auto; }
+  .ws-drawer.open { transform:translateX(0); }
+  .ws-drawer-head { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:16px 18px; background:linear-gradient(135deg,#1a1a1a,#2b2b2b); color:#fff; position:sticky; top:0; }
+  .ws-drawer-head .t { font-size:10.5px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:rgba(255,255,255,0.55); }
+  .ws-drawer-head .n { font-size:15px; font-weight:700; color:#fff; margin-top:2px; }
+  .ws-drawer-head button { background:rgba(255,255,255,0.14); color:#fff; border:none; width:34px; height:34px; border-radius:8px; cursor:pointer; font-size:18px; flex-shrink:0; }
+  .ws-drawer-item { display:flex; align-items:center; gap:12px; padding:14px 18px; cursor:pointer; font-size:14.5px; font-weight:600; color:var(--ink); border:none; border-bottom:1px solid #f3f3f1; background:transparent; width:100%; text-align:left; min-height:50px; }
+  .ws-drawer-item:hover { background:var(--chrome); }
+  .ws-drawer-item.active { background:var(--gold-fade); color:var(--gold-deep); box-shadow:inset 4px 0 0 var(--gold-deep); }
+  .ws-drawer-item .ic { width:22px; text-align:center; font-size:16px; flex-shrink:0; }
+  .ws-drawer-item .badge { margin-left:auto; background:var(--burgundy); color:#fff; font-size:11px; font-weight:800; border-radius:999px; padding:1px 8px; }
+
+  /* Overview quick-action tiles. */
+  .ov-actions { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:16px; }
+  @media (max-width:680px) { .ov-actions { grid-template-columns:1fr; } }
+  .ov-action { display:flex; align-items:center; gap:12px; padding:16px; border:1px solid var(--chrome-mute); border-radius:12px; background:#fff; cursor:pointer; font:inherit; font-size:14.5px; font-weight:700; color:var(--ink); text-align:left; min-height:60px; }
+  .ov-action:hover { border-color:var(--gold); background:var(--gold-fade); }
+  .ov-action .ic { font-size:22px; }
+  .ov-action .sub { display:block; font-size:11.5px; font-weight:500; color:var(--muted); margin-top:2px; }
 </style>
 <script src="bcc-api.js" defer></script>
 </head>
@@ -180,18 +246,9 @@
   <!-- Per-client workspace tab bar (shown only when a client is selected) -->
   <div class="ws-tabs" id="wsTabs" style="display:none;">
     <div class="ws-head">
-      <button class="btn btn-ghost" id="wsBack" type="button">← All companies</button>
-      <span class="ws-client">Client: <strong id="wsClientName"></strong></span>
-    </div>
-    <div class="ws-tabrow">
-      <button class="ws-tab active" data-tab="financials" type="button">Financials</button>
-      <button class="ws-tab" data-tab="info" type="button">Client info</button>
-      <button class="ws-tab" data-tab="files" type="button">Files</button>
-      <button class="ws-tab" data-tab="tasks" type="button">Tasks</button>
-      <button class="ws-tab" data-tab="time" type="button">Time</button>
-      <button class="ws-tab" data-tab="email" type="button">Email</button>
-      <button class="ws-tab" data-tab="payroll" type="button">Certified payroll</button>
-      <button class="ws-tab" data-tab="access" type="button">Team &amp; access</button>
+      <button class="btn btn-ghost" id="wsBack" type="button">← Clients</button>
+      <button class="btn btn-ghost ws-menu-btn" id="wsMenuBtn" type="button" aria-label="Open section menu">☰ <strong id="wsSectionName">Overview</strong></button>
+      <span class="ws-client">· <strong id="wsClientName"></strong></span>
     </div>
   </div>
 
@@ -275,16 +332,23 @@
   <!-- QuickBooks write: create/edit invoices, bills, payments (posts to live books) -->
   <div class="card" id="qboWrite" style="display:none; margin-top:14px;">
     <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
-      <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0;">New transaction <span style="color:var(--muted);font-weight:400;font-size:12px;">· posts to QuickBooks</span></h3>
-      <div style="display:flex; gap:6px; flex-wrap:wrap;">
+      <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0;">New &amp; transactions <span style="color:var(--muted);font-weight:400;font-size:12px;">· posts to QuickBooks</span></h3>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
         <label class="btn btn-primary" for="scanInput" style="cursor:pointer;display:inline-flex;align-items:center;">📷 Scan receipt (AI)</label>
-        <button class="btn btn-ghost" data-tx="invoice" type="button">+ Invoice</button>
-        <button class="btn btn-ghost" data-tx="bill" type="button">+ Bill / expense</button>
-        <button class="btn btn-ghost" data-tx="payment" type="button">+ Payment</button>
-        <button class="btn btn-ghost" data-add="customer" type="button">+ Customer</button>
-        <button class="btn btn-ghost" data-add="vendor" type="button">+ Vendor</button>
-        <button class="btn btn-ghost" data-add="item" type="button">+ Item</button>
-        <button class="btn btn-ghost" data-add="account" type="button">+ Account</button>
+        <select id="qboNewSel" aria-label="Create a new record" style="background:var(--chrome); border:1px solid var(--chrome-mute); border-radius:8px; padding:9px 11px; font:inherit; font-size:14px; min-height:42px; font-weight:700;">
+          <option value="">+ New…</option>
+          <optgroup label="Transactions">
+            <option value="tx:invoice">Invoice</option>
+            <option value="tx:bill">Bill / expense</option>
+            <option value="tx:payment">Receive payment</option>
+          </optgroup>
+          <optgroup label="Records">
+            <option value="add:customer">Customer</option>
+            <option value="add:vendor">Vendor</option>
+            <option value="add:item">Item / service</option>
+            <option value="add:account">Account</option>
+          </optgroup>
+        </select>
       </div>
     </div>
     <input type="file" id="scanInput" accept="image/*,application/pdf" style="display:none;" />
@@ -293,26 +357,41 @@
 
   <!-- QuickBooks live reports (shown when a single company is selected) -->
   <div class="card" id="qboReports" style="display:none; margin-top:14px;">
-    <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 4px;">QuickBooks live reports <span id="qboReportsCo" style="color:var(--muted); font-weight:400; font-size:13px;"></span></h3>
-    <div style="display:flex; gap:6px; flex-wrap:wrap; margin:10px 0;">
-      <button class="btn btn-ghost" data-rpt="pl" type="button">P&amp;L</button>
-      <button class="btn btn-ghost" data-rpt="balancesheet" type="button">Balance Sheet</button>
-      <button class="btn btn-ghost" data-rpt="ar-aging" type="button">A/R Aging</button>
-      <button class="btn btn-ghost" data-rpt="ap-aging" type="button">A/P Aging</button>
-      <button class="btn btn-ghost" data-rpt="customers" type="button">Customers</button>
-      <button class="btn btn-ghost" data-rpt="vendors" type="button">Vendors</button>
-      <button class="btn btn-ghost" data-rpt="invoices" type="button">Open Invoices</button>
-      <button class="btn btn-ghost" data-rpt="bills" type="button">Open Bills</button>
-      <button class="btn btn-ghost" data-rpt="transactions" type="button">Transactions</button>
-      <button class="btn btn-ghost" data-rpt="payments" type="button">Payments</button>
-      <button class="btn btn-ghost" data-rpt="expenses" type="button">Expenses</button>
-      <button class="btn btn-ghost" data-rpt="all-invoices" type="button">All Invoices</button>
-      <button class="btn btn-ghost" data-rpt="all-bills" type="button">All Bills</button>
+    <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 8px;">QuickBooks reports <span id="qboReportsCo" style="color:var(--muted); font-weight:400; font-size:13px;"></span></h3>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:0 0 10px;">
+      <label style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--muted);">Report</label>
+      <select id="qboReportSel" style="background:var(--chrome); border:1px solid var(--chrome-mute); border-radius:8px; padding:9px 11px; font:inherit; font-size:14px; min-height:42px; min-width:200px;">
+        <option value="">— Choose a report —</option>
+        <optgroup label="Financial statements">
+          <option value="pl">Profit &amp; Loss</option>
+          <option value="balancesheet">Balance Sheet</option>
+        </optgroup>
+        <optgroup label="Aging">
+          <option value="ar-aging">A/R Aging</option>
+          <option value="ap-aging">A/P Aging</option>
+        </optgroup>
+        <optgroup label="Transactions">
+          <option value="transactions">All transactions</option>
+          <option value="payments">Payments</option>
+          <option value="expenses">Expenses</option>
+          <option value="invoices">Open invoices</option>
+          <option value="all-invoices">All invoices</option>
+          <option value="bills">Open bills</option>
+          <option value="all-bills">All bills</option>
+        </optgroup>
+        <optgroup label="Lists">
+          <option value="customers">Customers</option>
+          <option value="vendors">Vendors</option>
+        </optgroup>
+      </select>
     </div>
     <div id="qboReportOut" style="overflow:auto;"></div>
   </div>
 
-  <!-- Per-client workspace panels (one shown at a time, by tab) -->
+  <!-- Per-client workspace panels (one shown at a time, by section) -->
+  <div class="card" id="tab-overview" style="display:none; margin-top:14px;">
+    <div id="overview-body"></div>
+  </div>
   <div class="card" id="tab-info" style="display:none; margin-top:14px;">
     <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Client information</h3>
     <div id="info-body"></div>
@@ -754,6 +833,7 @@
 
   /* ===== QuickBooks live KPIs + reports ===== */
   var qboActiveReport = null;
+  var _qboReportRealm = null; // which client the report output currently belongs to
   function money2(v) { var n = parseFloat(String(v == null ? '' : v).replace(/,/g, '')); return isNaN(n) ? (v == null ? '' : esc(v)) : ((n < 0 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString()); }
   function qboRange() {
     var now = new Date();
@@ -768,23 +848,29 @@
     else { from = iso(new Date(now.getFullYear(), 0, 1)); to = iso(now); }
     return { from: from, to: to, method: ((document.getElementById('qboMethod') || {}).value || 'accrual') };
   }
+  // Visibility of the QBO cards is owned by showSection(); this just keeps the
+  // company-name labels current and clears stale state when leaving a client.
   function toggleQboReports() {
-    var box = document.getElementById('qboReports'), kbox = document.getElementById('qboKpis'), wbox = document.getElementById('qboWrite');
-    // If the client changed while a write form was open, discard it so a file/
-    // record meant for one client can never post to another (cross-client leak).
+    // Cross-client safety: discard a write form opened for a different client
+    // so a file/record can never post to another client.
     if (_txnFormRealm && _txnFormRealm !== currentRealm) {
       var _wf = document.getElementById('qboWriteForm'); if (_wf) _wf.innerHTML = '';
       _txnFile = null; _txnEdit = null; _txnFormRealm = null;
     }
+    // Clear stale report output on a client change so one client's financial
+    // report can never appear under another client's workspace.
+    if (currentRealm !== _qboReportRealm) {
+      _qboReportRealm = currentRealm;
+      var ro = document.getElementById('qboReportOut'); if (ro) ro.innerHTML = '';
+      var rs = document.getElementById('qboReportSel'); if (rs) rs.value = '';
+      qboActiveReport = null;
+    }
     if (currentRealm) {
-      if (box) { box.style.display = ''; document.getElementById('qboReportsCo').textContent = '· ' + companyName(currentRealm); }
-      if (kbox) { kbox.style.display = ''; document.getElementById('qboKpisCo').textContent = '· ' + companyName(currentRealm); }
-      if (wbox) wbox.style.display = '';
-      loadQboKpis();
+      var rco = document.getElementById('qboReportsCo'); if (rco) rco.textContent = '· ' + companyName(currentRealm);
+      var kco = document.getElementById('qboKpisCo'); if (kco) kco.textContent = '· ' + companyName(currentRealm);
     } else {
-      if (box) { box.style.display = 'none'; var o = document.getElementById('qboReportOut'); if (o) o.innerHTML = ''; }
-      if (kbox) kbox.style.display = 'none';
-      if (wbox) { wbox.style.display = 'none'; var wf = document.getElementById('qboWriteForm'); if (wf) wf.innerHTML = ''; }
+      var o = document.getElementById('qboReportOut'); if (o) o.innerHTML = '';
+      var wf2 = document.getElementById('qboWriteForm'); if (wf2) wf2.innerHTML = '';
       qboActiveReport = null;
     }
   }
@@ -810,7 +896,7 @@
       })
       .catch(function (e) { tiles.innerHTML = ''; document.getElementById('qboKpiNote').innerHTML = '<span style="color:var(--burgundy);">QuickBooks: ' + esc(e.message) + '</span>'; });
   }
-  function qboRefresh() { if (!currentRealm) return; loadQboKpis(); if (qboActiveReport) loadQboReport(qboActiveReport, document.querySelector('#qboReports button[data-rpt="' + qboActiveReport + '"]')); }
+  function qboRefresh() { if (!currentRealm) return; loadQboKpis(); if (qboActiveReport) loadQboReport(qboActiveReport, null); }
   function renderReport(resp) {
     var d = (resp && resp.data) || {};
     if (d.kind === 'list') {
@@ -834,6 +920,7 @@
   function loadQboReport(type, btn) {
     if (!currentRealm) return;
     qboActiveReport = type;
+    var sel = document.getElementById('qboReportSel'); if (sel && sel.value !== type) sel.value = type; // keep the dropdown in sync (e.g. on programmatic refresh)
     var rg = qboRange();
     var q = 'type=' + encodeURIComponent(type) + '&method=' + rg.method;
     var RANGE_TYPES = { pl:1, transactions:1, payments:1, expenses:1, 'all-invoices':1, 'all-bills':1 };
@@ -841,8 +928,6 @@
     else if (type === 'balancesheet') q += '&asOf=' + rg.to;
     var out = document.getElementById('qboReportOut');
     out.innerHTML = '<div style="color:var(--muted);padding:10px;">Loading ' + esc(type) + '…</div>';
-    document.querySelectorAll('#qboReports button[data-rpt]').forEach(function (b) { b.classList.remove('btn-primary'); b.classList.add('btn-ghost'); });
-    if (btn) { btn.classList.remove('btn-ghost'); btn.classList.add('btn-primary'); }
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/report?' + q, { credentials: 'include' })
       .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
       .then(function (resp) { out.innerHTML = renderReport(resp); wireTxEdit(out, resp.data); })
@@ -871,6 +956,7 @@
     return '<div class="ws-row" data-lrow="' + i + '" style="gap:8px;flex-wrap:wrap;"><select data-l="accountId" style="flex:2;min-width:140px;border:1px solid var(--chrome-mute);border-radius:7px;padding:7px;">' + txOpt(expAccts.length ? expAccts : refs.accounts, ln.accountId) + '</select>' + desc + amt + rm + '</div>';
   }
   function openTxnForm(entity, edit, seed) {
+    gotoTransactions();
     _txnEdit = edit || null;
     _txnFile = (seed && seed.file) || null;
     _txnFormRealm = currentRealm;
@@ -905,9 +991,8 @@
       }
       html += '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;"><button class="btn btn-ghost" id="tx_cancel" type="button">Cancel</button><button class="btn btn-primary" id="tx_save" type="button">' + (edit ? 'Save changes' : 'Create') + '</button></div></div>';
       if (seed && seed.preview) {
-        host.innerHTML = '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;">' +
-          '<div style="flex:1 1 340px;min-width:300px;">' + html + '</div>' +
-          '<div style="flex:1 1 320px;min-width:280px;"><div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Scanned document</div>' + previewHtml(seed) + '</div></div>';
+        host.innerHTML = '<div class="scan-split"><div class="scan-pane">' + html + '</div>' +
+          '<div class="scan-pane scan-preview"><div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Scanned document</div>' + previewHtml(seed) + '</div></div>';
       } else { host.innerHTML = html; }
       if (entity === 'invoice' || entity === 'bill') {
         var linesEl = document.getElementById('tx_lines');
@@ -956,7 +1041,7 @@
         if (attachFile && (entity === 'invoice' || entity === 'bill') && resp.id) attachToEntity(entity === 'invoice' ? 'Invoice' : 'Bill', resp.id, attachFile, resp.docNumber);
         document.getElementById('qboWriteForm').innerHTML = ''; _txnEdit = null; _txnFormRealm = null;
         loadQboKpis();
-        if (qboActiveReport) loadQboReport(qboActiveReport, document.querySelector('#qboReports button[data-rpt="' + qboActiveReport + '"]'));
+        if (qboActiveReport) loadQboReport(qboActiveReport, null);
       })
       .catch(function (e) { btn.disabled = false; btn.textContent = ot; (window.bccNotify || alert)('QuickBooks rejected it: ' + e.message, 'error', 7000); });
   }
@@ -975,6 +1060,7 @@
   var ACCOUNT_TYPES = ['Expense', 'Income', 'Bank', 'Accounts Receivable', 'Accounts Payable', 'Credit Card', 'Other Current Asset', 'Fixed Asset', 'Other Asset', 'Other Current Liability', 'Long Term Liability', 'Equity', 'Cost of Goods Sold', 'Other Income', 'Other Expense'];
   function openEntityForm(entity, onCreated) {
     var host = document.getElementById('qboWriteForm'); if (!host) return;
+    gotoTransactions();
     _txnFormRealm = currentRealm; _txnFile = null; _txnEdit = null;
     host.innerHTML = '<div style="color:var(--muted);">Loading…</div>';
     loadQboRefs(function (refs) {
@@ -1074,6 +1160,7 @@
   }
   function scanReceipt(file) {
     if (file.size > 12 * 1024 * 1024) { (window.bccNotify || alert)('File too large (max 12 MB).', 'warn'); return; }
+    gotoTransactions(); // make sure the write card is visible (scan can be triggered from Overview)
     var host = document.getElementById('qboWriteForm');
     if (host) host.innerHTML = '<div style="padding:14px;color:var(--muted);">📷 Reading “' + esc(file.name) + '” with AI…</div>';
     var reader = new FileReader();
@@ -1123,48 +1210,132 @@
   }
 
   /* ===== Per-client workspace (tabs) ===== */
-  var currentTab = 'financials';
+  // Opening a client lands on Overview (the bookkeeper's view), not Financials.
+  var currentTab = 'overview';
   var _wsLastRealm = null;
+  var SECTIONS = [
+    { key: 'overview',     label: 'Overview',           ic: '📋' },
+    { key: 'transactions', label: 'New & transactions', ic: '🧾' },
+    { key: 'reports',      label: 'Reports & KPIs',     ic: '📊' },
+    { key: 'tasks',        label: 'Tasks',              ic: '☑️' },
+    { key: 'time',         label: 'Time',               ic: '⏱️' },
+    { key: 'files',        label: 'Files',              ic: '📎' },
+    { key: 'email',        label: 'Email',              ic: '✉️' },
+    { key: 'payroll',      label: 'Certified payroll',  ic: '🧮' },
+    { key: 'info',         label: 'Client info',        ic: '🏢' },
+    { key: 'access',       label: 'Team & access',      ic: '👥' }
+  ];
+  function sectionLabel(k) { var s = SECTIONS.find(function (x) { return x.key === k; }); return s ? s.label : 'Overview'; }
 
   function myUpn()  { return String((window.bccUser && window.bccUser.userDetails) || '').toLowerCase(); }
   function myName() { var u = myUpn(); return (window.bccDisplayName && window.bccDisplayName(u)) || u; }
   function sani(s)  { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40); }
   function uid2()   { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
-  function setFinVisible(show) {
-    var k = document.getElementById('finKpi'); if (k) k.style.display = show ? '' : 'none';
-    var tb = document.querySelector('.toolbar'); if (tb) tb.style.display = show ? '' : 'none';
-    var ls = document.querySelector('.list'); if (ls) ls.style.display = show ? '' : 'none';
-    if (!show) {
-      var p = document.getElementById('panel'); if (p) p.classList.remove('open');
-      var qk = document.getElementById('qboKpis'); if (qk) qk.style.display = 'none';
-      var qr = document.getElementById('qboReports'); if (qr) qr.style.display = 'none';
-      var qw = document.getElementById('qboWrite'); if (qw) qw.style.display = 'none';
+  // ----- Section slide-out drawer -----
+  var _wsDrawerBuilt = false;
+  function buildWsDrawer() {
+    if (_wsDrawerBuilt) return; _wsDrawerBuilt = true;
+    var bd = document.createElement('div'); bd.className = 'ws-drawer-backdrop'; bd.id = 'wsDrawerBackdrop';
+    var dr = document.createElement('nav'); dr.className = 'ws-drawer'; dr.id = 'wsDrawer'; dr.setAttribute('aria-label', 'Client sections');
+    dr.innerHTML = '<div class="ws-drawer-head"><div><div class="t">Client</div><div class="n" id="wsDrawerClient"></div></div><button id="wsDrawerClose" type="button" aria-label="Close menu">&times;</button></div><div id="wsDrawerList"></div>';
+    document.body.appendChild(bd); document.body.appendChild(dr);
+    bd.addEventListener('click', closeWsDrawer);
+    dr.querySelector('#wsDrawerClose').addEventListener('click', closeWsDrawer);
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeWsDrawer(); });
+  }
+  function openWsDrawer() { buildWsDrawer(); updateDrawer(); document.getElementById('wsDrawerBackdrop').classList.add('open'); document.getElementById('wsDrawer').classList.add('open'); }
+  function closeWsDrawer() { var b = document.getElementById('wsDrawerBackdrop'), d = document.getElementById('wsDrawer'); if (b) b.classList.remove('open'); if (d) d.classList.remove('open'); }
+  function updateDrawer() {
+    if (!_wsDrawerBuilt) return;
+    document.getElementById('wsDrawerClient').textContent = companyName(currentRealm);
+    var tmap = buildTaskMap();
+    var openTodos = (tmap[currentRealm] && tmap[currentRealm].count) || 0;
+    var listEl = document.getElementById('wsDrawerList');
+    listEl.innerHTML = SECTIONS.map(function (s) {
+      var badge = ((s.key === 'overview' || s.key === 'tasks') && openTodos) ? '<span class="badge">' + openTodos + '</span>' : '';
+      return '<button class="ws-drawer-item' + (s.key === currentTab ? ' active' : '') + '" data-sec="' + s.key + '" type="button"><span class="ic" aria-hidden="true">' + s.ic + '</span>' + esc(s.label) + badge + '</button>';
+    }).join('');
+    listEl.querySelectorAll('[data-sec]').forEach(function (b) { b.addEventListener('click', function () { setSection(b.getAttribute('data-sec')); }); });
+  }
+  function setSection(key) { currentTab = key; closeWsDrawer(); renderWorkspace(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+  // Reveal the Transactions section WITHOUT re-rendering (so an in-progress form
+  // is preserved). Used when a scan / + New is triggered from elsewhere.
+  function gotoTransactions() {
+    if (!currentRealm) return;
+    currentTab = 'transactions';
+    var sn = document.getElementById('wsSectionName'); if (sn) sn.textContent = sectionLabel('transactions');
+    showSection('transactions'); updateDrawer();
+  }
+
+  // ----- Section visibility -----
+  function hideAllSections() {
+    ['qboKpis', 'qboReports', 'qboWrite'].forEach(function (id) { var e = document.getElementById(id); if (e) e.style.display = 'none'; });
+    ['overview', 'info', 'files', 'tasks', 'time', 'email', 'payroll', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
+  }
+  function showSection(sec) {
+    hideAllSections();
+    var reports = (sec === 'reports');
+    var fk = document.getElementById('finKpi'); if (fk) fk.style.display = reports ? '' : 'none';
+    var tbar = document.querySelector('.toolbar'); if (tbar) tbar.style.display = reports ? '' : 'none';
+    var lst = document.querySelector('.list'); if (lst) lst.style.display = reports ? '' : 'none';
+    if (!reports) { var p = document.getElementById('panel'); if (p) p.classList.remove('open'); }
+    if (reports) {
+      var qk = document.getElementById('qboKpis'); if (qk) qk.style.display = '';
+      var qr = document.getElementById('qboReports'); if (qr) qr.style.display = '';
+    } else if (sec === 'transactions') {
+      var qw = document.getElementById('qboWrite'); if (qw) qw.style.display = '';
+    } else {
+      var el = document.getElementById('tab-' + sec); if (el) el.style.display = '';
     }
   }
   function renderWorkspace() {
     var tabbar = document.getElementById('wsTabs');
-    if (currentRealm !== _wsLastRealm) { currentTab = 'financials'; _wsLastRealm = currentRealm; }
-    var fin = (!currentRealm) || currentTab === 'financials';
+    if (currentRealm !== _wsLastRealm) { currentTab = 'overview'; _wsLastRealm = currentRealm; }
     if (tabbar) tabbar.style.display = currentRealm ? '' : 'none';
-    if (currentRealm && tabbar) {
-      var nm = document.getElementById('wsClientName'); if (nm) nm.textContent = companyName(currentRealm);
-      tabbar.querySelectorAll('[data-tab]').forEach(function (b) { b.classList.toggle('active', b.dataset.tab === currentTab); });
-    }
-    setFinVisible(fin);
-    ['info','files','tasks','time','email','payroll','access'].forEach(function (t) {
-      var el = document.getElementById('tab-' + t); if (el) el.style.display = (currentRealm && currentTab === t) ? '' : 'none';
-    });
-    if (currentRealm && currentTab !== 'financials') renderTabContent(currentTab);
+    if (!currentRealm) { hideAllSections(); return; }
+    document.getElementById('wsClientName').textContent = companyName(currentRealm);
+    document.getElementById('wsSectionName').textContent = sectionLabel(currentTab);
+    updateDrawer();
+    showSection(currentTab);
+    renderSectionContent(currentTab);
   }
-  function renderTabContent(tab) {
-    if (tab === 'info') renderInfo();
-    else if (tab === 'files') renderFiles();
-    else if (tab === 'tasks') renderTasks();
-    else if (tab === 'time') renderTime();
-    else if (tab === 'email') renderEmail();
-    else if (tab === 'payroll') renderPayroll();
-    else if (tab === 'access') renderAccess();
+  function renderSectionContent(sec) {
+    if (sec === 'overview') renderOverview();
+    else if (sec === 'reports') loadQboKpis();
+    else if (sec === 'transactions') { /* static card + Scan / + New select */ }
+    else if (sec === 'info') renderInfo();
+    else if (sec === 'files') renderFiles();
+    else if (sec === 'tasks') renderTasks();
+    else if (sec === 'time') renderTime();
+    else if (sec === 'email') renderEmail();
+    else if (sec === 'payroll') renderPayroll();
+    else if (sec === 'access') renderAccess();
+  }
+
+  /* ---- Overview (the bookkeeper's landing for a client) ---- */
+  function renderOverview() {
+    var body = document.getElementById('overview-body'); if (!body) return;
+    var actions = '<div class="ov-actions">' +
+      '<label class="ov-action" for="scanInput"><span class="ic" aria-hidden="true">📷</span><span>Scan a receipt<span class="sub">AI fills a bill</span></span></label>' +
+      '<button class="ov-action" type="button" data-ov="transactions"><span class="ic" aria-hidden="true">🧾</span><span>New transaction<span class="sub">invoice · bill · payment</span></span></button>' +
+      '<button class="ov-action" type="button" data-ov="tasks"><span class="ic" aria-hidden="true">➕</span><span>Tasks &amp; to-dos<span class="sub">track the work</span></span></button>' +
+    '</div>';
+    var open = allTasks().filter(function (t) { return t.status !== 'done'; }).sort(function (a, b) { return (a.dueDate || '9999').localeCompare(b.dueDate || '9999') || (b.createdAt || '').localeCompare(a.createdAt || ''); });
+    var today = new Date().toISOString().slice(0, 10);
+    var list = open.length ? open.map(function (t) {
+      var who = t.assigneeUpn ? ((window.bccDisplayName && window.bccDisplayName(t.assigneeUpn)) || t.assigneeUpn) : '';
+      var overdue = t.dueDate && t.dueDate < today;
+      var meta = [who, t.dueDate ? ('Due ' + t.dueDate) : ''].filter(Boolean).join(' · ');
+      return '<div class="ws-row"><input type="checkbox" data-ovdone="' + esc(t.id) + '" aria-label="Mark done" style="width:20px;height:20px;flex-shrink:0;" />' +
+        '<div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:14px;">' + esc(t.title) + '</div>' +
+        (meta ? '<div style="font-size:12px;color:' + (overdue ? 'var(--burgundy)' : 'var(--muted)') + ';">' + esc(meta) + '</div>' : '') + '</div></div>';
+    }).join('') : '<div style="color:var(--muted);padding:12px 0;">No open to-dos for this client. 🎉</div>';
+    body.innerHTML = actions +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:4px 0 6px;"><div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;">Open to-dos' + (open.length ? ' (' + open.length + ')' : '') + '</div><button class="btn btn-ghost" data-ov="tasks" type="button" style="font-size:12px;">Manage tasks →</button></div>' +
+      list;
+    body.querySelectorAll('[data-ov]').forEach(function (b) { b.addEventListener('click', function () { setSection(b.getAttribute('data-ov')); }); });
+    body.querySelectorAll('[data-ovdone]').forEach(function (cb) { cb.addEventListener('change', function () { toggleTask(cb.getAttribute('data-ovdone'), true); renderOverview(); updateDrawer(); }); });
   }
 
   /* ---- Client info ---- */
@@ -1731,14 +1902,12 @@
     if (window.bccAudit) window.bccAudit('cpr-print', { key: r.id, path:'/bookkeeping.html', meta:{ realmId: currentRealm, payrollNo: r.payrollNo } });
   }
 
-  /* Tab bar wiring (elements are static; safe to bind now) */
+  /* Workspace header wiring (elements are static; safe to bind now) */
   (function wireWs() {
-    var bar = document.getElementById('wsTabs');
-    if (bar) bar.querySelectorAll('[data-tab]').forEach(function (b) {
-      b.addEventListener('click', function () { currentTab = b.dataset.tab; renderWorkspace(); });
-    });
+    var menu = document.getElementById('wsMenuBtn');
+    if (menu) menu.addEventListener('click', openWsDrawer);
     var back = document.getElementById('wsBack');
-    if (back) back.addEventListener('click', function () { currentRealm = ''; var cf = document.getElementById('companyFilter'); if (cf) cf.value = ''; renderAll(); });
+    if (back) back.addEventListener('click', function () { closeWsDrawer(); currentRealm = ''; var cf = document.getElementById('companyFilter'); if (cf) cf.value = ''; renderAll(); });
   })();
 
   /* ===== Init ===== */
@@ -1755,7 +1924,8 @@
       var ls = document.querySelector('.list'); if (ls) ls.style.display = '';
     }
     var cb = document.getElementById('connectBtn'); if (cb) cb.style.display = mgmt ? '' : 'none';
-    ['syncBtn', 'newBtn', 'printBtn'].forEach(function (id) { var b = document.getElementById(id); if (b) b.style.display = (mgmt || currentRealm) ? '' : 'none'; });
+    var sb = document.getElementById('syncBtn'); if (sb) sb.style.display = (mgmt || currentRealm) ? '' : 'none'; // Sync is useful per-client too
+    ['newBtn', 'printBtn'].forEach(function (id) { var b = document.getElementById(id); if (b) b.style.display = mgmt ? '' : 'none'; }); // manual entry + print are management-only
     var mb = document.getElementById('mgmtBtn');
     if (mb) { mb.style.display = (atRoot && canManage()) ? '' : 'none'; mb.textContent = managementMode ? '← Working view' : 'Management dashboard →'; }
     var sub = document.getElementById('subline'); if (sub) sub.textContent = currentRealm ? '' : (mgmt ? 'Firm-wide snapshot across all companies.' : 'Your client work queue — open a company to do the books.');
@@ -1765,14 +1935,14 @@
     yearFilter = document.getElementById('yearFilter');
     rowsEl = document.getElementById('rows');
     emptyEl = document.getElementById('empty');
-    document.querySelectorAll('#qboReports button[data-rpt]').forEach(function (b) {
-      b.addEventListener('click', function () { loadQboReport(b.getAttribute('data-rpt'), b); });
-    });
-    document.querySelectorAll('#qboWrite button[data-tx]').forEach(function (b) {
-      b.addEventListener('click', function () { openTxnForm(b.getAttribute('data-tx')); });
-    });
-    document.querySelectorAll('#qboWrite button[data-add]').forEach(function (b) {
-      b.addEventListener('click', function () { openEntityForm(b.getAttribute('data-add')); });
+    var rptSel = document.getElementById('qboReportSel');
+    if (rptSel) rptSel.addEventListener('change', function () { if (rptSel.value) loadQboReport(rptSel.value, null); });
+    var newSel = document.getElementById('qboNewSel');
+    if (newSel) newSel.addEventListener('change', function () {
+      var v = newSel.value; newSel.value = ''; if (!v) return;
+      var parts = v.split(':');
+      if (parts[0] === 'tx') openTxnForm(parts[1]);
+      else if (parts[0] === 'add') openEntityForm(parts[1]);
     });
     var scanInput = document.getElementById('scanInput');
     if (scanInput) {
