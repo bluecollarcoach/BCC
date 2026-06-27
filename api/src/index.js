@@ -1486,6 +1486,19 @@ app.http('integrations-test', {
           }
           break;
 
+        case 'google-drive':
+          // Per-client OAuth (no firm-level token to exchange) — just confirm the
+          // app creds are present and Google's OAuth endpoint is reachable.
+          if (!fields.clientId || !fields.clientSecret) {
+            result = { ok: false, error: 'OAuth Client ID and Client Secret required' };
+          } else {
+            const r = await fetch('https://oauth2.googleapis.com/.well-known/openid-configuration').catch(() => null);
+            result = r && r.ok
+              ? { ok: true, note: 'Credentials saved. Open a client’s Files tab and click "Connect Google Drive" to link that client.' }
+              : { ok: false, error: 'could not reach Google OAuth endpoint (' + (r && r.status) + ')' };
+          }
+          break;
+
         case 'meta':
           if (!fields.accessToken) result = { ok: false, error: 'accessToken required' };
           else {
