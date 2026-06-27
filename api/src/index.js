@@ -1492,7 +1492,7 @@ app.http('integrations-test', {
           if (!fields.clientId || !fields.clientSecret) {
             result = { ok: false, error: 'OAuth Client ID and Client Secret required' };
           } else {
-            const r = await fetch('https://oauth2.googleapis.com/.well-known/openid-configuration').catch(() => null);
+            const r = await fetch('https://accounts.google.com/.well-known/openid-configuration').catch(() => null);
             result = r && r.ok
               ? { ok: true, note: 'Credentials saved. Open a client’s Files tab and click "Connect Google Drive" to link that client.' }
               : { ok: false, error: 'could not reach Google OAuth endpoint (' + (r && r.status) + ')' };
