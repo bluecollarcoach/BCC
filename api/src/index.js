@@ -1185,7 +1185,7 @@ function driveVerifyState(state, uid) {
     const ts = Number(parts[2]);
     if (!realmId || !ts || (Date.now() - ts) > 15 * 60 * 1000) return null;
     if (uid && stateUid && String(uid).toLowerCase() !== stateUid.toLowerCase()) return null;
-    return realmId;
+    return { realmId: realmId, uid: stateUid };
   } catch (e) { return null; }
 }
 // Generic tamper-proof OAuth state for the QBO + MS Graph callbacks: HMAC-sign a
@@ -1263,10 +1263,14 @@ function driveCallbackHandler(provider) {
     const code = u.searchParams.get('code'); const rawState = u.searchParams.get('state'); const oerr = u.searchParams.get('error');
     try {
       if (oerr) return driveBack(null, oerr);
-      if (!p || !domainAllowed(p)) return driveBack(null, 'sign in first');
-      const realmId = driveVerifyState(rawState, p.userDetails || p.userId || '');
-      if (!code || !realmId) return driveBack(null, 'invalid or expired sign-in — try again');
-      const acc = await driveClientAccess(p, realmId); if (acc.err) return driveBack(realmId, 'no access to this client');
+      // The SWA principal is usually ABSENT on the cross-site redirect back from
+      // Google/Microsoft, so we don't require it. The HMAC-signed state is the
+      // gate: it can't be forged, expires in 15 min, and is only minted by the
+      // /connect endpoint AFTER that endpoint verified the caller's access to the
+      // client. If a principal IS present, we additionally bind it to the state.
+      const st = driveVerifyState(rawState, p ? (p.userDetails || p.userId || '') : '');
+      if (!code || !st || !st.realmId) return driveBack(null, 'invalid or expired sign-in — start the connect again');
+      const realmId = st.realmId;
       const creds = await driveAppCreds(provider); if (!creds.ok) return driveBack(realmId, 'app not configured');
       const tok = await driveExchangeCode(creds, code, driveRedirect(request, provider));
       if (!tok.refresh_token) return driveBack(realmId, 'no refresh token returned — re-consent');
@@ -1275,7 +1279,8 @@ function driveCallbackHandler(provider) {
         if (provider === 'google') { const ui = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: 'Bearer ' + tok.access_token } }).then(r => r.json()); account = ui.email || ''; }
         else { const me = await fetch('https://graph.microsoft.com/v1.0/me', { headers: { Authorization: 'Bearer ' + tok.access_token } }).then(r => r.json()); account = me.userPrincipalName || me.mail || ''; }
       } catch (_) {}
-      await container().items.upsert({ id: 'bcc-clientdrive-' + realmId, tenantId: BCC_TENANT_ID, docType: 'client-drive', realmId, provider, account, refreshToken: tok.refresh_token, connectedAt: new Date().toISOString(), connectedBy: String(p.userDetails || p.userId || '').toLowerCase() });
+      const connectedBy = String((p && (p.userDetails || p.userId)) || st.uid || '').toLowerCase();
+      await container().items.upsert({ id: 'bcc-clientdrive-' + realmId, tenantId: BCC_TENANT_ID, docType: 'client-drive', realmId, provider, account, refreshToken: tok.refresh_token, connectedAt: new Date().toISOString(), connectedBy });
       return driveBack(realmId, null);
     } catch (e) { context.error('drive-callback', e); return driveBack(null, String(e && e.message || e)); }
   };
