@@ -1831,7 +1831,7 @@
     q = q.trim().toLowerCase();
     var rows = _intFiles.filter(function (it) {
       if (tag && fileTags(it).map(function (t) { return t.toLowerCase(); }).indexOf(tag) < 0) return false;
-      if (q) { var hay = (String(it.name || '') + ' ' + String(it.tags || '')).toLowerCase(); if (hay.indexOf(q) < 0) return false; }
+      if (q) { var hay = (String(it.name || '') + ' ' + String(it.tags || '') + ' ' + String(it.uploaderUpn || '') + ' ' + (it.uploaderUpn && window.bccDisplayName ? window.bccDisplayName(it.uploaderUpn) : '')).toLowerCase(); if (hay.indexOf(q) < 0) return false; }
       return true;
     });
     rows.sort(function (a, b) {
@@ -1846,11 +1846,12 @@
     });
     if (countEl) countEl.textContent = rows.length + (rows.length === 1 ? ' file' : ' files') + (rows.length !== _intFiles.length ? (' of ' + _intFiles.length) : '');
     if (!rows.length) { list.innerHTML = '<div style="color:var(--muted);padding:8px 0;">No files match your search/filter.</div>'; return; }
-    list.innerHTML = '<table><thead><tr><th>Name</th><th>Categories</th><th class="num">Size</th><th>Uploaded</th><th></th></tr></thead><tbody>' + rows.map(function (it) {
+    list.innerHTML = '<table><thead><tr><th>Name</th><th>Categories</th><th class="num">Size</th><th>Uploaded by</th><th></th></tr></thead><tbody>' + rows.map(function (it) {
       var kb = it.sizeBytes ? Math.max(1, Math.round(it.sizeBytes / 1024)) : 0;
       var when = it.createdAt ? new Date(it.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+      var by = it.uploaderUpn ? ((window.bccDisplayName && window.bccDisplayName(it.uploaderUpn)) || it.uploaderUpn) : '';
       var chips = fileTags(it).map(function (t) { return '<span class="fl-chip">' + esc(t) + '</span>'; }).join(' ');
-      return '<tr><td><a class="fs-file" href="/api/documents/' + encodeURIComponent(it.id) + '/download" data-pvname="' + esc(it.name) + '" data-pvmime="' + esc(it.mimeType || '') + '">' + esc(it.name) + '</a></td><td>' + (chips || '<span style="color:var(--muted);font-size:12px;">—</span>') + '</td><td class="num">' + kb + ' KB</td><td style="font-size:12px;color:var(--muted);white-space:nowrap;">' + esc(when) + '</td><td style="text-align:right;"><button class="btn btn-ghost" data-fdel="' + esc(it.id) + '" type="button" style="font-size:11px;min-height:28px;">Delete</button></td></tr>';
+      return '<tr><td><a class="fs-file" href="/api/documents/' + encodeURIComponent(it.id) + '/download" data-pvname="' + esc(it.name) + '" data-pvmime="' + esc(it.mimeType || '') + '">' + esc(it.name) + '</a></td><td>' + (chips || '<span style="color:var(--muted);font-size:12px;">—</span>') + '</td><td class="num">' + kb + ' KB</td><td style="font-size:12px;color:var(--muted);white-space:nowrap;">' + (by ? '<strong style="color:var(--ink);font-weight:600;">' + esc(by) + '</strong><br>' : '') + esc(when) + '</td><td style="text-align:right;"><button class="btn btn-ghost" data-fdel="' + esc(it.id) + '" type="button" style="font-size:11px;min-height:28px;">Delete</button></td></tr>';
     }).join('') + '</tbody></table>';
     list.querySelectorAll('[data-fdel]').forEach(function (b) { b.onclick = function () { delFile(b.getAttribute('data-fdel')); }; });
     wirePreviews(list, '?');
