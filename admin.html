@@ -161,6 +161,7 @@
     <button data-tab="integrations">Integrations</button>
     <button data-tab="company">Company Info</button>
     <button data-tab="security">Security</button>
+    <button data-tab="bktime">Bookkeeping time</button>
     <button data-tab="data">Data &amp; Backups</button>
   </nav>
 
@@ -334,6 +335,20 @@
       </div>
     </div>
   </section>
+
+  <section class="panel-section" id="panel-bktime">
+    <div class="card">
+      <h3>Bookkeeping time</h3>
+      <p class="blurb">Automatic active work time per client for bookkeepers (users whose default landing page is Bookkeeping). Counted only while actively working inside a client; paused on idle or when the tab is in the background.</p>
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px;">
+        <label style="font-size:11px;font-weight:700;color:var(--muted);display:flex;flex-direction:column;gap:4px;text-transform:uppercase;letter-spacing:.5px;">From<input type="date" id="bkFrom" style="min-height:36px;padding:6px 8px;border:1px solid var(--chrome-mute);border-radius:6px;font:inherit;" /></label>
+        <label style="font-size:11px;font-weight:700;color:var(--muted);display:flex;flex-direction:column;gap:4px;text-transform:uppercase;letter-spacing:.5px;">To<input type="date" id="bkTo" style="min-height:36px;padding:6px 8px;border:1px solid var(--chrome-mute);border-radius:6px;font:inherit;" /></label>
+        <button class="btn btn-primary" id="bkRefresh" type="button">Refresh</button>
+        <span id="bkStatus" style="font-size:12px;color:var(--muted);"></span>
+      </div>
+      <div id="bkTimeOut"></div>
+    </div>
+  </section>
 </div>
 
 <script>
@@ -403,8 +418,52 @@
       var name = btn.getAttribute('data-tab');
       document.querySelectorAll('.panel-section').forEach(function (s) { s.classList.remove('active'); });
       document.getElementById('panel-' + name).classList.add('active');
+      if (name === 'bktime') renderBkTime();
     });
   });
+
+  /* ===== BOOKKEEPING TIME ===== */
+  function bkFmtDur(secs) { secs = Math.round(secs || 0); var h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60); if (h) return h + 'h ' + m + 'm'; if (m) return m + 'm'; return secs + 's'; }
+  function bkDefaultRange() {
+    var to = new Date(), from = new Date(to.getFullYear(), to.getMonth(), 1);
+    var f = document.getElementById('bkFrom'), t = document.getElementById('bkTo');
+    if (f && !f.value) f.value = from.toISOString().slice(0, 10);
+    if (t && !t.value) t.value = to.toISOString().slice(0, 10);
+  }
+  var _bkLoaded = false;
+  function renderBkTime() {
+    bkDefaultRange();
+    var rb = document.getElementById('bkRefresh');
+    if (rb && !rb._wired) { rb._wired = true; rb.addEventListener('click', loadBkTime); }
+    if (!_bkLoaded) { _bkLoaded = true; loadBkTime(); }
+  }
+  function loadBkTime() {
+    var out = document.getElementById('bkTimeOut'), st = document.getElementById('bkStatus');
+    var from = (document.getElementById('bkFrom') || {}).value || '', to = (document.getElementById('bkTo') || {}).value || '';
+    out.innerHTML = '<div style="color:var(--muted);padding:10px;">Loading…</div>'; if (st) st.textContent = '';
+    fetch('/api/bookkeeping/time/report?from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to), { credentials: 'include' })
+      .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error(resp.error || 'failed');
+        var companies = resp.companies || [], users = resp.users || [];
+        if (!companies.length) { out.innerHTML = '<div style="color:var(--muted);padding:14px;">No bookkeeping time recorded in this range.</div>'; return; }
+        var grand = users.reduce(function (s, u) { return s + u.seconds; }, 0);
+        var nm = function (upn) { return (window.bccDisplayName && window.bccDisplayName(upn)) || upn; };
+        var compRows = companies.map(function (c) {
+          var sub = (c.users || []).map(function (u) { return '<div style="font-size:12.5px;color:var(--muted);padding-left:14px;">' + esc(nm(u.userUpn)) + ' — ' + esc(bkFmtDur(u.seconds)) + '</div>'; }).join('');
+          return '<tr><td><strong>' + esc(c.companyName) + '</strong>' + sub + '</td><td style="text-align:right;"><strong>' + esc(bkFmtDur(c.seconds)) + '</strong></td></tr>';
+        }).join('');
+        var userRows = users.map(function (u) { return '<tr><td>' + esc(nm(u.userUpn)) + '</td><td style="text-align:right;">' + esc(bkFmtDur(u.seconds)) + '</td></tr>'; }).join('');
+        out.innerHTML =
+          '<div style="font-size:13px;color:var(--muted);margin-bottom:10px;">Total tracked: <strong style="color:var(--ink);">' + esc(bkFmtDur(grand)) + '</strong> across ' + companies.length + ' client' + (companies.length === 1 ? '' : 's') + '</div>' +
+          '<h4 style="margin:0 0 6px;font-family:\'Source Serif 4\',Georgia,serif;font-size:14px;">By client</h4>' +
+          '<table style="width:100%;border-collapse:collapse;"><thead><tr><th style="text-align:left;">Client (and bookkeepers)</th><th style="text-align:right;">Time</th></tr></thead><tbody>' + compRows + '</tbody></table>' +
+          '<h4 style="margin:16px 0 6px;font-family:\'Source Serif 4\',Georgia,serif;font-size:14px;">By bookkeeper</h4>' +
+          '<table style="width:100%;border-collapse:collapse;"><thead><tr><th style="text-align:left;">Bookkeeper</th><th style="text-align:right;">Time</th></tr></thead><tbody>' + userRows + '</tbody></table>';
+        if (st) st.textContent = from + ' → ' + to;
+      })
+      .catch(function (e) { out.innerHTML = '<div style="color:#6a1c1c;padding:10px;">Could not load: ' + esc(e.message) + '</div>'; });
+  }
 
   /* ===== USERS ===== */
   function renderUsers() {

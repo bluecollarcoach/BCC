@@ -1910,6 +1910,55 @@
     if (back) back.addEventListener('click', function () { closeWsDrawer(); currentRealm = ''; var cf = document.getElementById('companyFilter'); if (cf) cf.value = ''; renderAll(); });
   })();
 
+  /* ===== Auto time tracking (bookkeepers only) =====
+   * Records ACTIVE time on the open client for users whose default landing page
+   * is Bookkeeping. Counts only while the client workspace is the focused, non-
+   * idle foreground tab; pauses on blur/hide/idle; flushes accrued seconds to
+   * /api/bookkeeping/time. Per-client totals show in Admin → Bookkeeping time. */
+  var _bkAccrued = {};            // realmId -> unsynced seconds
+  var _bkCompany = {};            // realmId -> companyName
+  var _bkLastActivity = Date.now();
+  var _bkTickCount = 0, _bkStarted = false;
+  var BK_IDLE_MS = 5 * 60 * 1000; // pause after 5 min of no input
+  var BK_TICK_MS = 5000;          // count in 5s ticks
+  var BK_FLUSH_EVERY = 12;        // flush ~every 60s
+
+  function isBookkeeper() {
+    try {
+      var who = myUpn(); if (!who) return false;
+      var cfg = JSON.parse(localStorage.getItem('bcc-admin-config-v1') || 'null');
+      if (!cfg || !Array.isArray(cfg.users)) return false;
+      var rec = cfg.users.find(function (u) { return (u.upn || '').toLowerCase() === who || (u.email || '').toLowerCase() === who; });
+      return !!(rec && rec.landingPage === 'bookkeeping.html');
+    } catch (e) { return false; }
+  }
+  function bkActive() { return isBookkeeper() && currentRealm && !document.hidden && document.hasFocus() && (Date.now() - _bkLastActivity < BK_IDLE_MS); }
+  function bkTick() {
+    if (bkActive()) {
+      _bkAccrued[currentRealm] = (_bkAccrued[currentRealm] || 0) + (BK_TICK_MS / 1000);
+      _bkCompany[currentRealm] = companyName(currentRealm);
+    }
+    if (++_bkTickCount % BK_FLUSH_EVERY === 0) bkFlush(false);
+  }
+  function bkFlush(useBeacon) {
+    var entries = [];
+    Object.keys(_bkAccrued).forEach(function (r) { var s = Math.round(_bkAccrued[r]); if (s > 0) entries.push({ realmId: r, companyName: _bkCompany[r] || '', seconds: s }); });
+    if (!entries.length) return;
+    _bkAccrued = {};
+    var body = JSON.stringify({ entries: entries });
+    if (useBeacon && navigator.sendBeacon) { try { navigator.sendBeacon('/api/bookkeeping/time', new Blob([body], { type: 'application/json' })); } catch (e) {} }
+    else { fetch('/api/bookkeeping/time', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: body, keepalive: true }).catch(function () {}); }
+  }
+  function bkStart() {
+    if (_bkStarted) return; _bkStarted = true;
+    var mark = function () { _bkLastActivity = Date.now(); };
+    ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'].forEach(function (ev) { window.addEventListener(ev, mark, { passive: true }); });
+    setInterval(bkTick, BK_TICK_MS);
+    document.addEventListener('visibilitychange', function () { if (document.hidden) bkFlush(false); });
+    window.addEventListener('pagehide', function () { bkFlush(true); });
+    window.addEventListener('beforeunload', function () { bkFlush(true); });
+  }
+
   /* ===== Init ===== */
   // Show/hide chrome per view: working queue (root, no mgmt), management
   // dashboard (root + authorized), or a single client. Runs last in renderAll
@@ -1965,6 +2014,7 @@
       else if (qs.get('qbo') === 'error' && window.bccNotify) window.bccNotify('QuickBooks connect failed: ' + (qs.get('detail') || ''), 'warn');
     } catch (_) {}
     loadCompanies().then(renderAll);
+    bkStart(); // auto time-tracking for bookkeepers
   }
   // localStorage→Cosmos sync can land after init; re-render the data views (not the company list).
   window.addEventListener('bcc-data-ready', function () { renderKpis(); renderTable(); });

@@ -264,7 +264,9 @@ app.http('data', {
           }
         }
         const q = {
-          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-")',
+          // Exclude server-only time docs so their ids (which encode who worked
+          // which client on which day) aren't shipped to every signed-in user.
+          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND (NOT IS_DEFINED(c.docType) OR c.docType != "bk-time")',
           parameters: [{ name: '@t', value: BCC_TENANT_ID }]
         };
         const { resources } = await c.items.query(q).fetchAll();
@@ -990,6 +992,105 @@ app.http('cron-reminders', {
       return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } };
     }
   }
+});
+
+/* ============ Bookkeeping auto time tracking ============
+ * Bookkeepers (users whose admin-config landingPage is bookkeeping.html) have
+ * their active time-on-client recorded automatically by bookkeeping.html, which
+ * POSTs accrued seconds here. Stored per user/client/day (bcc-bktime-*), and
+ * surfaced to admins via the report endpoint (Admin → Bookkeeping time).
+ */
+app.http('bookkeeping-time', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'bookkeeping/time',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    try {
+      const who = String(p.userDetails || p.userId || '').toLowerCase();
+      // Enforce the "bookkeeper = default landing is Bookkeeping" rule server-side.
+      const cfg = await getAdminCfg();
+      const rec = (cfg && Array.isArray(cfg.users) ? cfg.users : []).find(u =>
+        (u.upn || '').toLowerCase() === who || (u.email || '').toLowerCase() === who);
+      if (!rec || rec.landingPage !== 'bookkeeping.html') return { jsonBody: { ok: true, recorded: 0, skipped: 'not a bookkeeper' } };
+
+      const b = await request.json().catch(() => ({}));
+      const entries = Array.isArray(b.entries) ? b.entries : [];
+      if (!entries.length) return { jsonBody: { ok: true, recorded: 0 } };
+      const c = container();
+      const name = p.userDetails || who;
+      // Business-timezone (US Central) day bucket so evening work bins to the
+      // correct local day/month rather than UTC.
+      let day;
+      try { day = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' }); } catch (e) { day = new Date().toISOString().slice(0, 10); }
+      const DAILY_CAP = 16 * 3600; // realistic per-client/day ceiling (anti-inflation)
+      let recorded = 0;
+      for (const e of entries) {
+        const realmId = String(e.realmId || ''); if (!realmId) continue;
+        let secs = Math.round(Number(e.seconds) || 0);
+        if (!(secs > 0)) continue;
+        if (secs > 3600) secs = 3600; // per-beat cap (clock jumps)
+        const id = 'bcc-bktime-' + sanitizeUpn(who) + '-' + realmId + '-' + day;
+        // Optimistic-concurrency add so overlapping flushes (multiple tabs, or an
+        // unload beacon racing a keepalive fetch) can't silently lose increments.
+        for (let attempt = 0; attempt < 5; attempt++) {
+          let existing = null;
+          try { const r = await c.item(id, BCC_TENANT_ID).read(); existing = r.resource; }
+          catch (re) { if (re.code !== 404) throw re; }
+          const doc = existing || { id, tenantId: BCC_TENANT_ID, docType: 'bk-time', userUpn: who, userName: name, realmId, companyName: String(e.companyName || ''), day, seconds: 0, createdAt: new Date().toISOString() };
+          doc.seconds = Math.min((doc.seconds || 0) + secs, DAILY_CAP);
+          if (e.companyName) doc.companyName = String(e.companyName);
+          doc.userName = name; doc.updatedAt = new Date().toISOString();
+          try {
+            if (existing && existing._etag) await c.item(id, BCC_TENANT_ID).replace(doc, { accessCondition: { type: 'IfMatch', condition: existing._etag } });
+            else await c.items.create(doc);
+            break;
+          } catch (we) {
+            if ((we.code === 412 || we.code === 409) && attempt < 4) continue; // concurrent write — re-read and retry
+            throw we;
+          }
+        }
+        recorded += secs;
+      }
+      return { jsonBody: { ok: true, recorded } };
+    } catch (err) { context.error('bookkeeping-time', err); return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } }; }
+  })
+});
+
+app.http('bookkeeping-time-report', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'bookkeeping/time/report',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    if (!(await isAppAdmin(p))) return { status: 403, jsonBody: { ok: false, error: 'admin only' } };
+    try {
+      const u = new URL(request.url);
+      const from = u.searchParams.get('from') || '0000-00-00';
+      const to = u.searchParams.get('to') || '9999-99-99';
+      const c = container();
+      const { resources } = await c.items.query({
+        query: 'SELECT c.userUpn, c.userName, c.realmId, c.companyName, c.day, c.seconds FROM c WHERE c.tenantId=@t AND c.docType="bk-time" AND c.day>=@f AND c.day<=@to',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@f', value: from }, { name: '@to', value: to }]
+      }).fetchAll();
+      const byCompany = {}, byUser = {};
+      for (const r of resources) {
+        const s = r.seconds || 0;
+        const cc = byCompany[r.realmId] || (byCompany[r.realmId] = { realmId: r.realmId, companyName: r.companyName || r.realmId, seconds: 0, users: {} });
+        cc.seconds += s; cc.users[r.userUpn] = (cc.users[r.userUpn] || 0) + s;
+        if (r.companyName) cc.companyName = r.companyName;
+        const uu = byUser[r.userUpn] || (byUser[r.userUpn] = { userUpn: r.userUpn, userName: r.userName || r.userUpn, seconds: 0 });
+        uu.seconds += s; if (r.userName) uu.userName = r.userName;
+      }
+      const companies = Object.keys(byCompany).map(k => { const x = byCompany[k]; return { realmId: x.realmId, companyName: x.companyName, seconds: x.seconds, users: Object.keys(x.users).map(u2 => ({ userUpn: u2, seconds: x.users[u2] })).sort((a, b) => b.seconds - a.seconds) }; }).sort((a, b) => b.seconds - a.seconds);
+      const users = Object.keys(byUser).map(k => byUser[k]).sort((a, b) => b.seconds - a.seconds);
+      return { jsonBody: { ok: true, from, to, companies, users } };
+    } catch (err) { context.error('bookkeeping-time-report', err); return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } }; }
+  })
 });
 
 /* ============ Integrations — credential resolver + test endpoint ============
