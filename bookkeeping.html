@@ -392,6 +392,10 @@
   <div class="card" id="tab-overview" style="display:none; margin-top:14px;">
     <div id="overview-body"></div>
   </div>
+  <div class="card" id="tab-activity" style="display:none; margin-top:14px;">
+    <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Recent activity</h3>
+    <div id="activity-body"></div>
+  </div>
   <div class="card" id="tab-info" style="display:none; margin-top:14px;">
     <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Client information</h3>
     <div id="info-body"></div>
@@ -770,7 +774,7 @@
         var tr = b.closest('tr'); if (!tr) return;
         if (!confirm('Delete this period?')) return;
         deletePeriod(tr.dataset.id);
-        if (window.bccAudit) window.bccAudit('financial-period-delete', { key: tr.dataset.id, path: '/bookkeeping.html' });
+        if (window.bccAudit) window.bccAudit('financial-period-delete', { key: tr.dataset.id, path: '/bookkeeping.html', meta: { realmId: currentRealm } });
         renderAll();
       });
     });
@@ -798,7 +802,7 @@
       syncedAt: nowIso()
     };
     savePeriod(p);
-    if (window.bccAudit) window.bccAudit('financial-period-save', { key: p.id, path: '/bookkeeping.html', meta: { period: period, source: 'manual' } });
+    if (window.bccAudit) window.bccAudit('financial-period-save', { key: p.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, period: period, source: 'manual' } });
     if (window.bccNotifySaved) window.bccNotifySaved('Period saved.');
     document.getElementById('panel').classList.remove('open');
     ['p-period','p-rev','p-exp'].forEach(function (id) { document.getElementById(id).value = ''; });
@@ -1215,6 +1219,7 @@
   var _wsLastRealm = null;
   var SECTIONS = [
     { key: 'overview',     label: 'Overview',           ic: '📋' },
+    { key: 'activity',     label: 'Activity',           ic: '🕑' },
     { key: 'transactions', label: 'New & transactions', ic: '🧾' },
     { key: 'reports',      label: 'Reports & KPIs',     ic: '📊' },
     { key: 'tasks',        label: 'Tasks',              ic: '☑️' },
@@ -1271,7 +1276,7 @@
   // ----- Section visibility -----
   function hideAllSections() {
     ['qboKpis', 'qboReports', 'qboWrite'].forEach(function (id) { var e = document.getElementById(id); if (e) e.style.display = 'none'; });
-    ['overview', 'info', 'files', 'tasks', 'time', 'email', 'payroll', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
+    ['overview', 'activity', 'info', 'files', 'tasks', 'time', 'email', 'payroll', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
   }
   function showSection(sec) {
     hideAllSections();
@@ -1302,6 +1307,7 @@
   }
   function renderSectionContent(sec) {
     if (sec === 'overview') renderOverview();
+    else if (sec === 'activity') renderActivity();
     else if (sec === 'reports') loadQboKpis();
     else if (sec === 'transactions') { /* static card + Scan / + New select */ }
     else if (sec === 'info') renderInfo();
@@ -1336,6 +1342,86 @@
       list;
     body.querySelectorAll('[data-ov]').forEach(function (b) { b.addEventListener('click', function () { setSection(b.getAttribute('data-ov')); }); });
     body.querySelectorAll('[data-ovdone]').forEach(function (cb) { cb.addEventListener('change', function () { toggleTask(cb.getAttribute('data-ovdone'), true); renderOverview(); updateDrawer(); }); });
+  }
+
+  /* ---- Activity (recent changes to this client, from the audit log) ---- */
+  var _actDays = 7, _actMine = false;
+  function actDayLabel(d) {
+    var t = new Date(); t.setHours(0, 0, 0, 0);
+    var y = new Date(t); y.setDate(t.getDate() - 1);
+    var md = new Date(d); md.setHours(0, 0, 0, 0);
+    if (md.getTime() === t.getTime()) return 'Today';
+    if (md.getTime() === y.getTime()) return 'Yesterday';
+    return d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+  }
+  function actIcon(action) {
+    if (action.indexOf('qbo') === 0) return '🧾';
+    if (action.indexOf('email') >= 0) return '✉️';
+    if (action.indexOf('file') >= 0) return '📎';
+    if (action.indexOf('time') >= 0 || action.indexOf('punch') >= 0) return '⏱️';
+    if (action.indexOf('task') >= 0) return '☑️';
+    if (action.indexOf('cpr') >= 0 || action.indexOf('payroll') >= 0) return '🧮';
+    if (action.indexOf('info') >= 0 || action.indexOf('mailbox') >= 0) return '🏢';
+    return '•';
+  }
+  function actDesc(a) {
+    var m = a.meta || {};
+    switch (a.action) {
+      case 'qbo-write': return (m.op === 'update' ? 'Updated ' : 'Created ') + (m.entity || 'record') + (m.id ? (' #' + m.id) : '') + ' in QuickBooks';
+      case 'qbo-attach': return 'Attached a file to a ' + (m.entity || 'transaction');
+      case 'client-email-send': return 'Sent an email' + (m.recipients ? (' (' + m.recipients + ' recipient' + (m.recipients === 1 ? '' : 's') + ')') : '');
+      case 'client-file-upload': return 'Uploaded a file' + (m.name ? (' — ' + m.name) : '');
+      case 'client-file-delete': return 'Deleted a file';
+      case 'client-info-update': return 'Updated client info';
+      case 'client-mailbox-set': return 'Changed the client mailbox';
+      case 'client-task-create': return 'Added a task';
+      case 'client-task-delete': return 'Removed a task';
+      case 'time-punch-in': return 'Clocked in';
+      case 'time-punch-out': return 'Clocked out' + (m.minutes ? (' (' + m.minutes + 'm)') : '');
+      case 'time-entry-add': return 'Logged time' + (m.minutes ? (' (' + m.minutes + 'm)') : '');
+      case 'time-entry-delete': return 'Deleted a time entry';
+      case 'cpr-save': return 'Saved certified payroll' + (m.payrollNo ? (' #' + m.payrollNo) : '');
+      case 'cpr-print': return 'Printed certified payroll' + (m.payrollNo ? (' #' + m.payrollNo) : '');
+      case 'cpr-delete': return 'Deleted a payroll report';
+      case 'financial-period-save': return 'Saved a financial period' + (m.period ? (' (' + m.period + ')') : '');
+      case 'financial-period-delete': return 'Deleted a financial period';
+      default: return a.action;
+    }
+  }
+  function renderActivity() {
+    var body = document.getElementById('activity-body'); if (!body) return;
+    body.innerHTML = '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">' +
+      '<select id="act_days" style="background:var(--chrome);border:1px solid var(--chrome-mute);border-radius:8px;padding:8px 10px;font:inherit;font-size:13px;min-height:38px;">' +
+      [7, 14, 30, 90].map(function (d) { return '<option value="' + d + '"' + (d === _actDays ? ' selected' : '') + '>Last ' + d + ' days</option>'; }).join('') + '</select>' +
+      '<label style="font-size:13px;display:inline-flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="act_mine"' + (_actMine ? ' checked' : '') + ' /> Just me</label>' +
+      '<span style="flex:1;"></span><button class="btn btn-ghost" id="act_refresh" type="button" style="font-size:12px;">Refresh</button></div>' +
+      '<div id="act_list"></div>';
+    document.getElementById('act_days').onchange = function () { _actDays = +this.value; loadActivity(); };
+    document.getElementById('act_mine').onchange = function () { _actMine = this.checked; loadActivity(); };
+    document.getElementById('act_refresh').onclick = loadActivity;
+    loadActivity();
+  }
+  function loadActivity() {
+    var list = document.getElementById('act_list'); if (!list) return;
+    list.innerHTML = '<div style="color:var(--muted);padding:10px;">Loading recent activity…</div>';
+    fetch('/api/audit/client/' + encodeURIComponent(currentRealm) + '?days=' + _actDays, { credentials: 'include' })
+      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+      .then(function (resp) {
+        if (!resp || !resp.ok) { list.innerHTML = '<div style="color:var(--muted);padding:10px;">Activity unavailable.</div>'; return; }
+        var rows = resp.rows || [];
+        if (_actMine) { var me = myUpn(); rows = rows.filter(function (a) { return (a.user || '').toLowerCase() === me; }); }
+        if (!rows.length) { list.innerHTML = '<div style="color:var(--muted);padding:14px;">No changes in this range.</div>'; return; }
+        var lastDay = '';
+        list.innerHTML = rows.map(function (a) {
+          var d = new Date(a.ts); var day = d.toDateString(); var h = '';
+          if (day !== lastDay) { lastDay = day; h = '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 6px;">' + esc(actDayLabel(d)) + '</div>'; }
+          var who = (window.bccDisplayName && window.bccDisplayName(a.user)) || a.user || '';
+          return h + '<div class="ws-row" style="align-items:flex-start;"><span aria-hidden="true" style="font-size:16px;width:24px;text-align:center;flex-shrink:0;">' + actIcon(a.action) + '</span>' +
+            '<div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:14px;">' + esc(actDesc(a)) + '</div>' +
+            '<div style="font-size:12px;color:var(--muted);">' + esc(who) + ' · ' + esc(d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) + '</div></div></div>';
+        }).join('');
+      })
+      .catch(function () { list.innerHTML = '<div style="color:var(--muted);padding:10px;">Could not load activity.</div>'; });
   }
 
   /* ---- Client info ---- */
@@ -1399,7 +1485,7 @@
     renderTasks();
   }
   function toggleTask(id, done) { var t; try { t = JSON.parse(localStorage.getItem(id)); } catch (e) {} if (!t) return; t.status = done ? 'done' : 'open'; t.doneAt = done ? nowIso() : null; t.updatedAt = nowIso(); localStorage.setItem(id, JSON.stringify(t)); renderTasks(); }
-  function delTask(id) { if (!confirm('Delete this task?')) return; localStorage.removeItem(id); if (window.bccAudit) window.bccAudit('client-task-delete', { key: id, path: '/bookkeeping.html' }); renderTasks(); }
+  function delTask(id) { if (!confirm('Delete this task?')) return; localStorage.removeItem(id); if (window.bccAudit) window.bccAudit('client-task-delete', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } }); renderTasks(); }
 
   /* ---- Time tracking ---- */
   var _timeInt = null;
@@ -1457,7 +1543,7 @@
     if (window.bccAudit) window.bccAudit('time-entry-add', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm, minutes: Math.round(hrs * 60) } });
     renderTime();
   }
-  function delEntry(id) { if (!confirm('Delete this time entry?')) return; localStorage.removeItem(id); if (window.bccAudit) window.bccAudit('time-entry-delete', { key: id, path: '/bookkeeping.html' }); renderTime(); }
+  function delEntry(id) { if (!confirm('Delete this time entry?')) return; localStorage.removeItem(id); if (window.bccAudit) window.bccAudit('time-entry-delete', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } }); renderTime(); }
 
   /* ---- Files (reuses the Documents Blob store, folder = /clients/<realmId>) ---- */
   function clientFolder() { return '/clients/' + currentRealm; }
@@ -1492,7 +1578,7 @@
       loadFiles();
     }).catch(function (e) { st.textContent = 'Upload failed: ' + e.message; });
   }
-  function delFile(id) { if (!confirm('Delete this file?')) return; fetch('/api/documents/' + encodeURIComponent(id), { method: 'DELETE', credentials: 'include' }).then(function () { if (window.bccAudit) window.bccAudit('client-file-delete', { key: id, path: '/bookkeeping.html' }); loadFiles(); }).catch(function () { (window.bccNotify || alert)('Delete failed.', 'warn'); }); }
+  function delFile(id) { if (!confirm('Delete this file?')) return; fetch('/api/documents/' + encodeURIComponent(id), { method: 'DELETE', credentials: 'include' }).then(function () { if (window.bccAudit) window.bccAudit('client-file-delete', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } }); loadFiles(); }).catch(function () { (window.bccNotify || alert)('Delete failed.', 'warn'); }); }
 
   /* ---- Team & access (per-client permissions; admins edit, others read-only) ---- */
   function renderAccess() {
@@ -1685,7 +1771,7 @@
     document.getElementById('cpr_new').onclick = cprNew;
     body.querySelectorAll('[data-cpr-open]').forEach(function (b) { b.onclick = function () { cprEditingId = b.getAttribute('data-cpr-open'); try { cprDraft = JSON.parse(localStorage.getItem(cprEditingId)); } catch (e) { cprDraft = null; } if (!cprDraft) { cprEditingId = null; return; } if (!cprDraft.employees) cprDraft.employees = []; renderPayroll(); }; });
     body.querySelectorAll('[data-cpr-print]').forEach(function (b) { b.onclick = function () { var r; try { r = JSON.parse(localStorage.getItem(b.getAttribute('data-cpr-print'))); } catch (e) {} if (r) printCpr(r); }; });
-    body.querySelectorAll('[data-cpr-del]').forEach(function (b) { b.onclick = function () { if (!confirm('Delete this payroll report?')) return; localStorage.removeItem(b.getAttribute('data-cpr-del')); if (window.bccAudit) window.bccAudit('cpr-delete', { key: b.getAttribute('data-cpr-del'), path:'/bookkeeping.html' }); renderPayroll(); }; });
+    body.querySelectorAll('[data-cpr-del]').forEach(function (b) { b.onclick = function () { if (!confirm('Delete this payroll report?')) return; localStorage.removeItem(b.getAttribute('data-cpr-del')); if (window.bccAudit) window.bccAudit('cpr-delete', { key: b.getAttribute('data-cpr-del'), path:'/bookkeeping.html', meta: { realmId: currentRealm } }); renderPayroll(); }; });
   }
 
   function cprNew() {

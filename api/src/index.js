@@ -451,7 +451,7 @@ const ALLOWED_AUDIT_ACTIONS = new Set([
   'customer-types-save',
   'integration-save', 'integration-clear',
   // Auth / activity-log gate
-  'signin-denied', 'activity-unlock', 'activity-unlock-failed',
+  'activity-unlock', 'activity-unlock-failed',
   // CRM
   'contact-create', 'contact-update', 'contact-delete',
   'convo-add', 'convo-delete', 'need-add',
@@ -476,7 +476,18 @@ const ALLOWED_AUDIT_ACTIONS = new Set([
   'event-create', 'event-update', 'event-delete',
   'kb-article-create', 'kb-article-update', 'kb-article-delete',
   // Issues / inbox
-  'issue-report'
+  'issue-report',
+  // Bookkeeping client workspace (were being rejected → not recorded)
+  'qbo-write', 'qbo-attach',
+  'client-info-update', 'client-mailbox-set',
+  'client-task-create', 'client-task-delete',
+  'time-punch-in', 'time-punch-out', 'time-entry-add', 'time-entry-delete',
+  'client-email-send', 'client-file-upload', 'client-file-delete',
+  'cpr-save', 'cpr-delete', 'cpr-print',
+  'financial-period-save', 'financial-period-delete',
+  // Other recently-added events that were also being rejected
+  'chat-members-update', 'dashboard-update', 'permissions-update',
+  'user-add', 'user-remove', 'job-create'
 ]);
 
 app.http('audit', {
@@ -1090,6 +1101,46 @@ app.http('bookkeeping-time-report', {
       const users = Object.keys(byUser).map(k => byUser[k]).sort((a, b) => b.seconds - a.seconds);
       return { jsonBody: { ok: true, from, to, companies, users } };
     } catch (err) { context.error('bookkeeping-time-report', err); return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } }; }
+  })
+});
+
+/**
+ * GET /api/audit/client/{realmId}?days=7
+ * Recent change activity for one client (audit rows whose meta.realmId matches),
+ * gated by client access. Powers the per-client Activity section.
+ */
+app.http('audit-client', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'audit/client/{realmId}',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const realmId = request.params.realmId;
+    try {
+      const c = container();
+      // Access gate: admins see all; others only enabled companies assigned to
+      // them (or open to all) — mirrors the company-list scoping.
+      const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      // Fail CLOSED for non-admins: require a company doc they can actually see
+      // (audit rows exist independently of the company doc, so a missing doc must
+      // not fall through to returning activity).
+      if (!(await isAppAdmin(p))) {
+        const who = String(p.userDetails || p.userId || '').toLowerCase();
+        const allow = ((comp && comp.allowedUserUpns) || []).map(u => String(u).toLowerCase());
+        if (!comp || comp.enabled === false || (allow.length && allow.indexOf(who) < 0)) return { status: 403, jsonBody: { ok: false, error: 'no access to this client' } };
+      }
+      const u = new URL(request.url);
+      let days = parseInt(u.searchParams.get('days') || '7', 10) || 7;
+      if (days < 1) days = 1; if (days > 90) days = 90;
+      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+      const { resources } = await c.items.query({
+        query: 'SELECT TOP 300 c.ts, c.action, c.user, c.meta FROM c WHERE c.tenantId=@t AND c.docType="audit" AND c.ts>=@s AND c.meta.realmId=@r ORDER BY c.ts DESC',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@s', value: since }, { name: '@r', value: realmId }]
+      }).fetchAll();
+      return { jsonBody: { ok: true, realmId, days, rows: resources } };
+    } catch (e) { context.error('audit-client', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
 
