@@ -47,6 +47,14 @@ const ADMIN_KEYS      = new Set(['bcc-admin-config-v1']); // writable only by us
 // delete these (they each have an admin/allow-list-gated endpoint of their own).
 const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-emailmeta-'];
 function isProtectedServerKey(k) { return PROTECTED_KEY_PREFIXES.some(pre => String(k || '').startsWith(pre)); }
+// Content types we'll serve INLINE for in-app preview. Deliberately excludes
+// text/html + svg + xhtml (active content) so an uploaded page can't render and
+// run script — those always download instead.
+function inlineOk(ct) {
+  ct = String(ct || '').toLowerCase().split(';')[0].trim();
+  if (ct === 'text/html' || ct === 'image/svg+xml' || ct === 'application/xhtml+xml') return false;
+  return /^image\//.test(ct) || ct === 'application/pdf' || ct === 'text/plain' || ct === 'text/csv';
+}
 
 // Email-domain allowlist used by /api/users when filtering the Graph tenant
 // directory down to BCC employees (drops guests / external members so they
@@ -1346,8 +1354,11 @@ app.http('drive-download', {
       const r = await fetch(mediaUrl, { headers: { Authorization: 'Bearer ' + dt.at } });
       if (!r.ok) return { status: 502, jsonBody: { ok: false, error: 'download failed (' + r.status + ')' } };
       const buf = Buffer.from(await r.arrayBuffer());
-      const name = (new URL(request.url).searchParams.get('name') || 'download').replace(/[^a-zA-Z0-9._ -]+/g, '_').slice(0, 120);
-      return { status: 200, headers: { 'Content-Type': r.headers.get('content-type') || 'application/octet-stream', 'Content-Disposition': 'attachment; filename="' + name + '"' }, body: buf };
+      const uq = new URL(request.url).searchParams;
+      const name = (uq.get('name') || 'download').replace(/[^a-zA-Z0-9._ -]+/g, '_').slice(0, 120);
+      const ct = r.headers.get('content-type') || 'application/octet-stream';
+      const wantInline = uq.get('inline') === '1' && inlineOk(ct);
+      return { status: 200, headers: { 'Content-Type': ct, 'Content-Disposition': (wantInline ? 'inline' : 'attachment') + '; filename="' + name + '"', 'X-Content-Type-Options': 'nosniff' }, body: buf };
     } catch (e) { context.error('drive-download', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
@@ -3676,13 +3687,16 @@ app.http('document-download', {
       const now = new Date();
       const expiry = new Date(now.getTime() + 15 * 60 * 1000); // 15 minute window
       const filename = String(meta.name || 'file').replace(/[\r\n"]/g, '');
+      // ?inline=1 → render in-app (image/pdf/text only); blob SAS is on a separate
+      // *.blob.core.windows.net origin, so even an inline page can't touch our app.
+      const wantInline = new URL(request.url).searchParams.get('inline') === '1' && inlineOk(meta.mimeType);
       const sas = generateBlobSASQueryParameters({
         containerName: cont.containerName,
         blobName: meta.storageKey,
         permissions: BlobSASPermissions.parse('r'),
         startsOn: new Date(now.getTime() - 60 * 1000),
         expiresOn: expiry,
-        contentDisposition: 'attachment; filename="' + filename + '"',
+        contentDisposition: (wantInline ? 'inline' : 'attachment') + '; filename="' + filename + '"',
         contentType: meta.mimeType || 'application/octet-stream'
       }, _blobAccount).toString();
       const url = cont.getBlockBlobClient(meta.storageKey).url + '?' + sas;
