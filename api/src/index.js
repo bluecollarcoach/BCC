@@ -1140,7 +1140,10 @@ app.http('bookkeeping-time-report', {
  * (a dedicated multi-tenant Entra app). All token secrets stay server-side.
  */
 const MS_DRIVE_SCOPE = 'offline_access Files.ReadWrite User.Read';
-function driveRedirect(request, provider) { return publicOrigin(request) + '/api/integrations/' + provider + '/callback'; }
+// The Google provider key is 'google' but its route segment is 'google-drive';
+// the redirect_uri MUST match the registered callback route, so map it.
+function driveRouteSeg(provider) { return provider === 'google' ? 'google-drive' : provider; }
+function driveRedirect(request, provider) { return publicOrigin(request) + '/api/integrations/' + driveRouteSeg(provider) + '/callback'; }
 function driveStateSecret() { return process.env.CRON_SECRET || process.env.AZURE_CLIENT_SECRET || process.env.COSMOS_KEY || 'bcc-drive-state'; }
 // Sign the OAuth state so it carries the realmId + the initiating user, tamper-proof.
 function driveSignState(realmId, uid) {
