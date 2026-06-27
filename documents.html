@@ -330,7 +330,7 @@
       if (d.linkedEngagementId) {
         var eng = engagementById(d.linkedEngagementId);
         var engName = eng ? (eng.title || '(engagement)') : '(engagement)';
-        linkedHtml += '<a href="jobs.html" style="color:var(--gold-deep);text-decoration:none;font-weight:600;font-size:12.5px;display:block;">📋 ' + esc(engName) + '</a>';
+        linkedHtml += '<a href="jobs.html?id=' + encodeURIComponent(d.linkedEngagementId) + '" style="color:var(--gold-deep);text-decoration:none;font-weight:600;font-size:12.5px;display:block;">📋 ' + esc(engName) + '</a>';
       }
       if (!linkedHtml) linkedHtml = '<span class="muted">—</span>';
       html +=

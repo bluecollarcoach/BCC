@@ -36,7 +36,8 @@
   .page-head { display:flex; align-items:flex-end; justify-content:space-between; gap:14px; margin-bottom:18px; flex-wrap:wrap; }
   .page-head h1 { font-family:'Source Serif 4', Georgia, serif; font-size:26px; margin:0; }
   .page-head .sub { color:var(--muted); font-size:13px; margin-top:4px; }
-  .btn { min-height:38px; border:0; border-radius:8px; padding:0 14px; font:inherit; font-weight:700; font-size:13px; cursor:pointer; }
+  .btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:38px; border:0; border-radius:8px; padding:0 14px; font:inherit; font-weight:700; font-size:13px; cursor:pointer; text-decoration:none; text-align:center; }
+  a.btn, a.btn:hover, a.btn:visited { text-decoration:none; }
   .btn-primary { background:var(--gold-deep); color:#fff; }
   .btn-primary:hover { background:#876d3a; }
   .btn-ghost { background:transparent; color:var(--ink); border:1px solid var(--chrome-mute); }
@@ -1722,7 +1723,7 @@
         if (!s || !s.ok) { area.innerHTML = ''; return; }
         if (!s.connected) {
           var btns = '';
-          if (s.googleConfigured) btns += '<a class="btn btn-primary" style="text-decoration:none;" href="/api/integrations/google-drive/connect?realmId=' + encodeURIComponent(currentRealm) + '">Connect Google Drive</a> ';
+          if (s.googleConfigured) btns += '<a class="btn btn-ghost" style="text-decoration:none;" href="/api/integrations/google-drive/connect?realmId=' + encodeURIComponent(currentRealm) + '">Connect Google Drive</a> ';
           if (s.onedriveConfigured) btns += '<a class="btn btn-ghost" style="text-decoration:none;" href="/api/integrations/onedrive/connect?realmId=' + encodeURIComponent(currentRealm) + '">Connect OneDrive</a>';
           if (!s.googleConfigured && !s.onedriveConfigured) btns = '<span style="color:var(--muted);font-size:12.5px;">No drive provider is configured yet — an admin adds Google Drive credentials in <a href="admin.html" style="color:var(--gold-deep);font-weight:600;">Admin → Integrations</a> (OneDrive is configured centrally).</span>';
           area.innerHTML = '<div class="fs-block fs-client">' +

@@ -144,7 +144,7 @@
   <div class="page-head">
     <div>
       <h1>Marketing</h1>
-      <div class="sub" id="subline">Campaigns across Google Ads, Meta, LinkedIn, Mailchimp, and WordPress. Status drawn from <a href="admin.html#integrations" style="color:var(--gold-deep);text-decoration:none;font-weight:700;">Admin → Integrations</a>.</div>
+      <div class="sub" id="subline">Campaigns across Google Ads, Meta, LinkedIn, Mailchimp, and WordPress. Status drawn from <a href="admin.html#integrations" style="color:var(--gold-deep);text-decoration:none;font-weight:700;">Admin → Integrations</a>. <span id="campCount" style="font-weight:600;"></span></div>
     </div>
     <button class="btn btn-primary" id="newBtn" type="button">+ New campaign</button>
   </div>
@@ -317,7 +317,7 @@
       var hay = [c.name, c.channel, c.notes].filter(Boolean).join(' ').toLowerCase();
       return hay.indexOf(q) >= 0;
     });
-    subline.textContent = matched.length + ' of ' + all.length + ' campaign' + (all.length === 1 ? '' : 's') + (q || channel || status ? ' shown' : '');
+    var _cc = document.getElementById('campCount'); if (_cc) _cc.textContent = matched.length + ' of ' + all.length + ' campaign' + (all.length === 1 ? '' : 's') + (q || channel || status ? ' shown' : '');
 
     if (matched.length === 0) {
       rowsEl.innerHTML = '';

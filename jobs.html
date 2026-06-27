@@ -418,9 +418,16 @@
 
   /* ===== Init ===== */
   function init() { renderBoard(); }
-  window.addEventListener('bcc-data-ready', renderBoard);
-  window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
-  setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
+  // Deep-link from other pages: jobs.html?id=<engagementId> opens that engagement
+  // once its data has loaded (fires once).
+  var _deepLinkDone = false;
+  function tryDeepLink() {
+    if (_deepLinkDone) return;
+    try { var jid = new URLSearchParams(location.search).get('id'); if (jid && getEng(jid)) { _deepLinkDone = true; openModal(jid); } } catch (e) {}
+  }
+  window.addEventListener('bcc-data-ready', function () { renderBoard(); tryDeepLink(); });
+  window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); tryDeepLink(); });
+  setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } tryDeepLink(); }, 600);
 })();
 </script>
 </body>

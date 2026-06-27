@@ -253,37 +253,48 @@
 
     <section class="section" id="bookkeeping">
       <h2>Bookkeeping</h2>
-      <p class="lead">Live QuickBooks Online financials across every connected company.</p>
-      <h3>Connecting companies</h3>
-      <p>Click <strong>Connect a company</strong> to run the QuickBooks sign-in; repeat for each business you manage. The <strong>All companies</strong> table lists everything connected. Admins get a per-company <strong>Enabled</strong> toggle and an <strong>Access</strong> editor to choose exactly which user(s) can see each company — so a coach only sees the clients they work with.</p>
-      <h3>Financial-health KPIs</h3>
-      <p>Pick a company to see KPI tiles at the top: <strong>months of cash</strong> (rounded down to a whole number), <strong>days of cash</strong>, <strong>current ratio</strong>, working capital, cash on hand, revenue / COGS / OpEx / net income, and net margin. Choose the period and <strong>Cash vs Accrual</strong> (accrual is the default).</p>
-      <h3>Live reports</h3>
+      <p class="lead">A complete per-client bookkeeping workspace on top of live QuickBooks Online — everything for a client in one place, no extra navigation.</p>
+
+      <h3>The main page (your work queue)</h3>
+      <p>Open <strong>Bookkeeping</strong> from the home screen. You land on your <strong>work queue</strong>: the clients you can access, each with a 🔔 count of open to-dos (overdue flagged). Click a client to open its workspace. The <strong>Bookkeeping</strong> wordmark (top bar) and the page title are clickable from anywhere inside — they always take you back to this work queue.</p>
+
+      <h3>Inside a client</h3>
+      <p>Opening a client lands on its <strong>Overview</strong> (quick actions + open to-dos), not a wall of numbers. Use the <strong>☰ menu</strong> (top-left of the workspace) to slide between sections, and <strong>← Clients</strong> to return to the queue:</p>
       <ul>
-        <li><strong>Profit &amp; Loss</strong> (monthly, detail, and YTD)</li>
-        <li><strong>Balance Sheet</strong></li>
-        <li><strong>A/R &amp; A/P aging</strong> and cash position</li>
-        <li><strong>Customers, Vendors, Invoices, Bills</strong> lists</li>
+        <li><strong>Overview</strong> — quick actions and the client's open to-dos, plus a recent-activity strip.</li>
+        <li><strong>Activity</strong> — a per-user feed of what changed for this client (new transactions, files, emails, tasks, etc.) over the last 7–90 days, with a "Just me" filter.</li>
+        <li><strong>New &amp; transactions</strong> — create an <strong>invoice</strong>, <strong>bill/expense</strong>, or <strong>customer payment</strong> straight into the client's QuickBooks, and <strong>Edit</strong> existing ones; add <strong>+ Customer / + Vendor / + Item / + Account</strong> on the spot. Every post shows a <strong>confirm dialog</strong> (it writes to live books) and is logged. Browse Transactions / Payments / Expenses / All Invoices / All Bills. <strong>📷 Scan receipt (AI)</strong> photographs or uploads a receipt and auto-fills a bill (vendor, date, line items, total), matching the vendor in QuickBooks when it can.</li>
+        <li><strong>Reports &amp; KPIs</strong> — financial-health tiles (months/days of cash, current ratio, working capital, revenue/COGS/OpEx/net, margin) plus live <strong>P&amp;L, Balance Sheet, A/R &amp; A/P aging</strong> and Customer/Vendor/Invoice/Bill lists, for the period and Cash/Accrual method you pick. <strong>Sync</strong> refreshes stored monthly snapshots.</li>
+        <li><strong>Tasks</strong> — per-client to-dos with assignee and due date; overdue items flag red.</li>
+        <li><strong>Time</strong> — punch in/out and manual entries. For bookkeepers, time on the open client is also <strong>tracked automatically</strong> while you work; totals show in Admin → Bookkeeping time.</li>
+        <li><strong>Files</strong> — see below.</li>
+        <li><strong>Email</strong> — see below.</li>
+        <li><strong>Certified payroll</strong> — create and print <strong>Minnesota DLI</strong> certified-payroll reports (header, employees with daily ST/OT hours, rates, auto-totaled deductions, Statement of Compliance). <strong>Print MN form</strong> opens a print-ready version.</li>
+        <li><strong>Customer info</strong> — full details (legal name, contact, EIN, fiscal year, payroll schedule, address, notes); autosaves.</li>
+        <li><strong>Team &amp; access</strong> — admins set who can see this client and enable/disable it; others see a read-only note.</li>
       </ul>
-      <p>Reports pull straight from QuickBooks for the period and method you select. Use <strong>Sync</strong> to refresh the stored monthly snapshots. You can also <strong>browse transactions</strong> (Transactions, Payments, Expenses, All Invoices/Bills).</p>
-      <h3>Create &amp; edit in QuickBooks</h3>
-      <p>The <strong>New transaction</strong> card creates an <strong>invoice</strong>, <strong>bill/expense</strong>, or <strong>customer payment</strong> directly in the client's QuickBooks, and you can <strong>Edit</strong> existing invoices/bills from the browse lists. You can also add master records on the spot — <strong>+ Customer, + Vendor, + Item, + Account</strong>. Every transaction post shows a <strong>confirm dialog</strong> first (it writes to the client's live books) and is recorded in the activity log.</p>
-      <h3>Scan a receipt (AI)</h3>
-      <p>Tap <strong>📷 Scan receipt (AI)</strong> — on a phone it opens the camera — to photograph or upload a receipt or invoice. Claude reads it and <strong>auto-fills a bill</strong> (vendor, date, line items, total); it even matches the vendor to QuickBooks when it can. Review, pick the expense account(s), and post. <span style="color:var(--muted);">Requires an admin to add an <code>ANTHROPIC_API_KEY</code> in the app settings.</span></p>
+
+      <h3>Files — internal vs. the client's drive</h3>
+      <p>The Files section keeps two clearly-separated areas:</p>
+      <ul>
+        <li><strong>🔒 Internal BCC files</strong> — private to Blue Collar Coach (the client can't see them). Upload with categories/tags; <strong>search, filter by category, and sort</strong> the list, which shows each file's <strong>uploader</strong> and date.</li>
+        <li><strong>☁️ Client's shared drive</strong> — link the client's own <strong>Google Drive</strong> or <strong>OneDrive</strong> using the login they set up for the firm. Once connected (the panel shows the connected account), browse folders, upload, and download the files you share with that client.</li>
+      </ul>
+      <p>Click any file to <strong>preview it right in the app</strong> — images, PDFs, and text open in a viewer, no download needed (Download and Open-in-new-tab are there if you want them).</p>
+
+      <h3>Email — a shared mailbox, in-app</h3>
+      <p>Each client can have a <strong>dedicated shared mailbox</strong> (e.g. <code>mikesrepair@bluecollarcoach.us</code>): an admin creates the shared mailbox once in Microsoft 365 (free, no license) and enters the address on the client's Email tab. From then on the whole team works that mailbox <strong>without opening Outlook</strong>:</p>
+      <ul>
+        <li><strong>Compose &amp; reply</strong> from the client address, with your own <strong>signature</strong> auto-appended. Open any message to read the full email and <strong>reply / reply-all</strong> in a pop-up.</li>
+        <li><strong>Read / unread</strong> is tracked <strong>per teammate</strong>, and each message shows <strong>who read it</strong> and <strong>who replied</strong> — while still sending from the one client address.</li>
+        <li><strong>Tag, assign to a teammate, and archive</strong> messages; filter by All / Unread / Assigned to me / Tagged / Archived, or search.</li>
+      </ul>
+
+      <h3>Management dashboard</h3>
+      <p>Managers (admins, or anyone with the bookkeeping "admin" permission) get a <strong>Management dashboard</strong> toggle on the main page: firm-wide KPIs across all companies, and the place to <strong>Connect a company</strong> (run the QuickBooks sign-in) and manage access. Per company, admins control <strong>Enabled</strong> and an <strong>Access</strong> editor for exactly which users can see it.</p>
+
+      <div class="callout"><strong>Going live on a production QuickBooks company:</strong> in <strong>Admin → Integrations → QuickBooks</strong>, set <strong>Environment = production</strong> and paste your <strong>production</strong> Client ID/Secret, then <strong>Connect</strong> the real company. Each company remembers its own environment, so a real company always uses live books even if a sandbox company is still connected.</div>
       <div class="callout"><strong>CRM companies vs QuickBooks companies:</strong> a CRM company is a contact record; a QuickBooks company is a connected accounting file. They're separate — connect QuickBooks here, manage relationships in CRM.</div>
-      <h3>Per-client workspace</h3>
-      <p>Open a client (click its row, or pick it in the company dropdown) and a tab bar appears — everything for that client lives here, with no extra navigation:</p>
-      <ul>
-        <li><strong>Financials</strong> — the KPIs, live reports, and monthly periods described above.</li>
-        <li><strong>Client info</strong> — full customer details (legal name, contact, EIN, fiscal year, payroll schedule, address, notes); autosaves.</li>
-        <li><strong>Files</strong> — upload and store documents securely per client (W-9s, statements, contracts), with download and delete.</li>
-        <li><strong>Tasks</strong> — a per-client to-do list with assignee and due date; overdue items flag red.</li>
-        <li><strong>Time</strong> — punch in/out against the client plus manual entries; shows your week, your total, and the client total.</li>
-        <li><strong>Email</strong> — compose and send (with CC), logged to a per-client sent history, plus an <strong>inbox</strong>. Each client can have a <strong>dedicated shared mailbox</strong> (e.g. <code>mikesrepair@bluecollarcoach.us</code>): an admin creates the shared mailbox once in Microsoft 365 (free, no license), enters the address here, and from then on this client's email <strong>sends from and reads that mailbox</strong>. Without one, email uses your own account.</li>
-        <li><strong>Certified payroll</strong> — create and print <strong>Minnesota DLI</strong> certified-payroll reports per client: header, employees with daily ST/OT hours, rates, deductions (auto-totaled), and the Statement of Compliance. <strong>Print MN form</strong> opens a submittable, print-ready version.</li>
-        <li><strong>Team &amp; access</strong> — admins set who can see this client (and enable/disable it); others see a read-only note.</li>
-      </ul>
-      <p style="color:var(--muted);font-size:13px;">Coming next in this area: client OneDrive/Google Drive linking.</p>
     </section>
 
     <section class="section" id="training">

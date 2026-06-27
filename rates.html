@@ -151,7 +151,7 @@
       <div>
         <img src="bcc-logo-full.png" alt="Blue Collar Coach" id="brandLogo" onerror="this.src='bcc-logo.png';this.onerror=null;" />
         <h2 id="brandName">Blue Collar Coach</h2>
-        <div class="tagline" id="brandTagline">Coaching, bookkeeping, consulting, marketing Coaching for blue-collar business owners training</div>
+        <div class="tagline" id="brandTagline">Coaching for blue-collar business owners</div>
       </div>
       <div class="meta">
         <strong id="brandPhone">(320) 635-6973</strong><br/>
@@ -247,7 +247,7 @@
     var cfg = loadCfg();
     var co = (cfg && cfg.company) || {};
     document.getElementById('brandName').textContent = co.displayName || co.legalName || 'Blue Collar Coach';
-    document.getElementById('brandTagline').textContent = co.tagline || 'Coaching, bookkeeping, consulting, marketing Coaching for blue-collar business owners training';
+    document.getElementById('brandTagline').textContent = co.tagline || 'Coaching for blue-collar business owners';
     document.getElementById('brandPhone').textContent = co.phone || '(320) 635-6973';
     document.getElementById('brandEmail').textContent = co.email || '';
     document.getElementById('brandWebsite').textContent = (co.website || 'bluecollarcoach.us').replace(/^https?:\/\//, '');

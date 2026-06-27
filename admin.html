@@ -168,8 +168,10 @@
   <section class="panel-section active" id="panel-users">
     <div class="card">
       <h3>Team members
-        <button class="btn btn-ghost" id="refreshUsersBtn" type="button">Refresh from Entra</button>
-        <button class="btn btn-primary" id="addUserBtn" type="button" style="margin-left:8px;">+ Add user</button>
+        <span style="display:flex; gap:8px;">
+          <button class="btn btn-ghost" id="refreshUsersBtn" type="button">Refresh from Entra</button>
+          <button class="btn btn-primary" id="addUserBtn" type="button">+ Add user</button>
+        </span>
       </h3>
       <p class="blurb" id="usersBlurb">Pulled from your Microsoft 365 tenant via Graph when available. Add team members manually below; anyone signed in is auto-listed. Toggle the admin role to grant access to this page; mark inactive to revoke without removing.</p>
 
@@ -421,6 +423,13 @@
       if (name === 'bktime') renderBkTime();
     });
   });
+  // Deep-link support: e.g. admin.html#integrations opens that tab on load.
+  (function () {
+    var h = (location.hash || '').replace('#', '');
+    if (!h) return;
+    var b = document.querySelector('.tabs button[data-tab="' + h + '"]');
+    if (b) b.click();
+  })();
 
   /* ===== BOOKKEEPING TIME ===== */
   function bkFmtDur(secs) { secs = Math.round(secs || 0); var h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60); if (h) return h + 'h ' + m + 'm'; if (m) return m + 'm'; return secs + 's'; }
