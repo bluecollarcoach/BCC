@@ -1300,7 +1300,52 @@ app.http('drive-status', {
     const c = container(); const id = 'bcc-clientdrive-' + realmId;
     if (request.method === 'DELETE') { try { await c.item(id, BCC_TENANT_ID).delete(); } catch (e) { if (e.code !== 404) throw e; } return { jsonBody: { ok: true, connected: false } }; }
     const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-    return { jsonBody: { ok: true, connected: !!doc, provider: doc ? doc.provider : null, account: doc ? doc.account : null, googleConfigured: (await driveAppCreds('google')).ok, onedriveConfigured: (await driveAppCreds('onedrive')).ok } };
+    return { jsonBody: { ok: true, connected: !!doc, provider: doc ? doc.provider : null, account: doc ? doc.account : null, rootName: (doc && doc.root && doc.root.name) || null, googleConfigured: (await driveAppCreds('google')).ok, onedriveConfigured: (await driveAppCreds('onedrive')).ok } };
+  })
+});
+
+// Encode a Microsoft sharing URL into the /shares share id (lets us read a folder
+// the client shared with us even when our account has no OneDrive of its own).
+function msShareId(url) { const b64 = Buffer.from(String(url || ''), 'utf8').toString('base64'); return 'u!' + b64.replace(/=+$/, '').replace(/\//g, '_').replace(/\+/g, '-'); }
+function googleFolderId(s) { s = String(s || '').trim(); const m = s.match(/\/folders\/([\w-]+)/) || s.match(/[?&]id=([\w-]+)/) || s.match(/\/d\/([\w-]+)/); if (m) return m[1]; if (/^[\w-]{12,}$/.test(s)) return s; return ''; }
+
+// Set/clear the per-client "landing folder" — the folder the browser opens in.
+// Required for OneDrive when the client SHARES a folder with our account (that
+// account often has no personal OneDrive, so we reach the folder via /shares).
+app.http('drive-set-root', {
+  methods: ['POST'], authLevel: 'anonymous', route: 'integrations/drive/{realmId}/root',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    const realmId = request.params.realmId;
+    const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
+    try {
+      const dt = await driveDocAndToken(realmId); if (dt.err) return dt.err;
+      const b = await request.json().catch(() => ({}));
+      const c = container();
+      if (b.clear) { delete dt.doc.root; await c.items.upsert(dt.doc); return { jsonBody: { ok: true, root: null } }; }
+      const link = String(b.link || '').trim();
+      if (!link) return badRequest('paste the shared-folder link');
+      let root;
+      if (dt.doc.provider === 'onedrive') {
+        const r = await fetch('https://graph.microsoft.com/v1.0/shares/' + msShareId(link) + '/driveItem?$select=id,name,parentReference,folder', { headers: { Authorization: 'Bearer ' + dt.at } });
+        if (!r.ok) return { status: 400, jsonBody: { ok: false, error: 'Could not open that link (' + r.status + '). Make sure it was shared with ' + (dt.doc.account || 'this account') + ' and points to a folder.' } };
+        const di = await r.json();
+        if (!di.folder) return badRequest('that link points to a file, not a folder');
+        if (!di.parentReference || !di.parentReference.driveId) return badRequest('could not resolve that folder');
+        root = { driveId: di.parentReference.driveId, itemId: di.id, name: di.name || 'Shared folder' };
+      } else {
+        const fid = googleFolderId(link);
+        if (!fid) return badRequest('could not find a folder id in that link');
+        const r = await fetch('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fid) + '?fields=id,name,mimeType&supportsAllDrives=true', { headers: { Authorization: 'Bearer ' + dt.at } });
+        if (!r.ok) return { status: 400, jsonBody: { ok: false, error: 'Could not open that folder (' + r.status + '). Make sure it is shared with ' + (dt.doc.account || 'this account') + '.' } };
+        const f = await r.json();
+        if (f.mimeType !== 'application/vnd.google-apps.folder') return badRequest('that link is not a folder');
+        root = { folderId: f.id, name: f.name || 'Shared folder' };
+      }
+      dt.doc.root = root;
+      await c.items.upsert(dt.doc);
+      return { jsonBody: { ok: true, root: { name: root.name } } };
+    } catch (e) { context.error('drive-set-root', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
 
@@ -1325,16 +1370,25 @@ app.http('drive-files', {
       const dt = await driveDocAndToken(realmId); if (dt.err) return dt.err;
       const folderId = new URL(request.url).searchParams.get('folderId') || '';
       let items = [];
+      const root = dt.doc.root || null;
       if (dt.doc.provider === 'google') {
-        const q = encodeURIComponent("'" + (folderId || 'root') + "' in parents and trashed=false");
+        const start = folderId || (root && root.folderId) || 'root';
+        const q = encodeURIComponent("'" + start + "' in parents and trashed=false");
         const r = await fetch('https://www.googleapis.com/drive/v3/files?q=' + q + '&fields=files(id,name,mimeType,modifiedTime,size,webViewLink)&pageSize=300&orderBy=folder,name&supportsAllDrives=true&includeItemsFromAllDrives=true', { headers: { Authorization: 'Bearer ' + dt.at } });
         if (!r.ok) throw new Error('Google Drive ' + r.status);
         const j = await r.json();
         items = (j.files || []).map(f => ({ id: f.id, name: f.name, folder: f.mimeType === 'application/vnd.google-apps.folder', size: f.size ? Number(f.size) : null, modified: f.modifiedTime || null, webUrl: f.webViewLink || null }));
       } else {
-        const path = folderId ? ('/items/' + encodeURIComponent(folderId) + '/children') : '/root/children';
-        const r = await fetch('https://graph.microsoft.com/v1.0/me/drive' + path + '?$top=300&$select=id,name,folder,size,lastModifiedDateTime,webUrl', { headers: { Authorization: 'Bearer ' + dt.at } });
-        if (!r.ok) throw new Error('OneDrive ' + r.status);
+        let path;
+        if (root && root.driveId) { path = '/drives/' + root.driveId + '/items/' + encodeURIComponent(folderId || root.itemId) + '/children'; }
+        else { path = folderId ? ('/me/drive/items/' + encodeURIComponent(folderId) + '/children') : '/me/drive/root/children'; }
+        const r = await fetch('https://graph.microsoft.com/v1.0' + path + '?$top=300&$select=id,name,folder,size,lastModifiedDateTime,webUrl', { headers: { Authorization: 'Bearer ' + dt.at } });
+        if (!r.ok) {
+          const detail = (await r.text().catch(() => '')).slice(0, 160);
+          // No landing folder set + the account has no personal OneDrive → tell the UI to ask for the shared-folder link.
+          if (!root && (r.status === 403 || r.status === 404)) return { jsonBody: { ok: false, needsRoot: true, provider: 'onedrive', account: dt.doc.account, error: 'This account has no personal OneDrive. Paste the link to the folder the client shared with ' + (dt.doc.account || 'it') + '.' } };
+          throw new Error('OneDrive ' + r.status + (detail ? (': ' + detail) : ''));
+        }
         const j = await r.json();
         items = (j.value || []).map(f => ({ id: f.id, name: f.name, folder: !!f.folder, size: f.size || null, modified: f.lastModifiedDateTime || null, webUrl: f.webUrl || null }));
       }
@@ -1353,9 +1407,10 @@ app.http('drive-download', {
     const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
     try {
       const dt = await driveDocAndToken(realmId); if (dt.err) return dt.err;
+      const odRoot = dt.doc.root && dt.doc.root.driveId;
       const mediaUrl = dt.doc.provider === 'google'
         ? ('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fileId) + '?alt=media&supportsAllDrives=true')
-        : ('https://graph.microsoft.com/v1.0/me/drive/items/' + encodeURIComponent(fileId) + '/content');
+        : ('https://graph.microsoft.com/v1.0' + (odRoot ? ('/drives/' + dt.doc.root.driveId) : '/me/drive') + '/items/' + encodeURIComponent(fileId) + '/content');
       const r = await fetch(mediaUrl, { headers: { Authorization: 'Bearer ' + dt.at } });
       if (!r.ok) return { status: 502, jsonBody: { ok: false, error: 'download failed (' + r.status + ')' } };
       const buf = Buffer.from(await r.arrayBuffer());
@@ -1383,9 +1438,10 @@ app.http('drive-upload', {
       if (file.size > 4 * 1024 * 1024) return badRequest('file too large (max 4 MB for now)');
       const buf = Buffer.from(await file.arrayBuffer());
       const name = String(file.name || 'upload'); const ct = file.type || 'application/octet-stream';
+      const root = dt.doc.root || null;
       if (dt.doc.provider === 'google') {
         const boundary = 'bcc' + Date.now().toString(36);
-        const meta = { name }; if (folderId) meta.parents = [folderId];
+        const meta = { name }; const parent = folderId || (root && root.folderId); if (parent) meta.parents = [parent];
         const body = Buffer.concat([
           Buffer.from('--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + JSON.stringify(meta) + '\r\n'),
           Buffer.from('--' + boundary + '\r\nContent-Type: ' + ct + '\r\n\r\n'),
@@ -1396,8 +1452,10 @@ app.http('drive-upload', {
         if (!r.ok) throw new Error('Google upload ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 160));
       } else {
         const safe = name.replace(/[#%?:*<>|"\\]+/g, '_');
-        const path = folderId ? ('/items/' + encodeURIComponent(folderId) + ':/' + encodeURIComponent(safe) + ':/content') : ('/root:/' + encodeURIComponent(safe) + ':/content');
-        const r = await fetch('https://graph.microsoft.com/v1.0/me/drive' + path, { method: 'PUT', headers: { Authorization: 'Bearer ' + dt.at, 'Content-Type': ct }, body: buf });
+        let path;
+        if (root && root.driveId) { path = '/drives/' + root.driveId + '/items/' + encodeURIComponent(folderId || root.itemId) + ':/' + encodeURIComponent(safe) + ':/content'; }
+        else { path = folderId ? ('/me/drive/items/' + encodeURIComponent(folderId) + ':/' + encodeURIComponent(safe) + ':/content') : ('/me/drive/root:/' + encodeURIComponent(safe) + ':/content'); }
+        const r = await fetch('https://graph.microsoft.com/v1.0' + path, { method: 'PUT', headers: { Authorization: 'Bearer ' + dt.at, 'Content-Type': ct }, body: buf });
         if (!r.ok) throw new Error('OneDrive upload ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 160));
       }
       return { jsonBody: { ok: true } };
