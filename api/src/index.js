@@ -1867,9 +1867,11 @@ app.http('integrations-qbo-sync', {
           const startStr = target.toISOString().slice(0, 10);
           const end = new Date(target.getFullYear(), target.getMonth() + 1, 0);
           const endStr = end.toISOString().slice(0, 10);
-          const url = base + '/v3/company/' + encodeURIComponent(comp.realmId) +
-            '/reports/ProfitAndLoss?start_date=' + startStr + '&end_date=' + endStr + '&accounting_method=Accrual&minorversion=70';
-          const r = await fetch(url, { headers: { 'Authorization': 'Bearer ' + accessToken, 'Accept': 'application/json' } });
+          const hdr = { headers: { 'Authorization': 'Bearer ' + accessToken, 'Accept': 'application/json' } };
+          const plUrl = base + '/v3/company/' + encodeURIComponent(comp.realmId) + '/reports/ProfitAndLoss?start_date=' + startStr + '&end_date=' + endStr + '&accounting_method=Accrual&minorversion=70';
+          const bsUrl = base + '/v3/company/' + encodeURIComponent(comp.realmId) + '/reports/BalanceSheet?as_of=' + endStr + '&accounting_method=Accrual&minorversion=70';
+          // P&L + Balance Sheet fetched concurrently per month (keeps sync time ~flat despite 2x the reports).
+          const [r, br] = await Promise.all([fetch(plUrl, hdr), fetch(bsUrl, hdr).catch(() => null)]);
           if (i === 0) { diag.firstStatus = r.status; if (!r.ok) diag.firstBody = (await r.text().catch(() => '')).slice(0, 400); }
           if (!r.ok) continue;
           const j = await r.json().catch(() => null);
@@ -1885,6 +1887,17 @@ app.http('integrations-qbo-sync', {
             opex   = (findByGroup(pl, 'Expenses') ?? findByLabel(pl, /total expenses/i)) || 0;
             net    = (findByGroup(pl, 'NetIncome') ?? (income - cogs - opex)) || 0;
           } catch (_) {}
+          // Balance-sheet snapshot as of month-end (fetched above), so cash /
+          // current ratio / working capital have monthly history for the trends.
+          let cash = 0, ca = 0, cl = 0;
+          try {
+            if (br && br.ok) {
+              const bs = flattenQboReport(await br.json());
+              cash = (findByLabel(bs, /total bank account/i) ?? findByLabel(bs, /bank account/i) ?? findByLabel(bs, /checking|savings|cash on hand|^cash$/i)) || 0;
+              ca = (findByGroup(bs, 'TotalCurrentAssets') ?? findByLabel(bs, /total current assets/i)) || 0;
+              cl = (findByGroup(bs, 'TotalCurrentLiabilities') ?? findByLabel(bs, /total current liabilities/i)) || 0;
+            }
+          } catch (_) {}
           const periodKey = startStr.slice(0, 7);
           periods.push({
             id: 'bcc-financial-period-' + comp.realmId + '-' + periodKey,
@@ -1895,6 +1908,9 @@ app.http('integrations-qbo-sync', {
             cogsCents: Math.round(cogs * 100),
             expensesCents: Math.round(opex * 100),
             netCents: Math.round(net * 100),
+            cashCents: Math.round(cash * 100),
+            currentAssetsCents: Math.round(ca * 100),
+            currentLiabilitiesCents: Math.round(cl * 100),
             source: 'qbo', syncedAt: new Date().toISOString()
           });
         }
@@ -2685,7 +2701,7 @@ app.http('qbo-companies', {
         parameters: [{ name: '@t', value: BCC_TENANT_ID }]
       }).fetchAll();
       const { resources: periods } = await c.items.query({
-        query: 'SELECT c.realmId, c.period, c.revenueCents, c.cogsCents, c.expensesCents, c.netCents FROM c WHERE c.tenantId=@t AND c.docType="financial-period"',
+        query: 'SELECT c.realmId, c.period, c.revenueCents, c.cogsCents, c.expensesCents, c.netCents, c.cashCents, c.currentAssetsCents, c.currentLiabilitiesCents FROM c WHERE c.tenantId=@t AND c.docType="financial-period"',
         parameters: [{ name: '@t', value: BCC_TENANT_ID }]
       }).fetchAll();
       const latestByRealm = {};
@@ -3176,17 +3192,13 @@ app.http('qbo-kpis', {
     const p = principal(request);
     if (!p) return unauthorized();
     if (!domainAllowed(p)) return domainBlocked();
+    if (!(await isAppAdmin(p))) return { status: 403, jsonBody: { error: 'KPIs are admin-only' } }; // KPIs restricted to administrators for now
     const realmId = request.params.realmId;
     const url = new URL(request.url);
     try {
       const c = container();
       const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
       if (!comp) return { status: 404, jsonBody: { error: 'company not connected' } };
-      if (!(await isAppAdmin(p))) {
-        const who = String(p.userDetails || p.userId || '').toLowerCase();
-        const allow = (comp.allowedUserUpns || []).map(u => u.toLowerCase());
-        if (comp.enabled === false || (allow.length && allow.indexOf(who) < 0)) return { status: 403, jsonBody: { error: 'no access to this company' } };
-      }
       const fields = await getIntegrationFields('qbo');
       const { accessToken, base } = await qboAccessForCompany(comp, fields);
       const apiGet = async (path) => {

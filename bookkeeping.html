@@ -329,10 +329,10 @@
 
   <!-- KPIs -->
   <div class="kpi-grid" id="finKpi">
-    <div class="kpi"><div class="label">Last month revenue</div><div class="value" id="kpiRev">—</div><div class="delta flat" id="kpiRevD">no prior period</div></div>
-    <div class="kpi"><div class="label">Last month expenses</div><div class="value" id="kpiExp">—</div><div class="delta flat" id="kpiExpD">no prior period</div></div>
-    <div class="kpi"><div class="label">Net</div><div class="value" id="kpiNet">—</div><div class="delta flat" id="kpiNetD">—</div></div>
-    <div class="kpi"><div class="label">YTD net</div><div class="value" id="kpiYtd">—</div><div class="delta flat" id="kpiYtdD"></div></div>
+    <div class="kpi"><div class="label">Last month revenue</div><div class="value" id="kpiRev">—</div><div id="kpiRevSpark"></div><div class="delta flat" id="kpiRevD">no prior period</div></div>
+    <div class="kpi"><div class="label">Last month expenses</div><div class="value" id="kpiExp">—</div><div id="kpiExpSpark"></div><div class="delta flat" id="kpiExpD">no prior period</div></div>
+    <div class="kpi"><div class="label">Net</div><div class="value" id="kpiNet">—</div><div id="kpiNetSpark"></div><div class="delta flat" id="kpiNetD">—</div></div>
+    <div class="kpi"><div class="label">YTD net</div><div class="value" id="kpiYtd">—</div><div id="kpiYtdSpark"></div><div class="delta flat" id="kpiYtdD"></div></div>
   </div>
 
   <!-- Toolbar -->
@@ -607,8 +607,12 @@
 
   /* ===== KPIs ===== */
   function setDelta(el, txt, cls) { el.textContent = txt; el.className = 'delta ' + (cls || 'flat'); }
+  function setSpark(id, svg) { var e = document.getElementById(id); if (e) e.innerHTML = svg || ''; }
   function renderKpis() {
     var ids = ['kpiRev','kpiExp','kpiNet','kpiYtd'];
+    var fk = document.getElementById('finKpi');
+    if (!isAdmin) { if (fk) fk.style.display = 'none'; return; } // KPIs are admin-only for now
+    ['kpiRevSpark','kpiExpSpark','kpiNetSpark','kpiYtdSpark'].forEach(function (s) { setSpark(s, ''); });
     if (!currentRealm) {
       // Firm-wide totals are management-only — don't even compute/write them to
       // the DOM for non-managers (gate the data, not just the visibility).
@@ -648,6 +652,11 @@
     var ytdNet=0; all.forEach(function(p){ if(p.period&&p.period.indexOf(year)===0){ ytdNet += netOf(p);} });
     document.getElementById('kpiYtd').textContent = dollars(ytdNet);
     setDelta(document.getElementById('kpiYtdD'), year + ' · ' + companyName(currentRealm));
+    // Trend lines from the last 12 synced months (oldest→newest).
+    setSpark('kpiRevSpark', sparkline(kpiSeries(function (p) { return (p.revenueCents || 0) / 100; })));
+    setSpark('kpiExpSpark', sparkline(kpiSeries(function (p) { return (p.expensesCents || 0) / 100; })));
+    setSpark('kpiNetSpark', sparkline(kpiSeries(function (p) { return netOf(p) / 100; })));
+    var yrun = 0; setSpark('kpiYtdSpark', sparkline(all.slice().sort(function (a, b) { return (a.period || '').localeCompare(b.period || ''); }).filter(function (p) { return p.period && p.period.indexOf(year) === 0; }).map(function (p) { yrun += netOf(p) / 100; return yrun; })));
   }
 
   /* ===== Table ===== */
@@ -1049,9 +1058,32 @@
       qboActiveReport = null;
     }
   }
-  function kpiTile(label, value, sub, cls) { return '<div class="kpi"><div class="label">' + esc(label) + '</div><div class="value">' + value + '</div>' + (sub ? '<div class="delta ' + (cls || 'flat') + '">' + esc(sub) + '</div>' : '') + '</div>'; }
+  function kpiTile(label, value, sub, cls, spark) { return '<div class="kpi"><div class="label">' + esc(label) + '</div><div class="value">' + value + '</div>' + (spark || '') + (sub ? '<div class="delta ' + (cls || 'flat') + '">' + esc(sub) + '</div>' : '') + '</div>'; }
+  // Tiny inline SVG trend line from a series (oldest→newest). Skips nulls.
+  function sparkline(vals) {
+    var v = (vals || []).map(function (x) { return (x == null || isNaN(x)) ? null : x; });
+    var real = v.filter(function (x) { return x != null; });
+    if (real.length < 2) return '';
+    var w = 116, h = 28, pad = 2;
+    var min = Math.min.apply(null, real), max = Math.max.apply(null, real), range = (max - min) || Math.abs(max) || 1;
+    var n = v.length, step = (w - 2 * pad) / (n - 1);
+    var pts = [], lastY = null;
+    for (var i = 0; i < n; i++) { if (v[i] == null) continue; var x = pad + i * step; var y = h - pad - ((v[i] - min) / range) * (h - 2 * pad); pts.push(x.toFixed(1) + ',' + y.toFixed(1)); lastY = y; }
+    var col = real[real.length - 1] >= real[0] ? '#0f7a3d' : 'var(--burgundy)';
+    var lastX = pad + (n - 1) * step;
+    return '<svg class="spark" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" style="display:block;margin:5px 0 2px;overflow:visible;">' +
+      '<polyline points="' + pts.join(' ') + '" fill="none" stroke="' + col + '" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>' +
+      (lastY != null ? '<circle cx="' + lastX.toFixed(1) + '" cy="' + lastY.toFixed(1) + '" r="2.1" fill="' + col + '"/>' : '') + '</svg>';
+  }
+  // Last-12-months series for one company, oldest→newest, mapped by fn(period).
+  function kpiSeries(fn) {
+    return periodsFor(currentRealm).slice().sort(function (a, b) { return (a.period || '').localeCompare(b.period || ''); }).slice(-12).map(fn);
+  }
   function loadQboKpis() {
     if (!currentRealm) return;
+    var card = document.getElementById('qboKpis');
+    if (!isAdmin) { if (card) card.style.display = 'none'; return; } // KPIs are admin-only for now
+    if (card) card.style.display = '';
     var rg = qboRange();
     var tiles = document.getElementById('qboKpiTiles');
     tiles.innerHTML = '<div class="kpi"><div class="label">Loading…</div></div>';
@@ -1060,14 +1092,21 @@
       .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
       .then(function (resp) {
         var k = resp.kpis || {};
+        // Monthly trend series from the synced history (oldest→newest).
+        var burn = function (p) { return ((p.cogsCents || 0) + (p.expensesCents || 0)) / 100; };
+        var sMonths = kpiSeries(function (p) { var b = burn(p); return (p.cashCents != null && b > 0) ? (p.cashCents / 100) / b : null; });
+        var sCR = kpiSeries(function (p) { return p.currentLiabilitiesCents ? (p.currentAssetsCents / p.currentLiabilitiesCents) : null; });
+        var sCash = kpiSeries(function (p) { return p.cashCents != null ? p.cashCents / 100 : null; });
+        var sWC = kpiSeries(function (p) { return (p.currentAssetsCents != null && p.currentLiabilitiesCents != null) ? (p.currentAssetsCents - p.currentLiabilitiesCents) / 100 : null; });
+        var sMargin = kpiSeries(function (p) { return p.revenueCents ? (netOf(p) / p.revenueCents) * 100 : null; });
         tiles.innerHTML =
-          kpiTile('Months of cash', k.monthsOfCash == null ? '—' : k.monthsOfCash, 'rounded down', (k.monthsOfCash != null && k.monthsOfCash < 3 ? 'down' : 'up')) +
-          kpiTile('Days of cash', k.daysOfCash == null ? '—' : k.daysOfCash, '', '') +
-          kpiTile('Current ratio', k.currentRatio == null ? '—' : k.currentRatio.toFixed(2), k.currentRatio == null ? 'no current liabilities' : 'assets ÷ liabilities', (k.currentRatio != null && k.currentRatio < 1 ? 'down' : 'up')) +
-          kpiTile('Cash on hand', money2(k.cash), '', '') +
-          kpiTile('Working capital', money2(k.workingCapital), 'current assets − liabilities', (k.workingCapital < 0 ? 'down' : 'up')) +
-          kpiTile('Net margin', k.netMargin == null ? '—' : (k.netMargin * 100).toFixed(1) + '%', 'trailing ' + resp.burnMonths + ' mo', (k.netMargin != null && k.netMargin < 0 ? 'down' : 'up'));
-        document.getElementById('qboKpiNote').textContent = 'As of ' + resp.asOf + ' · ' + resp.method + ' basis · monthly burn ' + money2(k.monthlyBurn) + ' (trailing ' + resp.burnMonths + ' mo). Months of cash = cash ÷ monthly burn, rounded down.';
+          kpiTile('Months of cash', k.monthsOfCash == null ? '—' : k.monthsOfCash, 'rounded down', (k.monthsOfCash != null && k.monthsOfCash < 3 ? 'down' : 'up'), sparkline(sMonths)) +
+          kpiTile('Days of cash', k.daysOfCash == null ? '—' : k.daysOfCash, '', '', sparkline(sMonths.map(function (m) { return m == null ? null : m * 30; }))) +
+          kpiTile('Current ratio', k.currentRatio == null ? '—' : k.currentRatio.toFixed(2), k.currentRatio == null ? 'no current liabilities' : 'assets ÷ liabilities', (k.currentRatio != null && k.currentRatio < 1 ? 'down' : 'up'), sparkline(sCR)) +
+          kpiTile('Cash on hand', money2(k.cash), '', '', sparkline(sCash)) +
+          kpiTile('Working capital', money2(k.workingCapital), 'current assets − liabilities', (k.workingCapital < 0 ? 'down' : 'up'), sparkline(sWC)) +
+          kpiTile('Net margin', k.netMargin == null ? '—' : (k.netMargin * 100).toFixed(1) + '%', 'trailing ' + resp.burnMonths + ' mo', (k.netMargin != null && k.netMargin < 0 ? 'down' : 'up'), sparkline(sMargin));
+        document.getElementById('qboKpiNote').textContent = 'As of ' + resp.asOf + ' · ' + resp.method + ' basis · trend = last 12 synced months · monthly burn ' + money2(k.monthlyBurn) + ' (trailing ' + resp.burnMonths + ' mo).';
       })
       .catch(function (e) { tiles.innerHTML = ''; document.getElementById('qboKpiNote').innerHTML = '<span style="color:var(--burgundy);">QuickBooks: ' + esc(e.message) + '</span>'; });
   }
@@ -1452,12 +1491,12 @@
   function showSection(sec) {
     hideAllSections();
     var reports = (sec === 'reports');
-    var fk = document.getElementById('finKpi'); if (fk) fk.style.display = reports ? '' : 'none';
+    var fk = document.getElementById('finKpi'); if (fk) fk.style.display = (reports && isAdmin) ? '' : 'none'; // KPIs admin-only
     var tbar = document.querySelector('.toolbar'); if (tbar) tbar.style.display = reports ? '' : 'none';
     var lst = document.querySelector('.list'); if (lst) lst.style.display = reports ? '' : 'none';
     if (!reports) { var p = document.getElementById('panel'); if (p) p.classList.remove('open'); }
     if (reports) {
-      var qk = document.getElementById('qboKpis'); if (qk) qk.style.display = '';
+      var qk = document.getElementById('qboKpis'); if (qk) qk.style.display = isAdmin ? '' : 'none';
       var qr = document.getElementById('qboReports'); if (qr) qr.style.display = '';
     } else if (sec === 'transactions') {
       var qw = document.getElementById('qboWrite'); if (qw) qw.style.display = '';
@@ -2681,7 +2720,7 @@
     var mgmt = atRoot && managementMode && canManage();
     var pan = document.getElementById('panel'); if (pan) pan.classList.remove('open'); // never leave the add-period panel stuck across views
     if (atRoot) {
-      var fk = document.getElementById('finKpi'); if (fk) fk.style.display = mgmt ? '' : 'none';
+      var fk = document.getElementById('finKpi'); if (fk) fk.style.display = (mgmt && isAdmin) ? '' : 'none'; // KPIs admin-only
       var tb = document.querySelector('.toolbar'); if (tb) tb.style.display = mgmt ? '' : 'none';
       var ls = document.querySelector('.list'); if (ls) ls.style.display = '';
     }
