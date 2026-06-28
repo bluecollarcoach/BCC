@@ -3240,6 +3240,48 @@ app.http('qbo-kpis', {
 });
 
 /**
+ * GET /api/integrations/qbo/companies/{realmId}/companyinfo
+ * The connected company's profile from QuickBooks (legal/display name, email,
+ * phone, website, address, fiscal-year end) — used to pre-fill Client info.
+ */
+app.http('qbo-companyinfo', {
+  methods: ['GET'], authLevel: 'anonymous', route: 'integrations/qbo/companies/{realmId}/companyinfo',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    const realmId = request.params.realmId;
+    try {
+      const c = container();
+      const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      if (!comp) return { status: 404, jsonBody: { ok: false, error: 'company not connected' } };
+      if (!(await isAppAdmin(p))) {
+        const who = String(p.userDetails || p.userId || '').toLowerCase();
+        const allow = (comp.allowedUserUpns || []).map(u => u.toLowerCase());
+        if (comp.enabled === false || (allow.length && allow.indexOf(who) < 0)) return { status: 403, jsonBody: { ok: false, error: 'no access to this company' } };
+      }
+      const fields = await getIntegrationFields('qbo');
+      const { accessToken, base } = await qboAccessForCompany(comp, fields);
+      const r = await fetch(base + '/v3/company/' + encodeURIComponent(realmId) + '/companyinfo/' + encodeURIComponent(realmId) + '?minorversion=70', { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
+      if (!r.ok) return { status: 502, jsonBody: { ok: false, error: 'QBO ' + r.status } };
+      const ci = (await r.json()).CompanyInfo || {};
+      const addr = ci.CompanyAddr || ci.CustomerCommunicationAddr || ci.LegalAddr || {};
+      const addressLine = [addr.Line1, addr.Line2, [addr.City, addr.CountrySubDivisionCode].filter(Boolean).join(', '), addr.PostalCode].filter(Boolean).join('\n');
+      const fyStart = parseInt(ci.FiscalYearStartMonth, 10);
+      const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+      const fiscalYearEnd = (fyStart >= 1 && fyStart <= 12) ? months[(fyStart + 10) % 12] : '';
+      return { jsonBody: { ok: true,
+        legalName: ci.LegalName || ci.CompanyName || '',
+        displayName: ci.CompanyName || '',
+        email: (ci.Email && ci.Email.Address) || '',
+        phone: (ci.PrimaryPhone && ci.PrimaryPhone.FreeFormNumber) || '',
+        website: (ci.WebAddr && ci.WebAddr.URI) || '',
+        address: addressLine,
+        fiscalYearEnd: fiscalYearEnd
+      } };
+    } catch (e) { context.error('qbo-companyinfo', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+
+/**
  * GET /api/integrations/qbo/cashflow
  * Firm-wide 90-day cash-flow projection across every company the caller can see.
  * For each company: current cash (Balance Sheet bank accounts) + open invoices

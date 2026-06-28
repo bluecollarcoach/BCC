@@ -1632,6 +1632,30 @@
       '</div><div style="margin-top:8px;font-size:12px;color:var(--muted);" id="ci_status"></div>';
     if (!d.legalName) { var co = companyName(currentRealm); var le = document.getElementById('ci_legalName'); if (le && co && co !== '—') le.value = co; }
     body.querySelectorAll('input,textarea').forEach(function (el) { el.addEventListener('input', scheduleInfoSave); });
+    fillInfoFromQbo(d);
+  }
+  // Pre-fill BLANK Client-info fields from QuickBooks company profile. Never
+  // overwrites a value already there (manual or pulled from CRM) — QBO only
+  // fills the gaps. Saves the filled values so they persist.
+  function fillInfoFromQbo(d) {
+    if (d.legalName && d.email && d.phone && d.address && d.website) return; // nothing to fill
+    var realmAt = currentRealm;
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/companyinfo', { credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (ci) {
+        if (!ci || !ci.ok || currentRealm !== realmAt) return;
+        var filled = false;
+        function setIf(id, val) { var el = document.getElementById(id); if (el && !el.value && val) { el.value = val; filled = true; } }
+        setIf('ci_legalName', ci.legalName || ci.displayName);
+        setIf('ci_dba', ci.displayName);
+        setIf('ci_email', ci.email);
+        setIf('ci_phone', ci.phone);
+        setIf('ci_website', ci.website);
+        setIf('ci_address', ci.address);
+        setIf('ci_fiscalYearEnd', ci.fiscalYearEnd);
+        if (filled) { saveInfo(); var s = document.getElementById('ci_status'); if (s) s.textContent = 'Blank fields filled from QuickBooks'; }
+      })
+      .catch(function () {});
   }
   function scheduleInfoSave() { var s = document.getElementById('ci_status'); if (s) s.textContent = 'Saving…'; if (_infoTimer) clearTimeout(_infoTimer); _infoTimer = setTimeout(saveInfo, 500); }
   function saveInfo() {
@@ -2663,7 +2687,8 @@
     }
     var cb = document.getElementById('connectBtn'); if (cb) cb.style.display = mgmt ? '' : 'none'; // adding companies lives in the Management dashboard, not the main work queue
     var sb = document.getElementById('syncBtn'); if (sb) sb.style.display = (mgmt || currentRealm) ? '' : 'none'; // Sync is useful per-client too
-    ['newBtn', 'printBtn', 'cashflowBtn'].forEach(function (id) { var b = document.getElementById(id); if (b) b.style.display = mgmt ? '' : 'none'; }); // manual entry + print + cash flow are management-only
+    ['newBtn', 'printBtn'].forEach(function (id) { var b = document.getElementById(id); if (b) b.style.display = mgmt ? '' : 'none'; }); // manual entry + print are management-only
+    var cf = document.getElementById('cashflowBtn'); if (cf) cf.style.display = (atRoot && canManage()) ? '' : 'none'; // cash flow: any manager, from the work queue or management view
     var mb = document.getElementById('mgmtBtn');
     if (mb) { mb.style.display = (atRoot && canManage()) ? '' : 'none'; mb.textContent = managementMode ? '← Working view' : 'Management dashboard →'; }
     var sub = document.getElementById('subline'); if (sub) sub.textContent = currentRealm ? '' : (mgmt ? 'Firm-wide snapshot across all companies.' : 'Your client work queue — open a company to do the books.');
