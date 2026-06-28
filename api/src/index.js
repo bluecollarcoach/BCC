@@ -1873,15 +1873,17 @@ app.http('integrations-qbo-sync', {
           if (i === 0) { diag.firstStatus = r.status; if (!r.ok) diag.firstBody = (await r.text().catch(() => '')).slice(0, 400); }
           if (!r.ok) continue;
           const j = await r.json().catch(() => null);
-          let income = 0, expense = 0;
+          // Parse the P&L by EXACT QBO group (Income / COGS / Expenses / NetIncome).
+          // The old loose /income/i regex also matched the computed NetIncome and
+          // NetOperatingIncome rows, double-counting them and inflating revenue
+          // (even going negative). This mirrors the qbo-kpis parser.
+          let income = 0, cogs = 0, opex = 0, net = 0;
           try {
-            const rows = (j && j.Rows && j.Rows.Row) || [];
-            for (const row of rows) {
-              const group = row.group || row.type || '';
-              const summary = row.Summary && row.Summary.ColData && row.Summary.ColData[1] ? parseFloat(row.Summary.ColData[1].value || '0') : 0;
-              if (/income/i.test(group)) income += summary;
-              else if (/expense/i.test(group) || /cogs/i.test(group)) expense += summary;
-            }
+            const pl = flattenQboReport(j);
+            income = (findByGroup(pl, 'Income') ?? findByLabel(pl, /total income/i)) || 0;
+            cogs   = (findByGroup(pl, 'COGS') ?? findByLabel(pl, /total cost of goods sold|total cogs/i)) || 0;
+            opex   = (findByGroup(pl, 'Expenses') ?? findByLabel(pl, /total expenses/i)) || 0;
+            net    = (findByGroup(pl, 'NetIncome') ?? (income - cogs - opex)) || 0;
           } catch (_) {}
           const periodKey = startStr.slice(0, 7);
           periods.push({
@@ -1890,8 +1892,9 @@ app.http('integrations-qbo-sync', {
             realmId: comp.realmId, companyName: comp.companyName,
             period: periodKey,
             revenueCents: Math.round(income * 100),
-            expensesCents: Math.round(expense * 100),
-            netCents: Math.round((income - expense) * 100),
+            cogsCents: Math.round(cogs * 100),
+            expensesCents: Math.round(opex * 100),
+            netCents: Math.round(net * 100),
             source: 'qbo', syncedAt: new Date().toISOString()
           });
         }
@@ -2682,7 +2685,7 @@ app.http('qbo-companies', {
         parameters: [{ name: '@t', value: BCC_TENANT_ID }]
       }).fetchAll();
       const { resources: periods } = await c.items.query({
-        query: 'SELECT c.realmId, c.period, c.revenueCents, c.expensesCents, c.netCents FROM c WHERE c.tenantId=@t AND c.docType="financial-period"',
+        query: 'SELECT c.realmId, c.period, c.revenueCents, c.cogsCents, c.expensesCents, c.netCents FROM c WHERE c.tenantId=@t AND c.docType="financial-period"',
         parameters: [{ name: '@t', value: BCC_TENANT_ID }]
       }).fetchAll();
       const latestByRealm = {};
