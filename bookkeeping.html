@@ -300,6 +300,7 @@
       <button class="btn btn-ghost" id="mgmtBtn" type="button" style="display:none;">Management dashboard →</button>
       <button class="btn btn-primary" id="connectBtn" type="button">+ Connect a company</button>
       <button class="btn btn-ghost" id="syncBtn" type="button">Sync all from QBO</button>
+      <button class="btn btn-ghost" id="cashflowBtn" type="button">📈 90-day cash flow</button>
       <button class="btn btn-ghost" id="newBtn" type="button">+ Manual entry</button>
       <button class="btn btn-ghost" id="printBtn" type="button">Print report</button>
     </div>
@@ -917,6 +918,7 @@
 
   document.getElementById('printBtn').addEventListener('click', function () { window.print(); });
   document.getElementById('mgmtBtn').addEventListener('click', function () { if (!canManage()) return; managementMode = !managementMode; accessEditRealm = null; renderAll(); });
+  document.getElementById('cashflowBtn').addEventListener('click', openCashflow);
   document.getElementById('yearFilter').addEventListener('change', renderTable);
   document.getElementById('companyFilter').addEventListener('change', function () { currentRealm = this.value; renderAll(); });
 
@@ -924,6 +926,52 @@
   var qboActiveReport = null;
   var _qboReportRealm = null; // which client the report output currently belongs to
   function money2(v) { var n = parseFloat(String(v == null ? '' : v).replace(/,/g, '')); return isNaN(n) ? (v == null ? '' : esc(v)) : ((n < 0 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString()); }
+
+  /* ===== Firm-wide 90-day cash flow projection ===== */
+  function openCashflow() {
+    var ov = document.createElement('div'); ov.id = 'cf_modal'; ov.className = 'em-modal-ov';
+    ov.innerHTML = '<div class="em-modal" style="max-width:1040px;"><div class="em-modal-head"><div style="flex:1;min-width:0;"><div class="em-modal-subj">📈 90-day cash flow projection</div><div class="em-modal-from">Current cash + expected collections (open A/R) − scheduled payments (open A/P), by due date — across every company you can access.</div></div><button class="btn btn-ghost" id="cf_close" type="button" style="font-size:18px;min-height:34px;width:38px;">×</button></div>' +
+      '<div class="em-modal-body" id="cf_body"><div style="color:var(--muted);padding:24px;">Crunching QuickBooks for every company — this can take a moment…</div></div></div>';
+    document.body.appendChild(ov);
+    function cfClose() { var m = document.getElementById('cf_modal'); if (m) m.remove(); document.removeEventListener('keydown', cfKey); }
+    function cfKey(e) { if (e.key === 'Escape') cfClose(); }
+    document.getElementById('cf_close').onclick = cfClose;
+    ov.addEventListener('click', function (e) { if (e.target === ov) cfClose(); });
+    document.addEventListener('keydown', cfKey);
+    fetch('/api/integrations/qbo/cashflow', { credentials: 'include' })
+      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+      .then(function (resp) {
+        var body = document.getElementById('cf_body'); if (!body) return;
+        if (!resp || !resp.ok) { body.innerHTML = '<div style="color:var(--burgundy);padding:24px;">Could not load: ' + esc((resp && resp.error) || 'error') + '</div>'; return; }
+        var comps = resp.companies || [];
+        if (!comps.length) { body.innerHTML = '<div style="color:var(--muted);padding:24px;">No connected companies to project.</div>'; return; }
+        var proj = function (v) { return '<strong style="color:' + (v < 0 ? 'var(--burgundy)' : 'var(--green)') + ';">' + money2(v) + '</strong>'; };
+        var rows = comps.map(function (c) {
+          if (c.error) return '<tr><td><strong>' + esc(c.companyName) + '</strong></td><td colspan="6" style="color:var(--burgundy);font-size:12px;">' + esc(c.error) + '</td></tr>';
+          return '<tr>' +
+            '<td><strong>' + esc(c.companyName) + '</strong></td>' +
+            '<td class="num">' + money2(c.cash) + '</td>' +
+            '<td class="num" style="color:#0f7a3d;">+' + money2(c.in90) + '</td>' +
+            '<td class="num" style="color:var(--burgundy);">−' + money2(c.out90) + '</td>' +
+            '<td class="num">' + proj(c.projected[0]) + '</td>' +
+            '<td class="num">' + proj(c.projected[1]) + '</td>' +
+            '<td class="num">' + proj(c.projected[2]) + '</td>' +
+          '</tr>';
+        }).join('');
+        var t = resp.totals || {};
+        var totalRow = '<tr style="border-top:2px solid var(--chrome-mute);">' +
+          '<td><strong>All companies</strong></td>' +
+          '<td class="num"><strong>' + money2(t.cash) + '</strong></td>' +
+          '<td class="num" style="color:#0f7a3d;"><strong>+' + money2(t.in90) + '</strong></td>' +
+          '<td class="num" style="color:var(--burgundy);"><strong>−' + money2(t.out90) + '</strong></td>' +
+          '<td></td><td></td><td class="num">' + proj(t.projected90) + '</td></tr>';
+        body.innerHTML = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;"><thead><tr style="text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);">' +
+          '<th style="padding:6px 8px;">Company</th><th class="num" style="padding:6px 8px;">Cash now</th><th class="num" style="padding:6px 8px;">In (90d)</th><th class="num" style="padding:6px 8px;">Out (90d)</th><th class="num" style="padding:6px 8px;">Proj. 30d</th><th class="num" style="padding:6px 8px;">Proj. 60d</th><th class="num" style="padding:6px 8px;">Proj. 90d</th></tr></thead>' +
+          '<tbody>' + rows + totalRow + '</tbody></table></div>' +
+          '<div style="font-size:12px;color:var(--muted);margin-top:14px;line-height:1.5;">Projection = current bank cash, plus open invoices (expected collections) minus open bills (scheduled payments), bucketed by due date over the next 90 days; overdue items fall in the first 30-day bucket. It reflects existing receivables &amp; payables only — not future sales, payroll, or recurring costs. As of ' + esc(resp.asOf || '') + '.</div>';
+      })
+      .catch(function () { var body = document.getElementById('cf_body'); if (body) body.innerHTML = '<div style="color:var(--burgundy);padding:24px;">Could not load the projection.</div>'; });
+  }
   function qboRange() {
     var now = new Date();
     function iso(d) { return d.toISOString().slice(0, 10); }
@@ -2577,7 +2625,7 @@
     }
     var cb = document.getElementById('connectBtn'); if (cb) cb.style.display = mgmt ? '' : 'none'; // adding companies lives in the Management dashboard, not the main work queue
     var sb = document.getElementById('syncBtn'); if (sb) sb.style.display = (mgmt || currentRealm) ? '' : 'none'; // Sync is useful per-client too
-    ['newBtn', 'printBtn'].forEach(function (id) { var b = document.getElementById(id); if (b) b.style.display = mgmt ? '' : 'none'; }); // manual entry + print are management-only
+    ['newBtn', 'printBtn', 'cashflowBtn'].forEach(function (id) { var b = document.getElementById(id); if (b) b.style.display = mgmt ? '' : 'none'; }); // manual entry + print + cash flow are management-only
     var mb = document.getElementById('mgmtBtn');
     if (mb) { mb.style.display = (atRoot && canManage()) ? '' : 'none'; mb.textContent = managementMode ? '← Working view' : 'Management dashboard →'; }
     var sub = document.getElementById('subline'); if (sub) sub.textContent = currentRealm ? '' : (mgmt ? 'Firm-wide snapshot across all companies.' : 'Your client work queue — open a company to do the books.');

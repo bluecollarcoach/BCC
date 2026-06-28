@@ -3233,6 +3233,84 @@ app.http('qbo-kpis', {
   })
 });
 
+/**
+ * GET /api/integrations/qbo/cashflow
+ * Firm-wide 90-day cash-flow projection across every company the caller can see.
+ * For each company: current cash (Balance Sheet bank accounts) + open invoices
+ * (A/R, expected collections) − open bills (A/P, scheduled payments), bucketed by
+ * due date into 0–30 / 31–60 / 61–90 days, with a running projected cash balance.
+ * Access-scoped exactly like the sync (admin = all; others = enabled + allow-list).
+ */
+app.http('qbo-cashflow', {
+  methods: ['GET'], authLevel: 'anonymous', route: 'integrations/qbo/cashflow',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    try {
+      const c = container();
+      const { resources: comps } = await c.items.query({ query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="qbo-company" ORDER BY c.companyName', parameters: [{ name: '@t', value: BCC_TENANT_ID }] }).fetchAll();
+      const admin = await isAppAdmin(p);
+      const who = String(p.userDetails || p.userId || '').toLowerCase();
+      const visible = comps.filter(co => {
+        if (admin) return true;
+        if (co.enabled === false) return false;
+        const allow = (co.allowedUserUpns || []).map(u => String(u).toLowerCase());
+        return !allow.length || allow.indexOf(who) >= 0;
+      });
+      const fields = await getIntegrationFields('qbo');
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      const dayMs = 86400000;
+      const bucketOf = (dateStr) => {
+        if (!dateStr) return 0; // no due date → treat as due now
+        const d = new Date(String(dateStr) + 'T00:00:00');
+        const days = Math.round((d - today) / dayMs);
+        if (days <= 30) return 0; if (days <= 60) return 1; if (days <= 90) return 2; return 3;
+      };
+      const companies = await Promise.all(visible.map(async (comp) => {
+        try {
+          const { accessToken, base } = await qboAccessForCompany(comp, fields);
+          const apiGet = async (path) => {
+            const u = base + '/v3/company/' + encodeURIComponent(comp.realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70';
+            const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
+            if (!r.ok) throw new Error('QBO ' + r.status);
+            return r.json();
+          };
+          const queryAll = async (sql) => {
+            let all = [], start = 1;
+            for (;;) {
+              const j = await apiGet('/query?query=' + encodeURIComponent(sql + ' STARTPOSITION ' + start + ' MAXRESULTS 1000'));
+              const qr = j.QueryResponse || {}; const k = Object.keys(qr).find(x => Array.isArray(qr[x]));
+              const page = k ? qr[k] : []; all = all.concat(page);
+              if (page.length < 1000 || start > 20000) break; // page until short page (or a 20k hard cap)
+              start += 1000;
+            }
+            return all;
+          };
+          const bs = flattenQboReport(await apiGet('/reports/BalanceSheet?accounting_method=Accrual'));
+          const cash = (findByLabel(bs, /total bank account/i) ?? findByLabel(bs, /bank account/i) ?? findByLabel(bs, /checking|savings|cash on hand|^cash$/i)) || 0;
+          const invoices = await queryAll("SELECT Id, DueDate, TxnDate, Balance FROM Invoice WHERE Balance > '0'");
+          const bills = await queryAll("SELECT Id, DueDate, TxnDate, Balance FROM Bill WHERE Balance > '0'");
+          const inflow = [0, 0, 0], outflow = [0, 0, 0]; let inLater = 0, outLater = 0;
+          invoices.forEach(iv => { const b = bucketOf(iv.DueDate || iv.TxnDate); const amt = Number(iv.Balance) || 0; if (b < 3) inflow[b] += amt; else inLater += amt; });
+          bills.forEach(bl => { const b = bucketOf(bl.DueDate || bl.TxnDate); const amt = Number(bl.Balance) || 0; if (b < 3) outflow[b] += amt; else outLater += amt; });
+          const projected = []; let run = cash;
+          for (let i = 0; i < 3; i++) { run = run + inflow[i] - outflow[i]; projected.push(run); }
+          const round = n => Math.round(n * 100) / 100;
+          return {
+            realmId: comp.realmId, companyName: comp.companyName,
+            cash: round(cash), inflow: inflow.map(round), outflow: outflow.map(round), projected: projected.map(round),
+            in90: round(inflow[0] + inflow[1] + inflow[2]), out90: round(outflow[0] + outflow[1] + outflow[2]),
+            projected90: round(projected[2]), net90: round(projected[2] - cash), inLater: round(inLater), outLater: round(outLater)
+          };
+        } catch (e) { return { realmId: comp.realmId, companyName: comp.companyName, error: String(e && e.message || e).slice(0, 140) }; }
+      }));
+      const ok = companies.filter(x => !x.error);
+      const totals = ok.reduce((t, r) => ({ cash: t.cash + r.cash, in90: t.in90 + r.in90, out90: t.out90 + r.out90, projected90: t.projected90 + r.projected90 }), { cash: 0, in90: 0, out90: 0, projected90: 0 });
+      Object.keys(totals).forEach(k => totals[k] = Math.round(totals[k] * 100) / 100);
+      return { jsonBody: { ok: true, asOf: today.toISOString().slice(0, 10), buckets: ['Overdue + 0–30 days', '31–60 days', '61–90 days'], companies, totals } };
+    } catch (e) { context.error('qbo-cashflow', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+
 /* ============ Marketing OAuth: Google Ads, LinkedIn, Meta, Mailchimp ============
  *
  * Same pattern as QBO above (UI-pasted clientId / clientSecret on the
