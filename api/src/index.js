@@ -2802,7 +2802,13 @@ function flattenQboReport(rep) {
 // "TotalCurrentAssets"), tolerant of label fallbacks.
 function reportNum(s) { const n = parseFloat(String(s == null ? '' : s).replace(/,/g, '')); return isNaN(n) ? 0 : n; }
 function findByGroup(flat, group) {
-  const r = (flat.rows || []).find(x => x.group === group && (x.type === 'summary' || x.type === 'data'));
+  // flattenQboReport tags every sub-account row with its section's group, so the
+  // FIRST match is a sub-line (e.g. "Labor Income"), not the section total. The
+  // section total is the LAST summary row for the group (nested sub-totals are
+  // pushed earlier during the walk). Fall back to the last data row.
+  const rows = (flat.rows || []).filter(x => x.group === group);
+  const sums = rows.filter(x => x.type === 'summary');
+  const r = sums.length ? sums[sums.length - 1] : rows.filter(x => x.type === 'data').slice(-1)[0];
   return r ? reportNum((r.cells || [])[r.cells.length - 1]) : null;
 }
 function findByLabel(flat, rx) {

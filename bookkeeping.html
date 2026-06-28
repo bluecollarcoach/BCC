@@ -838,8 +838,8 @@
       var rev = p.revenueCents || 0, cogs = p.cogsCents || 0, gp = rev - cogs, net = netOf(p);
       var expPct = pctOf(p.expensesCents || 0, rev), netPct = pctOf(net, rev);
       var syncedAt = p.syncedAt ? new Date(p.syncedAt).toLocaleDateString([], { month:'short', day:'numeric', year:'numeric' }) : '—';
-      return '<tr data-id="' + esc(p.id) + '">' +
-        '<td data-label="Period">' + esc(p.period || '—') + '</td>' +
+      return '<tr data-id="' + esc(p.id) + '" data-period="' + esc(p.period || '') + '" style="cursor:pointer;" title="View the Profit &amp; Loss detail">' +
+        '<td data-label="Period"><span style="color:var(--gold-deep);font-weight:600;">' + esc(p.period || '—') + '</span></td>' +
         '<td data-label="Revenue" class="num">' + dollars(rev) + '</td>' +
         '<td data-label="COGS" class="num">' + (p.cogsCents != null ? dollars(cogs) : '—') + '</td>' +
         '<td data-label="Gross profit" class="num">' + dollars(gp) + '</td>' +
@@ -854,7 +854,8 @@
     }).join('');
 
     rowsEl.querySelectorAll('button[data-act=del]').forEach(function (b) {
-      b.addEventListener('click', function () {
+      b.addEventListener('click', function (ev) {
+        ev.stopPropagation();
         var tr = b.closest('tr'); if (!tr) return;
         if (!confirm('Delete this period?')) return;
         deletePeriod(tr.dataset.id);
@@ -862,6 +863,43 @@
         renderAll();
       });
     });
+    rowsEl.querySelectorAll('tr[data-period]').forEach(function (tr) {
+      tr.addEventListener('click', function (ev) { if (ev.target.closest('button')) return; openPeriodPnl(tr.dataset.id, tr.dataset.period); });
+    });
+  }
+  // Click a period row → full Profit & Loss detail. QBO periods pull live from
+  // QuickBooks; manual periods show the entered figures.
+  function openPeriodPnl(id, period) {
+    var p = periodsFor(currentRealm).filter(function (x) { return x.id === id; })[0] || {};
+    var ov = document.createElement('div'); ov.id = 'pnl_modal'; ov.className = 'em-modal-ov';
+    ov.innerHTML = '<div class="em-modal" style="max-width:720px;"><div class="em-modal-head"><div style="flex:1;min-width:0;"><div class="em-modal-subj">Profit &amp; Loss — ' + esc(period || '') + '</div><div class="em-modal-from">' + esc(companyName(currentRealm)) + ' · accrual basis</div></div><button class="btn btn-ghost" id="pnl_close" type="button" style="font-size:18px;min-height:34px;width:38px;">×</button></div>' +
+      '<div class="em-modal-body" id="pnl_body"><div style="color:var(--muted);padding:20px;">Loading from QuickBooks…</div></div></div>';
+    document.body.appendChild(ov);
+    function close() { var x = document.getElementById('pnl_modal'); if (x) x.remove(); document.removeEventListener('keydown', key); }
+    function key(e) { if (e.key === 'Escape') close(); }
+    document.getElementById('pnl_close').onclick = close;
+    ov.addEventListener('click', function (e) { if (e.target === ov) close(); });
+    document.addEventListener('keydown', key);
+    var body = document.getElementById('pnl_body');
+    if (p.source !== 'qbo') {
+      body.innerHTML = '<div style="padding:6px 4px;"><div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Manually entered period — no QuickBooks detail.</div>' +
+        '<table><tbody>' +
+        '<tr><td>Revenue</td><td class="num">' + dollars(p.revenueCents) + '</td></tr>' +
+        '<tr><td>COGS</td><td class="num">' + (p.cogsCents != null ? dollars(p.cogsCents) : '—') + '</td></tr>' +
+        '<tr><td><strong>Gross profit</strong></td><td class="num"><strong>' + dollars((p.revenueCents || 0) - (p.cogsCents || 0)) + '</strong></td></tr>' +
+        '<tr><td>Operating expenses</td><td class="num">' + dollars(p.expensesCents) + '</td></tr>' +
+        '<tr><td><strong>Net</strong></td><td class="num"><strong>' + dollars(netOf(p)) + '</strong></td></tr>' +
+        '</tbody></table></div>';
+      return;
+    }
+    if (!period) { body.innerHTML = '<div style="color:var(--burgundy);padding:20px;">Missing period.</div>'; return; }
+    var y = period.slice(0, 4), m = +period.slice(5, 7);
+    var from = period + '-01';
+    var to = period + '-' + String(new Date(+y, m, 0).getDate()).padStart(2, '0');
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/report?type=pl&method=accrual&from=' + from + '&to=' + to, { credentials: 'include' })
+      .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
+      .then(function (resp) { var b = document.getElementById('pnl_body'); if (b) b.innerHTML = renderReport(resp); })
+      .catch(function (e) { var b = document.getElementById('pnl_body'); if (b) b.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:14px;font-size:13px;">QuickBooks: ' + esc(e.message) + '</div>'; });
   }
 
   /* ===== Add panel ===== */
