@@ -229,6 +229,16 @@
   .fs-folder:hover { color:#2f6fd6; }
   @media (max-width:680px){ .fs-head { flex-direction:column; } }
 
+  /* P&L detail popup + transaction drill — clean tabular layout. */
+  #pnl_body table { width:100%; border-collapse:collapse; font-size:13px; }
+  #pnl_body thead th { text-align:left; font-size:10.5px; text-transform:uppercase; letter-spacing:0.5px; color:var(--muted); border-bottom:1px solid var(--chrome-mute); padding:7px 8px; position:sticky; top:0; background:#fff; z-index:1; }
+  #pnl_body th.num, #pnl_body td.num { text-align:right; white-space:nowrap; }
+  #pnl_body tbody td { padding:6px 8px; border-bottom:1px solid var(--chrome); vertical-align:top; }
+  #pnl_body tbody tr:last-child td { border-bottom:none; }
+  .txn-detail tbody tr:hover { background:var(--chrome); }
+  .txn-detail .txn-total td { border-top:2px solid var(--chrome-mute); border-bottom:none; font-weight:700; background:#faf8f4; }
+  .pnl-drill-head { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:10px; padding-bottom:9px; border-bottom:1px solid var(--chrome); }
+
   /* Sparkline hover tooltip + highlighted band. */
   .spark-tip { position:fixed; z-index:300; pointer-events:none; display:none; background:#1a1a1a; color:#fff; font-size:11.5px; font-weight:600; padding:4px 9px; border-radius:6px; white-space:nowrap; box-shadow:0 4px 14px rgba(0,0,0,0.28); }
   .spark-hit:hover { fill:rgba(168,136,74,0.14); }
@@ -933,7 +943,7 @@
   function openPeriodPnl(id, period) {
     var p = periodsFor(currentRealm).filter(function (x) { return x.id === id; })[0] || {};
     var ov = document.createElement('div'); ov.id = 'pnl_modal'; ov.className = 'em-modal-ov';
-    ov.innerHTML = '<div class="em-modal" style="max-width:720px;"><div class="em-modal-head"><div style="flex:1;min-width:0;"><div class="em-modal-subj">Profit &amp; Loss — ' + esc(period || '') + '</div><div class="em-modal-from">' + esc(companyName(currentRealm)) + ' · accrual basis</div></div><button class="btn btn-ghost" id="pnl_close" type="button" style="font-size:18px;min-height:34px;width:38px;">×</button></div>' +
+    ov.innerHTML = '<div class="em-modal" style="max-width:880px;"><div class="em-modal-head"><div style="flex:1;min-width:0;"><div class="em-modal-subj">Profit &amp; Loss — ' + esc(period || '') + '</div><div class="em-modal-from">' + esc(companyName(currentRealm)) + ' · accrual basis</div></div><button class="btn btn-ghost" id="pnl_close" type="button" style="font-size:18px;min-height:34px;width:38px;">×</button></div>' +
       '<div class="em-modal-body" id="pnl_body"><div style="color:var(--muted);padding:20px;">Loading from QuickBooks…</div></div></div>';
     document.body.appendChild(ov);
     function close() { var x = document.getElementById('pnl_modal'); if (x) x.remove(); document.removeEventListener('keydown', key); }
@@ -968,16 +978,34 @@
     }
     function drill(acctId, acctName) {
       var b = document.getElementById('pnl_body'); if (!b) return; b.innerHTML = '<div style="color:var(--muted);padding:20px;">Loading ' + esc(acctName) + ' detail…</div>';
-      fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/report?type=transactions&from=' + from + '&to=' + to + '&account=' + encodeURIComponent(acctId), { credentials: 'include' })
+      fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/report?type=transactions&method=accrual&from=' + from + '&to=' + to + '&account=' + encodeURIComponent(acctId), { credentials: 'include' })
         .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
         .then(function (resp) {
           var bd = document.getElementById('pnl_body'); if (!bd || currentRealm !== realmAt) return;
-          bd.innerHTML = '<div style="margin-bottom:10px;"><button class="btn btn-ghost" id="pnl_back" type="button" style="font-size:12px;">← Back to P&amp;L</button> <strong style="margin-left:8px;">' + esc(acctName) + '</strong> <span style="color:var(--muted);font-size:12px;">· transactions ' + esc(from) + ' → ' + esc(to) + '</span></div>' + renderReport(resp);
+          bd.innerHTML = '<div class="pnl-drill-head"><button class="btn btn-ghost" id="pnl_back" type="button" style="font-size:12px;">← Back to P&amp;L</button> <strong style="margin-left:6px;">' + esc(acctName) + '</strong> <span style="color:var(--muted);font-size:12px;">· ' + esc(from) + ' → ' + esc(to) + '</span></div>' + renderTxnDetail(resp);
           var bk = document.getElementById('pnl_back'); if (bk) bk.onclick = showPnl;
         })
         .catch(function (e) { fail(document.getElementById('pnl_body'), e); });
     }
     showPnl();
+  }
+  // Clean transaction-detail table for the P&L drill (only the relevant columns).
+  function renderTxnDetail(resp) {
+    var d = (resp && resp.data) || {};
+    var cols = d.columns || [];
+    function ci(rx) { for (var i = 0; i < cols.length; i++) { if (rx.test(String(cols[i] || ''))) return i; } return -1; }
+    var iType = ci(/transaction type|^type$/i), iName = ci(/^name$/i), iMemo = ci(/memo|description/i), iAmt = ci(/amount/i);
+    var rows = (d.rows || []).filter(function (r) { return r.type === 'data'; });
+    if (!rows.length) return '<div style="color:var(--muted);padding:16px 4px;">No transactions for this account in the period.</div>';
+    var total = 0;
+    var body = rows.map(function (r) {
+      var c = r.cells || [], cell = function (idx) { return idx > 0 ? (c[idx - 1] || '') : ''; };
+      var amt = iAmt > 0 ? c[iAmt - 1] : '';
+      var amtN = parseFloat(String(amt).replace(/,/g, '')); if (!isNaN(amtN)) total += amtN;
+      return '<tr><td style="white-space:nowrap;">' + esc(r.label || '') + '</td><td>' + esc(cell(iType)) + '</td><td>' + esc(cell(iName)) + '</td><td style="color:var(--muted);">' + esc(cell(iMemo)) + '</td><td class="num">' + (amt === '' || amt == null ? '' : money2(amt)) + '</td></tr>';
+    }).join('');
+    return '<table class="txn-detail"><thead><tr><th>Date</th><th>Type</th><th>Name</th><th>Memo</th><th class="num">Amount</th></tr></thead><tbody>' + body +
+      '<tr class="txn-total"><td colspan="4" style="text-align:right;">Total · ' + rows.length + ' transaction' + (rows.length === 1 ? '' : 's') + '</td><td class="num">' + money2(total) + '</td></tr></tbody></table>';
   }
 
   /* ===== Add panel ===== */
@@ -1046,7 +1074,7 @@
   /* ===== Firm-wide 90-day cash flow projection ===== */
   function openCashflow() {
     var ov = document.createElement('div'); ov.id = 'cf_modal'; ov.className = 'em-modal-ov';
-    ov.innerHTML = '<div class="em-modal" style="max-width:1040px;"><div class="em-modal-head"><div style="flex:1;min-width:0;"><div class="em-modal-subj">📈 90-day cash flow projection</div><div class="em-modal-from">Current cash + expected collections (open A/R) − scheduled payments (open A/P), by due date — across every company you can access.</div></div><button class="btn btn-ghost" id="cf_close" type="button" style="font-size:18px;min-height:34px;width:38px;">×</button></div>' +
+    ov.innerHTML = '<div class="em-modal" style="max-width:1120px;"><div class="em-modal-head"><div style="flex:1;min-width:0;"><div class="em-modal-subj">📈 90-day cash flow projection</div><div class="em-modal-from">Operating run-rate (revenue − COGS − burn) + A/R−A/P timing, across every company you can access. Edit revenue, COGS %, or burn to model scenarios.</div></div><button class="btn btn-ghost" id="cf_close" type="button" style="font-size:18px;min-height:34px;width:38px;">×</button></div>' +
       '<div class="em-modal-body" id="cf_body"><div style="color:var(--muted);padding:24px;">Crunching QuickBooks for every company — this can take a moment…</div></div></div>';
     document.body.appendChild(ov);
     function cfClose() { var m = document.getElementById('cf_modal'); if (m) m.remove(); document.removeEventListener('keydown', cfKey); }
@@ -1059,32 +1087,63 @@
       .then(function (resp) {
         var body = document.getElementById('cf_body'); if (!body) return;
         if (!resp || !resp.ok) { body.innerHTML = '<div style="color:var(--burgundy);padding:24px;">Could not load: ' + esc((resp && resp.error) || 'error') + '</div>'; return; }
-        var comps = resp.companies || [];
-        if (!comps.length) { body.innerHTML = '<div style="color:var(--muted);padding:24px;">No connected companies to project.</div>'; return; }
-        var proj = function (v) { return '<strong style="color:' + (v < 0 ? 'var(--burgundy)' : 'var(--green)') + ';">' + money2(v) + '</strong>'; };
-        var rows = comps.map(function (c) {
-          if (c.error) return '<tr><td><strong>' + esc(c.companyName) + '</strong></td><td colspan="6" style="color:var(--burgundy);font-size:12px;">' + esc(c.error) + '</td></tr>';
-          return '<tr>' +
-            '<td><strong>' + esc(c.companyName) + '</strong></td>' +
+        var comps = (resp.companies || []).filter(function (c) { return !c.error; });
+        var errs = (resp.companies || []).filter(function (c) { return c.error; });
+        if (!comps.length && !errs.length) { body.innerHTML = '<div style="color:var(--muted);padding:24px;">No connected companies to project.</div>'; return; }
+        // Editable run-rate assumptions per company (defaults from synced history).
+        var st = comps.map(function (c) { return { revenue: c.avgRevenue || 0, cogsPct: Math.round((c.cogsRatio || 0) * 1000) / 10, burn: c.monthlyBurn || 0 }; });
+        function calc(c, s) {
+          var opNet = s.revenue * (1 - s.cogsPct / 100) - s.burn;
+          var inf = c.inflow || [0, 0, 0], outf = c.outflow || [0, 0, 0], p = [], run = c.cash || 0;
+          for (var i = 0; i < 3; i++) { run = run + (inf[i] || 0) - (outf[i] || 0) + opNet; p.push(run); }
+          return { opNet: opNet, proj: p };
+        }
+        var projCell = function (v) { return '<strong style="color:' + (v < 0 ? 'var(--burgundy)' : 'var(--green)') + ';">' + money2(v) + '</strong>'; };
+        var inp = function (i, f, v, suf) { return '<input data-i="' + i + '" data-f="' + f + '" value="' + v + '" inputmode="decimal" style="width:' + (suf === '%' ? '58' : '92') + 'px;text-align:right;font:inherit;font-size:12.5px;padding:4px 6px;border:1px solid var(--chrome-mute);border-radius:6px;background:#fff;" />' + (suf ? '<span style="color:var(--muted);font-size:11px;margin-left:2px;">' + suf + '</span>' : ''); };
+        function rowHtml(c, i) {
+          var s = st[i], r = calc(c, s);
+          return '<tr data-row="' + i + '">' +
+            '<td style="white-space:nowrap;"><strong>' + esc(c.companyName) + '</strong>' + (c.historyMonths < 3 ? ' <span style="color:var(--muted);font-size:10.5px;">(' + c.historyMonths + ' mo data)</span>' : '') + '</td>' +
             '<td class="num">' + money2(c.cash) + '</td>' +
+            '<td class="num">' + inp(i, 'revenue', s.revenue, '') + '</td>' +
+            '<td class="num">' + inp(i, 'cogsPct', s.cogsPct, '%') + '</td>' +
+            '<td class="num">' + inp(i, 'burn', s.burn, '') + '</td>' +
+            '<td class="num" id="cf_opnet_' + i + '">' + projCell(r.opNet) + '</td>' +
             '<td class="num" style="color:#0f7a3d;">+' + money2(c.in90) + '</td>' +
             '<td class="num" style="color:var(--burgundy);">−' + money2(c.out90) + '</td>' +
-            '<td class="num">' + proj(c.projected[0]) + '</td>' +
-            '<td class="num">' + proj(c.projected[1]) + '</td>' +
-            '<td class="num">' + proj(c.projected[2]) + '</td>' +
+            '<td class="num" id="cf_p0_' + i + '">' + projCell(r.proj[0]) + '</td>' +
+            '<td class="num" id="cf_p1_' + i + '">' + projCell(r.proj[1]) + '</td>' +
+            '<td class="num" id="cf_p2_' + i + '">' + projCell(r.proj[2]) + '</td>' +
           '</tr>';
-        }).join('');
-        var t = resp.totals || {};
-        var totalRow = '<tr style="border-top:2px solid var(--chrome-mute);">' +
-          '<td><strong>All companies</strong></td>' +
-          '<td class="num"><strong>' + money2(t.cash) + '</strong></td>' +
-          '<td class="num" style="color:#0f7a3d;"><strong>+' + money2(t.in90) + '</strong></td>' +
-          '<td class="num" style="color:var(--burgundy);"><strong>−' + money2(t.out90) + '</strong></td>' +
-          '<td></td><td></td><td class="num">' + proj(t.projected90) + '</td></tr>';
-        body.innerHTML = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;"><thead><tr style="text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);">' +
-          '<th style="padding:6px 8px;">Company</th><th class="num" style="padding:6px 8px;">Cash now</th><th class="num" style="padding:6px 8px;">In (90d)</th><th class="num" style="padding:6px 8px;">Out (90d)</th><th class="num" style="padding:6px 8px;">Proj. 30d</th><th class="num" style="padding:6px 8px;">Proj. 60d</th><th class="num" style="padding:6px 8px;">Proj. 90d</th></tr></thead>' +
-          '<tbody>' + rows + totalRow + '</tbody></table></div>' +
-          '<div style="font-size:12px;color:var(--muted);margin-top:14px;line-height:1.5;">Projection = current bank cash, plus open invoices (expected collections) minus open bills (scheduled payments), bucketed by due date over the next 90 days; overdue items fall in the first 30-day bucket. It reflects existing receivables &amp; payables only — not future sales, payroll, or recurring costs. As of ' + esc(resp.asOf || '') + '.</div>';
+        }
+        var rows = comps.map(rowHtml).join('') +
+          errs.map(function (c) { return '<tr><td><strong>' + esc(c.companyName) + '</strong></td><td colspan="10" style="color:var(--burgundy);font-size:12px;">' + esc(c.error) + '</td></tr>'; }).join('');
+        body.innerHTML = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;min-width:920px;"><thead><tr style="text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:0.6px;color:var(--muted);">' +
+          '<th style="padding:6px 8px;">Company</th><th class="num" style="padding:6px 8px;">Cash now</th><th class="num" style="padding:6px 8px;">Revenue/mo</th><th class="num" style="padding:6px 8px;">COGS</th><th class="num" style="padding:6px 8px;">Burn/mo</th><th class="num" style="padding:6px 8px;">Op net/mo</th><th class="num" style="padding:6px 8px;">A/R 90d</th><th class="num" style="padding:6px 8px;">A/P 90d</th><th class="num" style="padding:6px 8px;">→30d</th><th class="num" style="padding:6px 8px;">→60d</th><th class="num" style="padding:6px 8px;">→90d</th></tr></thead>' +
+          '<tbody>' + rows + '<tr id="cf_totalrow" style="border-top:2px solid var(--chrome-mute);"></tr></tbody></table></div>' +
+          '<div style="font-size:12px;color:var(--muted);margin-top:14px;line-height:1.55;">Each month layers the <strong>operating run-rate</strong> (revenue − COGS − overhead burn) on top of <strong>A/R−A/P timing</strong> (open invoices collected − open bills paid, by due date; overdue falls in the first 30 days). <strong>Revenue, COGS %, and burn are editable</strong> — defaults are the rolling-12-month average from your synced history. As of ' + esc(resp.asOf || '') + '.</div>';
+        function fmtBold(v) { return '<strong style="color:' + (v < 0 ? 'var(--burgundy)' : 'var(--green)') + ';">' + money2(v) + '</strong>'; }
+        function renderTotals() {
+          var T = { cash: 0, in90: 0, out90: 0, opNet: 0, p: [0, 0, 0] };
+          comps.forEach(function (c, i) { var r = calc(c, st[i]); T.cash += c.cash || 0; T.in90 += c.in90 || 0; T.out90 += c.out90 || 0; T.opNet += r.opNet; T.p[0] += r.proj[0]; T.p[1] += r.proj[1]; T.p[2] += r.proj[2]; });
+          var tr = document.getElementById('cf_totalrow'); if (!tr) return;
+          tr.innerHTML = '<td><strong>All companies</strong></td><td class="num"><strong>' + money2(T.cash) + '</strong></td><td colspan="3"></td>' +
+            '<td class="num">' + fmtBold(T.opNet) + '</td><td class="num" style="color:#0f7a3d;"><strong>+' + money2(T.in90) + '</strong></td><td class="num" style="color:var(--burgundy);"><strong>−' + money2(T.out90) + '</strong></td>' +
+            '<td class="num">' + fmtBold(T.p[0]) + '</td><td class="num">' + fmtBold(T.p[1]) + '</td><td class="num">' + fmtBold(T.p[2]) + '</td>';
+        }
+        renderTotals();
+        body.querySelectorAll('input[data-i]').forEach(function (el) {
+          el.addEventListener('input', function () {
+            var i = +el.getAttribute('data-i'), f = el.getAttribute('data-f');
+            var n = parseFloat(String(el.value).replace(/[^0-9.\-]/g, '')); st[i][f] = isNaN(n) ? 0 : n;
+            var r = calc(comps[i], st[i]);
+            document.getElementById('cf_opnet_' + i).innerHTML = projCell(r.opNet);
+            document.getElementById('cf_p0_' + i).innerHTML = projCell(r.proj[0]);
+            document.getElementById('cf_p1_' + i).innerHTML = projCell(r.proj[1]);
+            document.getElementById('cf_p2_' + i).innerHTML = projCell(r.proj[2]);
+            renderTotals();
+          });
+        });
       })
       .catch(function () { var body = document.getElementById('cf_body'); if (body) body.innerHTML = '<div style="color:var(--burgundy);padding:24px;">Could not load the projection.</div>'; });
   }
@@ -1099,7 +1158,9 @@
     else if (per === 'qtd') { from = iso(new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1)); to = iso(now); }
     else if (per === 'last12') { from = iso(new Date(now.getFullYear(), now.getMonth() - 11, 1)); to = iso(now); }
     else { from = iso(new Date(now.getFullYear(), 0, 1)); to = iso(now); }
-    return { from: from, to: to, method: ((document.getElementById('qboMethod') || {}).value || 'accrual') };
+    var fd = new Date(from), td = new Date(to);
+    var months = Math.max(1, Math.min(12, (td.getFullYear() - fd.getFullYear()) * 12 + (td.getMonth() - fd.getMonth()) + 1));
+    return { from: from, to: to, method: ((document.getElementById('qboMethod') || {}).value || 'accrual'), months: months };
   }
   // Visibility of the QBO cards is owned by showSection(); this just keeps the
   // company-name labels current and clears stale state when leaving a client.
@@ -1182,12 +1243,13 @@
     var tiles = document.getElementById('qboKpiTiles');
     tiles.innerHTML = '<div class="kpi"><div class="label">Loading…</div></div>';
     document.getElementById('qboKpiNote').textContent = '';
-    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/kpis?method=' + rg.method + '&asOf=' + rg.to + '&burnMonths=3', { credentials: 'include' })
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/kpis?method=' + rg.method + '&asOf=' + rg.to + '&burnMonths=' + rg.months, { credentials: 'include' })
       .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
       .then(function (resp) {
         var k = resp.kpis || {};
         // Monthly trend series from the synced history (oldest→newest).
-        var burn = function (p) { return ((p.cogsCents || 0) + (p.expensesCents || 0)) / 100; };
+        // Burn = operating expenses (overhead) only, matching the KPI calc — COGS excluded.
+        var burn = function (p) { return (p.expensesCents || 0) / 100; };
         var sMonths = kpiSeries(function (p) { var b = burn(p); return (p.cashCents != null && b > 0) ? (p.cashCents / 100) / b : null; });
         var sCR = kpiSeries(function (p) { return p.currentLiabilitiesCents ? (p.currentAssetsCents / p.currentLiabilitiesCents) : null; });
         var sCash = kpiSeries(function (p) { return p.cashCents != null ? p.cashCents / 100 : null; });
@@ -1196,13 +1258,13 @@
         var L = kpiMonths();
         var fMoney = function (x) { return money2(x); }, f1 = function (x) { return x.toFixed(1); }, fInt = function (x) { return Math.round(x).toLocaleString(); }, f2 = function (x) { return x.toFixed(2); }, fPct = function (x) { return x.toFixed(1) + '%'; };
         tiles.innerHTML =
-          kpiTile('Months of cash', k.monthsOfCash == null ? '—' : k.monthsOfCash, 'rounded down', (k.monthsOfCash != null && k.monthsOfCash < 3 ? 'down' : 'up'), sparkline(sMonths, { labels: L, fmt: f1 })) +
+          kpiTile('Months of cash', k.monthsOfCash == null ? '—' : k.monthsOfCash, 'cash ÷ monthly overhead', (k.monthsOfCash != null && k.monthsOfCash < 3 ? 'down' : 'up'), sparkline(sMonths, { labels: L, fmt: f1 })) +
           kpiTile('Days of cash', k.daysOfCash == null ? '—' : k.daysOfCash, '', '', sparkline(sMonths.map(function (m) { return m == null ? null : m * 30; }), { labels: L, fmt: fInt })) +
           kpiTile('Current ratio', k.currentRatio == null ? '—' : k.currentRatio.toFixed(2), k.currentRatio == null ? 'no current liabilities' : 'assets ÷ liabilities', (k.currentRatio != null && k.currentRatio < 1 ? 'down' : 'up'), sparkline(sCR, { labels: L, fmt: f2 })) +
           kpiTile('Cash on hand', money2(k.cash), '', '', sparkline(sCash, { labels: L, fmt: fMoney })) +
           kpiTile('Working capital', money2(k.workingCapital), 'current assets − liabilities', (k.workingCapital < 0 ? 'down' : 'up'), sparkline(sWC, { labels: L, fmt: fMoney })) +
           kpiTile('Net margin', k.netMargin == null ? '—' : (k.netMargin * 100).toFixed(1) + '%', 'trailing ' + resp.burnMonths + ' mo', (k.netMargin != null && k.netMargin < 0 ? 'down' : 'up'), sparkline(sMargin, { labels: L, fmt: fPct }));
-        document.getElementById('qboKpiNote').textContent = 'As of ' + resp.asOf + ' · ' + resp.method + ' basis · trend = last 12 synced months · monthly burn ' + money2(k.monthlyBurn) + ' (trailing ' + resp.burnMonths + ' mo).';
+        document.getElementById('qboKpiNote').textContent = 'As of ' + resp.asOf + ' · ' + resp.method + ' basis · trend = last 12 synced months · monthly overhead ' + money2(k.monthlyBurn) + ' (avg of ' + resp.burnMonths + ' mo, COGS excluded).';
       })
       .catch(function (e) { tiles.innerHTML = ''; document.getElementById('qboKpiNote').innerHTML = '<span style="color:var(--burgundy);">QuickBooks: ' + esc(e.message) + '</span>'; });
   }

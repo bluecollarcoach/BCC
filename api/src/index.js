@@ -2931,8 +2931,13 @@ app.http('qbo-report', {
         case 'bills': { data = { kind: 'list', editable: 'bill', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, VendorRef FROM Bill WHERE Balance > '0'")).map(x => ({ id: x.Id, doc: x.DocNumber, name: x.VendorRef && x.VendorRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance })) }; break; }
         case 'transactions': {
           const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
-          const acct = url.searchParams.get('account'); // drill-down: one account's transactions
-          data = flattenQboReport(await apiGet('/reports/TransactionList?start_date=' + from + '&end_date=' + to + (acct ? '&account=' + encodeURIComponent(acct) : ''))); data.range = { from, to, account: acct || undefined }; data.kind = 'report'; break;
+          const acct = url.searchParams.get('account'); // P&L drill-down: one account's transactions
+          // ProfitAndLossDetail honors the account filter (TransactionList silently
+          // ignores it and returns every transaction); use it for the per-account drill.
+          data = acct
+            ? flattenQboReport(await apiGet('/reports/ProfitAndLossDetail?start_date=' + from + '&end_date=' + to + '&accounting_method=' + method + '&account=' + encodeURIComponent(acct)))
+            : flattenQboReport(await apiGet('/reports/TransactionList?start_date=' + from + '&end_date=' + to));
+          data.range = { from, to, account: acct || undefined }; data.kind = 'report'; break;
         }
         case 'payments': {
           const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
@@ -3271,11 +3276,14 @@ app.http('qbo-kpis', {
       const opex = (findByGroup(pl, 'Expenses') ?? findByLabel(pl, /total expenses/i)) || 0;
       const netIncome = (findByGroup(pl, 'NetIncome') ?? (revenue - cogs - opex));
       const expenses = cogs + opex;
-      const monthlyBurn = expenses / burnMonths;
+      // "Months of cash" = runway of OVERHEAD: cash ÷ average monthly operating
+      // expense. COGS is excluded because it only occurs when producing revenue
+      // (including it made the figure meaningless for COGS-heavy trades).
+      const monthlyBurn = opex / burnMonths;
 
       const currentRatio = currentLiabilities > 0 ? currentAssets / currentLiabilities : null;
       const workingCapital = currentAssets - currentLiabilities;
-      const monthsOfCash = monthlyBurn > 0 ? Math.floor(cash / monthlyBurn) : null;
+      const monthsOfCash = monthlyBurn > 0 ? Math.round((cash / monthlyBurn) * 10) / 10 : null;
       const daysOfCash = monthlyBurn > 0 ? Math.round((cash / monthlyBurn) * 30) : null;
 
       return { jsonBody: {
@@ -3340,9 +3348,11 @@ app.http('qbo-companyinfo', {
 /**
  * GET /api/integrations/qbo/cashflow
  * Firm-wide 90-day cash-flow projection across every company the caller can see.
- * For each company: current cash (Balance Sheet bank accounts) + open invoices
- * (A/R, expected collections) − open bills (A/P, scheduled payments), bucketed by
- * due date into 0–30 / 31–60 / 61–90 days, with a running projected cash balance.
+ * Combines two drivers per month: (1) A/R−A/P timing — open invoices (expected
+ * collections) − open bills (scheduled payments), bucketed by due date into
+ * 0–30 / 31–60 / 61–90 days; and (2) the operating run-rate — monthly revenue
+ * (default rolling-12 avg, editable in the UI) − COGS (via ratio) − overhead burn.
+ * Returns current cash + both drivers; the UI recomputes live as the owner edits.
  * Access-scoped exactly like the sync (admin = all; others = enabled + allow-list).
  */
 app.http('qbo-cashflow', {
@@ -3396,19 +3406,36 @@ app.http('qbo-cashflow', {
           const inflow = [0, 0, 0], outflow = [0, 0, 0]; let inLater = 0, outLater = 0;
           invoices.forEach(iv => { const b = bucketOf(iv.DueDate || iv.TxnDate); const amt = Number(iv.Balance) || 0; if (b < 3) inflow[b] += amt; else inLater += amt; });
           bills.forEach(bl => { const b = bucketOf(bl.DueDate || bl.TxnDate); const amt = Number(bl.Balance) || 0; if (b < 3) outflow[b] += amt; else outLater += amt; });
-          const projected = []; let run = cash;
-          for (let i = 0; i < 3; i++) { run = run + inflow[i] - outflow[i]; projected.push(run); }
           const round = n => Math.round(n * 100) / 100;
+          // Run-rate inputs from a live trailing-12-month P&L: default monthly
+          // revenue (rolling-12 avg), COGS ratio, and monthly overhead burn.
+          const r12Start = new Date(today.getFullYear(), today.getMonth() - 11, 1).toISOString().slice(0, 10);
+          const r12End = today.toISOString().slice(0, 10);
+          const pl12 = flattenQboReport(await apiGet('/reports/ProfitAndLoss?start_date=' + r12Start + '&end_date=' + r12End + '&accounting_method=Accrual'));
+          const rev12 = (findByGroup(pl12, 'Income') ?? findByLabel(pl12, /total income/i)) || 0;
+          const cogs12 = (findByGroup(pl12, 'COGS') ?? findByLabel(pl12, /total cost of goods sold|total cogs/i)) || 0;
+          const opex12 = (findByGroup(pl12, 'Expenses') ?? findByLabel(pl12, /total expenses/i)) || 0;
+          const avgRevenue = round(rev12 / 12);
+          const monthlyBurn = round(opex12 / 12);
+          const cogsRatio = rev12 > 0 ? Math.round((cogs12 / rev12) * 1000) / 1000 : 0;
+          const historyMonths = 12;
+          // Default combined projection: existing A/R−A/P timing PLUS the run-rate
+          // operating net each month (revenue − COGS − burn). The frontend recomputes
+          // live when the owner edits revenue / COGS% / burn.
+          const opNet = round(avgRevenue * (1 - cogsRatio) - monthlyBurn);
+          const projected = []; let run = cash;
+          for (let i = 0; i < 3; i++) { run = run + inflow[i] - outflow[i] + opNet; projected.push(round(run)); }
           return {
             realmId: comp.realmId, companyName: comp.companyName,
-            cash: round(cash), inflow: inflow.map(round), outflow: outflow.map(round), projected: projected.map(round),
+            cash: round(cash), inflow: inflow.map(round), outflow: outflow.map(round), projected,
             in90: round(inflow[0] + inflow[1] + inflow[2]), out90: round(outflow[0] + outflow[1] + outflow[2]),
-            projected90: round(projected[2]), net90: round(projected[2] - cash), inLater: round(inLater), outLater: round(outLater)
+            projected90: projected[2], net90: round(projected[2] - cash), inLater: round(inLater), outLater: round(outLater),
+            avgRevenue, cogsRatio, monthlyBurn, opNet, historyMonths
           };
         } catch (e) { return { realmId: comp.realmId, companyName: comp.companyName, error: String(e && e.message || e).slice(0, 140) }; }
       }));
       const ok = companies.filter(x => !x.error);
-      const totals = ok.reduce((t, r) => ({ cash: t.cash + r.cash, in90: t.in90 + r.in90, out90: t.out90 + r.out90, projected90: t.projected90 + r.projected90 }), { cash: 0, in90: 0, out90: 0, projected90: 0 });
+      const totals = ok.reduce((t, r) => ({ cash: t.cash + r.cash, in90: t.in90 + r.in90, out90: t.out90 + r.out90, projected90: t.projected90 + r.projected90, opNet: t.opNet + (r.opNet || 0) }), { cash: 0, in90: 0, out90: 0, projected90: 0, opNet: 0 });
       Object.keys(totals).forEach(k => totals[k] = Math.round(totals[k] * 100) / 100);
       return { jsonBody: { ok: true, asOf: today.toISOString().slice(0, 10), buckets: ['Overdue + 0–30 days', '31–60 days', '61–90 days'], companies, totals } };
     } catch (e) { context.error('qbo-cashflow', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
