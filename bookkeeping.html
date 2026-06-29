@@ -229,6 +229,10 @@
   .fs-folder:hover { color:#2f6fd6; }
   @media (max-width:680px){ .fs-head { flex-direction:column; } }
 
+  /* Sparkline hover tooltip + highlighted band. */
+  .spark-tip { position:fixed; z-index:300; pointer-events:none; display:none; background:#1a1a1a; color:#fff; font-size:11.5px; font-weight:600; padding:4px 9px; border-radius:6px; white-space:nowrap; box-shadow:0 4px 14px rgba(0,0,0,0.28); }
+  .spark-hit:hover { fill:rgba(168,136,74,0.14); }
+
   /* In-progress (not-yet-closed) financial periods. */
   tr.period-inprogress { background:#fff8e6; }
   tr.period-inprogress:hover { background:#fdf2d6; }
@@ -684,11 +688,13 @@
     var ytdNet=0; all.forEach(function(p){ if(p.period&&p.period.indexOf(year)===0){ ytdNet += netOf(p);} });
     document.getElementById('kpiYtd').textContent = dollars(ytdNet);
     setDelta(document.getElementById('kpiYtdD'), year + ' · ' + companyName(currentRealm));
-    // Trend lines from the last 12 synced months (oldest→newest).
-    setSpark('kpiRevSpark', sparkline(kpiSeries(function (p) { return (p.revenueCents || 0) / 100; })));
-    setSpark('kpiExpSpark', sparkline(kpiSeries(function (p) { return (p.expensesCents || 0) / 100; })));
-    setSpark('kpiNetSpark', sparkline(kpiSeries(function (p) { return netOf(p) / 100; })));
-    var yrun = 0; setSpark('kpiYtdSpark', sparkline(all.slice().sort(function (a, b) { return (a.period || '').localeCompare(b.period || ''); }).filter(function (p) { return p.period && p.period.indexOf(year) === 0; }).map(function (p) { yrun += netOf(p) / 100; return yrun; })));
+    // Trend lines from the last 12 synced months (oldest→newest), with hover values.
+    var L = kpiMonths(), fM = function (x) { return money2(x); };
+    setSpark('kpiRevSpark', sparkline(kpiSeries(function (p) { return (p.revenueCents || 0) / 100; }), { labels: L, fmt: fM }));
+    setSpark('kpiExpSpark', sparkline(kpiSeries(function (p) { return (p.expensesCents || 0) / 100; }), { labels: L, fmt: fM }));
+    setSpark('kpiNetSpark', sparkline(kpiSeries(function (p) { return netOf(p) / 100; }), { labels: L, fmt: fM }));
+    var yp = all.slice().sort(function (a, b) { return (a.period || '').localeCompare(b.period || ''); }).filter(function (p) { return p.period && p.period.indexOf(year) === 0; });
+    var yrun = 0; setSpark('kpiYtdSpark', sparkline(yp.map(function (p) { yrun += netOf(p) / 100; return yrun; }), { labels: yp.map(function (p) { return p.period; }), fmt: fM }));
   }
 
   /* ===== Table ===== */
@@ -1123,25 +1129,50 @@
   }
   function kpiTile(label, value, sub, cls, spark) { return '<div class="kpi"><div class="label">' + esc(label) + '</div><div class="value">' + value + '</div>' + (spark || '') + (sub ? '<div class="delta ' + (cls || 'flat') + '">' + esc(sub) + '</div>' : '') + '</div>'; }
   // Tiny inline SVG trend line from a series (oldest→newest). Skips nulls.
-  function sparkline(vals) {
+  // opts: { labels: [...] (per-point, e.g. months), fmt: function(value)->string }.
+  // Renders the line + an invisible per-point hover band carrying the value/label
+  // so hovering anywhere along the line pops a tooltip (see the delegated handler).
+  function sparkline(vals, opts) {
+    opts = opts || {};
+    var labels = opts.labels || [], fmt = opts.fmt || function (x) { return Math.round(x).toLocaleString(); };
     var v = (vals || []).map(function (x) { return (x == null || isNaN(x)) ? null : x; });
     var real = v.filter(function (x) { return x != null; });
     if (real.length < 2) return '';
     var w = 116, h = 28, pad = 2;
     var min = Math.min.apply(null, real), max = Math.max.apply(null, real), range = (max - min) || Math.abs(max) || 1;
     var n = v.length, step = (w - 2 * pad) / (n - 1);
-    var pts = [], lastY = null;
-    for (var i = 0; i < n; i++) { if (v[i] == null) continue; var x = pad + i * step; var y = h - pad - ((v[i] - min) / range) * (h - 2 * pad); pts.push(x.toFixed(1) + ',' + y.toFixed(1)); lastY = y; }
+    var pts = [], hits = '', lastY = null, lastX = pad + (n - 1) * step;
+    for (var i = 0; i < n; i++) {
+      if (v[i] == null) continue;
+      var x = pad + i * step, y = h - pad - ((v[i] - min) / range) * (h - 2 * pad);
+      pts.push(x.toFixed(1) + ',' + y.toFixed(1)); lastY = y;
+      hits += '<rect class="spark-hit" x="' + (x - step / 2).toFixed(1) + '" y="-3" width="' + step.toFixed(1) + '" height="' + (h + 6) + '" fill="transparent" pointer-events="all" data-l="' + (labels[i] != null ? esc(String(labels[i])) : '') + '" data-v="' + esc(fmt(v[i])) + '"></rect>';
+    }
     var col = real[real.length - 1] >= real[0] ? '#0f7a3d' : 'var(--burgundy)';
-    var lastX = pad + (n - 1) * step;
     return '<svg class="spark" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" style="display:block;margin:5px 0 2px;overflow:visible;">' +
       '<polyline points="' + pts.join(' ') + '" fill="none" stroke="' + col + '" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>' +
-      (lastY != null ? '<circle cx="' + lastX.toFixed(1) + '" cy="' + lastY.toFixed(1) + '" r="2.1" fill="' + col + '"/>' : '') + '</svg>';
+      (lastY != null ? '<circle cx="' + lastX.toFixed(1) + '" cy="' + lastY.toFixed(1) + '" r="2.1" fill="' + col + '"/>' : '') +
+      hits + '</svg>';
   }
+  // Delegated tooltip for sparkline hover bands (one listener for every sparkline).
+  var _sparkTip = null;
+  function _ensureSparkTip() { if (!_sparkTip) { _sparkTip = document.createElement('div'); _sparkTip.className = 'spark-tip'; document.body.appendChild(_sparkTip); } return _sparkTip; }
+  document.addEventListener('mousemove', function (e) {
+    var t = e.target;
+    if (t && t.getAttribute && t.classList && t.classList.contains('spark-hit')) {
+      var tp = _ensureSparkTip(), lbl = t.getAttribute('data-l'), val = t.getAttribute('data-v');
+      tp.textContent = (lbl ? lbl + ' · ' : '') + val;
+      tp.style.display = 'block';
+      var left = e.clientX + 12; if (left + tp.offsetWidth > window.innerWidth - 8) left = e.clientX - tp.offsetWidth - 12;
+      tp.style.left = Math.max(4, left) + 'px';
+      tp.style.top = Math.max(4, e.clientY - 30) + 'px';
+    } else if (_sparkTip) { _sparkTip.style.display = 'none'; }
+  }, { passive: true });
   // Last-12-months series for one company, oldest→newest, mapped by fn(period).
   function kpiSeries(fn) {
     return periodsFor(currentRealm).slice().sort(function (a, b) { return (a.period || '').localeCompare(b.period || ''); }).slice(-12).map(fn);
   }
+  function kpiMonths() { return kpiSeries(function (p) { return p.period; }); }
   function loadQboKpis() {
     if (!currentRealm) return;
     var card = document.getElementById('qboKpis');
@@ -1162,13 +1193,15 @@
         var sCash = kpiSeries(function (p) { return p.cashCents != null ? p.cashCents / 100 : null; });
         var sWC = kpiSeries(function (p) { return (p.currentAssetsCents != null && p.currentLiabilitiesCents != null) ? (p.currentAssetsCents - p.currentLiabilitiesCents) / 100 : null; });
         var sMargin = kpiSeries(function (p) { return p.revenueCents ? (netOf(p) / p.revenueCents) * 100 : null; });
+        var L = kpiMonths();
+        var fMoney = function (x) { return money2(x); }, f1 = function (x) { return x.toFixed(1); }, fInt = function (x) { return Math.round(x).toLocaleString(); }, f2 = function (x) { return x.toFixed(2); }, fPct = function (x) { return x.toFixed(1) + '%'; };
         tiles.innerHTML =
-          kpiTile('Months of cash', k.monthsOfCash == null ? '—' : k.monthsOfCash, 'rounded down', (k.monthsOfCash != null && k.monthsOfCash < 3 ? 'down' : 'up'), sparkline(sMonths)) +
-          kpiTile('Days of cash', k.daysOfCash == null ? '—' : k.daysOfCash, '', '', sparkline(sMonths.map(function (m) { return m == null ? null : m * 30; }))) +
-          kpiTile('Current ratio', k.currentRatio == null ? '—' : k.currentRatio.toFixed(2), k.currentRatio == null ? 'no current liabilities' : 'assets ÷ liabilities', (k.currentRatio != null && k.currentRatio < 1 ? 'down' : 'up'), sparkline(sCR)) +
-          kpiTile('Cash on hand', money2(k.cash), '', '', sparkline(sCash)) +
-          kpiTile('Working capital', money2(k.workingCapital), 'current assets − liabilities', (k.workingCapital < 0 ? 'down' : 'up'), sparkline(sWC)) +
-          kpiTile('Net margin', k.netMargin == null ? '—' : (k.netMargin * 100).toFixed(1) + '%', 'trailing ' + resp.burnMonths + ' mo', (k.netMargin != null && k.netMargin < 0 ? 'down' : 'up'), sparkline(sMargin));
+          kpiTile('Months of cash', k.monthsOfCash == null ? '—' : k.monthsOfCash, 'rounded down', (k.monthsOfCash != null && k.monthsOfCash < 3 ? 'down' : 'up'), sparkline(sMonths, { labels: L, fmt: f1 })) +
+          kpiTile('Days of cash', k.daysOfCash == null ? '—' : k.daysOfCash, '', '', sparkline(sMonths.map(function (m) { return m == null ? null : m * 30; }), { labels: L, fmt: fInt })) +
+          kpiTile('Current ratio', k.currentRatio == null ? '—' : k.currentRatio.toFixed(2), k.currentRatio == null ? 'no current liabilities' : 'assets ÷ liabilities', (k.currentRatio != null && k.currentRatio < 1 ? 'down' : 'up'), sparkline(sCR, { labels: L, fmt: f2 })) +
+          kpiTile('Cash on hand', money2(k.cash), '', '', sparkline(sCash, { labels: L, fmt: fMoney })) +
+          kpiTile('Working capital', money2(k.workingCapital), 'current assets − liabilities', (k.workingCapital < 0 ? 'down' : 'up'), sparkline(sWC, { labels: L, fmt: fMoney })) +
+          kpiTile('Net margin', k.netMargin == null ? '—' : (k.netMargin * 100).toFixed(1) + '%', 'trailing ' + resp.burnMonths + ' mo', (k.netMargin != null && k.netMargin < 0 ? 'down' : 'up'), sparkline(sMargin, { labels: L, fmt: fPct }));
         document.getElementById('qboKpiNote').textContent = 'As of ' + resp.asOf + ' · ' + resp.method + ' basis · trend = last 12 synced months · monthly burn ' + money2(k.monthlyBurn) + ' (trailing ' + resp.burnMonths + ' mo).';
       })
       .catch(function (e) { tiles.innerHTML = ''; document.getElementById('qboKpiNote').innerHTML = '<span style="color:var(--burgundy);">QuickBooks: ' + esc(e.message) + '</span>'; });
