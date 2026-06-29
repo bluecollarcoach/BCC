@@ -229,6 +229,11 @@
   .fs-folder:hover { color:#2f6fd6; }
   @media (max-width:680px){ .fs-head { flex-direction:column; } }
 
+  /* In-progress (not-yet-closed) financial periods. */
+  tr.period-inprogress { background:#fff8e6; }
+  tr.period-inprogress:hover { background:#fdf2d6; }
+  .inprogress-badge { display:inline-block; font-size:10px; font-weight:700; color:#9a6b00; background:#fdecc8; border:1px solid #f0d79a; border-radius:10px; padding:1px 7px; margin-left:6px; vertical-align:middle; letter-spacing:.3px; white-space:nowrap; }
+
   /* Clickable "Bookkeeping" wordmark / title → back to home. */
   .bk-home { transition:color .12s ease; }
   .bk-home:hover { color:var(--gold-deep); text-decoration:underline; }
@@ -545,6 +550,23 @@
       .then(function () { renderAll(); })
       .catch(function (e) { if (window.bccNotify) window.bccNotify('Update failed: ' + e.message, 'warn'); else alert(e.message); });
   }
+  function disconnectCompany(realm) {
+    var name = companyName(realm) || 'this company';
+    if (!confirm('Disconnect ' + name + ' from QuickBooks?\n\nThis revokes our access token and removes its stored financial periods. You can reconnect later via “Connect a company.” It does NOT change anything in QuickBooks itself.')) return;
+    accessEditRealm = null;
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(realm), { method: 'DELETE', credentials: 'include' })
+      .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
+      .then(function () {
+        if (window.bccAudit) window.bccAudit('company-delete', { path: '/bookkeeping.html', meta: { realmId: realm } });
+        // Drop the company's cached financial-period snapshots locally too.
+        try { Object.keys(localStorage).forEach(function (k) { if (k.indexOf(PER_PREFIX + realm + '-') === 0) localStorage.removeItem(k); }); } catch (_) {}
+        if (currentRealm === realm) currentRealm = '';
+        if (window.bccNotifySaved) window.bccNotifySaved(name + ' disconnected.');
+        return loadCompanies();
+      })
+      .then(function () { renderAll(); })
+      .catch(function (e) { if (window.bccNotify) window.bccNotify('Disconnect failed: ' + e.message, 'warn'); else alert(e.message); });
+  }
   function fillCompanyFilter() {
     var sel = document.getElementById('companyFilter');
     if (!sel) return;
@@ -604,6 +626,16 @@
   function netOf(p) { return (p.revenueCents || 0) - (p.cogsCents || 0) - (p.expensesCents || 0); }
   function pctOf(numCents, revCents) { return revCents ? Math.round((numCents / revCents) * 1000) / 10 : null; }
   function pctTxt(v) { return v == null ? '—' : (v + '%'); }
+  var ADMIN_ONLY_UPN = '__admins_only__';
+  function isAdminOnly(allow) { return Array.isArray(allow) && allow.length === 1 && allow[0] === ADMIN_ONLY_UPN; }
+  function accessLabel(allow) { if (isAdminOnly(allow)) return 'Admin only'; return (allow && allow.length) ? (allow.length + ' user' + (allow.length === 1 ? '' : 's')) : 'All users'; }
+  // A period is "in progress" until 5 days after its month ends (lets QBO settle).
+  function periodInProgress(period) {
+    if (!period || !/^\d{4}-\d{2}$/.test(period)) return false;
+    var y = +period.slice(0, 4), m = +period.slice(5, 7);
+    var graceEnd = new Date(y, m, 0 + 5); graceEnd.setHours(23, 59, 59, 999); // last day of month + 5 days
+    return new Date() <= graceEnd;
+  }
 
   /* ===== KPIs ===== */
   function setDelta(el, txt, cls) { el.textContent = txt; el.className = 'delta ' + (cls || 'flat'); }
@@ -755,10 +787,10 @@
         var dim = (isAdmin && c.enabled === false) ? ' style="opacity:.5;"' : '';
         var adminCells = '';
         if (isAdmin) {
-          var access = (c.allowedUserUpns && c.allowedUserUpns.length) ? (c.allowedUserUpns.length + ' user' + (c.allowedUserUpns.length === 1 ? '' : 's')) : 'All users';
+          var access = accessLabel(c.allowedUserUpns);
           adminCells =
             '<td data-label="Enabled" class="nodrill"><label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" data-act="enabled" ' + (c.enabled !== false ? 'checked' : '') + ' /> <span style="font-size:12px;">' + (c.enabled !== false ? 'On' : 'Off') + '</span></label></td>' +
-            '<td data-label="Access" class="nodrill"><span style="font-size:12.5px;">' + esc(access) + '</span> <button class="btn btn-ghost" data-act="access" type="button" style="font-size:11px;padding:0 8px;min-height:28px;margin-left:6px;">Edit</button></td>';
+            '<td data-label="Access" class="nodrill"><span style="font-size:12.5px;' + (isAdminOnly(c.allowedUserUpns) ? 'color:var(--gold-deep);font-weight:600;' : '') + '">' + esc(access) + '</span> <button class="btn btn-ghost" data-act="access" type="button" style="font-size:11px;padding:0 8px;min-height:28px;margin-left:6px;">Edit</button> <button class="btn btn-ghost" data-act="disconnect" type="button" style="font-size:11px;padding:0 8px;min-height:28px;color:var(--burgundy);">Disconnect</button></td>';
         }
         var row = '<tr data-realm="' + esc(c.realmId) + '"' + dim + ' style="cursor:pointer;">' +
           '<td data-label="Company"><strong>' + esc(c.companyName || ('Company ' + c.realmId)) + '</strong></td>' +
@@ -773,16 +805,19 @@
         // Inline access editor row (admin)
         if (isAdmin && accessEditRealm === c.realmId) {
           var allow = (c.allowedUserUpns || []).map(function (u) { return u.toLowerCase(); });
+          var mode = isAdminOnly(allow) ? 'admin' : (allow.length ? 'specific' : 'all');
           var checks = usersDir.length
             ? usersDir.map(function (u) {
                 return '<label style="display:inline-flex;align-items:center;gap:6px;margin:0 14px 8px 0;font-size:13px;"><input type="checkbox" data-upn="' + esc(u.upn) + '" ' + (allow.indexOf(u.upn) >= 0 ? 'checked' : '') + ' /> ' + esc(u.displayName || u.upn) + '</label>';
               }).join('')
             : '<span class="muted">No users in the directory yet (add team members in Admin → Users).</span>';
+          var radio = function (v, lbl) { return '<label style="display:inline-flex;align-items:center;gap:6px;margin-right:18px;font-size:13px;font-weight:600;cursor:pointer;"><input type="radio" name="accmode" value="' + v + '" ' + (mode === v ? 'checked' : '') + ' /> ' + lbl + '</label>'; };
           row += '<tr data-editor="' + esc(c.realmId) + '"><td colspan="' + span + '" style="background:var(--chrome);">' +
             '<div style="padding:10px 4px;">' +
               '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Who can see ' + esc(c.companyName || c.realmId) + '?</div>' +
-              '<div style="margin-bottom:8px;">' + checks + '</div>' +
-              '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Tick specific users, or leave all unticked = visible to everyone. Admins always see every company.</div>' +
+              '<div style="margin-bottom:10px;">' + radio('admin', 'Admins only') + radio('all', 'Everyone') + radio('specific', 'Specific users') + '</div>' +
+              '<div data-accusers style="margin-bottom:8px;' + (mode === 'specific' ? '' : 'display:none;') + '">' + checks + '</div>' +
+              '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Admins always see every company. New companies start as <strong>Admins only</strong>.</div>' +
               '<button class="btn btn-primary" data-act="access-save" type="button" style="font-size:12px;min-height:32px;">Save access</button> ' +
               '<button class="btn btn-ghost" data-act="access-cancel" type="button" style="font-size:12px;min-height:32px;">Cancel</button>' +
             '</div></td></tr>';
@@ -804,6 +839,12 @@
         rowsEl.querySelectorAll('button[data-act=access]').forEach(function (b) {
           b.addEventListener('click', function (ev) { ev.stopPropagation(); var realm = b.closest('tr').dataset.realm; accessEditRealm = (accessEditRealm === realm ? null : realm); renderTable(); });
         });
+        rowsEl.querySelectorAll('button[data-act=disconnect]').forEach(function (b) {
+          b.addEventListener('click', function (ev) { ev.stopPropagation(); disconnectCompany(b.closest('tr').dataset.realm); });
+        });
+        rowsEl.querySelectorAll('input[name=accmode]').forEach(function (rb) {
+          rb.addEventListener('change', function () { var box = rb.closest('[data-editor]').querySelector('[data-accusers]'); if (box) box.style.display = (rb.value === 'specific') ? '' : 'none'; });
+        });
         rowsEl.querySelectorAll('button[data-act=access-cancel]').forEach(function (b) {
           b.addEventListener('click', function (ev) { ev.stopPropagation(); accessEditRealm = null; renderTable(); });
         });
@@ -811,7 +852,11 @@
           b.addEventListener('click', function (ev) {
             ev.stopPropagation();
             var editorTr = b.closest('tr'); var realm = editorTr.dataset.editor;
-            var upns = []; editorTr.querySelectorAll('input[data-upn]:checked').forEach(function (i) { upns.push(i.getAttribute('data-upn')); });
+            var mode = (editorTr.querySelector('input[name=accmode]:checked') || {}).value || 'admin';
+            var upns;
+            if (mode === 'all') upns = [];
+            else if (mode === 'specific') { upns = []; editorTr.querySelectorAll('input[data-upn]:checked').forEach(function (i) { upns.push(i.getAttribute('data-upn')); }); if (!upns.length) upns = [ADMIN_ONLY_UPN]; }
+            else upns = [ADMIN_ONLY_UPN];
             accessEditRealm = null;
             updateCompany(realm, { allowedUserUpns: upns });
           });
@@ -847,8 +892,9 @@
       var rev = p.revenueCents || 0, cogs = p.cogsCents || 0, gp = rev - cogs, net = netOf(p);
       var expPct = pctOf(p.expensesCents || 0, rev), netPct = pctOf(net, rev);
       var syncedAt = p.syncedAt ? new Date(p.syncedAt).toLocaleDateString([], { month:'short', day:'numeric', year:'numeric' }) : '—';
-      return '<tr data-id="' + esc(p.id) + '" data-period="' + esc(p.period || '') + '" style="cursor:pointer;" title="View the Profit &amp; Loss detail">' +
-        '<td data-label="Period"><span style="color:var(--gold-deep);font-weight:600;">' + esc(p.period || '—') + '</span></td>' +
+      var inProg = periodInProgress(p.period);
+      return '<tr class="' + (inProg ? 'period-inprogress' : '') + '" data-id="' + esc(p.id) + '" data-period="' + esc(p.period || '') + '" style="cursor:pointer;" title="View the Profit &amp; Loss detail">' +
+        '<td data-label="Period"><span style="color:var(--gold-deep);font-weight:600;">' + esc(p.period || '—') + '</span>' + (inProg ? ' <span class="inprogress-badge">● in progress</span>' : '') + '</td>' +
         '<td data-label="Revenue" class="num">' + dollars(rev) + '</td>' +
         '<td data-label="COGS" class="num">' + (p.cogsCents != null ? dollars(cogs) : '—') + '</td>' +
         '<td data-label="Gross profit" class="num">' + dollars(gp) + '</td>' +
@@ -905,10 +951,27 @@
     var y = period.slice(0, 4), m = +period.slice(5, 7);
     var from = period + '-01';
     var to = period + '-' + String(new Date(+y, m, 0).getDate()).padStart(2, '0');
-    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/report?type=pl&method=accrual&from=' + from + '&to=' + to, { credentials: 'include' })
-      .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
-      .then(function (resp) { var b = document.getElementById('pnl_body'); if (b) b.innerHTML = renderReport(resp); })
-      .catch(function (e) { var b = document.getElementById('pnl_body'); if (b) b.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:14px;font-size:13px;">QuickBooks: ' + esc(e.message) + '</div>'; });
+    var realmAt = currentRealm;
+    function fail(b, e) { if (b) b.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:14px;font-size:13px;">QuickBooks: ' + esc(e.message) + '</div>'; }
+    function showPnl() {
+      var b = document.getElementById('pnl_body'); if (!b) return; b.innerHTML = '<div style="color:var(--muted);padding:20px;">Loading from QuickBooks…</div>';
+      fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/report?type=pl&method=accrual&from=' + from + '&to=' + to, { credentials: 'include' })
+        .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
+        .then(function (resp) { var bd = document.getElementById('pnl_body'); if (!bd || currentRealm !== realmAt) return; bd.innerHTML = renderReport(resp, true); bd.querySelectorAll('tr[data-acct]').forEach(function (tr) { tr.onclick = function () { drill(tr.getAttribute('data-acct'), tr.getAttribute('data-acctname')); }; }); })
+        .catch(function (e) { fail(document.getElementById('pnl_body'), e); });
+    }
+    function drill(acctId, acctName) {
+      var b = document.getElementById('pnl_body'); if (!b) return; b.innerHTML = '<div style="color:var(--muted);padding:20px;">Loading ' + esc(acctName) + ' detail…</div>';
+      fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/report?type=transactions&from=' + from + '&to=' + to + '&account=' + encodeURIComponent(acctId), { credentials: 'include' })
+        .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
+        .then(function (resp) {
+          var bd = document.getElementById('pnl_body'); if (!bd || currentRealm !== realmAt) return;
+          bd.innerHTML = '<div style="margin-bottom:10px;"><button class="btn btn-ghost" id="pnl_back" type="button" style="font-size:12px;">← Back to P&amp;L</button> <strong style="margin-left:8px;">' + esc(acctName) + '</strong> <span style="color:var(--muted);font-size:12px;">· transactions ' + esc(from) + ' → ' + esc(to) + '</span></div>' + renderReport(resp);
+          var bk = document.getElementById('pnl_back'); if (bk) bk.onclick = showPnl;
+        })
+        .catch(function (e) { fail(document.getElementById('pnl_body'), e); });
+    }
+    showPnl();
   }
 
   /* ===== Add panel ===== */
@@ -1111,7 +1174,7 @@
       .catch(function (e) { tiles.innerHTML = ''; document.getElementById('qboKpiNote').innerHTML = '<span style="color:var(--burgundy);">QuickBooks: ' + esc(e.message) + '</span>'; });
   }
   function qboRefresh() { if (!currentRealm) return; loadQboKpis(); if (qboActiveReport) loadQboReport(qboActiveReport, null); }
-  function renderReport(resp) {
+  function renderReport(resp, drillable) {
     var d = (resp && resp.data) || {};
     if (d.kind === 'list') {
       if (!d.items || !d.items.length) return '<div style="color:var(--muted);padding:10px;">No records.</div>';
@@ -1124,10 +1187,12 @@
     if (!(d.rows || []).length) return '<div style="color:var(--muted);padding:10px;">No data in this report' + (d.range ? ' for ' + esc(JSON.stringify(d.range)) : '') + '.</div>';
     var head2 = '<tr>' + cc.map(function (c, i) { return '<th' + (i > 0 ? ' class="num"' : '') + '>' + esc(c || '') + '</th>'; }).join('') + '</tr>';
     var body = (d.rows || []).map(function (row) {
-      var style = 'padding-left:' + (8 + (row.level || 0) * 16) + 'px;' + ((row.type === 'summary' || row.type === 'header') ? 'font-weight:700;' : '');
+      var canDrill = drillable && !!row.acctId; // only the P&L popup is drillable; transaction/inline views are not
+      var drill = canDrill ? (' data-acct="' + esc(row.acctId) + '" data-acctname="' + esc(row.label) + '"') : '';
+      var style = 'padding-left:' + (8 + (row.level || 0) * 16) + 'px;' + ((row.type === 'summary' || row.type === 'header') ? 'font-weight:700;' : '') + (canDrill ? 'color:var(--gold-deep);' : '');
       var cells = (row.cells || []).map(function (v) { return '<td class="num">' + money2(v) + '</td>'; }).join('');
       var pads = ''; for (var k = (row.cells || []).length; k < cc.length - 1; k++) pads += '<td class="num"></td>';
-      return '<tr><td style="' + style + '">' + esc(row.label) + '</td>' + cells + pads + '</tr>';
+      return '<tr' + drill + (canDrill ? ' style="cursor:pointer;" title="See the transactions behind this line"' : '') + '><td style="' + style + '">' + esc(row.label) + (canDrill ? ' ›' : '') + '</td>' + cells + pads + '</tr>';
     }).join('');
     return '<table><thead>' + head2 + '</thead><tbody>' + body + '</tbody></table>';
   }
@@ -2069,14 +2134,22 @@
       return;
     }
     var allow = (co.allowedUserUpns || []).map(function (u) { return (u || '').toLowerCase(); });
+    var mode = isAdminOnly(allow) ? 'admin' : (allow.length ? 'specific' : 'all');
     var checks = usersDir.length ? usersDir.map(function (u) { return '<label style="display:inline-flex;align-items:center;gap:6px;margin:0 16px 10px 0;font-size:13.5px;"><input type="checkbox" data-acc="' + esc(u.upn) + '" ' + (allow.indexOf((u.upn || '').toLowerCase()) >= 0 ? 'checked' : '') + ' /> ' + esc(u.displayName || u.upn) + '</label>'; }).join('') : '<span style="color:var(--muted);">No users in the directory yet (add team members in Admin → Users).</span>';
+    var radio = function (v, lbl) { return '<label style="display:inline-flex;align-items:center;gap:6px;margin-right:18px;font-weight:600;cursor:pointer;"><input type="radio" name="accmode2" value="' + v + '" ' + (mode === v ? 'checked' : '') + ' /> ' + lbl + '</label>'; };
     body.innerHTML = '<div style="margin-bottom:12px;"><label style="display:inline-flex;align-items:center;gap:8px;font-weight:700;cursor:pointer;"><input type="checkbox" id="acc_enabled" ' + (co.enabled !== false ? 'checked' : '') + ' /> Company enabled (visible in Bookkeeping)</label></div>' +
       '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Who can see this client?</div>' +
-      '<div style="margin-bottom:8px;">' + checks + '</div>' +
-      '<div style="font-size:12px;color:var(--muted);margin-bottom:12px;">Tick specific users, or leave all unticked = visible to everyone. Admins always see every client.</div>' +
+      '<div style="margin-bottom:10px;">' + radio('admin', 'Admins only') + radio('all', 'Everyone') + radio('specific', 'Specific users') + '</div>' +
+      '<div id="acc_users" style="margin-bottom:8px;' + (mode === 'specific' ? '' : 'display:none;') + '">' + checks + '</div>' +
+      '<div style="font-size:12px;color:var(--muted);margin-bottom:12px;">Admins always see every client. New clients start as <strong>Admins only</strong>.</div>' +
       '<button class="btn btn-primary" id="acc_save" type="button">Save access</button>';
+    body.querySelectorAll('input[name=accmode2]').forEach(function (rb) { rb.addEventListener('change', function () { var u = document.getElementById('acc_users'); if (u) u.style.display = (rb.value === 'specific') ? '' : 'none'; }); });
     document.getElementById('acc_save').onclick = function () {
-      var upns = []; body.querySelectorAll('input[data-acc]:checked').forEach(function (i) { upns.push(i.getAttribute('data-acc')); });
+      var m = (body.querySelector('input[name=accmode2]:checked') || {}).value || 'admin';
+      var upns;
+      if (m === 'all') upns = [];
+      else if (m === 'specific') { upns = []; body.querySelectorAll('input[data-acc]:checked').forEach(function (i) { upns.push(i.getAttribute('data-acc')); }); if (!upns.length) upns = [ADMIN_ONLY_UPN]; }
+      else upns = [ADMIN_ONLY_UPN];
       updateCompany(currentRealm, { allowedUserUpns: upns, enabled: document.getElementById('acc_enabled').checked });
       if (window.bccNotifySaved) window.bccNotifySaved('Access updated.');
     };

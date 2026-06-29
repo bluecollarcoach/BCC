@@ -46,6 +46,11 @@ const ADMIN_KEYS      = new Set(['bcc-admin-config-v1']); // writable only by us
 // server-only time. The generic /api/data path must NEVER create, overwrite, or
 // delete these (they each have an admin/allow-list-gated endpoint of their own).
 const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-emailmeta-'];
+// Sentinel allowedUserUpns value meaning "admins only" — a non-matching UPN, so
+// every existing access check (allow.length && who not in allow → deny) denies
+// non-admins automatically, while admins bypass the allow-list. New companies
+// start here so they're invisible to bookkeepers until an admin grants access.
+const ADMIN_ONLY_UPN = '__admins_only__';
 function isProtectedServerKey(k) { return PROTECTED_KEY_PREFIXES.some(pre => String(k || '').startsWith(pre)); }
 // Content types we'll serve INLINE for in-app preview. Deliberately excludes
 // text/html + svg + xhtml (active content) so an uploaded page can't render and
@@ -2649,7 +2654,9 @@ app.http('qbo-callback', {
       comp.status = 'connected';
       // Visibility controls (admins manage these): enabled on/off + per-user allow-list.
       if (comp.enabled === undefined) comp.enabled = true;
-      if (!Array.isArray(comp.allowedUserUpns)) comp.allowedUserUpns = []; // [] = visible to all users
+      // New companies are ADMIN-ONLY until an admin grants access (the sentinel
+      // denies all non-admins). Existing companies keep whatever they had.
+      if (!Array.isArray(comp.allowedUserUpns)) comp.allowedUserUpns = [ADMIN_ONLY_UPN];
       comp.connectedAt = comp.connectedAt || new Date().toISOString();
       comp.updatedAt = new Date().toISOString();
       await c.items.upsert(comp);
@@ -2739,12 +2746,14 @@ app.http('qbo-companies', {
 });
 
 /**
- * POST /api/integrations/qbo/companies/{realmId}   (admin only)
- * Body: { enabled?: bool, allowedUserUpns?: string[] }
- * Turns a company on/off and/or sets which users can see it ([] = everyone).
+ * POST   /api/integrations/qbo/companies/{realmId}   (admin only)
+ *   Body: { enabled?: bool, allowedUserUpns?: string[] } — on/off + who can see it.
+ * DELETE /api/integrations/qbo/companies/{realmId}   (admin only)
+ *   Disconnect: revoke the QBO token, delete the company + its stored financial
+ *   periods. The client can be re-connected later via Connect a company.
  */
 app.http('qbo-company-update', {
-  methods: ['POST'],
+  methods: ['POST', 'DELETE'],
   authLevel: 'anonymous',
   route: 'integrations/qbo/companies/{realmId}',
   handler: withAccessLog(async (request, context) => {
@@ -2754,11 +2763,45 @@ app.http('qbo-company-update', {
     if (!(await isAppAdmin(p))) return { status: 403, jsonBody: { error: 'admin only' } };
     try {
       const realmId = request.params.realmId;
-      const body = await request.json().catch(() => ({}));
       const c = container();
       const id = 'bcc-qbo-company-' + realmId;
       const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
       if (!doc) return { status: 404, jsonBody: { error: 'company not found' } };
+
+      if (request.method === 'DELETE') {
+        // Best-effort revoke the refresh token at Intuit so our access truly ends.
+        try {
+          const fields = await getIntegrationFields('qbo');
+          if (fields.clientId && fields.clientSecret && doc.refreshToken) {
+            await fetch('https://developer.api.intuit.com/v2/oauth2/tokens/revoke', {
+              method: 'POST',
+              headers: { Authorization: 'Basic ' + Buffer.from(fields.clientId + ':' + fields.clientSecret).toString('base64'), 'Content-Type': 'application/json', Accept: 'application/json' },
+              body: JSON.stringify({ token: doc.refreshToken })
+            });
+          }
+        } catch (e) { context.error('qbo revoke failed (continuing)', e); }
+        // Revoke + delete the per-client SHARED-DRIVE OAuth token (a live credential)
+        // so our access truly ends and nothing re-attaches if the realm is reconnected.
+        try {
+          const dd = await c.item('bcc-clientdrive-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+          if (dd && dd.refreshToken && dd.provider === 'google') {
+            try { await fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(dd.refreshToken), { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }); } catch (_) {}
+            // (Microsoft has no simple programmatic delegated-token revoke; deleting the stored token ends our use.)
+          }
+        } catch (_) {}
+        // Delete the company doc + every other realm-keyed doc (drive link, client
+        // mailbox config, email collaboration metadata, financial periods).
+        for (const k of [id, 'bcc-clientdrive-' + realmId, 'bcc-client-mailbox-' + realmId, 'bcc-emailmeta-' + realmId]) {
+          try { await c.item(k, BCC_TENANT_ID).delete(); } catch (e) { if (e.code !== 404 && k === id) throw e; }
+        }
+        try {
+          const { resources: pers } = await c.items.query({ query: 'SELECT c.id FROM c WHERE c.tenantId=@t AND c.docType="financial-period" AND c.realmId=@r', parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@r', value: realmId }] }).fetchAll();
+          for (const per of pers) { try { await c.item(per.id, BCC_TENANT_ID).delete(); } catch (_) {} }
+        } catch (_) {}
+        return { jsonBody: { ok: true, disconnected: true, realmId } };
+      }
+
+      const body = await request.json().catch(() => ({}));
       if (typeof body.enabled === 'boolean') doc.enabled = body.enabled;
       if (Array.isArray(body.allowedUserUpns)) doc.allowedUserUpns = body.allowedUserUpns.map(s => String(s).toLowerCase()).filter(Boolean);
       doc.updatedAt = new Date().toISOString();
@@ -2806,9 +2849,9 @@ function flattenQboReport(rep) {
   (function walk(rs, level, grp) {
     for (const row of (rs || [])) {
       const g = row.group || grp || null;
-      if (row.Header && row.Header.ColData) rows.push({ label: row.Header.ColData[0].value || '', cells: row.Header.ColData.slice(1).map(d => d.value), level, type: 'header', group: g });
+      if (row.Header && row.Header.ColData) rows.push({ label: row.Header.ColData[0].value || '', cells: row.Header.ColData.slice(1).map(d => d.value), level, type: 'header', group: g, acctId: (row.Header.ColData[0] || {}).id || null });
       if (row.Rows && row.Rows.Row) walk(row.Rows.Row, level + 1, g);
-      if (row.ColData) rows.push({ label: (row.ColData[0] || {}).value || '', cells: row.ColData.slice(1).map(d => d.value), level, type: 'data', group: g });
+      if (row.ColData) rows.push({ label: (row.ColData[0] || {}).value || '', cells: row.ColData.slice(1).map(d => d.value), level, type: 'data', group: g, acctId: (row.ColData[0] || {}).id || null });
       if (row.Summary && row.Summary.ColData) rows.push({ label: (row.Summary.ColData[0] || {}).value || '', cells: row.Summary.ColData.slice(1).map(d => d.value), level, type: 'summary', group: row.group || g });
     }
   })(((rep || {}).Rows || {}).Row || [], 0, null);
@@ -2888,7 +2931,8 @@ app.http('qbo-report', {
         case 'bills': { data = { kind: 'list', editable: 'bill', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, VendorRef FROM Bill WHERE Balance > '0'")).map(x => ({ id: x.Id, doc: x.DocNumber, name: x.VendorRef && x.VendorRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance })) }; break; }
         case 'transactions': {
           const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
-          data = flattenQboReport(await apiGet('/reports/TransactionList?start_date=' + from + '&end_date=' + to)); data.range = { from, to }; data.kind = 'report'; break;
+          const acct = url.searchParams.get('account'); // drill-down: one account's transactions
+          data = flattenQboReport(await apiGet('/reports/TransactionList?start_date=' + from + '&end_date=' + to + (acct ? '&account=' + encodeURIComponent(acct) : ''))); data.range = { from, to, account: acct || undefined }; data.kind = 'report'; break;
         }
         case 'payments': {
           const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
