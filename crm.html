@@ -82,13 +82,25 @@
   .toolbar .search input { flex: 1; border: none; outline: none; background: transparent; font: inherit; font-size: 14px; min-width: 0; }
   .toolbar .search svg { width: 16px; height: 16px; opacity: 0.6; flex-shrink: 0; }
   .toolbar select { background: var(--chrome); border: 1px solid var(--chrome-mute); border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 13px; min-height: 38px; min-width: 130px; }
-  .toolbar .btn { min-height: 38px; border: 0; border-radius: 8px; padding: 0 14px; font: inherit; font-weight: 700; font-size: 13px; cursor: pointer; letter-spacing: 0.2px; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 38px; border: 0; border-radius: 8px; padding: 0 14px; font: inherit; font-weight: 700; font-size: 13px; cursor: pointer; letter-spacing: 0.2px; -webkit-appearance: none; appearance: none; transition: background .14s ease, border-color .14s ease, color .14s ease, transform .06s ease; }
+  .btn:active { transform: translateY(1px); }
+  .btn:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
   .btn-primary { background: var(--gold); color: #fff; }
   .btn-primary:hover { background: var(--gold-deep); }
   .btn-ghost { background: transparent; color: var(--ink); border: 1px solid var(--chrome-mute); }
   .btn-ghost:hover { background: var(--chrome-mute); }
   .btn-danger { background: transparent; color: #6a1c1c; border: 1px solid #e6c8c8; }
   .btn-danger:hover { background: #f3e0e0; }
+  /* Header sits on a dark band — recolor ghost/danger buttons for contrast. */
+  .detail-head .top-actions .btn-ghost { color: #fff; border-color: rgba(255,255,255,0.28); }
+  .detail-head .top-actions .btn-ghost:hover { background: rgba(255,255,255,0.14); border-color: rgba(255,255,255,0.5); }
+  .detail-head .top-actions .btn-danger { color: #f0b4b4; border-color: rgba(240,150,150,0.45); }
+  .detail-head .top-actions .btn-danger:hover { background: rgba(240,150,150,0.18); color: #fff; }
+  .detail-head .top-actions .btn-primary { background: var(--gold-warm, var(--gold)); color: #1a1a1a; }
+  /* Modernize the Profile dropdowns (Stage / Customer type). */
+  .field-row .v select { background: var(--chrome); border: 1px solid var(--chrome-mute); border-radius: 8px; padding: 6px 9px; font: inherit; font-size: 13px; min-height: 34px; color: var(--ink); cursor: pointer; }
+  .field-row .v select:hover { border-color: var(--gold); }
+  .field-row .v select:focus { outline: none; border-color: var(--gold); }
 
   .list { background: #fff; border: 1px solid var(--chrome-mute); border-radius: 12px; overflow: hidden; }
   table { width: 100%; border-collapse: collapse; }

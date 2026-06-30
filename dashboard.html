@@ -45,13 +45,18 @@
   }
   .toolbar select:focus, .toolbar input:focus { outline:2px solid var(--gold); outline-offset:-1px; border-color:var(--gold); }
   .toolbar .grow { flex:1; }
-  .toolbar .btn {
+  .btn {
+    display:inline-flex; align-items:center; justify-content:center; gap:6px;
     border:none; border-radius:8px; padding:9px 14px; font:inherit; font-weight:700; font-size:13px; cursor:pointer;
+    -webkit-appearance:none; appearance:none;
+    transition:background .14s ease, border-color .14s ease, color .14s ease, transform .06s ease;
     background:var(--gold-deep); color:#fff;
   }
-  .toolbar .btn:hover { background:#876d3a; }
-  .toolbar .btn.ghost { background:var(--chrome); color:var(--ink); border:1px solid var(--border); }
-  .toolbar .btn.ghost:hover { background:var(--chrome-mute); }
+  .btn:hover { background:#876d3a; }
+  .btn:active { transform:translateY(1px); }
+  .btn:focus-visible { outline:2px solid var(--gold); outline-offset:1px; }
+  .btn.ghost { background:var(--chrome); color:var(--ink); border:1px solid var(--border); }
+  .btn.ghost:hover { background:var(--chrome-mute); }
   .save-state { font-size:12px; color:var(--muted); min-width:74px; }
   .save-state.saved { color:var(--green); }
 
