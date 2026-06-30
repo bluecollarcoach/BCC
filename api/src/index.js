@@ -3245,33 +3245,39 @@ app.http('ai-scan-card', {
     if (!key) return { jsonBody: { ok: false, needsKey: true, error: 'AI not configured — add ANTHROPIC_API_KEY in the app settings.' } };
     try {
       const form = await request.formData();
-      const file = form.get('file');
-      if (!file || typeof file.arrayBuffer !== 'function') return badRequest('file required');
-      const buf = Buffer.from(await file.arrayBuffer());
-      if (buf.length > 12 * 1024 * 1024) return badRequest('file too large (max 12 MB)');
-      const mt = (file.type || '').toLowerCase() || 'image/jpeg';
-      const srcBlock = { type: 'image', source: { type: 'base64', media_type: (/(png|jpe?g|webp|gif)/.test(mt) ? mt : 'image/jpeg'), data: buf.toString('base64') } };
+      const files = form.getAll('file').filter(f => f && typeof f.arrayBuffer === 'function');
+      if (!files.length) return badRequest('file required');
+      if (files.length > 10) return badRequest('too many images (max 10)');
+      const imageBlocks = []; let totalBytes = 0;
+      for (const file of files) {
+        const buf = Buffer.from(await file.arrayBuffer());
+        if (buf.length > 12 * 1024 * 1024) return badRequest('an image is too large (max 12 MB each)');
+        totalBytes += buf.length; if (totalBytes > 30 * 1024 * 1024) return badRequest('images too large in total (max 30 MB)');
+        const mt = (file.type || '').toLowerCase() || 'image/jpeg';
+        imageBlocks.push({ type: 'image', source: { type: 'base64', media_type: (/(png|jpe?g|webp|gif)/.test(mt) ? mt : 'image/jpeg'), data: buf.toString('base64') } });
+      }
+      const contactProps = {
+        firstName: { type: 'string' },
+        lastName: { type: 'string' },
+        title: { type: 'string', description: 'Job title / role' },
+        company: { type: 'string' },
+        email: { type: 'string' },
+        phone: { type: 'string', description: 'Primary phone as printed' },
+        mobilePhone: { type: 'string', description: 'Mobile/cell if separate from the main phone' },
+        website: { type: 'string', description: 'Company website (host or URL)' },
+        street: { type: 'string', description: 'Street address line' },
+        city: { type: 'string' },
+        state: { type: 'string', description: '2-letter US state/region code if shown' },
+        zip: { type: 'string' },
+        otherInfo: { type: 'string', description: 'Anything else on the card (fax, second email, tagline) — keep short' }
+      };
       const tool = {
-        name: 'record_contact',
-        description: 'Record the contact details read from a business card.',
+        name: 'record_contacts',
+        description: 'Record every distinct business card found across the provided image(s) — one entry per card/person.',
         input_schema: {
           type: 'object',
-          properties: {
-            firstName: { type: 'string' },
-            lastName: { type: 'string' },
-            title: { type: 'string', description: 'Job title / role' },
-            company: { type: 'string' },
-            email: { type: 'string' },
-            phone: { type: 'string', description: 'Primary phone as printed' },
-            mobilePhone: { type: 'string', description: 'Mobile/cell if separate from the main phone' },
-            website: { type: 'string', description: 'Company website (host or URL)' },
-            street: { type: 'string', description: 'Street address line' },
-            city: { type: 'string' },
-            state: { type: 'string', description: '2-letter US state/region code if shown' },
-            zip: { type: 'string' },
-            otherInfo: { type: 'string', description: 'Anything else on the card (fax, second email, tagline) — keep short' }
-          },
-          required: []
+          properties: { contacts: { type: 'array', items: { type: 'object', properties: contactProps, required: [] } } },
+          required: ['contacts']
         }
       };
       const model = process.env.AI_MODEL || 'claude-sonnet-4-6';
@@ -3279,15 +3285,16 @@ app.http('ai-scan-card', {
         method: 'POST',
         headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
         body: JSON.stringify({
-          model: model, max_tokens: 1024, tools: [tool], tool_choice: { type: 'tool', name: 'record_contact' },
-          messages: [{ role: 'user', content: [srcBlock, { type: 'text', text: 'This is a photo of a business card. Read it and call record_contact. Split the person\'s name into first and last. Use the 2-letter state code. Only include fields clearly visible on the card; omit anything you cannot read.' }] }]
+          model: model, max_tokens: 4096, tools: [tool], tool_choice: { type: 'tool', name: 'record_contacts' },
+          messages: [{ role: 'user', content: imageBlocks.concat([{ type: 'text', text: 'These image(s) contain one or more business cards (there may be several cards in a single photo, and/or multiple photos). Read EVERY distinct card and call record_contacts with one entry per card/person. Split each name into first and last. Use the 2-letter state code. Only include fields clearly visible on a card; omit anything you cannot read. Do not invent or duplicate cards.' }]) }]
         })
       });
       if (!r.ok) { const t = (await r.text().catch(() => '')).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'AI error ' + r.status, detail: t } }; }
       const j = await r.json();
       const tu = (j.content || []).find(c => c.type === 'tool_use');
-      if (!tu) return { jsonBody: { ok: false, error: 'Could not read the card — try a clearer, well-lit photo.' } };
-      return { jsonBody: { ok: true, data: tu.input } };
+      const contacts = (tu && tu.input && Array.isArray(tu.input.contacts)) ? tu.input.contacts.filter(c => c && (c.firstName || c.lastName || c.company || c.email)) : [];
+      if (!contacts.length) return { jsonBody: { ok: false, error: 'No business card detected — try a clearer, well-lit photo.' } };
+      return { jsonBody: { ok: true, contacts: contacts } };
     } catch (e) { context.error('ai-scan-card', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });

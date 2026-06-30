@@ -340,7 +340,7 @@
     </div>
 
     <input type="file" id="csvFile" accept=".csv,text/csv" style="display:none;" />
-    <input type="file" id="cardFile" accept="image/*" capture="environment" style="display:none;" />
+    <input type="file" id="cardFile" accept="image/*" multiple style="display:none;" />
 
     <div class="list" id="list" aria-live="polite">
       <table id="tbl">
@@ -954,31 +954,45 @@
     function fillForce(id, val) { if (val == null || val === '') return; var el = document.getElementById(id); if (el) el.value = String(val).trim(); }
     function fillIfEmpty(id, val) { if (val == null || val === '') return; var el = document.getElementById(id); if (el && !el.value.trim()) el.value = String(val).trim(); }
     function appendNote(text) { if (!text) return; var n = document.getElementById('f-notes'); if (n.value.indexOf(String(text).slice(0, 24)) >= 0) return; n.value = (n.value ? n.value + '\n' : '') + text; }
+    function cleanWeb(w) { return String(w || '').replace(/^https?:\/\//i, '').replace(/\/$/, ''); }
+    // Fill the single New-contact panel from one parsed card.
+    function fillPanelFrom(d) {
+      fillForce('f-first', d.firstName); fillForce('f-last', d.lastName);
+      fillForce('f-email', d.email); fillForce('f-phone', d.phone || d.mobilePhone);
+      fillForce('f-title', d.title); fillForce('f-company', d.company);
+      fillForce('f-website', cleanWeb(d.website));
+      fillForce('f-street', d.street); fillForce('f-city', d.city); fillForce('f-state', d.state); fillForce('f-zip', d.zip);
+      appendNote(d.otherInfo);
+    }
     document.getElementById('scanBtn').addEventListener('click', function () { document.getElementById('cardFile').click(); });
     document.getElementById('cardFile').addEventListener('change', function () {
-      var f = this.files && this.files[0]; this.value = '';
-      if (!f) return;
-      if (f.size > 12 * 1024 * 1024) { (window.bccNotify || alert)('Image too large (max 12 MB).', 'warn'); return; }
+      var files = this.files ? Array.prototype.slice.call(this.files) : []; this.value = '';
+      if (!files.length) return;
+      if (files.length > 10) { (window.bccNotify || alert)('Up to 10 images at a time.', 'warn'); return; }
+      var total = 0;
+      for (var i = 0; i < files.length; i++) { if (files[i].size > 12 * 1024 * 1024) { (window.bccNotify || alert)('Each image must be under 12 MB.', 'warn'); return; } total += files[i].size; }
+      if (total > 30 * 1024 * 1024) { (window.bccNotify || alert)('Those images total over 30 MB — pick fewer.', 'warn'); return; }
       resetForm();
       document.getElementById('panelTitle').textContent = 'New contact — from card';
       panel.classList.add('open');
-      setScan('📇 Reading the card…', '');
-      var fd = new FormData(); fd.append('file', f);
+      setScan('📇 Reading ' + (files.length > 1 ? files.length + ' images' : 'the card') + '…', '');
+      var fd = new FormData(); files.forEach(function (f) { fd.append('file', f); });
       fetch('/api/ai/scan-card', { method: 'POST', credentials: 'include', body: fd })
         .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
         .then(function (j) {
           if (j && j.needsKey) { setScan('AI scanning isn’t configured yet — an admin needs to add ANTHROPIC_API_KEY in the app settings.', 'err'); return; }
-          if (!j || !j.ok) { setScan('Could not read the card: ' + ((j && j.error) || 'error'), 'err'); return; }
-          var d = j.data || {};
-          fillForce('f-first', d.firstName); fillForce('f-last', d.lastName);
-          fillForce('f-email', d.email); fillForce('f-phone', d.phone || d.mobilePhone);
-          fillForce('f-title', d.title); fillForce('f-company', d.company);
-          fillForce('f-website', (d.website || '').replace(/^https?:\/\//i, '').replace(/\/$/, ''));
-          fillForce('f-street', d.street); fillForce('f-city', d.city); fillForce('f-state', d.state); fillForce('f-zip', d.zip);
-          appendNote(d.otherInfo);
-          setScan('✓ Card read — review the fields below' + ((d.website || d.email) ? '; searching the website too…' : '.'), 'ok');
-          document.getElementById('f-first').focus();
-          if (d.website || (d.email && d.email.indexOf('@') > 0)) enrichCompany(true);
+          if (!j || !j.ok) { setScan('Could not read the card(s): ' + ((j && j.error) || 'error'), 'err'); return; }
+          var contacts = j.contacts || [];
+          if (contacts.length <= 1) {
+            var d = contacts[0] || {};
+            fillPanelFrom(d);
+            setScan('✓ Card read — review the fields below' + ((d.website || d.email) ? '; searching the website too…' : '.'), 'ok');
+            document.getElementById('f-first').focus();
+            if (d.website || (d.email && d.email.indexOf('@') > 0)) enrichCompany(true);
+          } else {
+            panel.classList.remove('open'); resetForm();
+            openBatchReview(contacts);
+          }
         })
         .catch(function () { setScan('Scan failed — please try again.', 'err'); });
     });
@@ -1017,6 +1031,103 @@
         .catch(function () { btn.disabled = false; es.style.color = 'var(--burgundy)'; es.textContent = 'Enrichment failed.'; });
     }
     document.getElementById('enrichBtn').addEventListener('click', function () { enrichCompany(false); });
+
+    // ---- Batch review when a scan yields multiple cards ----
+    function openBatchReview(contacts) {
+      var types = loadTypes(); var defType = types[0] ? types[0].id : '';
+      var batch = contacts.map(function (d) {
+        return { firstName: d.firstName || '', lastName: d.lastName || '', title: d.title || '', company: d.company || '',
+          email: d.email || '', phone: d.phone || d.mobilePhone || '', website: cleanWeb(d.website),
+          street: d.street || '', city: d.city || '', state: d.state || '', zip: d.zip || '',
+          industry: '', yearsInBusiness: '', companySize: '', notes: d.otherInfo || '', sel: true, enriched: false };
+      });
+      var ov = document.createElement('div'); ov.id = 'batch_modal';
+      ov.style.cssText = 'position:fixed;inset:0;background:rgba(20,18,15,.5);z-index:300;display:flex;align-items:flex-start;justify-content:center;padding:24px;overflow:auto;';
+      function field(i, f, ph) { return '<input data-i="' + i + '" data-f="' + f + '" placeholder="' + ph + '" value="' + esc(batch[i][f]) + '" style="font:inherit;font-size:13px;padding:6px 8px;border:1px solid var(--line,#e6e5e1);border-radius:6px;width:100%;box-sizing:border-box;" />'; }
+      function cardHtml(i) {
+        return '<div data-card="' + i + '" style="border:1px solid var(--line,#e6e5e1);border-radius:10px;padding:12px;margin-bottom:10px;display:flex;gap:12px;align-items:flex-start;">' +
+          '<label style="display:flex;align-items:center;padding-top:6px;" title="Include this card"><input type="checkbox" data-sel="' + i + '" checked /></label>' +
+          '<div style="flex:1;min-width:0;display:grid;grid-template-columns:1fr 1fr;gap:8px;">' +
+            field(i, 'firstName', 'First name') + field(i, 'lastName', 'Last name') +
+            field(i, 'title', 'Title') + field(i, 'company', 'Company') +
+            field(i, 'email', 'Email') + field(i, 'phone', 'Phone') +
+            '<div style="grid-column:1/3;">' + field(i, 'website', 'Website') + '</div>' +
+            '<div data-extra="' + i + '" style="grid-column:1/3;font-size:12px;color:var(--gold-deep,#8a6d2f);"></div>' +
+          '</div></div>';
+      }
+      ov.innerHTML = '<div style="background:#fff;border-radius:14px;max-width:900px;width:100%;box-shadow:0 24px 60px rgba(0,0,0,.3);">' +
+        '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:16px 20px;border-bottom:1px solid var(--line,#e6e5e1);">' +
+          '<div><div style="font-weight:700;font-size:16px;">' + batch.length + ' contacts found</div><div style="font-size:12.5px;color:var(--muted,#6b7077);">Review &amp; edit below. Untick any card you don’t want, then save.</div></div>' +
+          '<button id="batch_close" type="button" class="btn btn-ghost" style="font-size:18px;min-height:34px;width:38px;">×</button>' +
+        '</div>' +
+        '<div id="batch_list" style="padding:14px 20px;max-height:62vh;overflow:auto;">' + batch.map(function (_, i) { return cardHtml(i); }).join('') + '</div>' +
+        '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:14px 20px;border-top:1px solid var(--line,#e6e5e1);">' +
+          '<span id="batch_status" style="margin-right:auto;font-size:12.5px;color:var(--muted,#6b7077);"></span>' +
+          '<button id="batch_enrich" type="button" class="btn btn-ghost">🔎 Enrich all from websites</button>' +
+          '<button id="batch_cancel" type="button" class="btn btn-ghost">Cancel</button>' +
+          '<button id="batch_save" type="button" class="btn btn-primary">Save ' + batch.length + ' contacts</button>' +
+        '</div></div>';
+      document.body.appendChild(ov);
+      var status = document.getElementById('batch_status');
+      function close() { var m = document.getElementById('batch_modal'); if (m) m.remove(); document.removeEventListener('keydown', onKey); }
+      function onKey(e) { if (e.key === 'Escape') close(); }
+      document.addEventListener('keydown', onKey);
+      ov.addEventListener('click', function (e) { if (e.target === ov) close(); });
+      document.getElementById('batch_close').onclick = close;
+      document.getElementById('batch_cancel').onclick = close;
+      function selCount() { return batch.filter(function (b) { return b.sel; }).length; }
+      function updateCount() { var s = document.getElementById('batch_save'); if (s) s.textContent = 'Save ' + selCount() + ' contact' + (selCount() === 1 ? '' : 's'); }
+      ov.querySelectorAll('input[data-f]').forEach(function (el) { el.addEventListener('input', function () { batch[+el.getAttribute('data-i')][el.getAttribute('data-f')] = el.value; }); });
+      ov.querySelectorAll('input[data-sel]').forEach(function (cb) {
+        cb.addEventListener('change', function () { var i = +cb.getAttribute('data-sel'); batch[i].sel = cb.checked; var card = ov.querySelector('[data-card="' + i + '"]'); if (card) card.style.opacity = cb.checked ? '1' : '.45'; updateCount(); });
+      });
+      document.getElementById('batch_enrich').onclick = function () {
+        var idxs = batch.map(function (b, i) { return i; }).filter(function (i) { return batch[i].sel && !batch[i].enriched && (batch[i].website || (batch[i].email && batch[i].email.indexOf('@') > 0)); });
+        if (!idxs.length) { status.textContent = 'Nothing to enrich (each card needs a website or work email).'; return; }
+        var btn = document.getElementById('batch_enrich'); btn.disabled = true; var total = idxs.length, done = 0;
+        (function next() {
+          if (!idxs.length) { btn.disabled = false; status.textContent = '✓ Enriched ' + done + ' of ' + total + ' cards.'; return; }
+          var i = idxs.shift(); status.textContent = '🔎 Enriching ' + (done + 1) + '/' + total + '…';
+          fetch('/api/ai/enrich-company', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ website: batch[i].website, email: batch[i].email, company: batch[i].company }) })
+            .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+            .then(function (j) {
+              if (j && j.ok) {
+                var d = j.data || {}; batch[i].enriched = true;
+                if (j.website) { batch[i].website = cleanWeb(j.website); var wf = ov.querySelector('input[data-i="' + i + '"][data-f="website"]'); if (wf) wf.value = batch[i].website; }
+                if (!batch[i].industry) batch[i].industry = d.businessType || '';
+                if (!batch[i].yearsInBusiness) batch[i].yearsInBusiness = d.yearsInBusiness || (d.foundedYear ? (new Date().getFullYear() - d.foundedYear) : '');
+                if (!batch[i].companySize) batch[i].companySize = d.companySize || '';
+                if (!batch[i].street) batch[i].street = d.street || '';
+                if (!batch[i].city) batch[i].city = d.city || '';
+                if (!batch[i].state) batch[i].state = d.state || '';
+                if (!batch[i].zip) batch[i].zip = d.zip || '';
+                var note = [];
+                if (d.description) note.push(d.description);
+                if (d.services && d.services.length) note.push('Services: ' + d.services.slice(0, 6).join(', '));
+                if (note.length) batch[i].notes = (batch[i].notes ? batch[i].notes + '\n' : '') + note.join('\n');
+                var ex = ov.querySelector('[data-extra="' + i + '"]'); if (ex) ex.textContent = [batch[i].industry, batch[i].yearsInBusiness ? batch[i].yearsInBusiness + ' yrs in business' : '', batch[i].companySize].filter(Boolean).join(' · ');
+              }
+              done++; next();
+            })
+            .catch(function () { done++; next(); });
+        })();
+      };
+      document.getElementById('batch_save').onclick = function () {
+        var sel = batch.filter(function (b) { return b.sel && (b.firstName || b.company || b.email); });
+        if (!sel.length) { status.textContent = 'Nothing to save — each card needs at least a name, company, or email.'; return; }
+        sel.forEach(function (b) {
+          var c = { firstName: (b.firstName || '').trim(), lastName: (b.lastName || '').trim(), email: (b.email || '').trim(), phone: (b.phone || '').trim(),
+            title: (b.title || '').trim(), company: (b.company || '').trim(), website: cleanWeb(b.website), street: (b.street || '').trim(),
+            city: (b.city || '').trim(), state: (b.state || '').trim(), zip: (b.zip || '').trim(), industry: (b.industry || '').trim(),
+            yearsInBusiness: String(b.yearsInBusiness || '').trim(), companySize: (b.companySize || '').trim(),
+            customerType: defType, stage: 'lead', tags: [], notes: (b.notes || '').trim(), needs: [], ownerId: (window.bccUser && window.bccUser.userDetails) || '' };
+          saveContact(c);
+          if (window.bccAudit) window.bccAudit('contact-create', { key: c.id, path: '/crm.html', meta: { batch: true } });
+        });
+        if (window.bccNotifySaved) window.bccNotifySaved('Saved ' + sel.length + ' contacts.'); else (window.bccNotify || alert)('Saved ' + sel.length + ' contacts.', 'success');
+        close(); renderList();
+      };
+    }
 
     rowsEl.addEventListener('click', function (e) {
       var btn = e.target.closest('button[data-act]');
