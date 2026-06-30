@@ -228,6 +228,7 @@
         <option value="20-50">20-50</option>
         <option value="50+">50+</option>
       </select>
+      <button class="btn btn-ghost" id="bkSyncBtn" type="button" title="Create CRM records for your QuickBooks bookkeeping companies and fill in their details">⟳ Sync from Bookkeeping</button>
       <button class="btn btn-primary" id="newBtn" type="button">+ New company</button>
     </div>
 
@@ -331,6 +332,86 @@
     return c;
   }
   function deleteCompany(id) { localStorage.removeItem(id); }
+
+  /* ===== Sync from Bookkeeping (QuickBooks companies → CRM companies) ===== */
+  var _bkSyncRan = false;
+  function cleanWeb(w) { return String(w || '').replace(/^https?:\/\//i, '').replace(/\/+$/, ''); }
+  // Normalize a company name for matching: drop common entity suffixes + punctuation
+  // so "Patriot Masonry Co" and "Patriot Masonry" collapse to the same key.
+  function normName(s) {
+    return String(s || '').toLowerCase()
+      .replace(/\b(co|company|llc|l\.l\.c|inc|incorporated|corp|corporation|ltd|limited|pllc|pc|lp|llp|the)\b/g, '')
+      .replace(/[^a-z0-9]+/g, '');
+  }
+  function setSyncMeta(t) { var el = document.getElementById('syncMeta'); if (el) el.textContent = t || 'Synced via bcc-api.js'; }
+  // Pull QBO companies, create any missing CRM company (linked by realmId), and
+  // fill detail from CompanyInfo. opts.full = also refill existing un-detailed ones.
+  function syncFromBookkeeping(opts) {
+    opts = opts || {};
+    var btn = document.getElementById('bkSyncBtn'); if (btn) btn.disabled = true;
+    if (opts.full) setSyncMeta('Syncing from Bookkeeping…');
+    return fetch('/api/integrations/qbo/companies', { credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : { companies: [] }; })
+      .then(function (d) {
+        var qcos = (d && d.companies) || [];
+        if (!qcos.length) { if (btn) btn.disabled = false; setSyncMeta(''); if (opts.full) (window.bccNotify || function () {})('No bookkeeping companies you can access.', 'warn'); return; }
+        var existing = allCompanies(); var created = 0, linked = 0; var toFill = [];
+        qcos.forEach(function (q) {
+          var match = existing.filter(function (c) { return c.realmId && String(c.realmId) === String(q.realmId); })[0]
+                   || existing.filter(function (c) { return !c.realmId && normName(c.name) === normName(q.companyName); })[0];
+          if (!match) {
+            var nc = saveCompany({ name: q.companyName || ('Company ' + q.realmId), realmId: String(q.realmId), source: 'bookkeeping' });
+            existing.push(nc); created++; toFill.push(nc.id);
+          } else if (!match.realmId) {
+            match.realmId = String(q.realmId); if (!match.source) match.source = 'bookkeeping'; saveCompany(match); linked++;
+            if (!match.qboInfoAt) toFill.push(match.id);
+          } else if (opts.full && !match.qboInfoAt) { toFill.push(match.id); }
+        });
+        renderList();
+        return fillCompanyDetails(toFill).then(function (filled) {
+          if (btn) btn.disabled = false; setSyncMeta('');
+          renderList();
+          if (created || filled || linked || opts.full) {
+            var parts = [];
+            if (created) parts.push('added ' + created);
+            if (linked) parts.push('linked ' + linked);
+            if (filled) parts.push('filled ' + filled);
+            var msg = parts.length ? ('Bookkeeping sync: ' + parts.join(', ') + '.') : 'Bookkeeping companies already up to date.';
+            if (window.bccNotifySaved && (created || filled || linked)) window.bccNotifySaved(msg);
+            else if (opts.full && window.bccNotify) window.bccNotify(msg, 'success');
+          }
+        });
+      })
+      .catch(function () { if (btn) btn.disabled = false; setSyncMeta(''); });
+  }
+  // Fill each company's blank fields from QBO CompanyInfo (sequential, best-effort).
+  function fillCompanyDetails(ids) {
+    var filled = 0;
+    return (ids || []).reduce(function (p, id) {
+      return p.then(function () {
+        var c = getCompany(id); if (!c || !c.realmId) return;
+        return fetch('/api/integrations/qbo/companies/' + encodeURIComponent(c.realmId) + '/companyinfo', { credentials: 'include' })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (info) {
+            if (!info || !info.ok) return;
+            var cur = getCompany(id) || c;
+            if (!cur.phone && info.phone) cur.phone = info.phone;
+            if (!cur.website && info.website) cur.website = cleanWeb(info.website);
+            if (!cur.city && info.city) cur.city = info.city;
+            if (!cur.state && info.state) cur.state = info.state;
+            if (!cur.domain && info.website) cur.domain = cleanWeb(info.website); // website only — never a free-email domain
+            var extra = [];
+            if (info.legalName && normName(info.legalName) !== normName(cur.name)) extra.push('Legal name: ' + info.legalName);
+            if (info.fiscalYearEnd) extra.push('Fiscal year ends ' + info.fiscalYearEnd);
+            var add = extra.join(' · ');
+            if (add && (cur.notes || '').indexOf('Legal name:') < 0 && (cur.notes || '').indexOf('Fiscal year') < 0) cur.notes = (cur.notes ? cur.notes + '\n' : '') + add;
+            cur.qboInfoAt = nowIso();
+            saveCompany(cur); filled++;
+          })
+          .catch(function () {});
+      });
+    }, Promise.resolve()).then(function () { return filled; });
+  }
 
   function contactsForCompany(companyId, companyName) {
     var out = [];
@@ -558,6 +639,8 @@
       panel.classList.add('open');
       document.getElementById('f-name').focus();
     });
+    var bk = document.getElementById('bkSyncBtn');
+    if (bk) bk.addEventListener('click', function () { _bkSyncRan = true; syncFromBookkeeping({ full: true }); });
     document.getElementById('cancelBtn').addEventListener('click', function () {
       panel.classList.remove('open'); resetForm();
     });
@@ -620,12 +703,20 @@
     }
     if (syncMetaEl) syncMetaEl.textContent = 'Synced via bcc-api.js';
   }
-  window.addEventListener('bcc-data-ready', function () {
-    var id = getParam('id');
-    if (id) renderDetail(id); else if (rowsEl) renderList();
-  });
-  window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
-  setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
+  // Init exactly once (auth-ready may fire after the 600ms fallback already ran).
+  function bootOnce() { if (document.body.dataset.didInit) return; document.body.dataset.didInit = '1'; init(); }
+  // Auto-create CRM companies from Bookkeeping. ONLY safe once the Cosmos pull has
+  // landed (existing bcc-company- docs loaded) — otherwise every QBO company looks
+  // new and gets duplicated. bcc-auth-ready fires AFTER that pull, so trigger here only.
+  function maybeAutoSync() {
+    if (_bkSyncRan || getParam('id') || !rowsEl) return;
+    _bkSyncRan = true;
+    syncFromBookkeeping({ auto: true });
+  }
+  window.addEventListener('bcc-auth-ready', function () { bootOnce(); maybeAutoSync(); });
+  // Fallback init only (offline / no bcc-api). NO auto-sync here: the pull may not
+  // have run yet, which would create duplicate companies.
+  setTimeout(bootOnce, 600);
 })();
 </script>
 

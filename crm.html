@@ -506,6 +506,38 @@
   }
   function deleteConvo(id) { localStorage.removeItem(id); }
 
+  /* Weekly coaching notes — dated entries per contact (after weekly calls). */
+  var WEEKLY_PREFIX = 'bcc-weeklynote-';
+  function weeklyNotesFor(contactId) {
+    var out = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i);
+      if (!k || k.indexOf(WEEKLY_PREFIX) !== 0) continue;
+      try { var w = JSON.parse(localStorage.getItem(k)); if (w && w.contactId === contactId) out.push(w); } catch (e) {}
+    }
+    return out.sort(function (a, b) { return (b.weekOf || '').localeCompare(a.weekOf || '') || (b.createdAt || '').localeCompare(a.createdAt || ''); });
+  }
+  function saveWeeklyNote(w) {
+    w.updatedAt = nowIso();
+    if (!w.createdAt) w.createdAt = w.updatedAt;
+    if (!w.id) w.id = WEEKLY_PREFIX + uid();
+    if (!w.tenantId) w.tenantId = 'blue-collar-coach';
+    w.docType = 'weekly-note';
+    localStorage.setItem(w.id, JSON.stringify(w));
+  }
+  function deleteWeeklyNote(id) { localStorage.removeItem(id); }
+  // Monday of the current week, YYYY-MM-DD (default "week of" for a new note).
+  function thisMonday() {
+    var d = new Date(); var day = (d.getDay() + 6) % 7; d.setDate(d.getDate() - day);
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  function fmtWeekOf(s) {
+    if (!s) return '';
+    var p = String(s).split('-'); if (p.length !== 3) return s;
+    var d = new Date(+p[0], +p[1] - 1, +p[2]); if (isNaN(d)) return s;
+    return 'Week of ' + d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
   /* ===== Mode routing ===== */
   function getParam(k) {
     return new URLSearchParams(location.search).get(k);
@@ -656,6 +688,17 @@
           '</li>';
         }).join('') + '</ul>';
 
+    var wnotes = weeklyNotesFor(c.id);
+    var wnotesHtml = wnotes.length === 0
+      ? '<p class="muted" style="font-size:13px;">No weekly notes yet. Add one after your call below.</p>'
+      : '<ul class="timeline">' + wnotes.map(function (w) {
+          return '<li>' +
+            '<span class="when">' + esc(fmtWeekOf(w.weekOf)) + (w.createdBy ? ' · ' + esc(String(w.createdBy).split('@')[0]) : '') + '</span>' +
+            ' <button class="icon-btn danger del" data-weekly-del="' + esc(w.id) + '" title="Delete">&times;</button>' +
+            '<div class="details" style="white-space:pre-wrap;margin-top:4px;">' + esc(w.note || '') + '</div>' +
+          '</li>';
+        }).join('') + '</ul>';
+
     el.innerHTML =
       '<div class="detail-head">' +
         '<div class="who">' +
@@ -715,6 +758,19 @@
         '</div>' +
 
         '<div>' +
+          // ---- Weekly coaching notes ----
+          '<div class="card">' +
+            '<h4>Weekly notes <span class="count">' + wnotes.length + ' logged</span></h4>' +
+            '<div id="weeklyList">' + wnotesHtml + '</div>' +
+            '<div class="inline-add stacked" style="margin-top:14px;">' +
+              '<div class="row">' +
+                '<label style="flex:0 0 auto;font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;">Week of <input id="weeklyDate" type="date" value="' + esc(thisMonday()) + '" style="font:inherit;font-size:13px;padding:5px 7px;border:1px solid var(--line,#e6e5e1);border-radius:6px;" /></label>' +
+                '<button id="weeklyAdd" type="button">Add note</button>' +
+              '</div>' +
+              '<textarea id="weeklyNote" rows="3" placeholder="Notes from this week\'s call — wins, focus, action items, follow-ups…"></textarea>' +
+            '</div>' +
+          '</div>' +
+
           // ---- Conversations / interactions timeline ----
           '<div class="card">' +
             '<h4>Conversations <span class="count">' + convos.length + ' total</span></h4>' +
@@ -868,6 +924,29 @@
         e.stopPropagation();
         if (!confirm('Delete this conversation entry?')) return;
         deleteConvo(btn.getAttribute('data-convo-del'));
+        renderDetail(c.id);
+      };
+    });
+    document.getElementById('weeklyAdd').onclick = function () {
+      var note = document.getElementById('weeklyNote').value.trim();
+      if (!note) { (window.bccNotify || alert)('Write the note first.', 'warn'); return; }
+      var w = {
+        contactId: c.id,
+        weekOf: document.getElementById('weeklyDate').value || thisMonday(),
+        note: note,
+        createdBy: (window.bccUser && window.bccUser.userDetails) || ''
+      };
+      saveWeeklyNote(w);
+      if (window.bccAudit) window.bccAudit('weekly-note-add', { key: w.id, path: '/crm.html', meta: { weekOf: w.weekOf } });
+      if (window.bccNotifySaved) window.bccNotifySaved('Weekly note saved.');
+      document.getElementById('weeklyNote').value = '';
+      renderDetail(c.id);
+    };
+    document.querySelectorAll('[data-weekly-del]').forEach(function (btn) {
+      btn.onclick = function (e) {
+        e.stopPropagation();
+        if (!confirm('Delete this weekly note?')) return;
+        deleteWeeklyNote(btn.getAttribute('data-weekly-del'));
         renderDetail(c.id);
       };
     });

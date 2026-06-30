@@ -3559,6 +3559,10 @@ app.http('qbo-companyinfo', {
         phone: (ci.PrimaryPhone && ci.PrimaryPhone.FreeFormNumber) || '',
         website: (ci.WebAddr && ci.WebAddr.URI) || '',
         address: addressLine,
+        street: addr.Line1 || '',
+        city: addr.City || '',
+        state: addr.CountrySubDivisionCode || '',
+        zip: addr.PostalCode || '',
         fiscalYearEnd: fiscalYearEnd
       } };
     } catch (e) { context.error('qbo-companyinfo', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
