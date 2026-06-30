@@ -45,14 +45,20 @@
     border-radius:12px; margin-bottom:14px;
   }
   .toolbar .navbtns { display:flex; gap:6px; }
-  .toolbar .navbtns button { min-height:38px; padding:0 12px; border:1px solid var(--chrome-mute); background:#fff; border-radius:8px; cursor:pointer; font:inherit; font-weight:700; font-size:13px; color:var(--ink); }
-  .toolbar .navbtns button:hover { background:var(--chrome-mute); }
+  .toolbar .navbtns button { appearance:none; -webkit-appearance:none; min-height:38px; padding:0 12px; border:1px solid var(--chrome-mute); background:#fff; border-radius:8px; cursor:pointer; font:inherit; font-weight:700; font-size:13px; line-height:1; color:var(--ink); transition:background .15s ease, border-color .15s ease, transform .05s ease; }
+  .toolbar .navbtns button:hover { background:var(--chrome-mute); border-color:var(--gold); }
+  .toolbar .navbtns button:active { transform:translateY(1px); }
+  .toolbar .navbtns button:focus-visible { outline:2px solid var(--gold); outline-offset:2px; }
   .toolbar .label { font-family:'Source Serif 4', Georgia, serif; font-size:18px; flex:1; text-align:center; }
   .view-toggle { display:flex; gap:0; border:1px solid var(--chrome-mute); border-radius:8px; overflow:hidden; }
   .view-toggle button {
-    background:#fff; border:0; padding:0 14px; min-height:38px;
-    font:inherit; font-weight:700; font-size:12.5px; cursor:pointer; color:var(--muted);
+    appearance:none; -webkit-appearance:none; background:#fff; border:0; padding:0 14px; min-height:38px;
+    font:inherit; font-weight:700; font-size:12.5px; line-height:1; cursor:pointer; color:var(--muted);
+    transition:background .15s ease, color .15s ease;
   }
+  .view-toggle button + button { border-left:1px solid var(--chrome-mute); }
+  .view-toggle button:hover:not(.active) { background:var(--chrome-mute); color:var(--ink); }
+  .view-toggle button:focus-visible { outline:2px solid var(--gold); outline-offset:-2px; }
   .view-toggle button.active { background:var(--ink); color:var(--gold-warm); }
 
   /* Month grid */

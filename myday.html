@@ -100,10 +100,15 @@
   .log-card textarea:focus { outline:2px solid var(--gold); outline-offset:-1px; border-color:var(--gold); }
   .log-card .row { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; }
   .log-card button {
-    min-height:38px; padding:0 14px; border-radius:8px; border:0; cursor:pointer;
-    font:inherit; font-weight:700; font-size:13px; background:var(--gold); color:#fff;
+    appearance:none; -webkit-appearance:none;
+    min-height:38px; padding:0 16px; border-radius:8px; border:0; cursor:pointer;
+    font:inherit; font-weight:700; font-size:13px; line-height:1;
+    background:var(--gold, #c5a55a); color:#fff;
+    transition:background 0.15s, transform 0.05s;
   }
-  .log-card button:hover { background:var(--gold-deep); }
+  .log-card button:hover { background:var(--gold-deep, #a8884a); }
+  .log-card button:active { transform:translateY(1px); }
+  .log-card button:focus-visible { outline:2px solid var(--gold-deep, #a8884a); outline-offset:2px; }
   .log-card .saved-at { font-size:11.5px; color:var(--muted); }
 
   .kpi { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }

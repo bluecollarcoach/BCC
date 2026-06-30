@@ -51,12 +51,16 @@
   }
   .uploader input[type=text] { min-width:160px; }
   .uploader button {
+    appearance:none; -webkit-appearance:none;
     min-height:38px; padding:0 16px; border-radius:8px; border:0;
-    font:inherit; font-weight:700; font-size:13px; cursor:pointer;
-    background:var(--gold); color:#fff;
+    font:inherit; font-weight:700; font-size:13px; line-height:1; cursor:pointer;
+    background:var(--gold, #c5a55a); color:#fff;
+    transition:background 0.15s, transform 0.05s;
   }
-  .uploader button:hover { background:var(--gold-deep); }
-  .uploader button:disabled { background:var(--muted); cursor:not-allowed; }
+  .uploader button:hover { background:var(--gold-deep, #a8884a); }
+  .uploader button:active { transform:translateY(1px); }
+  .uploader button:focus-visible { outline:2px solid var(--gold-deep, #a8884a); outline-offset:2px; }
+  .uploader button:disabled { background:var(--muted); cursor:not-allowed; transform:none; }
 
   .toolbar {
     display:flex; align-items:center; gap:8px; flex-wrap:wrap;

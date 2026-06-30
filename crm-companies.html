@@ -408,9 +408,73 @@
             cur.qboInfoAt = nowIso();
             saveCompany(cur); filled++;
           })
+          .then(function () { return aiEnrichCompany(id); }) // also pull richer detail from the website
           .catch(function () {});
       });
     }, Promise.resolve()).then(function () { return filled; });
+  }
+
+  /* ===== AI company enrichment (reads the website to fill richer detail) ===== */
+  var INDUSTRY_ENUM = ['HVAC','Plumbing','Electrical','Roofing','Construction','Landscaping','Cleaning','Auto','Restaurant','Retail','Professional Services','Other'];
+  function mapIndustry(text) {
+    var t = String(text || '').toLowerCase();
+    if (/hvac|heating|cooling|air condition|furnace|refrigerat/.test(t)) return 'HVAC';
+    if (/plumb/.test(t)) return 'Plumbing';
+    if (/electric/.test(t)) return 'Electrical';
+    if (/roof/.test(t)) return 'Roofing';
+    if (/construct|general contract|builder|build|remodel|mason|concrete|excavat|drywall|framing|carpentr/.test(t)) return 'Construction';
+    if (/landscap|lawn|tree|irrigation|hardscape|snow removal/.test(t)) return 'Landscaping';
+    if (/clean|janitor|maid|restoration/.test(t)) return 'Cleaning';
+    if (/auto|mechanic|body shop|collision|tire|dealership/.test(t)) return 'Auto';
+    if (/restaurant|cafe|catering|bakery|food|grill|brewery|bar\b/.test(t)) return 'Restaurant';
+    if (/retail|store|boutique|\bshop\b/.test(t)) return 'Retail';
+    if (/consult|account|bookkeep|\blaw\b|legal|attorney|market|agency|insurance|real estate|financ|software|technolog|design|profession/.test(t)) return 'Professional Services';
+    return t ? 'Other' : '';
+  }
+  function mapSize(text) {
+    var t = String(text || '').toLowerCase().replace(/,/g, '');
+    var nums = (t.match(/\d+/g) || []).map(Number);
+    if (!nums.length) return '';
+    var n = Math.max.apply(null, nums); // upper bound of any stated range
+    if (n <= 5) return '1-5';
+    if (n <= 20) return '5-20';
+    if (n <= 50) return '20-50';
+    return '50+';
+  }
+  // Fill richer company detail from the website via Claude. Runs once per company
+  // (aiEnrichedAt guard). Needs a website. Maps to the CRM's industry/size enums
+  // and appends an "about" summary to notes; only fills blanks.
+  function aiEnrichCompany(id) {
+    var c = getCompany(id); if (!c) return Promise.resolve(false);
+    var website = cleanWeb(c.website || '');
+    if (!website || c.aiEnrichedAt) return Promise.resolve(false);
+    return fetch('/api/ai/enrich-company', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ website: website, company: c.name }) })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j || !j.ok) return false;
+        var d = j.data || {}; var cur = getCompany(id) || c;
+        if (!cur.industry && d.businessType) cur.industry = mapIndustry(d.businessType);
+        if (!cur.size && d.companySize) cur.size = mapSize(d.companySize);
+        if (!cur.city && d.city) cur.city = d.city;
+        if (!cur.state && d.state) cur.state = d.state;
+        if (!cur.phone && d.phone) cur.phone = d.phone;
+        if (j.website && !cur.website) cur.website = cleanWeb(j.website);
+        var head = [];
+        if (d.businessType) head.push(d.businessType);
+        var yrs = d.yearsInBusiness || (d.foundedYear ? (new Date().getFullYear() - d.foundedYear) : '');
+        if (yrs) head.push(yrs + ' yrs in business');
+        if (d.companySize) head.push(d.companySize);
+        var bits = [];
+        if (head.length) bits.push(head.join(' · '));
+        if (d.description) bits.push(d.description);
+        if (d.services && d.services.length) bits.push('Services: ' + d.services.slice(0, 8).join(', '));
+        var about = bits.join('\n');
+        if (about && (cur.notes || '').indexOf(about.slice(0, 20)) < 0) cur.notes = (cur.notes ? cur.notes + '\n' : '') + about;
+        cur.aiEnrichedAt = nowIso();
+        saveCompany(cur);
+        return true;
+      })
+      .catch(function () { return false; });
   }
 
   function contactsForCompany(companyId, companyName) {
@@ -671,6 +735,8 @@
       panel.classList.remove('open');
       resetForm();
       renderList();
+      // Auto-fill richer detail from the company website (if one was entered).
+      if (c.website) aiEnrichCompany(c.id).then(function (did) { if (did) renderList(); });
     });
 
     rowsEl.addEventListener('click', function (e) {

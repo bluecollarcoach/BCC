@@ -54,11 +54,15 @@
   }
   .gate input:focus { outline:2px solid var(--gold); outline-offset:-1px; border-color:var(--gold); }
   .gate button {
+    appearance:none; -webkit-appearance:none;
     width:100%; margin-top:10px; padding:11px; border:0; border-radius:8px;
-    background:var(--gold); color:var(--ink); font:inherit; font-weight:700; font-size:14px; cursor:pointer;
-    letter-spacing:0.3px;
+    background:var(--gold, #c5a55a); color:var(--ink); font:inherit; font-weight:700; font-size:14px; cursor:pointer;
+    line-height:1; letter-spacing:0.3px;
+    transition:background 0.15s, transform 0.05s;
   }
-  .gate button:hover { background:var(--gold-warm); }
+  .gate button:hover { background:var(--gold-warm, #d4b67a); }
+  .gate button:active { transform:translateY(1px); }
+  .gate button:focus-visible { outline:2px solid var(--gold-warm, #d4b67a); outline-offset:2px; }
   .gate .err { color:#d9bdbd; font-size:12.5px; font-weight:600; margin-top:10px; min-height:18px; }
 
   /* Toolbar */
