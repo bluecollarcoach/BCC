@@ -290,11 +290,13 @@
         <option value="">All regions</option>
       </select>
       <button class="btn btn-ghost" id="csvBtn" type="button">Import CSV</button>
+      <button class="btn btn-ghost" id="scanBtn" type="button">📇 Scan card</button>
       <button class="btn btn-primary" id="newBtn" type="button">+ New contact</button>
     </div>
 
     <div class="panel" id="panel">
-      <h3>New contact</h3>
+      <h3 id="panelTitle">New contact</h3>
+      <div id="scanStatus" style="display:none;font-size:13px;margin-bottom:12px;padding:8px 12px;border-radius:8px;background:var(--chrome);"></div>
       <div class="grid">
         <label>First name<input id="f-first" type="text" required /></label>
         <label>Last name<input id="f-last" type="text" /></label>
@@ -302,6 +304,14 @@
         <label>Phone<input id="f-phone" type="tel" /></label>
         <label>Title<input id="f-title" type="text" placeholder="Owner, GM, …" /></label>
         <label>Company<input id="f-company" type="text" placeholder="Acme Co." /></label>
+        <div class="full" style="display:flex;flex-direction:column;gap:5px;">
+          <span style="font-size:12.5px;font-weight:600;color:var(--muted);">Website</span>
+          <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <input id="f-website" type="text" placeholder="acme.com" style="flex:1;min-width:180px;" />
+            <button class="btn btn-ghost" id="enrichBtn" type="button" style="white-space:nowrap;">🔎 Enrich from website</button>
+          </span>
+          <span id="enrichStatus" style="font-size:12px;color:var(--muted);"></span>
+        </div>
         <label>Customer type
           <select id="f-type"></select>
         </label>
@@ -313,8 +323,13 @@
             <option value="inactive">Inactive</option>
           </select>
         </label>
+        <label class="full">Street address<input id="f-street" type="text" placeholder="123 Main St" /></label>
         <label>City<input id="f-city" type="text" /></label>
         <label>State / region<input id="f-state" type="text" placeholder="MN" /></label>
+        <label>ZIP<input id="f-zip" type="text" placeholder="55101" /></label>
+        <label>Business type<input id="f-industry" type="text" placeholder="HVAC contractor" /></label>
+        <label>Years in business<input id="f-years" type="text" placeholder="12" /></label>
+        <label>Company size<input id="f-size" type="text" placeholder="10–50" /></label>
         <label class="full">Tags<input id="f-tags" type="text" placeholder="hvac, signed, midwest" /></label>
         <label class="full">Notes<textarea id="f-notes" rows="2"></textarea></label>
       </div>
@@ -325,6 +340,7 @@
     </div>
 
     <input type="file" id="csvFile" accept=".csv,text/csv" style="display:none;" />
+    <input type="file" id="cardFile" accept="image/*" capture="environment" style="display:none;" />
 
     <div class="list" id="list" aria-live="polite">
       <table id="tbl">
@@ -667,14 +683,20 @@
             '<div class="field-row"><div class="k">Phone</div><div class="v editable" contenteditable="true" data-prop="phone">' + esc(c.phone || '') + '</div></div>' +
             '<div class="field-row"><div class="k">Title</div><div class="v editable" contenteditable="true" data-prop="title">' + esc(c.title || '') + '</div></div>' +
             '<div class="field-row"><div class="k">Company</div><div class="v editable" contenteditable="true" data-prop="company">' + esc(c.company || '') + '</div></div>' +
+            '<div class="field-row"><div class="k">Website</div><div class="v editable" contenteditable="true" data-prop="website">' + esc(c.website || '') + '</div></div>' +
+            '<div class="field-row"><div class="k">Business type</div><div class="v editable" contenteditable="true" data-prop="industry">' + esc(c.industry || '') + '</div></div>' +
+            '<div class="field-row"><div class="k">Years in business</div><div class="v editable" contenteditable="true" data-prop="yearsInBusiness">' + esc(c.yearsInBusiness || '') + '</div></div>' +
+            '<div class="field-row"><div class="k">Company size</div><div class="v editable" contenteditable="true" data-prop="companySize">' + esc(c.companySize || '') + '</div></div>' +
             '<div class="field-row"><div class="k">Linked company</div><div class="v">' +
               '<select id="d-companyId" style="border:1px solid var(--chrome-mute);border-radius:6px;padding:6px 10px;font:inherit;font-size:13px;background:#fff;min-height:32px;width:100%;max-width:280px;">' +
                 buildCompanyOptions(c.companyId) +
               '</select>' +
               (c.companyId ? ' <a href="crm-companies.html?id=' + esc(c.companyId) + '" style="margin-left:8px;font-size:12px;color:var(--gold-deep);text-decoration:none;font-weight:700;">View →</a>' : '') +
             '</div></div>' +
+            '<div class="field-row"><div class="k">Street</div><div class="v editable" contenteditable="true" data-prop="street">' + esc(c.street || '') + '</div></div>' +
             '<div class="field-row"><div class="k">City</div><div class="v editable" contenteditable="true" data-prop="city">' + esc(c.city || '') + '</div></div>' +
             '<div class="field-row"><div class="k">State</div><div class="v editable" contenteditable="true" data-prop="state">' + esc(c.state || '') + '</div></div>' +
+            '<div class="field-row"><div class="k">ZIP</div><div class="v editable" contenteditable="true" data-prop="zip">' + esc(c.zip || '') + '</div></div>' +
             '<div class="field-row"><div class="k">Stage</div><div class="v"><select id="d-stage">' + stageOpts + '</select></div></div>' +
             '<div class="field-row"><div class="k">Customer type</div><div class="v"><select id="d-type">' + typeOpts + '</select></div></div>' +
             '<div class="field-row"><div class="k">Tags</div><div class="v editable" contenteditable="true" data-prop="tagsLine">' + esc((c.tags || []).join(', ')) + '</div></div>' +
@@ -753,7 +775,7 @@
     };
 
     document.getElementById('saveProfileBtn').onclick = function () {
-      var props = ['firstName','lastName','email','phone','title','company','city','state','notes'];
+      var props = ['firstName','lastName','email','phone','title','company','website','street','city','state','zip','industry','yearsInBusiness','companySize','notes'];
       var updated = Object.assign({}, c);
       props.forEach(function (p) {
         var el = document.querySelector('[data-prop="' + p + '"]');
@@ -868,7 +890,10 @@
     typeFilter.addEventListener('change', renderList);
 
     var panel = document.getElementById('panel');
+    var FORM_IDS = ['f-first','f-last','f-email','f-phone','f-title','f-company','f-website','f-street','f-city','f-state','f-zip','f-industry','f-years','f-size','f-tags','f-notes'];
     document.getElementById('newBtn').addEventListener('click', function () {
+      resetForm();
+      document.getElementById('panelTitle').textContent = 'New contact';
       panel.classList.add('open');
       document.getElementById('f-first').focus();
     });
@@ -876,9 +901,11 @@
       panel.classList.remove('open'); resetForm();
     });
     function resetForm() {
-      ['f-first','f-last','f-email','f-phone','f-title','f-company','f-city','f-state','f-tags','f-notes'].forEach(function (id) { document.getElementById(id).value = ''; });
+      FORM_IDS.forEach(function (id) { document.getElementById(id).value = ''; });
       document.getElementById('f-stage').value = 'lead';
       var types = loadTypes(); if (types[0]) document.getElementById('f-type').value = types[0].id;
+      var ss = document.getElementById('scanStatus'); if (ss) { ss.style.display = 'none'; ss.textContent = ''; }
+      var es = document.getElementById('enrichStatus'); if (es) es.textContent = '';
     }
     document.getElementById('saveBtn').addEventListener('click', function () {
       var first = document.getElementById('f-first').value.trim();
@@ -894,8 +921,14 @@
         phone:     document.getElementById('f-phone').value.trim(),
         title:     document.getElementById('f-title').value.trim(),
         company:   document.getElementById('f-company').value.trim(),
+        website:   document.getElementById('f-website').value.trim(),
+        street:    document.getElementById('f-street').value.trim(),
         city:      document.getElementById('f-city').value.trim(),
         state:     document.getElementById('f-state').value.trim(),
+        zip:       document.getElementById('f-zip').value.trim(),
+        industry:  document.getElementById('f-industry').value.trim(),
+        yearsInBusiness: document.getElementById('f-years').value.trim(),
+        companySize: document.getElementById('f-size').value.trim(),
         customerType: document.getElementById('f-type').value || '',
         stage:     document.getElementById('f-stage').value || 'lead',
         tags:      document.getElementById('f-tags').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean),
@@ -911,6 +944,79 @@
       resetForm();
       renderList();
     });
+
+    // ---- Business-card scanner (Claude vision) ----
+    function setScan(msg, kind) {
+      var ss = document.getElementById('scanStatus'); if (!ss) return;
+      ss.style.display = msg ? 'block' : 'none'; ss.textContent = msg || '';
+      ss.style.color = kind === 'err' ? 'var(--burgundy)' : (kind === 'ok' ? 'var(--green)' : 'var(--ink)');
+    }
+    function fillForce(id, val) { if (val == null || val === '') return; var el = document.getElementById(id); if (el) el.value = String(val).trim(); }
+    function fillIfEmpty(id, val) { if (val == null || val === '') return; var el = document.getElementById(id); if (el && !el.value.trim()) el.value = String(val).trim(); }
+    function appendNote(text) { if (!text) return; var n = document.getElementById('f-notes'); if (n.value.indexOf(String(text).slice(0, 24)) >= 0) return; n.value = (n.value ? n.value + '\n' : '') + text; }
+    document.getElementById('scanBtn').addEventListener('click', function () { document.getElementById('cardFile').click(); });
+    document.getElementById('cardFile').addEventListener('change', function () {
+      var f = this.files && this.files[0]; this.value = '';
+      if (!f) return;
+      if (f.size > 12 * 1024 * 1024) { (window.bccNotify || alert)('Image too large (max 12 MB).', 'warn'); return; }
+      resetForm();
+      document.getElementById('panelTitle').textContent = 'New contact — from card';
+      panel.classList.add('open');
+      setScan('📇 Reading the card…', '');
+      var fd = new FormData(); fd.append('file', f);
+      fetch('/api/ai/scan-card', { method: 'POST', credentials: 'include', body: fd })
+        .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
+        .then(function (j) {
+          if (j && j.needsKey) { setScan('AI scanning isn’t configured yet — an admin needs to add ANTHROPIC_API_KEY in the app settings.', 'err'); return; }
+          if (!j || !j.ok) { setScan('Could not read the card: ' + ((j && j.error) || 'error'), 'err'); return; }
+          var d = j.data || {};
+          fillForce('f-first', d.firstName); fillForce('f-last', d.lastName);
+          fillForce('f-email', d.email); fillForce('f-phone', d.phone || d.mobilePhone);
+          fillForce('f-title', d.title); fillForce('f-company', d.company);
+          fillForce('f-website', (d.website || '').replace(/^https?:\/\//i, '').replace(/\/$/, ''));
+          fillForce('f-street', d.street); fillForce('f-city', d.city); fillForce('f-state', d.state); fillForce('f-zip', d.zip);
+          appendNote(d.otherInfo);
+          setScan('✓ Card read — review the fields below' + ((d.website || d.email) ? '; searching the website too…' : '.'), 'ok');
+          document.getElementById('f-first').focus();
+          if (d.website || (d.email && d.email.indexOf('@') > 0)) enrichCompany(true);
+        })
+        .catch(function () { setScan('Scan failed — please try again.', 'err'); });
+    });
+
+    // ---- Website enrichment (Claude reads the company site) ----
+    function enrichCompany(auto) {
+      var website = document.getElementById('f-website').value.trim();
+      var email = document.getElementById('f-email').value.trim();
+      var company = document.getElementById('f-company').value.trim();
+      var es = document.getElementById('enrichStatus');
+      var hasEmail = email.indexOf('@') > 0;
+      if (!website && !hasEmail) { if (!auto) { es.style.color = 'var(--burgundy)'; es.textContent = 'Add a website or work email first.'; } return; }
+      es.style.color = 'var(--muted)'; es.textContent = '🔎 Searching the website…';
+      var btn = document.getElementById('enrichBtn'); btn.disabled = true;
+      fetch('/api/ai/enrich-company', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ website: website, email: email, company: company }) })
+        .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+        .then(function (j) {
+          btn.disabled = false;
+          if (j && j.needsKey) { es.style.color = 'var(--burgundy)'; es.textContent = 'AI isn’t configured — add ANTHROPIC_API_KEY in the app settings.'; return; }
+          if (!j || !j.ok) { es.style.color = auto ? 'var(--muted)' : 'var(--burgundy)'; es.textContent = (j && j.error) || 'Could not search the website.'; return; }
+          var d = j.data || {};
+          if (j.website) fillForce('f-website', j.website.replace(/^https?:\/\//i, '').replace(/\/$/, ''));
+          fillIfEmpty('f-industry', d.businessType);
+          if (d.yearsInBusiness) fillIfEmpty('f-years', d.yearsInBusiness); else if (d.foundedYear) fillIfEmpty('f-years', (new Date().getFullYear() - d.foundedYear));
+          fillIfEmpty('f-size', d.companySize);
+          fillIfEmpty('f-street', d.street); fillIfEmpty('f-city', d.city); fillIfEmpty('f-state', d.state); fillIfEmpty('f-zip', d.zip);
+          fillIfEmpty('f-phone', d.phone);
+          var bits = [];
+          if (d.description) bits.push(d.description);
+          if (d.foundedYear) bits.push('Founded ' + d.foundedYear + '.');
+          if (d.services && d.services.length) bits.push('Services: ' + d.services.slice(0, 8).join(', ') + '.');
+          if (d.socialLinks && d.socialLinks.length) bits.push(d.socialLinks.slice(0, 5).join('  '));
+          if (bits.length) appendNote(bits.join('\n'));
+          es.style.color = 'var(--green)'; es.textContent = '✓ Enriched from ' + (j.website || website);
+        })
+        .catch(function () { btn.disabled = false; es.style.color = 'var(--burgundy)'; es.textContent = 'Enrichment failed.'; });
+    }
+    document.getElementById('enrichBtn').addEventListener('click', function () { enrichCompany(false); });
 
     rowsEl.addEventListener('click', function (e) {
       var btn = e.target.closest('button[data-act]');

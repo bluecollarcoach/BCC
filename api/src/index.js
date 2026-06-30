@@ -3228,6 +3228,219 @@ app.http('ai-extract-receipt', {
 });
 
 /**
+ * POST /api/ai/scan-card  (multipart: file)
+ * Reads a business-card photo with Claude vision and returns structured contact
+ * fields (name, title, company, email, phone, website, address) to auto-fill a
+ * new CRM contact. Requires ANTHROPIC_API_KEY; returns needsKey:true if absent.
+ */
+app.http('ai-scan-card', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'ai/scan-card',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const key = process.env.ANTHROPIC_API_KEY;
+    if (!key) return { jsonBody: { ok: false, needsKey: true, error: 'AI not configured — add ANTHROPIC_API_KEY in the app settings.' } };
+    try {
+      const form = await request.formData();
+      const file = form.get('file');
+      if (!file || typeof file.arrayBuffer !== 'function') return badRequest('file required');
+      const buf = Buffer.from(await file.arrayBuffer());
+      if (buf.length > 12 * 1024 * 1024) return badRequest('file too large (max 12 MB)');
+      const mt = (file.type || '').toLowerCase() || 'image/jpeg';
+      const srcBlock = { type: 'image', source: { type: 'base64', media_type: (/(png|jpe?g|webp|gif)/.test(mt) ? mt : 'image/jpeg'), data: buf.toString('base64') } };
+      const tool = {
+        name: 'record_contact',
+        description: 'Record the contact details read from a business card.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            firstName: { type: 'string' },
+            lastName: { type: 'string' },
+            title: { type: 'string', description: 'Job title / role' },
+            company: { type: 'string' },
+            email: { type: 'string' },
+            phone: { type: 'string', description: 'Primary phone as printed' },
+            mobilePhone: { type: 'string', description: 'Mobile/cell if separate from the main phone' },
+            website: { type: 'string', description: 'Company website (host or URL)' },
+            street: { type: 'string', description: 'Street address line' },
+            city: { type: 'string' },
+            state: { type: 'string', description: '2-letter US state/region code if shown' },
+            zip: { type: 'string' },
+            otherInfo: { type: 'string', description: 'Anything else on the card (fax, second email, tagline) — keep short' }
+          },
+          required: []
+        }
+      };
+      const model = process.env.AI_MODEL || 'claude-sonnet-4-6';
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: model, max_tokens: 1024, tools: [tool], tool_choice: { type: 'tool', name: 'record_contact' },
+          messages: [{ role: 'user', content: [srcBlock, { type: 'text', text: 'This is a photo of a business card. Read it and call record_contact. Split the person\'s name into first and last. Use the 2-letter state code. Only include fields clearly visible on the card; omit anything you cannot read.' }] }]
+        })
+      });
+      if (!r.ok) { const t = (await r.text().catch(() => '')).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'AI error ' + r.status, detail: t } }; }
+      const j = await r.json();
+      const tu = (j.content || []).find(c => c.type === 'tool_use');
+      if (!tu) return { jsonBody: { ok: false, error: 'Could not read the card — try a clearer, well-lit photo.' } };
+      return { jsonBody: { ok: true, data: tu.input } };
+    } catch (e) { context.error('ai-scan-card', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+
+// --- Website enrichment helpers (SSRF-guarded fetch + HTML→text) ---------------
+function htmlToText(html) {
+  return String(html || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
+    .replace(/&#39;|&apos;/gi, "'").replace(/&quot;/gi, '"')
+    .replace(/\s+/g, ' ').trim();
+}
+// Is this IP literal (v4, v6, or IPv4-mapped IPv6) a private/loopback/link-local/
+// metadata/multicast address we must never connect to? Normalizes mapped forms.
+function ipBlocked(ipRaw) {
+  let ip = String(ipRaw || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/%.*$/, '').replace(/^::ffff:/, '');
+  // IPv4-mapped IPv6 in hex form, e.g. a9fe:a9fe -> 169.254.169.254
+  const hex = ip.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (hex && /[a-f]/.test(ip)) { const a = parseInt(hex[1], 16), b = parseInt(hex[2], 16); ip = ((a >> 8) & 255) + '.' + (a & 255) + '.' + ((b >> 8) & 255) + '.' + (b & 255); }
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
+    const o = ip.split('.').map(Number);
+    if (o.some(x => x > 255)) return true;
+    const a = o[0], b = o[1];
+    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || a >= 224;
+  }
+  if (ip.indexOf(':') >= 0) { // IPv6
+    if (ip === '::1' || ip === '::') return true;
+    if (/^(::1|0*:0*:0*:0*:0*:0*:0*:0*1)$/.test(ip)) return true;
+    if (/^(fe[89ab]|f[cd]|ff)/.test(ip)) return true; // link-local, ULA, multicast
+    return false;
+  }
+  return false;
+}
+function isBlockedHost(host) {
+  host = String(host || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (!host || host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal') || host.includes('metadata')) return true;
+  return ipBlocked(host); // literal IPs (incl. mapped IPv6); named hosts validated at connect time
+}
+// Custom DNS lookup used at socket-connect time: resolves the host and REJECTS if
+// any resolved address is non-public, so the IP we actually connect to is validated
+// (closes the redirect-bypass, IPv4-mapped-IPv6, and DNS-rebinding TOCTOU holes).
+function safeLookup(hostname, options, cb) {
+  require('dns').lookup(hostname, { all: true }, (err, addrs) => {
+    if (err) return cb(err);
+    const list = Array.isArray(addrs) ? addrs : [{ address: addrs, family: 4 }];
+    for (const a of list) if (ipBlocked(a.address)) return cb(new Error('blocked address ' + a.address));
+    if (options && options.all) return cb(null, list);
+    cb(null, list[0].address, list[0].family);
+  });
+}
+function requestOnce(urlStr) {
+  return new Promise((resolve, reject) => {
+    let u; try { u = new URL(urlStr); } catch (_) { return reject(new Error('bad url')); }
+    if (!/^https?:$/.test(u.protocol) || isBlockedHost(u.hostname)) return reject(new Error('blocked host'));
+    const lib = require(u.protocol === 'https:' ? 'https' : 'http');
+    const req = lib.request(u, { method: 'GET', lookup: safeLookup, headers: { 'User-Agent': 'BCC-Connect/1.0 (+contact enrichment)', 'Accept': 'text/html,application/xhtml+xml,text/plain' } }, (res) => resolve({ res, url: u }));
+    req.setTimeout(9000, () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    req.end();
+  });
+}
+async function fetchSiteText(rawUrl) {
+  let target = /^https?:\/\//i.test(rawUrl) ? rawUrl : ('https://' + rawUrl);
+  for (let hop = 0; hop < 4; hop++) {
+    let r; try { r = await requestOnce(target); } catch (_) { return null; }
+    const { res, url } = r; const status = res.statusCode || 0;
+    if (status >= 300 && status < 400 && res.headers.location) { res.resume(); try { target = new URL(res.headers.location, url).toString(); } catch (_) { return null; } continue; }
+    if (status !== 200) { res.resume(); return null; }
+    const ct = String(res.headers['content-type'] || ''); if (ct && !/html|text|xml/i.test(ct)) { res.resume(); return null; }
+    const text = await new Promise((resolve) => {
+      const chunks = []; let len = 0;
+      res.on('data', (c) => { len += c.length; if (len > 2 * 1024 * 1024) { res.destroy(); resolve(Buffer.concat(chunks).toString('utf8')); return; } chunks.push(c); });
+      res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+      res.on('error', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    });
+    return { url: url.toString(), text: htmlToText(text) };
+  }
+  return null; // too many redirects
+}
+
+/**
+ * POST /api/ai/enrich-company   Body: { website?, company?, email? }
+ * Fetches the company's website (homepage + /about), then has Claude extract
+ * business type, years in business, address, size, etc. If no website is given,
+ * derives one from a work-email domain. Requires ANTHROPIC_API_KEY.
+ */
+app.http('ai-enrich-company', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'ai/enrich-company',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const key = process.env.ANTHROPIC_API_KEY;
+    if (!key) return { jsonBody: { ok: false, needsKey: true, error: 'AI not configured — add ANTHROPIC_API_KEY in the app settings.' } };
+    try {
+      const body = await request.json().catch(() => ({}));
+      let website = String(body.website || '').trim();
+      const company = String(body.company || '').trim();
+      const email = String(body.email || '').trim();
+      if (!website && email.indexOf('@') > 0) {
+        const dom = email.split('@')[1].toLowerCase();
+        const free = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com', 'icloud.com', 'live.com', 'msn.com', 'comcast.net', 'me.com', 'protonmail.com'];
+        if (dom && free.indexOf(dom) < 0) website = dom;
+      }
+      if (!website) return { jsonBody: { ok: false, needsWebsite: true, error: 'No website to search — add a website or a work email first.' } };
+      const site = await fetchSiteText(website);
+      if (!site || !site.text || site.text.length < 40) return { jsonBody: { ok: false, error: 'Could not read that website.', website: website } };
+      let aboutText = '';
+      try { const ab = await fetchSiteText(site.url.replace(/\/+$/, '') + '/about'); if (ab && ab.text) aboutText = ab.text.slice(0, 6000); } catch (_) {}
+      const content = (site.text.slice(0, 9000) + (aboutText ? '\n\n[/about page]\n' + aboutText : '')).slice(0, 14000);
+      const tool = {
+        name: 'record_company',
+        description: 'Record factual company details found on the website.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            businessType: { type: 'string', description: 'Industry / trade in a few words, e.g. "Commercial HVAC contractor"' },
+            foundedYear: { type: 'number', description: 'Year founded if stated' },
+            yearsInBusiness: { type: 'number', description: 'Years in business (compute from founded year if needed)' },
+            description: { type: 'string', description: '1–2 sentence summary of what the company does' },
+            services: { type: 'array', items: { type: 'string' }, description: 'Key services/products offered' },
+            street: { type: 'string' }, city: { type: 'string' }, state: { type: 'string' }, zip: { type: 'string' },
+            phone: { type: 'string' }, email: { type: 'string' },
+            companySize: { type: 'string', description: 'Employee count or size band if stated' },
+            socialLinks: { type: 'array', items: { type: 'string' } }
+          },
+          required: []
+        }
+      };
+      const model = process.env.AI_MODEL || 'claude-sonnet-4-6';
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: model, max_tokens: 1024, tools: [tool], tool_choice: { type: 'tool', name: 'record_company' },
+          messages: [{ role: 'user', content: [{ type: 'text', text: 'Below is text scraped from the website of ' + (company || website) + '. Extract factual company details and call record_company. Only include facts clearly supported by the text — OMIT any field you are unsure about; never guess years in business or address. If a founded year is given, compute yearsInBusiness from ' + (new Date().getFullYear()) + '.\n\n=== WEBSITE CONTENT ===\n' + content }] }]
+        })
+      });
+      if (!r.ok) { const t = (await r.text().catch(() => '')).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'AI error ' + r.status, detail: t } }; }
+      const j = await r.json();
+      const tu = (j.content || []).find(c => c.type === 'tool_use');
+      if (!tu) return { jsonBody: { ok: false, error: 'No company details found on the site.' } };
+      return { jsonBody: { ok: true, website: site.url, data: tu.input } };
+    } catch (e) { context.error('ai-enrich-company', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+
+/**
  * GET /api/integrations/qbo/companies/{realmId}/kpis?method=&asOf=&burnMonths=
  * Computes headline financial-health KPIs from QBO Balance Sheet + trailing P&L:
  * cash, current ratio, working capital, monthly burn, months of cash (floored),
