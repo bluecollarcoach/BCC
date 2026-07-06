@@ -1,0 +1,23 @@
+name: Nightly QuickBooks sync
+
+# Pulls the last 12 months of P&L + Balance Sheet for every connected company
+# into financial-period docs, so KPIs/reports are fresh each morning without a
+# manual "Sync all from QBO". Idempotent (upserts by period), so re-runs and
+# overlaps are harmless. GitHub cron is best-effort and can lag a few minutes.
+on:
+  schedule:
+    - cron: '0 9 * * *'   # 09:00 UTC daily (~3-4am US Central) — before the workday
+  workflow_dispatch: {}   # allow manual "Run workflow" for testing
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger nightly QBO sync
+        run: |
+          code=$(curl -sS -o /tmp/out.json -w '%{http_code}' --max-time 600 \
+            -X POST 'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/cron/qbo-sync' \
+            -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}")
+          echo "HTTP $code"
+          cat /tmp/out.json || true
+          test "$code" = "200"

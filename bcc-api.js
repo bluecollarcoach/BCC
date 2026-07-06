@@ -166,6 +166,11 @@
   Storage.prototype.setItem = function (key, value) {
     _origSetItem.call(this, key, value);
     if (this === window.localStorage && signedIn && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0) {
+      // Financial periods are owned by the server (the QBO sync writes them to
+      // Cosmos as flat, access-scoped docs). Don't push them back: it would
+      // collide with the server doc AND expose every client's books through the
+      // un-scoped /api/data pull. The UI loads them via /integrations/qbo/periods.
+      if (key.indexOf('bcc-financial-period-') === 0) return;
       pending.set(key, value);
       schedulePush();
       // Admin user list / status changed → re-filter bccPeople immediately so
@@ -182,6 +187,7 @@
   Storage.prototype.removeItem = function (key) {
     _origRemoveItem.call(this, key);
     if (this === window.localStorage && signedIn && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0) {
+      if (key.indexOf('bcc-financial-period-') === 0) return; // server-owned (see setItem)
       pending.set(key, null); // null marks deletion
       schedulePush();
     }

@@ -45,7 +45,7 @@ const ADMIN_KEYS      = new Set(['bcc-admin-config-v1']); // writable only by us
 // tokens (bcc-qbo-company-*, bcc-clientdrive-*), per-client mailbox config, and
 // server-only time. The generic /api/data path must NEVER create, overwrite, or
 // delete these (they each have an admin/allow-list-gated endpoint of their own).
-const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-emailmeta-'];
+const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-emailmeta-', 'bcc-financial-period-'];
 // Sentinel allowedUserUpns value meaning "admins only" — a non-matching UPN, so
 // every existing access check (allow.length && who not in allow → deny) denies
 // non-admins automatically, while admins bypass the allow-list. New companies
@@ -288,6 +288,9 @@ app.http('data', {
       if (method === 'GET') {
         if (key) {
           if (!isPcKey(key)) return badRequest('invalid key');
+          // Financial periods are access-scoped — never serve them by direct key
+          // (that would bypass the per-company access check in qbo-periods).
+          if (String(key).indexOf('bcc-financial-period-') === 0) return { jsonBody: { key, data: null } };
           // Integration docs hold OAuth client secrets / tokens — redact for non-admins.
           const keyRedact = key.startsWith('bcc-integration-') && !(await isAppAdmin(p));
           try {
@@ -302,7 +305,10 @@ app.http('data', {
         const q = {
           // Exclude server-only time docs so their ids (which encode who worked
           // which client on which day) aren't shipped to every signed-in user.
-          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "client-drive"))',
+          // financial-period is excluded by ID PREFIX (not docType) — legacy docs
+          // pushed via /api/data nest docType under .data, so a docType filter
+          // would miss them and leak client books. Served only via qbo-periods.
+          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "client-drive"))',
           parameters: [{ name: '@t', value: BCC_TENANT_ID }]
         };
         const { resources } = await c.items.query(q).fetchAll();
@@ -1834,8 +1840,19 @@ app.http('integrations-qbo-sync', {
         return { status: 400, jsonBody: { ok: false, error: 'No QBO companies connected yet. Click "Connect a company" first.' } };
       }
 
+      const out = await syncQboCompanies(c, fields, companyDocs, new Date());
+      return { jsonBody: { ok: true, companies: out } };
+    } catch (err) {
+      context.error('qbo-sync error', err);
+      return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } };
+    }
+  })
+});
+
+// Sync the last 12 months of P&L + Balance Sheet into financial-period docs for
+// each company. Shared by the manual endpoint and the nightly cron job.
+async function syncQboCompanies(c, fields, companyDocs, now) {
       const basic = Buffer.from(fields.clientId + ':' + fields.clientSecret).toString('base64');
-      const now = new Date();
       const out = [];
 
       for (const comp of companyDocs) {
@@ -1926,12 +1943,81 @@ app.http('integrations-qbo-sync', {
         try { await c.items.upsert({ id: 'bcc-qbo-debug-sync', tenantId: BCC_TENANT_ID, docType: 'qbo-debug', at: new Date().toISOString(), realmId: comp.realmId, env, base, periodsBuilt: periods.length, firstStatus: diag.firstStatus, firstBody: diag.firstBody }); } catch (_) {}
         out.push({ realmId: comp.realmId, companyName: comp.companyName, periodsBuilt: periods.length, firstStatus: diag.firstStatus, firstBody: diag.firstBody, periods });
       }
+  return out;
+}
 
-      return { jsonBody: { ok: true, companies: out } };
+/**
+ * POST /api/cron/qbo-sync  — nightly QuickBooks sync for EVERY connected company.
+ * Called headless by the scheduler (GitHub Actions) with the CRON_SECRET header
+ * (NOT the Entra cookie). Runs the same 12-month P&L + Balance Sheet sync as the
+ * manual button, firm-wide, so the KPIs/reports are fresh each morning.
+ */
+app.http('cron-qbo-sync', {
+  methods: ['POST', 'GET'],
+  authLevel: 'anonymous',
+  route: 'cron/qbo-sync',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    const given = request.headers.get('x-bcc-cron-secret') || '';
+    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    try {
+      const fields = await getIntegrationFields('qbo');
+      if (!fields.clientId || !fields.clientSecret) return { status: 200, jsonBody: { ok: true, skipped: 'QBO app credentials not configured' } };
+      const c = container();
+      const { resources } = await c.items.query({
+        query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="qbo-company"',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+      }).fetchAll();
+      const companyDocs = resources.filter(co => co && co.enabled !== false && co.refreshToken);
+      if (!companyDocs.length) return { jsonBody: { ok: true, synced: 0, note: 'no connected companies' } };
+      const out = await syncQboCompanies(c, fields, companyDocs, new Date());
+      const summary = out.map(o => ({ realmId: o.realmId, companyName: o.companyName, periodsBuilt: o.periodsBuilt, error: o.error }));
+      context.log('cron-qbo-sync: synced ' + out.length + ' companies', JSON.stringify(summary));
+      return { jsonBody: { ok: true, synced: out.length, companies: summary } };
     } catch (err) {
-      context.error('qbo-sync error', err);
+      context.error('cron-qbo-sync error', err);
       return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } };
     }
+  }
+});
+
+/**
+ * GET /api/integrations/qbo/periods  — financial-period history from Cosmos,
+ * scoped to the companies the caller can see (admin = all; others = enabled +
+ * shared). Lets the UI load fresh (nightly-synced) periods without a manual sync
+ * and WITHOUT leaking other clients' books (financial-period docs are excluded
+ * from the generic /api/data pull for exactly this reason).
+ */
+app.http('qbo-periods', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'integrations/qbo/periods',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    try {
+      const c = container();
+      const admin = await isAppAdmin(p);
+      const who = String(p.userDetails || p.userId || '').toLowerCase();
+      const { resources: comps } = await c.items.query({
+        query: 'SELECT c.realmId, c.enabled, c.allowedUserUpns FROM c WHERE c.tenantId=@t AND c.docType="qbo-company"',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+      }).fetchAll();
+      const canSee = new Set();
+      comps.forEach(co => {
+        if (admin) { canSee.add(String(co.realmId)); return; }
+        if (co.enabled === false) return;
+        const allow = (co.allowedUserUpns || []).map(u => String(u).toLowerCase());
+        if (!allow.length || allow.indexOf(who) >= 0) canSee.add(String(co.realmId));
+      });
+      if (!canSee.size) return { jsonBody: { ok: true, periods: [] } };
+      const { resources: pers } = await c.items.query({
+        query: 'SELECT c.id, c.realmId, c.companyName, c.period, c.revenueCents, c.cogsCents, c.expensesCents, c.netCents, c.cashCents, c.currentAssetsCents, c.currentLiabilitiesCents, c.source, c.syncedAt FROM c WHERE c.tenantId=@t AND c.docType="financial-period"',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+      }).fetchAll();
+      return { jsonBody: { ok: true, periods: pers.filter(x => canSee.has(String(x.realmId))) } };
+    } catch (e) { context.error('qbo-periods error', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
 

@@ -558,6 +558,23 @@
       .then(function (d) { companies = (d && d.companies) || []; isAdmin = !!(d && d.isAdmin); usersDir = (d && d.users) || []; })
       .catch(function () { companies = []; isAdmin = false; usersDir = []; });
   }
+  // Pull the latest financial periods from Cosmos (kept fresh by the nightly QBO
+  // sync), access-scoped, into localStorage — so the tables/KPIs reflect last
+  // night's data without a manual sync. Server owns these keys (not pushed back).
+  function loadPeriodsFromCloud() {
+    return fetch('/api/integrations/qbo/periods', { credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d || !d.ok || !Array.isArray(d.periods)) return;
+        d.periods.forEach(function (p) {
+          if (!p || !p.realmId || !p.period) return;
+          if (!p.id) p.id = PER_PREFIX + p.realmId + '-' + p.period;
+          p.docType = 'financial-period';
+          try { localStorage.setItem(p.id, JSON.stringify(p)); } catch (_) {}
+        });
+      })
+      .catch(function () {});
+  }
   function updateCompany(realm, patch) {
     return fetch('/api/integrations/qbo/companies/' + encodeURIComponent(realm), {
       method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch)
@@ -628,6 +645,17 @@
     });
     return map;
   }
+  // Latest CLOSED month per company (skips the in-progress current month) — used
+  // for "last month" KPIs so they reflect a full, settled month, not partial data.
+  function latestClosedByCompany() {
+    var map = {};
+    allPeriods().forEach(function (p) {
+      if (periodInProgress(p.period)) return;
+      var r = p.realmId || '';
+      if (!map[r] || (p.period || '') > (map[r].period || '')) map[r] = p;
+    });
+    return map;
+  }
   function savePeriod(p) {
     p.updatedAt = nowIso();
     if (!p.createdAt) p.createdAt = p.updatedAt;
@@ -665,16 +693,16 @@
       // Firm-wide totals are management-only — don't even compute/write them to
       // the DOM for non-managers (gate the data, not just the visibility).
       if (!(managementMode && canManage())) { ids.forEach(function (k) { document.getElementById(k).textContent = '—'; }); return; }
-      // All companies: firm-wide totals from each company's latest month.
-      var map = latestByCompany();
+      // All companies: firm-wide totals from each company's latest CLOSED month.
+      var map = latestClosedByCompany();
       var realms = Object.keys(map);
-      if (realms.length === 0) { ids.forEach(function (k){ document.getElementById(k).textContent='—'; }); return; }
+      if (realms.length === 0) { ids.forEach(function (k){ document.getElementById(k).textContent='—'; }); setDelta(document.getElementById('kpiRevD'),'no closed month yet'); return; }
       var rev=0, exp=0, net=0; realms.forEach(function(r){ rev += (map[r].revenueCents||0); exp += (map[r].expensesCents||0); net += netOf(map[r]); });
       document.getElementById('kpiRev').textContent = dollars(rev);
       document.getElementById('kpiExp').textContent = dollars(exp);
       document.getElementById('kpiNet').textContent = dollars(net);
       setDelta(document.getElementById('kpiRevD'), 'across ' + realms.length + ' compan' + (realms.length===1?'y':'ies'));
-      setDelta(document.getElementById('kpiExpD'), 'latest month each');
+      setDelta(document.getElementById('kpiExpD'), 'latest closed month each');
       setDelta(document.getElementById('kpiNetD'), net>=0?'profitable overall':'net loss', net>=0?'up':'down');
       // YTD net across all companies, current year.
       var year = (new Date()).getFullYear().toString();
@@ -687,7 +715,9 @@
     var all = periodsFor(currentRealm);
     if (all.length === 0) { ids.forEach(function (k){ document.getElementById(k).textContent='—'; });
       setDelta(document.getElementById('kpiRevD'),'no data — Sync from QBO'); setDelta(document.getElementById('kpiExpD'),''); setDelta(document.getElementById('kpiNetD'),''); setDelta(document.getElementById('kpiYtdD'),''); return; }
-    var last = all[0], prev = all[1] || null;
+    // "Last month" = most recent CLOSED month (skip the in-progress current month).
+    var closed = all.filter(function (p) { return !periodInProgress(p.period); });
+    var last = closed[0] || all[0], prev = closed[1] || null;
     var rev = last.revenueCents||0, exp = last.expensesCents||0, net = netOf(last);
     document.getElementById('kpiRev').textContent = dollars(rev);
     document.getElementById('kpiExp').textContent = dollars(exp);
@@ -696,7 +726,7 @@
     dlt(document.getElementById('kpiRevD'), prev?pct(rev, prev.revenueCents):null);
     dlt(document.getElementById('kpiExpD'), prev?pct(exp, prev.expensesCents):null);
     dlt(document.getElementById('kpiNetD'), prev?pct(net, netOf(prev)):null);
-    var year = last.period ? last.period.slice(0,4) : '';
+    var year = (new Date()).getFullYear().toString();
     var ytdNet=0; all.forEach(function(p){ if(p.period&&p.period.indexOf(year)===0){ ytdNet += netOf(p);} });
     document.getElementById('kpiYtd').textContent = dollars(ytdNet);
     setDelta(document.getElementById('kpiYtdD'), year + ' · ' + companyName(currentRealm));
@@ -2944,6 +2974,8 @@
       if (rid) { try { setSection('files'); } catch (_) {} }
       if (dr === 'connected' && window.bccNotifySaved) window.bccNotifySaved('Shared drive connected.');
       else if (dr && dr !== 'connected' && window.bccNotify) window.bccNotify('Drive connect failed: ' + ((dq && dq.get('detail')) || ''), 'warn', 7000);
+      // Refresh periods from the cloud (nightly-synced) after companies load.
+      loadPeriodsFromCloud().then(function () { renderKpis(); renderTable(); });
     });
     bkStart(); // auto time-tracking for bookkeepers
   }
