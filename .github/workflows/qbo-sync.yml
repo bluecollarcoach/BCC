@@ -15,9 +15,18 @@ jobs:
     steps:
       - name: Trigger nightly QBO sync
         run: |
-          code=$(curl -sS -o /tmp/out.json -w '%{http_code}' --max-time 600 \
-            -X POST 'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/cron/qbo-sync' \
-            -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}")
-          echo "HTTP $code"
-          cat /tmp/out.json || true
-          test "$code" = "200"
+          # Idempotent (upserts by period), so retrying after a cold-start timeout
+          # is safe. Warm up first, then try up to 3 times.
+          curl -sS --max-time 60 -o /dev/null \
+            'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/cron/qbo-sync' \
+            -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}" || true
+          for attempt in 1 2 3; do
+            code=$(curl -sS -o /tmp/out.json -w '%{http_code}' --max-time 600 \
+              -X POST 'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/cron/qbo-sync' \
+              -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}")
+            echo "attempt $attempt -> HTTP $code"
+            cat /tmp/out.json 2>/dev/null || true; echo
+            if [ "$code" = "200" ]; then exit 0; fi
+            sleep 20
+          done
+          echo "all attempts failed"; exit 1
