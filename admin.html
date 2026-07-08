@@ -165,7 +165,7 @@
     <button data-tab="security">Security</button>
     <button data-tab="bktime">Bookkeeping time</button>
     <button data-tab="data">Data &amp; Backups</button>
-    <button data-tab="feedback">Feedback</button>
+    <button data-tab="feedback">Feedback<span id="fbTabBadge" style="display:none;margin-left:6px;background:#c0392b;color:#fff;font-size:10.5px;font-weight:800;min-width:16px;height:16px;line-height:16px;border-radius:999px;padding:0 5px;vertical-align:middle;"></span></button>
   </nav>
 
   <section class="panel-section active" id="panel-users">
@@ -461,14 +461,23 @@
   /* ===== USER FEEDBACK ===== */
   function fbEsc(s) { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c]); }); }
   function fbWhen(iso) { try { return new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }); } catch (_) { return ''; } }
+  function setFbBadge(n) { var b = document.getElementById('fbTabBadge'); if (!b) return; if (n > 0) { b.textContent = n > 99 ? '99+' : String(n); b.style.display = ''; } else b.style.display = 'none'; }
+  function newCount() { return (window._fbItems || []).filter(function (f) { return (f.status || 'new') === 'new'; }).length; }
   function renderFeedback() {
     var out = document.getElementById('fbOut'); var status = document.getElementById('fbStatus');
     if (!out) return; status.textContent = 'Loading…';
     fetch('/api/feedback', { credentials: 'include' })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
-      .then(function (j) { window._fbItems = (j && j.feedback) || []; status.textContent = window._fbItems.length + ' total'; renderFbList(); })
+      .then(function (j) { window._fbItems = (j && j.feedback) || []; status.textContent = window._fbItems.length + ' total'; setFbBadge(newCount()); renderFbList(); })
       .catch(function (e) { status.textContent = ''; out.innerHTML = '<div style="color:var(--burgundy);">Could not load feedback: ' + fbEsc(e.message) + '</div>'; });
   }
+  // Badge the Feedback tab with the count of new (unreviewed) items on load.
+  (function () {
+    fetch('/api/feedback', { credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) { if (j && j.feedback) { window._fbItems = j.feedback; setFbBadge(newCount()); } })
+      .catch(function () {});
+  })();
   function renderFbList() {
     var out = document.getElementById('fbOut'); if (!out) return;
     var filter = (document.getElementById('fbFilter') || {}).value || 'open';
@@ -499,7 +508,7 @@
         b.disabled = true;
         fetch('/api/feedback/' + encodeURIComponent(idv), { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: st }) })
           .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
-          .then(function () { var it = (window._fbItems || []).filter(function (x) { return x.id === idv; })[0]; if (it) it.status = st; renderFbList(); })
+          .then(function () { var it = (window._fbItems || []).filter(function (x) { return x.id === idv; })[0]; if (it) it.status = st; setFbBadge(newCount()); renderFbList(); })
           .catch(function () { b.disabled = false; (window.bccNotify || alert)('Update failed.', 'warn'); });
       };
     });

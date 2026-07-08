@@ -45,7 +45,7 @@ const ADMIN_KEYS      = new Set(['bcc-admin-config-v1']); // writable only by us
 // tokens (bcc-qbo-company-*, bcc-clientdrive-*), per-client mailbox config, and
 // server-only time. The generic /api/data path must NEVER create, overwrite, or
 // delete these (they each have an admin/allow-list-gated endpoint of their own).
-const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-emailmeta-', 'bcc-financial-period-'];
+const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-emailmeta-', 'bcc-financial-period-', 'bcc-usernotif-', 'bcc-feedback-'];
 // Sentinel allowedUserUpns value meaning "admins only" — a non-matching UPN, so
 // every existing access check (allow.length && who not in allow → deny) denies
 // non-admins automatically, while admins bypass the allow-list. New companies
@@ -288,9 +288,9 @@ app.http('data', {
       if (method === 'GET') {
         if (key) {
           if (!isPcKey(key)) return badRequest('invalid key');
-          // Financial periods are access-scoped — never serve them by direct key
-          // (that would bypass the per-company access check in qbo-periods).
-          if (String(key).indexOf('bcc-financial-period-') === 0) return { jsonBody: { key, data: null } };
+          // These are access-scoped / server-owned — never serve them by direct
+          // key (financials, per-user notifications, feedback have their own APIs).
+          if (/^bcc-(financial-period|usernotif|feedback)-/.test(String(key))) return { jsonBody: { key, data: null } };
           // Integration docs hold OAuth client secrets / tokens — redact for non-admins.
           const keyRedact = key.startsWith('bcc-integration-') && !(await isAppAdmin(p));
           try {
@@ -308,7 +308,7 @@ app.http('data', {
           // financial-period is excluded by ID PREFIX (not docType) — legacy docs
           // pushed via /api/data nest docType under .data, so a docType filter
           // would miss them and leak client books. Served only via qbo-periods.
-          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "client-drive"))',
+          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "client-drive"))',
           parameters: [{ name: '@t', value: BCC_TENANT_ID }]
         };
         const { resources } = await c.items.query(q).fetchAll();
@@ -953,6 +953,44 @@ function remFmtTime(t) {
   } catch (e) { return new Date(t).toISOString(); }
 }
 
+// Send a web-push payload to specific users (best-effort; skips the unsubscribed).
+async function pushToUsers(users, payload) {
+  try {
+    const wp = getWebPush(); if (!wp) return;
+    const list = (users || []).map(u => String(u || '').toLowerCase()).filter(Boolean);
+    if (!list.length) return;
+    const subs = await loadPushSubsForUsers(list);
+    const str = JSON.stringify(payload);
+    await Promise.allSettled(subs.map(s => wp.sendNotification(s.subscription, str, { TTL: 60 * 60 * 24 })));
+  } catch (_) {}
+}
+// Create an in-app notification for one user (surfaced in their bell via /api/notifications).
+async function createUserNotif(c, forUpn, o) {
+  const who = String(forUpn || '').toLowerCase();
+  if (!who) return;
+  const doc = {
+    id: 'bcc-usernotif-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
+    tenantId: BCC_TENANT_ID, docType: 'usernotif', forUpn: who,
+    title: String(o.title || '').slice(0, 140), body: String(o.body || '').slice(0, 300),
+    url: String(o.url || ''), tag: String(o.tag || ''),
+    createdAt: new Date().toISOString(), read: false
+  };
+  try { await c.items.upsert(doc); } catch (_) {}
+}
+// Notify a user in-app AND via web push.
+async function notifyUser(c, upn, o) {
+  await createUserNotif(c, upn, o);
+  await pushToUsers([upn], { title: o.title, body: o.body || '', url: o.url || '/', tag: o.tag || '' });
+}
+// Who is notified when feedback lands — the owner(s). Configurable via
+// FEEDBACK_NOTIFY_UPNS / BCC_OWNER_UPNS; defaults to the account owner.
+function feedbackNotifyUpns() {
+  const set = String(process.env.FEEDBACK_NOTIFY_UPNS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  if (set.length) return set;
+  const owners = bootstrapOwners();
+  return owners.length ? owners : ['lyle@bluecollarcoach.us'];
+}
+
 /**
  * User feedback.
  *   POST /api/feedback            — any signed-in user submits feedback.
@@ -988,8 +1026,18 @@ app.http('feedback', {
         if (!doc) return { status: 404, jsonBody: { ok: false, error: 'not found' } };
         const st = String(body.status || '').toLowerCase();
         if (['new', 'reviewed', 'resolved'].indexOf(st) < 0) return badRequest('bad status');
+        const wasResolved = doc.status === 'resolved';
         doc.status = st; doc.reviewedBy = who; doc.updatedAt = new Date().toISOString();
         await c.items.upsert(doc);
+        // When newly resolved, notify the person who submitted it.
+        if (st === 'resolved' && !wasResolved && doc.userUpn) {
+          const msg = String(doc.message || '');
+          await notifyUser(c, doc.userUpn, {
+            title: '✅ Your feedback was addressed',
+            body: (msg.length > 90 ? msg.slice(0, 90) + '…' : msg),
+            url: doc.page || '/', tag: 'fbdone-' + doc.id
+          });
+        }
         return { jsonBody: { ok: true, id: doc.id, status: doc.status } };
       }
       // new submission
@@ -1001,14 +1049,57 @@ app.http('feedback', {
       const doc = {
         id: fid, tenantId: BCC_TENANT_ID, docType: 'feedback',
         type, message: message.slice(0, 4000), rating,
-        page: String(body.page || '').slice(0, 200),
+        page: (/^\/[^\s"'<>]*$/.test(String(body.page || '')) ? String(body.page).slice(0, 200) : ''),
         userUpn: who.toLowerCase(), userName: who,
         userAgent: String(request.headers.get('user-agent') || '').slice(0, 300),
         status: 'new', createdAt: new Date().toISOString()
       };
       await c.items.upsert(doc);
+      // Notify the owner(s) that feedback landed.
+      const preview = message.length > 90 ? message.slice(0, 90) + '…' : message;
+      const from = who ? (who.split('@')[0] + ': ') : '';
+      for (const owner of feedbackNotifyUpns()) {
+        await notifyUser(c, owner, { title: 'New ' + type + ' feedback', body: from + preview, url: '/admin.html#feedback', tag: 'fbnew-' + fid });
+      }
       return { jsonBody: { ok: true, id: fid } };
     } catch (e) { context.error('feedback error', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+
+/**
+ * In-app notifications (bell), per-user.
+ *   GET  /api/notifications   — the caller's unread notifications.
+ *   POST /api/notifications   — { ids:[...] } mark the caller's own as read.
+ */
+app.http('notifications', {
+  methods: ['GET', 'POST'],
+  authLevel: 'anonymous',
+  route: 'notifications',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const c = container();
+    const me = String(p.userDetails || p.userId || '').toLowerCase();
+    try {
+      if (request.method === 'GET') {
+        const { resources } = await c.items.query({
+          query: 'SELECT TOP 50 c.id, c.title, c.body, c.url, c.tag, c.createdAt FROM c WHERE c.tenantId=@t AND c.docType="usernotif" AND c.forUpn=@u AND c.read=false ORDER BY c.createdAt DESC',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@u', value: me }]
+        }).fetchAll();
+        return { jsonBody: { ok: true, notifications: resources } };
+      }
+      const body = await request.json().catch(() => ({}));
+      const ids = Array.isArray(body.ids) ? body.ids.slice(0, 100) : [];
+      let marked = 0;
+      for (const nid of ids) {
+        try {
+          const d = await c.item(String(nid), BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+          if (d && d.docType === 'usernotif' && d.forUpn === me && !d.read) { d.read = true; await c.items.upsert(d); marked++; }
+        } catch (_) {}
+      }
+      return { jsonBody: { ok: true, marked } };
+    } catch (e) { context.error('notifications error', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
 

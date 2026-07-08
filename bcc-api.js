@@ -1063,8 +1063,9 @@
         html += '</div>';
       });
 
-      // Footer: sign in/out action
+      // Footer: feedback + sign in/out action
       html += '<div class="bcc-mm-foot">';
+      if (signedIn) html += '<a href="#" class="bcc-mm-feedback">💬 Send feedback</a>';
       if (signedIn) html += '<a href="#" class="bcc-mm-signout">Sign out</a>';
       else          html += '<a href="#" class="bcc-mm-signin">Sign in with Microsoft</a>';
       html += '</div>';
@@ -1098,6 +1099,7 @@
         if (!a) return;
         if (a.classList.contains('bcc-mm-signin')) { e.preventDefault(); closeMenu(); bccSignIn(); return; }
         if (a.classList.contains('bcc-mm-signout')) { e.preventDefault(); closeMenu(); bccSignOut(); return; }
+        if (a.classList.contains('bcc-mm-feedback')) { e.preventDefault(); closeMenu(); window.bccOpenFeedback(); return; }
         closeMenu();
       });
       document.addEventListener('keydown', function (e) {
@@ -1768,6 +1770,14 @@
     else b.style.display = 'none';
   }
 
+  // Only allow same-origin relative paths or http(s) URLs as a notification target
+  // (blocks javascript:/data: and attribute-breakout, since url is user-derived).
+  function ncSafeUrl(u) {
+    u = String(u || '');
+    if (/^\/(?!\/)/.test(u)) return u;        // "/path" but not "//host"
+    if (/^https?:\/\//i.test(u)) return u;
+    return '';
+  }
   function ncAdd(item) {
     if (!item || !item.title) return;
     var list = ncLoad();
@@ -1778,7 +1788,7 @@
       type: item.type || 'info',
       title: String(item.title).slice(0, 120),
       body: String(item.body || '').slice(0, 200),
-      url: item.url || '',
+      url: ncSafeUrl(item.url),
       tag: tag,
       at: Date.now(),
       read: false
@@ -1825,7 +1835,7 @@
     var items = ncLoad();
     if (!items.length) { list.innerHTML = '<div id="bcc-bell-empty">No notifications yet.</div>'; return; }
     list.innerHTML = items.map(function (i) {
-      return '<a class="ni' + (i.read ? '' : ' unread') + '" data-id="' + i.id + '" href="' + (i.url || '#') + '">' +
+      return '<a class="ni' + (i.read ? '' : ' unread') + '" data-id="' + i.id + '" href="' + escapeHtml(ncSafeUrl(i.url) || '#') + '">' +
         '<div class="t">' + escapeHtml(i.title) + '</div>' +
         (i.body ? '<div class="b">' + escapeHtml(i.body) + '</div>' : '') +
         '<div class="w">' + ncTimeAgo(i.at) + '</div></a>';
@@ -2038,11 +2048,26 @@
     if (changed) ncEngSeenSave(seen);
   }
 
+  // Pull server-pushed per-user notifications (feedback landed / addressed, etc.)
+  // into the bell, then mark them delivered so they aren't re-fetched.
+  function ncScanServerNotifs() {
+    if (!signedIn) return;
+    fetch('/api/notifications', { credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j || !j.ok || !Array.isArray(j.notifications) || !j.notifications.length) return;
+        var ids = [];
+        j.notifications.forEach(function (n) { ncAdd({ type: 'info', title: n.title, body: n.body, url: n.url, tag: n.id }); ids.push(n.id); });
+        if (ids.length) fetch('/api/notifications', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: ids }) }).catch(function () {});
+      })
+      .catch(function () {});
+  }
   function ncPoll() {
     if (!signedIn) return;
     try { ncScanReminders(); } catch (e) {}
     try { ncScanChat(); } catch (e) {}
     try { ncScanEngagements(); } catch (e) {}
+    try { ncScanServerNotifs(); } catch (e) {}
   }
 
   function ncStartPoller() {
