@@ -953,6 +953,65 @@ function remFmtTime(t) {
   } catch (e) { return new Date(t).toISOString(); }
 }
 
+/**
+ * User feedback.
+ *   POST /api/feedback            — any signed-in user submits feedback.
+ *   GET  /api/feedback            — admin: list all submissions (newest first).
+ *   POST /api/feedback/{id}       — admin: update status (new|reviewed|resolved).
+ */
+app.http('feedback', {
+  methods: ['POST', 'GET'],
+  authLevel: 'anonymous',
+  route: 'feedback/{id?}',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const c = container();
+    const id = request.params.id;
+    const who = String(p.userDetails || p.userId || '');
+    try {
+      if (request.method === 'GET') {
+        if (!(await isAppAdmin(p))) return { status: 403, jsonBody: { ok: false, error: 'admin only' } };
+        const { resources } = await c.items.query({
+          query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+        }).fetchAll();
+        return { jsonBody: { ok: true, feedback: resources } };
+      }
+      // POST
+      const body = await request.json().catch(() => ({}));
+      if (id) { // admin status update
+        if (!(await isAppAdmin(p))) return { status: 403, jsonBody: { ok: false, error: 'admin only' } };
+        if (String(id).indexOf('bcc-feedback-') !== 0) return badRequest('bad id');
+        const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+        if (!doc) return { status: 404, jsonBody: { ok: false, error: 'not found' } };
+        const st = String(body.status || '').toLowerCase();
+        if (['new', 'reviewed', 'resolved'].indexOf(st) < 0) return badRequest('bad status');
+        doc.status = st; doc.reviewedBy = who; doc.updatedAt = new Date().toISOString();
+        await c.items.upsert(doc);
+        return { jsonBody: { ok: true, id: doc.id, status: doc.status } };
+      }
+      // new submission
+      const message = String(body.message || '').trim();
+      if (!message) return badRequest('message required');
+      const type = ['bug', 'idea', 'question', 'praise', 'other'].indexOf(String(body.type || '').toLowerCase()) >= 0 ? String(body.type).toLowerCase() : 'other';
+      const rating = (body.rating >= 1 && body.rating <= 5) ? Math.round(body.rating) : null;
+      const fid = 'bcc-feedback-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+      const doc = {
+        id: fid, tenantId: BCC_TENANT_ID, docType: 'feedback',
+        type, message: message.slice(0, 4000), rating,
+        page: String(body.page || '').slice(0, 200),
+        userUpn: who.toLowerCase(), userName: who,
+        userAgent: String(request.headers.get('user-agent') || '').slice(0, 300),
+        status: 'new', createdAt: new Date().toISOString()
+      };
+      await c.items.upsert(doc);
+      return { jsonBody: { ok: true, id: fid } };
+    } catch (e) { context.error('feedback error', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',

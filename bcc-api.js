@@ -740,6 +740,47 @@
   ];
 
   /* ---------- UI ---------- */
+  // Global feedback modal — openable from the topbar button (or window.bccOpenFeedback()).
+  window.bccOpenFeedback = function () {
+    if (document.getElementById('bcc-fb-modal')) return;
+    var types = [['idea', '💡 Idea'], ['bug', '🐞 Bug'], ['question', '❓ Question'], ['praise', '🎉 Praise'], ['other', '💬 Other']];
+    var ov = document.createElement('div');
+    ov.id = 'bcc-fb-modal';
+    ov.className = 'bcc-modal-overlay open';
+    ov.innerHTML = '<div class="bcc-modal-card" role="dialog" aria-modal="true" aria-label="Send feedback">' +
+      '<h3>Send feedback</h3>' +
+      '<div class="bcc-modal-sub">Tell us what’s working, what’s broken, or what you’d like to see — it goes straight to the BCC team.</div>' +
+      '<label>Type</label>' +
+      '<div class="bcc-fb-types">' + types.map(function (t, i) { return '<button type="button" class="bcc-fb-chip' + (i === 0 ? ' sel' : '') + '" data-type="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</div>' +
+      '<label>Your feedback <span class="bcc-req">*</span></label>' +
+      '<textarea id="bcc-fb-msg" rows="5" placeholder="What happened, or what would help?"></textarea>' +
+      '<label>How’s your experience? (optional)</label>' +
+      '<div class="bcc-fb-stars" id="bcc-fb-stars">' + [1, 2, 3, 4, 5].map(function (n) { return '<span class="bcc-fb-star" data-n="' + n + '" role="button" aria-label="' + n + ' star">★</span>'; }).join('') + '</div>' +
+      '<div class="bcc-modal-actions">' +
+        '<button type="button" class="bcc-btn-ghost" id="bcc-fb-cancel">Cancel</button>' +
+        '<button type="button" class="bcc-btn-primary" id="bcc-fb-send">Send feedback</button>' +
+      '</div></div>';
+    document.body.appendChild(ov);
+    var chosenType = 'idea', rating = 0;
+    ov.querySelectorAll('.bcc-fb-chip').forEach(function (b) { b.onclick = function () { ov.querySelectorAll('.bcc-fb-chip').forEach(function (x) { x.classList.remove('sel'); }); b.classList.add('sel'); chosenType = b.getAttribute('data-type'); }; });
+    ov.querySelectorAll('.bcc-fb-star').forEach(function (s) { s.onclick = function () { rating = +s.getAttribute('data-n'); ov.querySelectorAll('.bcc-fb-star').forEach(function (x) { x.classList.toggle('on', +x.getAttribute('data-n') <= rating); }); }; });
+    function close() { var m = document.getElementById('bcc-fb-modal'); if (m) m.remove(); document.removeEventListener('keydown', onKey); }
+    function onKey(e) { if (e.key === 'Escape') close(); }
+    document.addEventListener('keydown', onKey);
+    ov.addEventListener('click', function (e) { if (e.target === ov) close(); });
+    document.getElementById('bcc-fb-cancel').onclick = close;
+    document.getElementById('bcc-fb-send').onclick = function () {
+      var msg = (document.getElementById('bcc-fb-msg').value || '').trim();
+      if (!msg) { (window.bccNotify || alert)('Please write your feedback first.', 'warn'); return; }
+      var btn = document.getElementById('bcc-fb-send'); btn.disabled = true; btn.textContent = 'Sending…';
+      fetch('/api/feedback', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: chosenType, message: msg, rating: rating || null, page: location.pathname }) })
+        .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+        .then(function () { close(); if (window.bccNotifySaved) window.bccNotifySaved('Thanks! Your feedback was sent.'); else (window.bccNotify || alert)('Thanks! Feedback sent.', 'success'); })
+        .catch(function () { btn.disabled = false; btn.textContent = 'Send feedback'; (window.bccNotify || alert)('Could not send — please try again.', 'warn'); });
+    };
+    setTimeout(function () { var m = document.getElementById('bcc-fb-msg'); if (m) m.focus(); }, 50);
+  };
+
   function injectAuthChip() {
     if (document.getElementById('bcc-auth-chip')) return;
     if (!document.head) return;
@@ -868,6 +909,18 @@
       '.bcc-btn-primary:hover{background:#876d3a;}' +
       '.bcc-btn-ghost{background:#f6f6f4;color:#1a1a1a;border:1px solid #e2e1dd;}' +
       '.bcc-btn-ghost:hover{background:#e2e1dd;}' +
+      // Feedback button (topbar) + feedback modal bits.
+      '.bcc-fb-btn{display:inline-flex;align-items:center;gap:6px;background:#fff;border:1px solid #e6e5e1;color:#6b7077;font-family:inherit;font-size:12.5px;font-weight:700;padding:6px 12px;border-radius:999px;cursor:pointer;flex-shrink:0;transition:background .15s,border-color .15s,color .15s;}' +
+      '.bcc-fb-btn:hover{background:#faf4e8;border-color:#c5a55a;color:#8a6f3c;}' +
+      '.bcc-fb-btn .bcc-fb-ic{font-size:14px;line-height:1;}' +
+      '@media (max-width:640px){.bcc-fb-btn .bcc-fb-lbl{display:none;}.bcc-fb-btn{padding:6px 9px;}}' +
+      '.bcc-fb-types{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:4px;}' +
+      '.bcc-fb-chip{background:#f6f6f4;border:1px solid #e2e1dd;color:#4b4b4b;font-family:inherit;font-size:13px;font-weight:600;padding:6px 12px;border-radius:999px;cursor:pointer;}' +
+      '.bcc-fb-chip:hover{border-color:#c5a55a;}' +
+      '.bcc-fb-chip.sel{background:#a8884a;border-color:#a8884a;color:#fff;}' +
+      '.bcc-fb-stars{display:flex;gap:4px;font-size:24px;color:#d8d5cc;}' +
+      '.bcc-fb-star{cursor:pointer;transition:color .1s;}' +
+      '.bcc-fb-star:hover,.bcc-fb-star.on{color:#e0a92e;}' +
       // Generic "+ New job" button alongside a job dropdown
       '.bcc-new-job-row{display:flex;gap:8px;align-items:stretch;min-width:0;max-width:100%;box-sizing:border-box;}' +
       '.bcc-new-job-row select{flex:1 1 0;min-width:0;width:0;}' +
@@ -920,6 +973,18 @@
     var spacer = topbar.querySelector('.spacer');
     if (spacer) spacer.parentNode.insertBefore(chip, spacer.nextSibling);
     else topbar.appendChild(chip);
+
+    // Persistent Feedback button — sits just before the auth chip on every page.
+    if (signedIn && !document.getElementById('bcc-fb-btn')) {
+      var fbBtn = document.createElement('button');
+      fbBtn.id = 'bcc-fb-btn';
+      fbBtn.className = 'bcc-fb-btn';
+      fbBtn.type = 'button';
+      fbBtn.title = 'Send feedback';
+      fbBtn.innerHTML = '<span class="bcc-fb-ic">💬</span><span class="bcc-fb-lbl">Feedback</span>';
+      fbBtn.onclick = function () { window.bccOpenFeedback(); };
+      chip.parentNode.insertBefore(fbBtn, chip);
+    }
 
     var inEl  = document.getElementById('bcc-in');
     var outEl = document.getElementById('bcc-out');

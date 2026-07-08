@@ -165,6 +165,7 @@
     <button data-tab="security">Security</button>
     <button data-tab="bktime">Bookkeeping time</button>
     <button data-tab="data">Data &amp; Backups</button>
+    <button data-tab="feedback">Feedback</button>
   </nav>
 
   <section class="panel-section active" id="panel-users">
@@ -353,6 +354,25 @@
       <div id="bkTimeOut"></div>
     </div>
   </section>
+
+  <section class="panel-section" id="panel-feedback">
+    <div class="card">
+      <h3>User feedback</h3>
+      <p class="blurb">Feedback submitted from the “💬 Feedback” button across the app. Mark items reviewed or resolved as you work through them.</p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">
+        <select id="fbFilter" style="min-height:36px;padding:6px 10px;border:1px solid var(--chrome-mute);border-radius:8px;font:inherit;">
+          <option value="open">Open (new + reviewed)</option>
+          <option value="all">All</option>
+          <option value="new">New</option>
+          <option value="reviewed">Reviewed</option>
+          <option value="resolved">Resolved</option>
+        </select>
+        <button class="btn btn-ghost" id="fbRefresh" type="button">Refresh</button>
+        <span id="fbStatus" style="font-size:12px;color:var(--muted);"></span>
+      </div>
+      <div id="fbOut"></div>
+    </div>
+  </section>
 </div>
 
 <script>
@@ -423,8 +443,13 @@
       document.querySelectorAll('.panel-section').forEach(function (s) { s.classList.remove('active'); });
       document.getElementById('panel-' + name).classList.add('active');
       if (name === 'bktime') renderBkTime();
+      if (name === 'feedback') renderFeedback();
     });
   });
+  (function () {
+    var fr = document.getElementById('fbRefresh'); if (fr) fr.onclick = renderFeedback;
+    var ff = document.getElementById('fbFilter'); if (ff) ff.onchange = renderFbList;
+  })();
   // Deep-link support: e.g. admin.html#integrations opens that tab on load.
   (function () {
     var h = (location.hash || '').replace('#', '');
@@ -432,6 +457,53 @@
     var b = document.querySelector('.tabs button[data-tab="' + h + '"]');
     if (b) b.click();
   })();
+
+  /* ===== USER FEEDBACK ===== */
+  function fbEsc(s) { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c]); }); }
+  function fbWhen(iso) { try { return new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }); } catch (_) { return ''; } }
+  function renderFeedback() {
+    var out = document.getElementById('fbOut'); var status = document.getElementById('fbStatus');
+    if (!out) return; status.textContent = 'Loading…';
+    fetch('/api/feedback', { credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+      .then(function (j) { window._fbItems = (j && j.feedback) || []; status.textContent = window._fbItems.length + ' total'; renderFbList(); })
+      .catch(function (e) { status.textContent = ''; out.innerHTML = '<div style="color:var(--burgundy);">Could not load feedback: ' + fbEsc(e.message) + '</div>'; });
+  }
+  function renderFbList() {
+    var out = document.getElementById('fbOut'); if (!out) return;
+    var filter = (document.getElementById('fbFilter') || {}).value || 'open';
+    var items = (window._fbItems || []).filter(function (f) { if (filter === 'all') return true; if (filter === 'open') return f.status !== 'resolved'; return (f.status || 'new') === filter; });
+    if (!items.length) { out.innerHTML = '<div style="color:var(--muted);padding:16px 0;">No feedback here.</div>'; return; }
+    var icon = { idea: '💡', bug: '🐞', question: '❓', praise: '🎉', other: '💬' };
+    out.innerHTML = items.map(function (f) {
+      var stars = f.rating ? ' · <span style="color:#e0a92e;">' + '★'.repeat(f.rating) + '</span><span style="color:var(--chrome-mute);">' + '★'.repeat(5 - f.rating) + '</span>' : '';
+      var badge = f.status === 'resolved' ? 'background:#e6f4ea;color:#1a7a3d;' : (f.status === 'reviewed' ? 'background:#fdf2d6;color:#8a6d2f;' : 'background:#eef2ff;color:#3538cd;');
+      var t = (f.type || 'other');
+      return '<div style="border:1px solid var(--chrome-mute);border-radius:10px;padding:12px 14px;margin-bottom:10px;">' +
+        '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:6px;">' +
+          '<div style="font-weight:700;">' + (icon[t] || '💬') + ' ' + fbEsc(t.charAt(0).toUpperCase() + t.slice(1)) + stars + '</div>' +
+          '<span style="font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;' + badge + '">' + fbEsc(f.status || 'new') + '</span>' +
+        '</div>' +
+        '<div style="white-space:pre-wrap;font-size:14px;color:var(--ink);margin-bottom:8px;">' + fbEsc(f.message) + '</div>' +
+        '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">' + fbEsc(f.userName || f.userUpn || '') + ' · ' + fbEsc(fbWhen(f.createdAt)) + (f.page ? (' · ' + fbEsc(f.page)) : '') + '</div>' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;">' +
+          (f.status !== 'reviewed' ? '<button class="btn btn-ghost" data-fbstat="reviewed" data-fbid="' + fbEsc(f.id) + '" type="button" style="font-size:12px;min-height:30px;">Mark reviewed</button>' : '') +
+          (f.status !== 'resolved' ? '<button class="btn btn-ghost" data-fbstat="resolved" data-fbid="' + fbEsc(f.id) + '" type="button" style="font-size:12px;min-height:30px;">Mark resolved</button>' : '') +
+          (f.status !== 'new' ? '<button class="btn btn-ghost" data-fbstat="new" data-fbid="' + fbEsc(f.id) + '" type="button" style="font-size:12px;min-height:30px;">Reopen</button>' : '') +
+        '</div>' +
+      '</div>';
+    }).join('');
+    out.querySelectorAll('[data-fbstat]').forEach(function (b) {
+      b.onclick = function () {
+        var idv = b.getAttribute('data-fbid'), st = b.getAttribute('data-fbstat');
+        b.disabled = true;
+        fetch('/api/feedback/' + encodeURIComponent(idv), { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: st }) })
+          .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+          .then(function () { var it = (window._fbItems || []).filter(function (x) { return x.id === idv; })[0]; if (it) it.status = st; renderFbList(); })
+          .catch(function () { b.disabled = false; (window.bccNotify || alert)('Update failed.', 'warn'); });
+      };
+    });
+  }
 
   /* ===== BOOKKEEPING TIME ===== */
   function bkFmtDur(secs) { secs = Math.round(secs || 0); var h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60); if (h) return h + 'h ' + m + 'm'; if (m) return m + 'm'; return secs + 's'; }
