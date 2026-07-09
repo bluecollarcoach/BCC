@@ -683,6 +683,10 @@ app.http('whoami', {
   authLevel: 'anonymous',
   handler: withAccessLog(async (request, context) => {
     const p = principal(request);
+    // Infrastructure diagnostics (which secrets are configured, Graph status, proxy
+    // headers, directory size) are admin-only — not for a plain authenticated user.
+    if (!p) return unauthorized();
+    if (!(await isAppAdmin(p))) return forbidden('admin only');
     const out = {
       signedIn: !!p,
       userDetails: p ? p.userDetails : null,
@@ -1544,6 +1548,28 @@ async function driveClientAccess(p, realmId) {
   }
   return { comp };
 }
+
+// Per-document access gate. A document that lives in a client folder (/clients/<realm>)
+// is STRICTLY per-client — only an admin or a user with access to that client may read,
+// download, or delete it. Non-client documents (the shared Documents module, CRM) stay
+// team-visible. Returns an async predicate that caches the per-realm access decision so
+// filtering a list doesn't re-check the same client repeatedly.
+function docFolderRealm(meta) { return (/^\/clients\/([^/]+)/.exec(String((meta && meta.folder) || '')) || [])[1] || null; }
+async function docAccessFilter(p) {
+  const admin = await isAppAdmin(p);
+  const cache = new Map(); // realm -> boolean
+  return async (meta) => {
+    if (admin) return true;
+    const realm = docFolderRealm(meta);
+    if (!realm) return true;                    // non-client docs remain team-visible
+    if (cache.has(realm)) return cache.get(realm);
+    const acc = await driveClientAccess(p, realm);
+    const ok = !acc.err;
+    cache.set(realm, ok);
+    return ok;
+  };
+}
+
 function driveTokenUrl(creds) { return creds.provider === 'google' ? 'https://oauth2.googleapis.com/token' : ('https://login.microsoftonline.com/' + creds.tenant + '/oauth2/v2.0/token'); }
 async function driveExchangeCode(creds, code, redirect) {
   const params = { client_id: creds.clientId, client_secret: creds.clientSecret, redirect_uri: redirect, code, grant_type: 'authorization_code' };
@@ -4222,13 +4248,14 @@ app.http('googleads-connect', {
     const p = principal(request);
     if (!p) return unauthorized();
     if (!domainAllowed(p)) return domainBlocked();
+    if (!(await isAppAdmin(p))) return forbidden('admin only — only an administrator can connect firm integrations');
     const r = await requireIntegrationFields('google-ads', ['clientId', 'clientSecret']);
     if (r.missing) {
       return { status: 400, jsonBody: { error: 'Set Google Ads clientId + clientSecret in Admin → Integrations first.', missing: r.missing } };
     }
     const origin = publicOrigin(request);
     const redirectUri = origin + '/api/integrations/google-ads/callback';
-    const state = Buffer.from(JSON.stringify({ upn: p.userDetails || p.userId, t: Date.now() })).toString('base64url');
+    const state = signOAuthState({ upn: p.userDetails || p.userId, t: Date.now() });
     const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams({
       client_id: r.fields.clientId,
       response_type: 'code',
@@ -4252,6 +4279,7 @@ app.http('googleads-callback', {
     const err = url.searchParams.get('error');
     if (err) return { status: 302, headers: { Location: '/admin.html?google-ads=' + encodeURIComponent(err) + '#integrations' } };
     if (!code) return { status: 400, jsonBody: { error: 'missing code' } };
+    if (!verifyOAuthState(url.searchParams.get('state'))) return { status: 302, headers: { Location: '/admin.html?google-ads=error&detail=' + encodeURIComponent('security check failed (invalid/expired request) — retry from Admin → Integrations') + '#integrations' } };
     try {
       const fields = await getIntegrationFields('google-ads');
       const redirectUri = publicOrigin(request) + '/api/integrations/google-ads/callback';
@@ -4286,13 +4314,14 @@ app.http('linkedin-connect', {
     const p = principal(request);
     if (!p) return unauthorized();
     if (!domainAllowed(p)) return domainBlocked();
+    if (!(await isAppAdmin(p))) return forbidden('admin only — only an administrator can connect firm integrations');
     const r = await requireIntegrationFields('linkedin', ['clientId', 'clientSecret']);
     if (r.missing) {
       return { status: 400, jsonBody: { error: 'Set LinkedIn clientId + clientSecret in Admin → Integrations first.', missing: r.missing } };
     }
     const origin = publicOrigin(request);
     const redirectUri = origin + '/api/integrations/linkedin/callback';
-    const state = Buffer.from(JSON.stringify({ upn: p.userDetails || p.userId, t: Date.now() })).toString('base64url');
+    const state = signOAuthState({ upn: p.userDetails || p.userId, t: Date.now() });
     // r_ads + r_ads_reporting require Marketing Developer Platform access.
     // r_basicprofile/email work for any new app without extra approval.
     const scope = (r.fields.scope || 'r_organization_social r_ads r_ads_reporting r_emailaddress').trim();
@@ -4317,6 +4346,7 @@ app.http('linkedin-callback', {
     const err = url.searchParams.get('error');
     if (err) return { status: 302, headers: { Location: '/admin.html?linkedin=' + encodeURIComponent(err) + '#integrations' } };
     if (!code) return { status: 400, jsonBody: { error: 'missing code' } };
+    if (!verifyOAuthState(url.searchParams.get('state'))) return { status: 302, headers: { Location: '/admin.html?linkedin=error&detail=' + encodeURIComponent('security check failed (invalid/expired request) — retry from Admin → Integrations') + '#integrations' } };
     try {
       const fields = await getIntegrationFields('linkedin');
       const redirectUri = publicOrigin(request) + '/api/integrations/linkedin/callback';
@@ -4357,13 +4387,14 @@ app.http('meta-connect', {
     const p = principal(request);
     if (!p) return unauthorized();
     if (!domainAllowed(p)) return domainBlocked();
+    if (!(await isAppAdmin(p))) return forbidden('admin only — only an administrator can connect firm integrations');
     const r = await requireIntegrationFields('meta', ['clientId', 'clientSecret']);
     if (r.missing) {
       return { status: 400, jsonBody: { error: 'Set Meta clientId + clientSecret in Admin → Integrations first.', missing: r.missing } };
     }
     const origin = publicOrigin(request);
     const redirectUri = origin + '/api/integrations/meta/callback';
-    const state = Buffer.from(JSON.stringify({ upn: p.userDetails || p.userId, t: Date.now() })).toString('base64url');
+    const state = signOAuthState({ upn: p.userDetails || p.userId, t: Date.now() });
     const scope = (r.fields.scope || 'ads_read,business_management,read_insights,pages_read_engagement').trim();
     const authUrl = 'https://www.facebook.com/v18.0/dialog/oauth?' + new URLSearchParams({
       client_id: r.fields.clientId,
@@ -4386,6 +4417,7 @@ app.http('meta-callback', {
     const err = url.searchParams.get('error');
     if (err) return { status: 302, headers: { Location: '/admin.html?meta=' + encodeURIComponent(err) + '#integrations' } };
     if (!code) return { status: 400, jsonBody: { error: 'missing code' } };
+    if (!verifyOAuthState(url.searchParams.get('state'))) return { status: 302, headers: { Location: '/admin.html?meta=error&detail=' + encodeURIComponent('security check failed (invalid/expired request) — retry from Admin → Integrations') + '#integrations' } };
     try {
       const fields = await getIntegrationFields('meta');
       const redirectUri = publicOrigin(request) + '/api/integrations/meta/callback';
@@ -4428,13 +4460,14 @@ app.http('mailchimp-connect', {
     const p = principal(request);
     if (!p) return unauthorized();
     if (!domainAllowed(p)) return domainBlocked();
+    if (!(await isAppAdmin(p))) return forbidden('admin only — only an administrator can connect firm integrations');
     const r = await requireIntegrationFields('mailchimp', ['clientId', 'clientSecret']);
     if (r.missing) {
       return { status: 400, jsonBody: { error: 'Set Mailchimp clientId + clientSecret in Admin → Integrations first.', missing: r.missing } };
     }
     const origin = publicOrigin(request);
     const redirectUri = origin + '/api/integrations/mailchimp/callback';
-    const state = Buffer.from(JSON.stringify({ upn: p.userDetails || p.userId, t: Date.now() })).toString('base64url');
+    const state = signOAuthState({ upn: p.userDetails || p.userId, t: Date.now() });
     const authUrl = 'https://login.mailchimp.com/oauth2/authorize?' + new URLSearchParams({
       response_type: 'code',
       client_id: r.fields.clientId,
@@ -4455,6 +4488,7 @@ app.http('mailchimp-callback', {
     const err = url.searchParams.get('error');
     if (err) return { status: 302, headers: { Location: '/admin.html?mailchimp=' + encodeURIComponent(err) + '#integrations' } };
     if (!code) return { status: 400, jsonBody: { error: 'missing code' } };
+    if (!verifyOAuthState(url.searchParams.get('state'))) return { status: 302, headers: { Location: '/admin.html?mailchimp=error&detail=' + encodeURIComponent('security check failed (invalid/expired request) — retry from Admin → Integrations') + '#integrations' } };
     try {
       const fields = await getIntegrationFields('mailchimp');
       const redirectUri = publicOrigin(request) + '/api/integrations/mailchimp/callback';
@@ -4592,7 +4626,12 @@ app.http('documents-list-create', {
         if (linkedContactId) { where += ' AND c.linkedContactId = @lc'; params.push({ name: '@lc', value: linkedContactId }); }
         const q = { query: 'SELECT * FROM c WHERE ' + where + ' ORDER BY c.createdAt DESC', parameters: params };
         const { resources } = await c.items.query(q).fetchAll();
-        return { jsonBody: { items: resources } };
+        // Defense in depth: drop any client-folder docs the caller can't access, so a
+        // linkedContactId (or any query shape) can never surface another client's files.
+        const allow = await docAccessFilter(p);
+        const items = [];
+        for (const d of resources) { if (await allow(d)) items.push(d); }
+        return { jsonBody: { items } };
       } catch (err) {
         context.error('documents list error', err);
         return { status: 500, jsonBody: { error: 'list failed', detail: String(err && err.message || err) } };
@@ -4675,12 +4714,15 @@ app.http('document-one', {
       if (request.method === 'GET') {
         const { resource } = await c.item(id, BCC_TENANT_ID).read();
         if (!resource) return { status: 404, jsonBody: { error: 'not found' } };
+        const allow = await docAccessFilter(p);
+        if (!(await allow(resource))) return forbidden('no access to this client’s files');
         return { jsonBody: resource };
       }
 
       // DELETE — remove from Blob + Cosmos
       let meta = null;
       try { ({ resource: meta } = await c.item(id, BCC_TENANT_ID).read()); } catch (e) { if (e.code !== 404) throw e; }
+      if (meta) { const allowDel = await docAccessFilter(p); if (!(await allowDel(meta))) return forbidden('no access to this client’s files'); }
       if (meta && meta.storageKey) {
         try {
           const cont = getBlobContainer();
@@ -4713,6 +4755,8 @@ app.http('document-download', {
       const c = container();
       const { resource: meta } = await c.item(id, BCC_TENANT_ID).read();
       if (!meta || !meta.storageKey) return { status: 404, jsonBody: { error: 'no file' } };
+      const allowDl = await docAccessFilter(p);
+      if (!(await allowDl(meta))) return forbidden('no access to this client’s files');
       const cont = getBlobContainer();
       if (!_blobAccount) return { status: 500, jsonBody: { error: 'blob credentials not parseable for SAS generation' } };
 
