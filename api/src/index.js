@@ -45,7 +45,7 @@ const ADMIN_KEYS      = new Set(['bcc-admin-config-v1']); // writable only by us
 // tokens (bcc-qbo-company-*, bcc-clientdrive-*), per-client mailbox config, and
 // server-only time. The generic /api/data path must NEVER create, overwrite, or
 // delete these (they each have an admin/allow-list-gated endpoint of their own).
-const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-emailmeta-', 'bcc-financial-period-', 'bcc-usernotif-', 'bcc-feedback-'];
+const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-emailmeta-', 'bcc-financial-period-', 'bcc-usernotif-', 'bcc-feedback-', 'bcc-errorlog-'];
 // Sentinel allowedUserUpns value meaning "admins only" — a non-matching UPN, so
 // every existing access check (allow.length && who not in allow → deny) denies
 // non-admins automatically, while admins bypass the allow-list. New companies
@@ -253,6 +253,22 @@ function logAccess(request, response, p) {
 }
 
 // Wrap an Azure Functions handler so every invocation is access-logged.
+// Persist an error to Cosmos for the in-app error log (best-effort, never throws).
+async function logError(where, err, extra) {
+  try {
+    await container().items.upsert({
+      id: 'bcc-errorlog-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7),
+      tenantId: BCC_TENANT_ID, docType: 'errorlog',
+      source: (extra && extra.source) || 'server',
+      where: String(where || '').slice(0, 200),
+      message: String((err && err.message) || err || '').slice(0, 800),
+      stack: String((err && err.stack) || '').slice(0, 2500),
+      user: (extra && extra.user) || '', url: (extra && extra.url) || '',
+      at: new Date().toISOString()
+    });
+  } catch (_) {}
+}
+
 function withAccessLog(handler) {
   return async (request, context) => {
     let response;
@@ -260,6 +276,9 @@ function withAccessLog(handler) {
       response = await handler(request, context);
     } catch (err) {
       context.error && context.error('handler error', err);
+      let uu = ''; try { const pp = principal(request); uu = (pp && pp.userDetails) || ''; } catch (_) {}
+      let wh = 'handler'; try { wh = request.method + ' ' + new URL(request.url).pathname; } catch (_) {}
+      await logError(wh, err, { user: String(uu).toLowerCase() });
       response = { status: 500, jsonBody: { error: 'server error', detail: String(err && err.message || err) } };
     }
     // Resolve a principal AFTER the handler runs, so even unauthenticated
@@ -290,7 +309,7 @@ app.http('data', {
           if (!isPcKey(key)) return badRequest('invalid key');
           // These are access-scoped / server-owned — never serve them by direct
           // key (financials, per-user notifications, feedback have their own APIs).
-          if (/^bcc-(financial-period|usernotif|feedback)-/.test(String(key))) return { jsonBody: { key, data: null } };
+          if (/^bcc-(financial-period|usernotif|feedback|errorlog)-/.test(String(key))) return { jsonBody: { key, data: null } };
           // Integration docs hold OAuth client secrets / tokens — redact for non-admins.
           const keyRedact = key.startsWith('bcc-integration-') && !(await isAppAdmin(p));
           try {
@@ -308,7 +327,7 @@ app.http('data', {
           // financial-period is excluded by ID PREFIX (not docType) — legacy docs
           // pushed via /api/data nest docType under .data, so a docType filter
           // would miss them and leak client books. Served only via qbo-periods.
-          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "client-drive"))',
+          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "client-drive"))',
           parameters: [{ name: '@t', value: BCC_TENANT_ID }]
         };
         const { resources } = await c.items.query(q).fetchAll();
@@ -1103,6 +1122,34 @@ app.http('notifications', {
   })
 });
 
+/**
+ * Error log.
+ *   POST /api/errorlog   — any signed-in user reports a client-side error.
+ *   GET  /api/errorlog   — admin: recent server + client errors (newest first).
+ */
+app.http('errorlog', {
+  methods: ['GET', 'POST'],
+  authLevel: 'anonymous',
+  route: 'errorlog',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const c = container();
+    if (request.method === 'GET') {
+      if (!(await isAppAdmin(p))) return { status: 403, jsonBody: { ok: false, error: 'admin only' } };
+      const { resources } = await c.items.query({
+        query: 'SELECT TOP 200 c.id, c.source, c.where, c.message, c.user, c.url, c.at FROM c WHERE c.tenantId=@t AND c.docType="errorlog" ORDER BY c.at DESC',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+      }).fetchAll();
+      return { jsonBody: { ok: true, errors: resources } };
+    }
+    const body = await request.json().catch(() => ({}));
+    await logError(String(body.where || 'client').slice(0, 200), { message: body.message, stack: body.stack }, { source: 'client', user: String(p.userDetails || '').toLowerCase(), url: String(body.url || '').slice(0, 200) });
+    return { jsonBody: { ok: true } };
+  })
+});
+
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
@@ -1438,6 +1485,12 @@ function driveCallbackHandler(provider) {
       const creds = await driveAppCreds(provider); if (!creds.ok) return driveBack(realmId, 'app not configured');
       const tok = await driveExchangeCode(creds, code, driveRedirect(request, provider));
       if (!tok.refresh_token) return driveBack(realmId, 'no refresh token returned — re-consent');
+      // Verify the Drive scope was actually granted. Google's granular consent lets a
+      // user approve sign-in but skip Drive, returning a token that later 403s on every
+      // file call. Don't store that — tell them to reconnect and approve Drive access.
+      if (provider === 'google' && !/googleapis\.com\/auth\/drive(?:\.readonly)?(?:\s|$)/.test(String(tok.scope || ''))) {
+        return driveBack(realmId, 'Google Drive access was not granted. Reconnect and approve “See, edit, create and delete all your Google Drive files.” (If that option was not shown, an admin must add the Drive scope to the app’s Google consent screen and enable the Drive API.)');
+      }
       let account = '';
       try {
         if (provider === 'google') { const ui = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: 'Bearer ' + tok.access_token } }).then(r => r.json()); account = ui.email || ''; }
@@ -1539,7 +1592,10 @@ app.http('drive-files', {
         const start = folderId || (root && root.folderId) || 'root';
         const q = encodeURIComponent("'" + start + "' in parents and trashed=false");
         const r = await fetch('https://www.googleapis.com/drive/v3/files?q=' + q + '&fields=files(id,name,mimeType,modifiedTime,size,webViewLink)&pageSize=300&orderBy=folder,name&supportsAllDrives=true&includeItemsFromAllDrives=true', { headers: { Authorization: 'Bearer ' + dt.at } });
-        if (!r.ok) throw new Error('Google Drive ' + r.status);
+        if (!r.ok) {
+          if (r.status === 403) return { jsonBody: { ok: false, needsReconnect: true, provider: 'google', account: dt.doc.account, error: 'Google Drive access isn’t authorized for this connection (the Drive permission was not granted). Disconnect and reconnect ' + (dt.doc.account || 'the account') + ', approving “See, edit, create and delete all your Google Drive files.”' } };
+          throw new Error('Google Drive ' + r.status);
+        }
         const j = await r.json();
         items = (j.files || []).map(f => ({ id: f.id, name: f.name, folder: f.mimeType === 'application/vnd.google-apps.folder', size: f.size ? Number(f.size) : null, modified: f.modifiedTime || null, webUrl: f.webViewLink || null }));
       } else {
@@ -2061,17 +2117,18 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
           } catch (_) {}
           // Balance-sheet snapshot as of month-end (fetched above), so cash /
           // current ratio / working capital have monthly history for the trends.
-          let cash = 0, ca = 0, cl = 0;
+          let cash = 0, ca = 0, cl = 0, bsOk = false;
           try {
             if (br && br.ok) {
               const bs = flattenQboReport(await br.json());
               cash = (findByLabel(bs, /total bank account/i) ?? findByLabel(bs, /bank account/i) ?? findByLabel(bs, /checking|savings|cash on hand|^cash$/i)) || 0;
               ca = (findByGroup(bs, 'TotalCurrentAssets') ?? findByLabel(bs, /total current assets/i)) || 0;
               cl = (findByGroup(bs, 'TotalCurrentLiabilities') ?? findByLabel(bs, /total current liabilities/i)) || 0;
+              bsOk = true;
             }
           } catch (_) {}
           const periodKey = startStr.slice(0, 7);
-          periods.push({
+          const per = {
             id: 'bcc-financial-period-' + comp.realmId + '-' + periodKey,
             tenantId: BCC_TENANT_ID, docType: 'financial-period',
             realmId: comp.realmId, companyName: comp.companyName,
@@ -2080,11 +2137,12 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
             cogsCents: Math.round(cogs * 100),
             expensesCents: Math.round(opex * 100),
             netCents: Math.round(net * 100),
-            cashCents: Math.round(cash * 100),
-            currentAssetsCents: Math.round(ca * 100),
-            currentLiabilitiesCents: Math.round(cl * 100),
             source: 'qbo', syncedAt: new Date().toISOString()
-          });
+          };
+          // Only record balance-sheet metrics when the BS actually loaded — a failed
+          // fetch must not persist a fake $0 (it corrupts current ratio / working capital).
+          if (bsOk) { per.cashCents = Math.round(cash * 100); per.currentAssetsCents = Math.round(ca * 100); per.currentLiabilitiesCents = Math.round(cl * 100); }
+          periods.push(per);
         }
         for (const per of periods) { try { await c.items.upsert(per); } catch (_) {} }
         comp.lastSyncAt = new Date().toISOString();
@@ -3379,6 +3437,23 @@ app.http('qbo-attach', {
   })
 });
 
+// Identify a file's real type from its magic bytes (mobile mime types are often
+// wrong; iPhone HEIC gets mislabeled image/jpeg and then fails the vision API).
+function sniffMediaType(buf) {
+  if (!buf || buf.length < 12) return null;
+  const b = buf;
+  if (b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46) return 'application/pdf'; // %PDF
+  if (b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF) return 'image/jpeg';
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) return 'image/png';
+  if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return 'image/gif';
+  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return 'image/webp'; // RIFF..WEBP
+  if (b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) { // 'ftyp' box
+    const brand = b.slice(8, 12).toString('ascii');
+    if (/heic|heix|hevc|heif|mif1|msf1/i.test(brand)) return 'image/heic';
+  }
+  return null;
+}
+
 /**
  * POST /api/ai/extract-receipt  (multipart: file)
  * Sends a receipt/invoice image or PDF to Claude and returns structured fields
@@ -3403,10 +3478,18 @@ app.http('ai-extract-receipt', {
       if (buf.length > 12 * 1024 * 1024) return badRequest('file too large (max 12 MB)');
       const b64 = buf.toString('base64');
       const mt = (file.type || '').toLowerCase() || 'image/jpeg';
-      const isPdf = /pdf/.test(mt);
+      // Trust the file's magic bytes over its (often wrong on mobile) mime type.
+      const sniffed = sniffMediaType(buf);
+      const isPdf = sniffed === 'application/pdf' || /pdf/.test(mt);
+      if (sniffed === 'image/heic' || /heic|heif/.test(mt)) {
+        return { jsonBody: { ok: false, error: 'That looks like an iPhone HEIC photo, which the scanner can’t read. Take a screenshot of the receipt, or set iPhone → Settings → Camera → Formats → “Most Compatible”, then re-scan.' } };
+      }
+      const mediaType = isPdf ? 'application/pdf'
+        : (sniffed && /^image\/(png|jpeg|gif|webp)$/.test(sniffed) ? sniffed
+          : (/(png|jpe?g|webp|gif)/.test(mt) ? mt.replace('image/jpg', 'image/jpeg') : 'image/jpeg'));
       const srcBlock = isPdf
         ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } }
-        : { type: 'image', source: { type: 'base64', media_type: (/(png|jpe?g|webp|gif)/.test(mt) ? mt : 'image/jpeg'), data: b64 } };
+        : { type: 'image', source: { type: 'base64', media_type: mediaType, data: b64 } };
       // Realm-aware matching: feed the client's vendors + expense accounts so the
       // model can pick the matching vendor Id and the best expense account Id.
       let matchHint = '';
@@ -3450,14 +3533,16 @@ app.http('ai-extract-receipt', {
         method: 'POST',
         headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
         body: JSON.stringify({
-          model: model, max_tokens: 1024, tools: [tool], tool_choice: { type: 'tool', name: 'record_document' },
+          model: model, max_tokens: 4096, tools: [tool], tool_choice: { type: 'tool', name: 'record_document' },
           messages: [{ role: 'user', content: [srcBlock, { type: 'text', text: 'Extract the vendor, date (YYYY-MM-DD), subtotal, tax, total, currency, and individual line items from this document. Call record_document with the data.' + matchHint }] }]
         })
       });
       if (!r.ok) { const t = (await r.text().catch(() => '')).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'AI error ' + r.status, detail: t } }; }
       const j = await r.json();
+      // A truncated response yields incomplete/invalid tool JSON — don't treat it as valid.
+      if (j.stop_reason === 'max_tokens') return { jsonBody: { ok: false, error: 'That receipt was too detailed to read in one pass — try a tighter crop or scan the itemized part separately.' } };
       const tu = (j.content || []).find(c => c.type === 'tool_use');
-      if (!tu) return { jsonBody: { ok: false, error: 'No data extracted' } };
+      if (!tu) return { jsonBody: { ok: false, error: 'Couldn’t read a receipt in that image — try a clearer, well-lit photo or crop to just the receipt.' } };
       return { jsonBody: { ok: true, data: tu.input } };
     } catch (e) { context.error('ai-extract', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })

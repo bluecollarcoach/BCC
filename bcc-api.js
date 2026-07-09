@@ -740,6 +740,21 @@
   ];
 
   /* ---------- UI ---------- */
+  // Capture client-side JS errors + unhandled promise rejections into the server
+  // error log (throttled to 1/min per message, only when signed in).
+  (function () {
+    var lastAt = {};
+    function reportClientError(where, message, stack, url) {
+      if (!signedIn || !message) return;
+      var k = String(message).slice(0, 120), now = Date.now();
+      if (lastAt[k] && now - lastAt[k] < 60000) return;
+      lastAt[k] = now;
+      try { fetch('/api/errorlog', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ where: where, message: String(message).slice(0, 600), stack: String(stack || '').slice(0, 2000), url: url || location.pathname }) }).catch(function () {}); } catch (e) {}
+    }
+    window.addEventListener('error', function (e) { if (!e) return; reportClientError('window.onerror', e.message || 'script error', (e.error && e.error.stack) || (e.filename ? (e.filename + ':' + e.lineno + ':' + e.colno) : ''), location.pathname); });
+    window.addEventListener('unhandledrejection', function (e) { var r = e && e.reason; reportClientError('unhandledrejection', (r && r.message) || String(r || 'rejection'), (r && r.stack) || '', location.pathname); });
+  })();
+
   // Global feedback modal — openable from the topbar button (or window.bccOpenFeedback()).
   window.bccOpenFeedback = function () {
     if (document.getElementById('bcc-fb-modal')) return;

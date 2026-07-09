@@ -537,6 +537,13 @@
   var managementMode = false; // root view: false = bookkeeper work queue, true = firm-wide management dashboard (access-controlled)
 
   function nowIso() { return new Date().toISOString(); }
+  // Date + time for sync/period stamps ("Jun 29, 2026, 2:14 PM"); short form drops the year.
+  function fmtSyncTime(iso, short) {
+    if (!iso) return '';
+    var d = new Date(iso); if (isNaN(d)) return '';
+    var o = short ? { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' } : { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' };
+    return d.toLocaleString([], o);
+  }
   function esc(s) { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
   function dollars(cents) {
     if (cents == null || isNaN(cents)) return '—';
@@ -667,7 +674,9 @@
   }
   function deletePeriod(id) { localStorage.removeItem(id); }
   // Net = Revenue − COGS − Operating Expenses (COGS is 0 for legacy/manual periods).
-  function netOf(p) { return (p.revenueCents || 0) - (p.cogsCents || 0) - (p.expensesCents || 0); }
+  // Prefer QBO's authoritative Net Income (includes other income/expense); fall
+  // back to Revenue − COGS − OpEx for manual/legacy periods without netCents.
+  function netOf(p) { return p.netCents != null ? p.netCents : ((p.revenueCents || 0) - (p.cogsCents || 0) - (p.expensesCents || 0)); }
   function pctOf(numCents, revCents) { return revCents ? Math.round((numCents / revCents) * 1000) / 10 : null; }
   function pctTxt(v) { return v == null ? '—' : (v + '%'); }
   var ADMIN_ONLY_UPN = '__admins_only__';
@@ -789,7 +798,7 @@
     });
     rowsEl.innerHTML = sorted.map(function (c) {
       var t = ti(c.realmId);
-      var ls = c.lastSyncAt ? new Date(c.lastSyncAt).toLocaleDateString([], { month: 'short', day: 'numeric' }) : 'never';
+      var ls = c.lastSyncAt ? fmtSyncTime(c.lastSyncAt, true) : 'never';
       var bell = t.count > 0
         ? '<span style="display:inline-flex;align-items:center;gap:5px;font-weight:700;font-size:12.5px;color:' + (t.overdue ? 'var(--burgundy)' : 'var(--gold-deep)') + ';">🔔 ' + t.count + ' to-do' + (t.count === 1 ? '' : 's') + (t.overdue ? ' · overdue' : '') + '</span>'
         : '<span style="color:var(--muted);font-size:12.5px;">—</span>';
@@ -831,7 +840,7 @@
       rowsEl.innerHTML = companies.map(function (c) {
         var l = map[c.realmId];
         var net = l ? netOf(l) : null;
-        var ls = c.lastSyncAt ? new Date(c.lastSyncAt).toLocaleDateString([], { month:'short', day:'numeric', year:'numeric' }) : 'never';
+        var ls = c.lastSyncAt ? fmtSyncTime(c.lastSyncAt) : 'never';
         var dim = (isAdmin && c.enabled === false) ? ' style="opacity:.5;"' : '';
         var adminCells = '';
         if (isAdmin) {
@@ -939,7 +948,7 @@
     rowsEl.innerHTML = rows.map(function (p) {
       var rev = p.revenueCents || 0, cogs = p.cogsCents || 0, gp = rev - cogs, net = netOf(p);
       var expPct = pctOf(p.expensesCents || 0, rev), netPct = pctOf(net, rev);
-      var syncedAt = p.syncedAt ? new Date(p.syncedAt).toLocaleDateString([], { month:'short', day:'numeric', year:'numeric' }) : '—';
+      var syncedAt = p.syncedAt ? fmtSyncTime(p.syncedAt) : '—';
       var inProg = periodInProgress(p.period);
       return '<tr class="' + (inProg ? 'period-inprogress' : '') + '" data-id="' + esc(p.id) + '" data-period="' + esc(p.period || '') + '" style="cursor:pointer;" title="View the Profit &amp; Loss detail">' +
         '<td data-label="Period"><span style="color:var(--gold-deep);font-weight:600;">' + esc(p.period || '—') + '</span>' + (inProg ? ' <span class="inprogress-badge">● in progress</span>' : '') + '</td>' +
@@ -2129,6 +2138,13 @@
       .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
       .then(function (resp) {
         if (resp && resp.needsRoot) { showSetRootForm(list, resp); return; }
+        if (resp && resp.needsReconnect) {
+          list.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:14px;font-size:13px;">' + esc(resp.error || 'Drive access needs reconnecting.') + '</div>' +
+            '<div style="margin-top:10px;"><button class="btn btn-primary" id="drv_reconnect" type="button">🔗 Reconnect ' + (resp.provider === 'google' ? 'Google Drive' : 'OneDrive') + '</button></div>';
+          var rc = document.getElementById('drv_reconnect');
+          if (rc) rc.onclick = function () { location.href = '/api/integrations/' + (resp.provider === 'google' ? 'google-drive' : 'onedrive') + '/connect?realmId=' + encodeURIComponent(currentRealm); };
+          return;
+        }
         if (!resp || !resp.ok) { list.innerHTML = '<div style="color:var(--burgundy);font-size:13px;">' + esc((resp && resp.error) || 'Could not load drive') + '</div>'; return; }
         var items = resp.items || [];
         if (!items.length) { list.innerHTML = '<div style="color:var(--muted);padding:8px 0;">This folder is empty.</div>'; return; }
@@ -2769,10 +2785,37 @@
     cprDraft.updatedAt = nowIso(); cprDraft.updatedBy = myUpn();
     localStorage.setItem(cprDraft.id, JSON.stringify(cprDraft));
     if (window.bccAudit) window.bccAudit('cpr-save', { key: cprDraft.id, path:'/bookkeeping.html', meta:{ realmId: currentRealm, payrollNo: cprDraft.payrollNo } });
-    if (!silent && window.bccNotifySaved) window.bccNotifySaved('Payroll report saved.');
+    cprSaveToFiles(cprDraft, silent); // also file a copy in the client's documents
+  }
+  // File the certified-payroll report into the client's private documents, tagged
+  // "Certified Payroll". Replaces the prior copy so there's one current file/report.
+  function cprSaveToFiles(r, silent) {
+    var realm = currentRealm; if (!realm) return;
+    var html, fname;
+    try {
+      html = cprDocHtml(r, false);
+      fname = 'Certified Payroll' + (r.payrollNo ? ' #' + r.payrollNo : '') + (r.weekStart ? ' (week of ' + r.weekStart + ')' : '') + '.html';
+    } catch (e) { if (!silent) (window.bccNotify || alert)('Saved locally (couldn’t build the file).', 'warn'); return; }
+    function upload() {
+      var fd = new FormData();
+      fd.append('file', new Blob([html], { type: 'text/html' }), fname);
+      fd.append('folder', (typeof clientFolder === 'function' ? clientFolder() : ('/clients/' + realm)));
+      fd.append('tags', 'Certified Payroll, payroll');
+      fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
+        .then(function (rr) { return rr.json().then(function (j) { return rr.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + rr.status))); }); })
+        .then(function (j) {
+          if (j && j.id) { r.docId = j.id; localStorage.setItem(r.id, JSON.stringify(r)); }
+          if (window.bccAudit) window.bccAudit('client-file-upload', { key: j && j.id, path: '/bookkeeping.html', meta: { realmId: realm, name: fname, source: 'certified-payroll' } });
+          if (!silent && window.bccNotifySaved) window.bccNotifySaved('Payroll report saved & filed to the client (tag: Certified Payroll).');
+          if (typeof loadFiles === 'function') loadFiles();
+        })
+        .catch(function (e) { (window.bccNotify || alert)('Saved locally, but couldn’t file it to the client: ' + e.message, 'warn', 8000); });
+    }
+    if (r.docId) fetch('/api/documents/' + encodeURIComponent(r.docId), { method: 'DELETE', credentials: 'include' }).then(upload, upload);
+    else upload();
   }
 
-  function printCpr(r) {
+  function cprDocHtml(r, forPrint) {
     var wd = weekDates(r.weekStart);
     var totals = { hrs:0, job:0, gp:0, ded:0, net:0 };
     var empRows = (r.employees || []).map(function (e) {
@@ -2829,10 +2872,13 @@
         'Name & title: <span class="fld">' + esc(r.socName || '') + (r.socTitle ? ', ' + esc(r.socTitle) : '') + '</span></div>' +
         '<p style="font-size:8px;color:#444;margin-top:18px;">Pursuant to the Minnesota Government Data Practices Act, data on this form is public. Do not provide Social Security numbers. Willful falsification may subject the contractor to civil or criminal prosecution.</p>' +
       '</div>' +
-      '<script>window.onload=function(){window.print();}<\/script></body></html>';
+      (forPrint ? '<script>window.onload=function(){window.print();}<\/script>' : '') + '</body></html>';
+    return doc;
+  }
+  function printCpr(r) {
     var w = window.open('', '_blank');
     if (!w) { (window.bccNotify || alert)('Allow pop-ups to print the payroll form.', 'warn'); return; }
-    w.document.open(); w.document.write(doc); w.document.close();
+    w.document.open(); w.document.write(cprDocHtml(r, true)); w.document.close();
     if (window.bccAudit) window.bccAudit('cpr-print', { key: r.id, path:'/bookkeeping.html', meta:{ realmId: currentRealm, payrollNo: r.payrollNo } });
   }
 
