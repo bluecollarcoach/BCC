@@ -455,7 +455,10 @@
 
   <!-- QuickBooks live reports (shown when a single company is selected) -->
   <div class="card" id="qboReports" style="display:none; margin-top:14px;">
-    <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 8px;">QuickBooks reports <span id="qboReportsCo" style="color:var(--muted); font-weight:400; font-size:13px;"></span></h3>
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin:0 0 10px;">
+      <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0;">QuickBooks reports <span id="qboReportsCo" style="color:var(--muted); font-weight:400; font-size:13px;"></span></h3>
+      <button class="btn btn-primary" id="mrOpenBtn" type="button" style="display:inline-flex; align-items:center; gap:6px;">📄 Generate monthly report</button>
+    </div>
     <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:0 0 10px;">
       <label style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--muted);">Report</label>
       <select id="qboReportSel" style="background:var(--chrome); border:1px solid var(--chrome-mute); border-radius:8px; padding:9px 11px; font:inherit; font-size:14px; min-height:42px; min-width:200px;">
@@ -1359,6 +1362,226 @@
       .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
       .then(function (resp) { out.innerHTML = renderReport(resp); wireTxEdit(out, resp.data); })
       .catch(function (e) { out.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:10px;font-size:13px;">QuickBooks: ' + esc(e.message) + '</div>'; });
+  }
+
+  /* ===== Branded monthly financial report (one-click) ===== */
+  var _mr = { data: null, obs: [], period: '' };
+  var MR_MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  function mrDefaultPeriod() { var d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); }
+  function mrPeriodOptions(selP) {
+    var out = '', d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1);
+    for (var i = 0; i < 18; i++) {
+      var p = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+      out += '<option value="' + p + '"' + (p === selP ? ' selected' : '') + '>' + MR_MONTHS[d.getMonth()] + ' ' + d.getFullYear() + '</option>';
+      d.setMonth(d.getMonth() - 1);
+    }
+    return out;
+  }
+  function escHtml(s) { return String(s == null ? '' : s).replace(/[<>&"]/g, function (c) { return ({ '<':'&lt;', '>':'&gt;', '&':'&amp;', '"':'&quot;' }[c]); }); }
+  function mrMoney(v) {
+    var n = (typeof v === 'number') ? v : parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, ''));
+    if (isNaN(n)) return String(v == null ? '' : v);
+    var neg = n < 0, s = '$' + Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return neg ? '(' + s + ')' : s;
+  }
+  function mrMoney0(n) { if (n == null) return '—'; var neg = n < 0, s = '$' + Math.round(Math.abs(n)).toLocaleString(); return neg ? '(' + s + ')' : s; }
+  // The KPI set that must appear on every report; conditional lines only when non-zero.
+  function mrKpiList(k) {
+    var out = [];
+    var cmp = function (cur, prior) { if (prior == null || cur == null) return ''; if (Math.abs(cur - prior) < 0.5) return 'flat'; return (cur > prior ? 'up from ' : 'down from ') + mrMoney0(prior); };
+    out.push({ l: 'Cash on Hand', v: mrMoney0(k.cash), n: [(k.monthsOfCash != null ? ((k.monthsOfCash <= 0 ? '~0' : k.monthsOfCash) + ' mo overhead') : ''), cmp(k.cash, k.cashPrior)].filter(Boolean).join(' · ') });
+    out.push({ l: 'Monthly Net Income', v: mrMoney0(k.netIncome), n: cmp(k.netIncome, k.netIncomePrior) });
+    out.push({ l: 'Revenue', v: mrMoney0(k.revenue), n: cmp(k.revenue, k.revenuePrior) });
+    if (k.grossMargin != null) out.push({ l: 'Gross Margin', v: Math.round(k.grossMargin * 100) + '%', n: '' });
+    if (k.netIncomeYtd != null) out.push({ l: 'Net Income YTD', v: mrMoney0(k.netIncomeYtd), n: '' });
+    if (k.ar) out.push({ l: 'A/R Outstanding', v: mrMoney0(k.ar), n: cmp(k.ar, k.arPrior) });
+    if (k.ap) out.push({ l: 'A/P Balance', v: mrMoney0(k.ap), n: cmp(k.ap, k.apPrior) });
+    if (k.creditCards) out.push({ l: 'Credit Card Balance', v: mrMoney0(k.creditCards), n: cmp(k.creditCards, k.creditCardsPrior) });
+    if (k.ccInterestAnnual) out.push({ l: 'CC Interest (annualized)', v: '~' + mrMoney0(k.ccInterestAnnual) + '/yr', n: 'est ' + Math.round((k.ccApr || 0.2) * 100) + '% APR' });
+    if (k.lineOfCredit) out.push({ l: 'Line of Credit', v: mrMoney0(k.lineOfCredit), n: cmp(k.lineOfCredit, k.lineOfCreditPrior) });
+    if (k.longTermDebt) out.push({ l: 'Long-Term Debt', v: mrMoney0(k.longTermDebt), n: cmp(k.longTermDebt, k.longTermDebtPrior) });
+    (k.debtLines || []).forEach(function (dl) { if (dl && dl.label) out.push({ l: dl.label, v: mrMoney0(dl.amount), n: '' }); });
+    out.push({ l: 'Total Equity', v: mrMoney0(k.equity), n: cmp(k.equity, k.equityPrior) });
+    if (k.currentRatio != null) out.push({ l: 'Current Ratio', v: String(k.currentRatio), n: '' });
+    if (k.inventory) out.push({ l: 'Inventory', v: mrMoney0(k.inventory), n: '' });
+    if (k.workingCapital != null) out.push({ l: 'Working Capital', v: mrMoney0(k.workingCapital), n: '' });
+    return out;
+  }
+  function openMonthlyReport() {
+    if (!currentRealm) return;
+    _mr = { data: null, obs: [], period: mrDefaultPeriod() };
+    var ov = document.getElementById('mrOverlay');
+    if (!ov) {
+      ov = document.createElement('div'); ov.id = 'mrOverlay';
+      ov.style.cssText = 'position:fixed;inset:0;background:rgba(20,22,26,.55);z-index:9998;display:flex;align-items:flex-start;justify-content:center;padding:24px 16px;overflow:auto;';
+      ov.innerHTML = '<div style="background:var(--paper,#fff);border-radius:14px;max-width:820px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3);">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:16px 18px;border-bottom:1px solid var(--chrome-mute,#e6e5e1);">' +
+          '<div style="font-family:\'Source Serif 4\',Georgia,serif;font-size:18px;font-weight:700;">Monthly financial report</div>' +
+          '<button id="mrClose" type="button" class="btn btn-ghost" style="font-size:18px;min-height:34px;width:38px;">&times;</button></div>' +
+        '<div style="padding:14px 18px;display:flex;gap:12px;flex-wrap:wrap;align-items:end;border-bottom:1px solid var(--chrome-mute,#e6e5e1);">' +
+          '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:700;color:var(--muted);">Month<select id="mrPeriod" style="min-height:40px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;padding:8px;font:inherit;"></select></label>' +
+          '<span id="mrStatus" style="font-size:12.5px;color:var(--muted);align-self:center;"></span></div>' +
+        '<div id="mrBody" style="padding:16px 18px;"></div>' +
+        '<div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;padding:14px 18px;border-top:1px solid var(--chrome-mute,#e6e5e1);">' +
+          '<button id="mrSaveObs" type="button" class="btn btn-ghost">Save notes</button>' +
+          '<button id="mrSaveFile" type="button" class="btn btn-ghost">Save to client Files</button>' +
+          '<button id="mrPrint" type="button" class="btn btn-primary">Preview / Print PDF</button></div>' +
+      '</div>';
+      document.body.appendChild(ov);
+      ov.addEventListener('click', function (e) { if (e.target === ov) closeMonthlyReport(); });
+      ov.querySelector('#mrClose').onclick = closeMonthlyReport;
+      ov.querySelector('#mrPrint').onclick = printMonthlyReport;
+      ov.querySelector('#mrSaveFile').onclick = saveMonthlyReportToFiles;
+      ov.querySelector('#mrSaveObs').onclick = function () { saveReportObservations(true); };
+      ov.querySelector('#mrPeriod').onchange = function () { loadMonthlyReport(this.value); };
+    }
+    ov.style.display = 'flex';
+    ov.querySelector('#mrPeriod').innerHTML = mrPeriodOptions(_mr.period);
+    loadMonthlyReport(_mr.period);
+  }
+  function closeMonthlyReport() { var ov = document.getElementById('mrOverlay'); if (ov) ov.style.display = 'none'; }
+  function mrBtns(disabled) { ['mrPrint', 'mrSaveFile', 'mrSaveObs'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = disabled; }); }
+  function loadMonthlyReport(period) {
+    _mr.period = period;
+    var body = document.getElementById('mrBody'), st = document.getElementById('mrStatus');
+    body.innerHTML = '<div style="color:var(--muted);padding:22px;text-align:center;">Pulling QuickBooks statements &amp; computing KPIs…</div>';
+    if (st) st.textContent = ''; mrBtns(true);
+    var method = (typeof qboRange === 'function' ? qboRange().method : 'accrual');
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/monthly-report?period=' + encodeURIComponent(period) + '&method=' + method, { credentials: 'include' })
+      .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
+      .then(function (d) {
+        _mr.data = d; _mr.obs = (d.observations || []).slice();
+        renderMrBody();
+        if (st) st.textContent = d.periodLabel + ' · ' + d.method + ' basis' + (d.observationsUpdatedAt ? ' · notes saved' : '');
+        mrBtns(false);
+      })
+      .catch(function (e) { body.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:12px;">Couldn’t build the report: ' + esc(e.message) + '</div>'; });
+  }
+  function renderMrBody() {
+    var d = _mr.data, k = d.kpis || {};
+    var kpiHtml = mrKpiList(k).map(function (r) {
+      return '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:5px 0;border-bottom:1px dotted var(--chrome-mute,#e6e5e1);font-size:13px;">' +
+        '<span style="color:var(--muted);">' + esc(r.l) + '</span>' +
+        '<span style="text-align:right;"><strong>' + esc(r.v) + '</strong>' + (r.n ? '<span style="display:block;font-size:10.5px;color:var(--muted);font-weight:400;">' + esc(r.n) + '</span>' : '') + '</span></div>';
+    }).join('');
+    document.getElementById('mrBody').innerHTML =
+      '<div style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;font-weight:700;">' + esc(d.company.legalName || d.company.name) + '</div>' +
+      '<div style="color:var(--muted);font-size:12.5px;margin-bottom:14px;">' + esc(d.periodLabel) + ' · includes P&amp;L, Balance Sheet, Cash Flows, A/R &amp; A/P aging detail</div>' +
+      '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--gold-deep,#a8884a);margin-bottom:4px;">Key Financial KPIs</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 22px;margin-bottom:16px;">' + kpiHtml + '</div>' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0 4px;">' +
+        '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--gold-deep,#a8884a);">Blue Collar Coach Observations</div>' +
+        '<button id="mrAiBtn" type="button" class="btn btn-ghost" style="font-size:12px;min-height:30px;">✨ Draft with AI</button></div>' +
+      '<textarea id="mrObs" rows="9" placeholder="One observation per line — e.g. Cash dropped to $11,962 — near-zero runway; collections critical." style="width:100%;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;padding:10px;font:inherit;font-size:13px;line-height:1.5;resize:vertical;box-sizing:border-box;">' + esc((_mr.obs || []).join('\n')) + '</textarea>' +
+      '<div style="font-size:11px;color:var(--muted);margin-top:4px;">These print at the top of the report. Review the AI draft before sending — it’s your professional judgment, not the model’s.</div>';
+    document.getElementById('mrObs').addEventListener('input', function () { _mr.obs = this.value.split('\n').map(function (s) { return s.trim(); }).filter(Boolean); });
+    document.getElementById('mrAiBtn').onclick = aiDraftObservations;
+  }
+  function aiDraftObservations() {
+    var d = _mr.data; if (!d) return;
+    var btn = document.getElementById('mrAiBtn'), ot = btn.textContent; btn.disabled = true; btn.textContent = 'Drafting…';
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/monthly-report/ai-draft', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kpis: d.kpis, companyName: d.company.legalName || d.company.name, periodLabel: d.periodLabel }) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        btn.disabled = false; btn.textContent = ot;
+        if (j && j.needsKey) { (window.bccNotify || alert)('AI isn’t configured — an admin must add ANTHROPIC_API_KEY.', 'warn', 7000); return; }
+        if (!j || !j.ok || !(j.observations || []).length) { (window.bccNotify || alert)((j && j.error) || 'AI draft failed.', 'error'); return; }
+        _mr.obs = j.observations.slice();
+        var ta = document.getElementById('mrObs'); if (ta) ta.value = _mr.obs.join('\n');
+        if (window.bccNotify) window.bccNotify('Draft ready — review &amp; edit before sending.', 'success');
+      })
+      .catch(function (e) { btn.disabled = false; btn.textContent = ot; (window.bccNotify || alert)('AI draft failed: ' + e.message, 'error'); });
+  }
+  function saveReportObservations(notify) {
+    var d = _mr.data; if (!d) return Promise.resolve();
+    return fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/monthly-report', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ period: d.period, observations: _mr.obs }) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (notify) { if (j && j.ok) { if (window.bccNotifySaved) window.bccNotifySaved('Report notes saved.'); } else (window.bccNotify || alert)('Couldn’t save notes.', 'warn'); } })
+      .catch(function () { if (notify) (window.bccNotify || alert)('Couldn’t save notes.', 'warn'); });
+  }
+  function mrStmtTable(stmt) {
+    if (!stmt || !(stmt.rows || []).length) return '<div class="mr-empty">No data for this statement.</div>';
+    var cc = stmt.columns || [];
+    var head = '<tr>' + cc.map(function (col, i) { return '<th' + (i > 0 ? ' class="num"' : '') + '>' + escHtml(col || '') + '</th>'; }).join('') + '</tr>';
+    var body = (stmt.rows || []).map(function (row) {
+      var strong = (row.type === 'summary' || row.type === 'header');
+      var cells = (row.cells || []).map(function (v) { return '<td class="num">' + escHtml(mrMoney(v)) + '</td>'; }).join('');
+      var pads = ''; for (var i = (row.cells || []).length; i < cc.length - 1; i++) pads += '<td class="num"></td>';
+      return '<tr' + (strong ? ' class="sum"' : '') + '><td style="padding-left:' + (6 + (row.level || 0) * 15) + 'px;">' + escHtml(row.label) + '</td>' + cells + pads + '</tr>';
+    }).join('');
+    return '<table class="mr-stmt"><thead>' + head + '</thead><tbody>' + body + '</tbody></table>';
+  }
+  function monthlyReportDocHtml(d, obs, forPrint) {
+    var k = d.kpis || {}, origin = window.location.origin;
+    var kpiTiles = mrKpiList(k).map(function (r) { return '<div class="kpi"><span class="kl">' + escHtml(r.l) + '</span><span class="kv">' + escHtml(r.v) + (r.n ? '<em class="kn">' + escHtml(r.n) + '</em>' : '') + '</span></div>'; }).join('');
+    var obsList = (obs && obs.length) ? ('<ul>' + obs.map(function (o) { return '<li>' + escHtml(o) + '</li>'; }).join('') + '</ul>') : '<p class="muted">No observations recorded for this month.</p>';
+    var prepStr = new Date(d.preparedOn || Date.now()).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+    var stmts = [
+      ['Profit &amp; Loss — ' + escHtml(d.periodLabel), d.statements.pl],
+      ['Balance Sheet — as of ' + escHtml(d.periodEnd), d.statements.balanceSheet],
+      ['Statement of Cash Flows — ' + escHtml(d.periodLabel), d.statements.cashFlow],
+      ['A/R Aging Detail — as of ' + escHtml(d.periodEnd), d.statements.arAging],
+      ['A/P Aging Detail — as of ' + escHtml(d.periodEnd), d.statements.apAging]
+    ];
+    var stmtHtml = stmts.map(function (s) { return '<section class="stmt"><h2>' + s[0] + '</h2>' + mrStmtTable(s[1]) + '</section>'; }).join('');
+    var css = '@page{size:letter;margin:.6in;} *{box-sizing:border-box;} '
+      + 'body{font-family:Georgia,"Times New Roman",serif;color:#23262b;margin:0;font-size:12px;line-height:1.5;} '
+      + '.brand{text-align:center;margin:4px 0 16px;} .brand img{max-height:60px;max-width:250px;} '
+      + '.period{text-align:center;font-size:14px;letter-spacing:.2em;text-transform:uppercase;color:#a8884a;font-weight:bold;margin-bottom:6px;} '
+      + 'h1.cover{text-align:center;font-size:22px;margin:0 0 20px;font-weight:normal;line-height:1.3;} h1.cover span{font-weight:bold;} '
+      + '.section{margin:0 auto 16px;max-width:640px;} '
+      + '.section h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#a8884a;border-bottom:2px solid #c5a55a;padding-bottom:4px;margin:0 0 9px;font-family:Arial,Helvetica,sans-serif;} '
+      + '.obs ul{margin:0;padding-left:20px;} .obs li{margin-bottom:6px;} '
+      + '.kpis{display:grid;grid-template-columns:1fr 1fr;gap:2px 26px;} '
+      + '.kpi{display:flex;justify-content:space-between;align-items:baseline;gap:10px;border-bottom:1px dotted #ddd;padding:4px 0;} '
+      + '.kpi .kl{color:#555;} .kpi .kv{font-weight:bold;font-family:Arial,Helvetica,sans-serif;text-align:right;white-space:nowrap;} '
+      + '.kpi .kn{display:block;font-weight:normal;font-style:normal;color:#6b7077;font-size:9px;} '
+      + '.prepared{text-align:center;color:#6b7077;font-size:11px;margin:22px auto 0;max-width:640px;padding-top:10px;border-top:1px solid #e6e5e1;} '
+      + '.stmt{page-break-before:always;padding-top:4px;} '
+      + '.stmt h2{font-size:15px;font-family:Arial,Helvetica,sans-serif;color:#23262b;border-bottom:2px solid #c5a55a;padding-bottom:5px;margin:0 0 10px;} '
+      + 'table.mr-stmt{width:100%;border-collapse:collapse;font-size:10.5px;font-family:Arial,Helvetica,sans-serif;} '
+      + 'table.mr-stmt th{background:#f7f1e3;text-align:left;padding:5px 7px;border-bottom:1px solid #c5a55a;font-size:9.5px;text-transform:uppercase;letter-spacing:.03em;} '
+      + 'table.mr-stmt th.num,table.mr-stmt td.num{text-align:right;} '
+      + 'table.mr-stmt td{padding:3px 7px;border-bottom:1px solid #f0efe9;} '
+      + 'table.mr-stmt tr.sum td{font-weight:bold;border-bottom:1px solid #cfcabb;background:#fbf9f4;} '
+      + '.mr-empty{color:#6b7077;padding:12px;font-style:italic;} .muted{color:#6b7077;}';
+    return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>' + escHtml((d.company.legalName || d.company.name) + ' — ' + d.periodLabel + ' Report') + '</title><style>' + css + '</style></head><body>' +
+      '<div class="brand"><img src="' + origin + '/bcc-logo-full.png" alt="Blue Collar Coach" onerror="this.style.display=\'none\'" /></div>' +
+      '<div class="period">' + escHtml(d.periodLabel) + '</div>' +
+      '<h1 class="cover">Monthly Financial Report<br><span>for ' + escHtml(d.company.legalName || d.company.name) + '</span></h1>' +
+      '<div class="section obs"><h2>Blue Collar Coach Observations</h2>' + obsList + '</div>' +
+      '<div class="section"><h2>Key Financial KPIs · ' + escHtml(d.periodLabel) + '</h2><div class="kpis">' + kpiTiles + '</div></div>' +
+      '<div class="prepared">Prepared ' + escHtml(prepStr) + ' &nbsp;·&nbsp; ' + escHtml(d.method) + ' basis &nbsp;·&nbsp; For management use only</div>' +
+      stmtHtml +
+      (forPrint ? '<script>window.onload=function(){setTimeout(function(){window.print();},300);}<\/script>' : '') +
+      '</body></html>';
+  }
+  function printMonthlyReport() {
+    if (!_mr.data) return;
+    saveReportObservations(false);
+    var w = window.open('', '_blank');
+    if (!w) { (window.bccNotify || alert)('Allow pop-ups to open the report.', 'warn'); return; }
+    w.document.open(); w.document.write(monthlyReportDocHtml(_mr.data, _mr.obs, true)); w.document.close();
+  }
+  function saveMonthlyReportToFiles() {
+    var d = _mr.data; if (!d) return;
+    saveReportObservations(false);
+    var html = monthlyReportDocHtml(d, _mr.obs, false);
+    var fname = (d.company.legalName || d.company.name || 'Company') + ' ' + d.periodLabel + ' Report.html';
+    var fd = new FormData();
+    fd.append('file', new Blob([html], { type: 'text/html' }), fname);
+    fd.append('folder', (typeof clientFolder === 'function' ? clientFolder() : ('/clients/' + currentRealm)));
+    fd.append('tags', 'Monthly Report, financials');
+    var btn = document.getElementById('mrSaveFile'), ot = btn.textContent; btn.disabled = true; btn.textContent = 'Saving…';
+    fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
+      .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
+      .then(function (j) {
+        btn.disabled = false; btn.textContent = ot;
+        if (window.bccAudit) window.bccAudit('client-file-upload', { key: j && j.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, name: fname, source: 'monthly-report' } });
+        if (window.bccNotifySaved) window.bccNotifySaved('Report filed to the client (tag: Monthly Report).');
+        if (typeof loadFiles === 'function') loadFiles();
+      })
+      .catch(function (e) { btn.disabled = false; btn.textContent = ot; (window.bccNotify || alert)('Couldn’t file the report: ' + e.message, 'error', 8000); });
   }
 
   /* ===== QuickBooks write: create/edit invoices, bills, payments ===== */
@@ -3086,6 +3309,8 @@
     emptyEl = document.getElementById('empty');
     var rptSel = document.getElementById('qboReportSel');
     if (rptSel) rptSel.addEventListener('change', function () { if (rptSel.value) loadQboReport(rptSel.value, null); });
+    var mrBtn = document.getElementById('mrOpenBtn');
+    if (mrBtn) mrBtn.addEventListener('click', openMonthlyReport);
     var newSel = document.getElementById('qboNewSel');
     if (newSel) newSel.addEventListener('change', function () {
       var v = newSel.value; newSel.value = ''; if (!v) return;

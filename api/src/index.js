@@ -4088,6 +4088,110 @@ app.http('qbo-kpis', {
  * report. The KPI set + observations are the same on every company's report.
  */
 const REPORT_CC_APR = 0.20; // credit-card interest estimate (annualized) shown in the KPI note
+// Build the full monthly-report dataset (KPIs + statements) for a company. Extracted so
+// both the access-scoped GET endpoint and the cron verification path share ONE code path.
+async function assembleMonthlyReport(apiGet, comp, per, method) {
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const realmId = comp.realmId || String(comp.id || '').replace('bcc-qbo-company-', '');
+  method = method === 'Cash' ? 'Cash' : 'Accrual';
+  const period = per.y + '-' + String(per.mo + 1).padStart(2, '0');
+  const mStart = new Date(per.y, per.mo, 1), mEnd = new Date(per.y, per.mo + 1, 0);
+  const pmStart = new Date(per.y, per.mo - 1, 1), pmEnd = new Date(per.y, per.mo, 0);
+  const yStart = new Date(per.y, 0, 1);
+  const periodLabel = MONTHS[per.mo] + ' ' + per.y;
+  const priorLabel = MONTHS[(per.mo + 11) % 12] + ' ' + (per.mo === 0 ? per.y - 1 : per.y);
+
+  const plUrl = (a, b) => '/reports/ProfitAndLoss?start_date=' + iso(a) + '&end_date=' + iso(b) + '&accounting_method=' + method;
+  const bsUrl = (d) => '/reports/BalanceSheet?as_of=' + iso(d) + '&accounting_method=' + method;
+  // Two waves of 4 — a burst of 8 to one realm trips QBO's per-realm rate limit.
+  const [plCur, plPrior, plYtd, bsCur] = await Promise.all([
+    apiGet(plUrl(mStart, mEnd)).then(flattenQboReport),
+    apiGet(plUrl(pmStart, pmEnd)).then(flattenQboReport).catch(() => null),
+    apiGet(plUrl(yStart, mEnd)).then(flattenQboReport).catch(() => null),
+    apiGet(bsUrl(mEnd)).then(flattenQboReport)
+  ]);
+  const [bsPrior, cashFlow, arAging, apAging] = await Promise.all([
+    apiGet(bsUrl(pmEnd)).then(flattenQboReport).catch(() => null),
+    apiGet('/reports/CashFlow?start_date=' + iso(mStart) + '&end_date=' + iso(mEnd) + '&accounting_method=' + method).then(flattenQboReport).catch(() => null),
+    apiGet('/reports/AgedReceivableDetail?report_date=' + iso(mEnd)).then(flattenQboReport).catch(() => null),
+    apiGet('/reports/AgedPayableDetail?report_date=' + iso(mEnd)).then(flattenQboReport).catch(() => null)
+  ]);
+
+  const plRevenue = (pl) => pl ? ((findByGroup(pl, 'Income') ?? findByLabel(pl, /total income/i)) || 0) : 0;
+  const plCogs = (pl) => pl ? ((findByGroup(pl, 'COGS') ?? findByLabel(pl, /total cost of goods sold|total cogs/i)) || 0) : 0;
+  const plOpex = (pl) => pl ? ((findByGroup(pl, 'Expenses') ?? findByLabel(pl, /total expenses/i)) || 0) : 0;
+  const plNet = (pl) => pl ? ((findByGroup(pl, 'NetIncome') ?? (plRevenue(pl) - plCogs(pl) - plOpex(pl))) || 0) : 0;
+  const revenue = plRevenue(plCur), cogs = plCogs(plCur), opex = plOpex(plCur), netIncome = plNet(plCur);
+  const grossProfit = revenue - cogs;
+
+  const bsCash = (bs) => bs ? ((findByLabel(bs, /total bank accounts?/i) ?? findByLabel(bs, /bank accounts?/i) ?? findByLabel(bs, /checking|savings|cash on hand|^cash$/i)) || 0) : 0;
+  const bsAR = (bs) => bs ? ((findByGroup(bs, 'AR') ?? findByLabel(bs, /total accounts receivable/i) ?? findByLabel(bs, /accounts receivable \(a\/r\)/i)) || 0) : 0;
+  const bsAP = (bs) => bs ? ((findByGroup(bs, 'AP') ?? findByLabel(bs, /total accounts payable/i) ?? findByLabel(bs, /accounts payable \(a\/p\)/i)) || 0) : 0;
+  const bsCC = (bs) => bs ? ((findByGroup(bs, 'CreditCard') ?? findByLabel(bs, /total credit cards?/i)) || 0) : 0;
+  const bsCA = (bs) => bs ? ((findByGroup(bs, 'TotalCurrentAssets') ?? findByLabel(bs, /total current assets/i)) || 0) : 0;
+  const bsCL = (bs) => bs ? ((findByGroup(bs, 'TotalCurrentLiabilities') ?? findByLabel(bs, /total current liabilities/i)) || 0) : 0;
+  const bsLTL = (bs) => bs ? ((findByGroup(bs, 'TotalLongTermLiabilities') ?? findByLabel(bs, /total long.?term liabilities/i)) || 0) : 0;
+  const bsEquity = (bs) => bs ? ((findByGroup(bs, 'TotalEquity') ?? findByLabel(bs, /^total equity$/i)) || 0) : 0;
+  const bsInventory = (bs) => bs ? (findByLabel(bs, /total inventory|^inventory$|inventory asset/i) || 0) : 0;
+  const bsLOC = (bs) => bs ? sumDataByLabel(bs, /line of credit/i) : 0;
+
+  const cash = bsCash(bsCur), ar = bsAR(bsCur), ap = bsAP(bsCur), cc = bsCC(bsCur);
+  const currentAssets = bsCA(bsCur), currentLiabilities = bsCL(bsCur);
+  const monthlyBurn = opex;
+  const monthsOfCash = monthlyBurn > 0 ? Math.round((cash / monthlyBurn) * 10) / 10 : null;
+  const currentRatio = currentLiabilities > 0 ? Math.round((currentAssets / currentLiabilities) * 100) / 100 : null;
+
+  return {
+    ok: true, realmId, method, period, periodLabel, priorLabel,
+    periodEnd: iso(mEnd), preparedOn: new Date().toISOString(),
+    company: { name: comp.companyName || realmId, legalName: comp.legalName || comp.companyName || '' },
+    kpis: {
+      cash, cashPrior: bsCash(bsPrior), monthsOfCash, monthlyBurn,
+      revenue, revenuePrior: plPrior ? plRevenue(plPrior) : null,
+      cogs, grossProfit, grossMargin: revenue ? grossProfit / revenue : null,
+      opex, netIncome, netIncomePrior: plPrior ? plNet(plPrior) : null, netIncomeYtd: plYtd ? plNet(plYtd) : null,
+      ar, arPrior: bsAR(bsPrior), ap, apPrior: bsAP(bsPrior),
+      creditCards: cc, creditCardsPrior: bsCC(bsPrior), ccInterestAnnual: cc > 0 ? Math.round(cc * REPORT_CC_APR) : 0, ccApr: REPORT_CC_APR,
+      lineOfCredit: bsLOC(bsCur), lineOfCreditPrior: bsLOC(bsPrior),
+      longTermDebt: bsLTL(bsCur), longTermDebtPrior: bsLTL(bsPrior),
+      equity: bsEquity(bsCur), equityPrior: bsEquity(bsPrior),
+      currentAssets, currentLiabilities, currentRatio, workingCapital: currentAssets - currentLiabilities,
+      inventory: bsInventory(bsCur), debtLines: linesByGroupRx(bsCur, /longtermliab/i, 6)
+    },
+    statements: { pl: plCur, balanceSheet: bsCur, cashFlow, arAging, apAging }
+  };
+}
+// TEMP verification (CRON_SECRET-gated): dump the computed KPIs for one company/month so
+// the report figures can be checked headless against known-good statements. Remove after.
+app.http('cron-report-check', {
+  methods: ['GET', 'POST'],
+  authLevel: 'anonymous',
+  route: 'cron/report-check',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad secret' } };
+    try {
+      const url = new URL(request.url);
+      const realmId = String(url.searchParams.get('realmId') || '');
+      const m = String(url.searchParams.get('period') || '').match(/^(\d{4})-(\d{2})$/);
+      const per = m ? { y: +m[1], mo: +m[2] - 1 } : (function () { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return { y: d.getFullYear(), mo: d.getMonth() }; })();
+      const c = container();
+      const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      if (!comp) return { status: 404, jsonBody: { ok: false, error: 'no company' } };
+      const fields = await getIntegrationFields('qbo');
+      const { accessToken, base } = await qboAccessForCompany(comp, fields);
+      const apiGet = async (path) => {
+        const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70';
+        const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
+        if (!r.ok) throw new Error('QBO ' + r.status);
+        return r.json();
+      };
+      const data = await assembleMonthlyReport(apiGet, comp, per, 'Accrual');
+      return { jsonBody: { ok: true, company: data.company, period: data.period, kpis: data.kpis } };
+    } catch (e) { context.error('cron-report-check', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  }
+});
 app.http('qbo-monthly-report', {
   methods: ['GET', 'POST'],
   authLevel: 'anonymous',
@@ -4123,77 +4227,12 @@ app.http('qbo-monthly-report', {
       const url = new URL(request.url);
       const method = (url.searchParams.get('method') || 'accrual').toLowerCase() === 'cash' ? 'Cash' : 'Accrual';
       const per = resolvePeriod(url.searchParams.get('period'));
-      const period = per.y + '-' + String(per.mo + 1).padStart(2, '0');
-      const mStart = new Date(per.y, per.mo, 1), mEnd = new Date(per.y, per.mo + 1, 0);
-      const pmStart = new Date(per.y, per.mo - 1, 1), pmEnd = new Date(per.y, per.mo, 0);
-      const yStart = new Date(per.y, 0, 1);
-      const periodLabel = MONTHS[per.mo] + ' ' + per.y;
-      const priorLabel = MONTHS[(per.mo + 11) % 12] + ' ' + (per.mo === 0 ? per.y - 1 : per.y);
-
-      const plUrl = (a, b) => '/reports/ProfitAndLoss?start_date=' + iso(a) + '&end_date=' + iso(b) + '&accounting_method=' + method;
-      const bsUrl = (d) => '/reports/BalanceSheet?as_of=' + iso(d) + '&accounting_method=' + method;
-      // Two waves of 4 — a burst of 8 to one realm trips QBO's per-realm rate limit.
-      const [plCur, plPrior, plYtd, bsCur] = await Promise.all([
-        ctx.apiGet(plUrl(mStart, mEnd)).then(flattenQboReport),
-        ctx.apiGet(plUrl(pmStart, pmEnd)).then(flattenQboReport).catch(() => null),
-        ctx.apiGet(plUrl(yStart, mEnd)).then(flattenQboReport).catch(() => null),
-        ctx.apiGet(bsUrl(mEnd)).then(flattenQboReport)
-      ]);
-      const [bsPrior, cashFlow, arAging, apAging] = await Promise.all([
-        ctx.apiGet(bsUrl(pmEnd)).then(flattenQboReport).catch(() => null),
-        ctx.apiGet('/reports/CashFlow?start_date=' + iso(mStart) + '&end_date=' + iso(mEnd) + '&accounting_method=' + method).then(flattenQboReport).catch(() => null),
-        ctx.apiGet('/reports/AgedReceivableDetail?report_date=' + iso(mEnd)).then(flattenQboReport).catch(() => null),
-        ctx.apiGet('/reports/AgedPayableDetail?report_date=' + iso(mEnd)).then(flattenQboReport).catch(() => null)
-      ]);
-
-      const plRevenue = (pl) => pl ? ((findByGroup(pl, 'Income') ?? findByLabel(pl, /total income/i)) || 0) : 0;
-      const plCogs = (pl) => pl ? ((findByGroup(pl, 'COGS') ?? findByLabel(pl, /total cost of goods sold|total cogs/i)) || 0) : 0;
-      const plOpex = (pl) => pl ? ((findByGroup(pl, 'Expenses') ?? findByLabel(pl, /total expenses/i)) || 0) : 0;
-      const plNet = (pl) => pl ? ((findByGroup(pl, 'NetIncome') ?? (plRevenue(pl) - plCogs(pl) - plOpex(pl))) || 0) : 0;
-      const revenue = plRevenue(plCur), cogs = plCogs(plCur), opex = plOpex(plCur), netIncome = plNet(plCur);
-      const grossProfit = revenue - cogs;
-
-      const bsCash = (bs) => bs ? ((findByLabel(bs, /total bank accounts?/i) ?? findByLabel(bs, /bank accounts?/i) ?? findByLabel(bs, /checking|savings|cash on hand|^cash$/i)) || 0) : 0;
-      const bsAR = (bs) => bs ? ((findByGroup(bs, 'AR') ?? findByLabel(bs, /total accounts receivable/i) ?? findByLabel(bs, /accounts receivable \(a\/r\)/i)) || 0) : 0;
-      const bsAP = (bs) => bs ? ((findByGroup(bs, 'AP') ?? findByLabel(bs, /total accounts payable/i) ?? findByLabel(bs, /accounts payable \(a\/p\)/i)) || 0) : 0;
-      const bsCC = (bs) => bs ? ((findByGroup(bs, 'CreditCard') ?? findByLabel(bs, /total credit cards?/i)) || 0) : 0;
-      const bsCA = (bs) => bs ? ((findByGroup(bs, 'TotalCurrentAssets') ?? findByLabel(bs, /total current assets/i)) || 0) : 0;
-      const bsCL = (bs) => bs ? ((findByGroup(bs, 'TotalCurrentLiabilities') ?? findByLabel(bs, /total current liabilities/i)) || 0) : 0;
-      const bsLTL = (bs) => bs ? ((findByGroup(bs, 'TotalLongTermLiabilities') ?? findByLabel(bs, /total long.?term liabilities/i)) || 0) : 0;
-      const bsEquity = (bs) => bs ? ((findByGroup(bs, 'TotalEquity') ?? findByLabel(bs, /^total equity$/i)) || 0) : 0;
-      const bsInventory = (bs) => bs ? (findByLabel(bs, /total inventory|^inventory$|inventory asset/i) || 0) : 0;
-      const bsLOC = (bs) => bs ? sumDataByLabel(bs, /line of credit/i) : 0;
-
-      const cash = bsCash(bsCur), ar = bsAR(bsCur), ap = bsAP(bsCur), cc = bsCC(bsCur);
-      const currentAssets = bsCA(bsCur), currentLiabilities = bsCL(bsCur);
-      const monthlyBurn = opex;
-      const monthsOfCash = monthlyBurn > 0 ? Math.round((cash / monthlyBurn) * 10) / 10 : null;
-      const currentRatio = currentLiabilities > 0 ? Math.round((currentAssets / currentLiabilities) * 100) / 100 : null;
-
-      const saved = await c.item(docId(period), BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-      const info = ctx.comp || {};
-      return { jsonBody: {
-        ok: true, realmId, method, period, periodLabel, priorLabel,
-        periodEnd: iso(mEnd), preparedOn: new Date().toISOString(),
-        company: { name: info.companyName || realmId, legalName: info.legalName || info.companyName || '' },
-        kpis: {
-          cash, cashPrior: bsCash(bsPrior), monthsOfCash, monthlyBurn,
-          revenue, revenuePrior: plPrior ? plRevenue(plPrior) : null,
-          cogs, grossProfit, grossMargin: revenue ? grossProfit / revenue : null,
-          opex, netIncome, netIncomePrior: plPrior ? plNet(plPrior) : null, netIncomeYtd: plYtd ? plNet(plYtd) : null,
-          ar, arPrior: bsAR(bsPrior), ap, apPrior: bsAP(bsPrior),
-          creditCards: cc, creditCardsPrior: bsCC(bsPrior), ccInterestAnnual: cc > 0 ? Math.round(cc * REPORT_CC_APR) : 0, ccApr: REPORT_CC_APR,
-          lineOfCredit: bsLOC(bsCur), lineOfCreditPrior: bsLOC(bsPrior),
-          longTermDebt: bsLTL(bsCur), longTermDebtPrior: bsLTL(bsPrior),
-          equity: bsEquity(bsCur), equityPrior: bsEquity(bsPrior),
-          currentAssets, currentLiabilities, currentRatio, workingCapital: currentAssets - currentLiabilities,
-          inventory: bsInventory(bsCur), debtLines: linesByGroupRx(bsCur, /longtermliab/i, 6)
-        },
-        statements: { pl: plCur, balanceSheet: bsCur, cashFlow, arAging, apAging },
-        observations: saved && Array.isArray(saved.observations) ? saved.observations : null,
-        observationsUpdatedAt: saved ? saved.updatedAt : null,
-        observationsBy: saved ? saved.updatedBy : null
-      } };
+      const data = await assembleMonthlyReport(ctx.apiGet, ctx.comp, per, method);
+      const saved = await c.item(docId(data.period), BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      data.observations = saved && Array.isArray(saved.observations) ? saved.observations : null;
+      data.observationsUpdatedAt = saved ? saved.updatedAt : null;
+      data.observationsBy = saved ? saved.updatedBy : null;
+      return { jsonBody: data };
     } catch (e) {
       context.error('qbo-monthly-report error', e);
       return { status: 502, jsonBody: { ok: false, error: String(e.message || e) } };
