@@ -4481,40 +4481,6 @@ app.http('qbo-monthly-report-pdf', {
   })
 });
 
-// TEMP (CRON_SECRET-gated): render a real company's report PDF headless to verify the
-// layout against live statements. Remove after.
-app.http('cron-report-pdf-check', {
-  methods: ['GET', 'POST'], authLevel: 'anonymous', route: 'cron/report-pdf-check',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
-    try {
-      const url = new URL(request.url); const realmId = String(url.searchParams.get('realmId') || '');
-      const m = String(url.searchParams.get('period') || '').match(/^(\d{4})-(\d{2})$/);
-      const per = m ? { y: +m[1], mo: +m[2] - 1 } : (function () { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return { y: d.getFullYear(), mo: d.getMonth() }; })();
-      const c = container(); const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-      if (!comp) return { status: 404, jsonBody: { ok: false, error: 'no company' } };
-      const fields = await getIntegrationFields('qbo'); const { accessToken, base } = await qboAccessForCompany(comp, fields);
-      const apiGet = async (path) => { const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70'; const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } }); if (!r.ok) throw new Error('QBO ' + r.status); return r.json(); };
-      const data = await assembleMonthlyReport(apiGet, comp, per, 'Accrual'); const k = data.kpis;
-      const n0 = (x) => '$' + Math.round(x || 0).toLocaleString();
-      const kpis = [
-        { l: 'Cash on Hand', v: n0(k.cash), dir: 'flat', tone: 'neutral' },
-        { l: 'Monthly Net Income', v: n0(k.netIncome), dir: k.netIncome >= 0 ? 'up' : 'down', tone: k.netIncome >= 0 ? 'good' : 'bad' },
-        { l: 'Revenue', v: n0(k.revenue), dir: 'up', tone: 'good' },
-        { l: 'Gross Margin', v: Math.round((k.grossMargin || 0) * 100) + '%', dir: 'up', tone: 'good' },
-        { l: 'A/R Outstanding', v: n0(k.ar), dir: 'flat', tone: 'neutral' },
-        { l: 'A/P Balance', v: n0(k.ap), dir: 'flat', tone: 'bad' },
-        { l: 'Line of Credit', v: n0(k.lineOfCredit), dir: 'flat', tone: 'bad' },
-        { l: 'Total Equity', v: n0(k.equity), dir: 'flat', tone: 'neutral' }
-      ];
-      const obs = [{ text: 'Cash 1.9 mo overhead - build to 2-3 mo', dir: 'flat', tone: 'neutral' }, { text: 'YTD net loss - needs profitable months', dir: 'down', tone: 'bad' }, { text: 'A/R large & flat - collect it', dir: 'flat', tone: 'bad' }];
-      const buf = await renderReportPdf({ company: data.company, periodLabel: data.periodLabel, periodEnd: data.periodEnd, preparedOn: data.preparedOn, method: data.method, kpis, observations: obs, forecast: null, statements: data.statements });
-      return { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="check.pdf"' }, body: buf };
-    } catch (e) { context.error('cron-report-pdf-check', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
-  }
-});
-
 /**
  * POST /api/planner/parse  (multipart: file — a Planner "Export plan to Excel" .xlsx, or .csv)
  * Parses the plan into structured tasks (title, labels, assignee, due date, done, notes) for
