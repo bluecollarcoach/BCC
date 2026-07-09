@@ -2102,7 +2102,7 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
         // Fetch all 12 months concurrently (each month = P&L + Balance Sheet), with
         // a per-request timeout so one hung report can't stall the whole sync.
         const hdr = { headers: { 'Authorization': 'Bearer ' + accessToken, 'Accept': 'application/json' } };
-        const monthResults = await Promise.all(Array.from({ length: 12 }, async (_, i) => {
+        const fetchMonth = async (i) => {
           const target = new Date(now.getFullYear(), now.getMonth() - i, 1);
           const startStr = target.toISOString().slice(0, 10);
           const end = new Date(target.getFullYear(), target.getMonth() + 1, 0);
@@ -2147,7 +2147,11 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
           // fetch must not persist a fake $0 (corrupts current ratio / working capital).
           if (bsOk) { per.cashCents = Math.round(cash * 100); per.currentAssetsCents = Math.round(ca * 100); per.currentLiabilitiesCents = Math.round(cl * 100); }
           return { i, status, per };
-        }));
+        };
+        let monthResults = await Promise.all(Array.from({ length: 12 }, (_, i) => fetchMonth(i)));
+        // Retry throttled months SEQUENTIALLY — QBO throttles a 24-request burst, so a
+        // slow serial second pass recovers the few that failed without re-tripping it.
+        for (let k = 0; k < 12; k++) { if (!monthResults[k].per) { await new Promise(res => setTimeout(res, 400)); monthResults[k] = await fetchMonth(monthResults[k].i); } }
         const m0 = monthResults.find(x => x.i === 0) || {};
         const diag = { firstStatus: m0.status || null, firstBody: (m0.status && m0.status !== 200) ? (m0.body || null) : null };
         const periods = monthResults.filter(x => x.per).map(x => x.per);
@@ -2187,7 +2191,7 @@ app.http('cron-qbo-sync', {
       const companyDocs = resources.filter(co => co && co.enabled !== false && co.refreshToken);
       if (!companyDocs.length) return { jsonBody: { ok: true, synced: 0, note: 'no connected companies' } };
       const out = await syncQboCompanies(c, fields, companyDocs, new Date());
-      const summary = out.map(o => ({ realmId: o.realmId, companyName: o.companyName, periodsBuilt: o.periodsBuilt, error: o.error }));
+      const summary = out.map(o => ({ realmId: o.realmId, companyName: o.companyName, periodsBuilt: o.periodsBuilt, partial: o.partial, error: o.error }));
       context.log('cron-qbo-sync: synced ' + out.length + ' companies', JSON.stringify(summary));
       return { jsonBody: { ok: true, synced: out.length, companies: summary } };
     } catch (err) {
