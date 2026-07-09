@@ -2200,9 +2200,9 @@
   function loadFiles() {
     var list = document.getElementById('fl_list'); if (!list) return;
     var realmAt = currentRealm;
-    fetch('/api/documents', { credentials: 'include' }).then(function (r) { return r.ok ? r.json() : { items: [] }; }).then(function (d) {
+    var folder = clientFolder();
+    fetch('/api/documents?folder=' + encodeURIComponent(folder), { credentials: 'include' }).then(function (r) { return r.ok ? r.json() : { items: [] }; }).then(function (d) {
       if (currentRealm !== realmAt) return;
-      var folder = clientFolder();
       _intFiles = ((d && d.items) || []).filter(function (it) { return (it.folder || '') === folder; });
       // Distinct categories/tags across this client's files → filter dropdown + upload autocomplete.
       var seen = {}, tags = [];

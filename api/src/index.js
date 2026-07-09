@@ -4383,13 +4383,30 @@ app.http('documents-list-create', {
     if (!domainAllowed(p)) return domainBlocked();
 
     if (request.method === 'GET') {
-      // List metadata docs (same shape as /api/data filtered to docType=document).
+      // List metadata docs — SCOPED to a folder. A client folder (/clients/<realm>)
+      // is access-checked so a bookkeeper can't list another client's files; the
+      // firm-wide list (no folder) is admin-only. (Previously returned every doc in
+      // the tenant and filtered client-side — a cross-client metadata leak.)
       try {
         const c = container();
-        const q = {
-          query: 'SELECT * FROM c WHERE c.tenantId = @t AND c.docType = "document" ORDER BY c.createdAt DESC',
-          parameters: [{ name: '@t', value: BCC_TENANT_ID }]
-        };
+        const sp = (function () { try { return new URL(request.url).searchParams; } catch (_) { return new URLSearchParams(); } })();
+        let folder = safeFolder(sp.get('folder') || ''); if (folder === '/') folder = '';
+        const linkedContactId = String(sp.get('linkedContactId') || '').trim();
+        if (!(await isAppAdmin(p))) {
+          // Non-admins may only list a client folder they can access, or a contact's
+          // docs. Anything broader (all folders, or /clients/ with no realm) is denied.
+          const m = folder.match(/^\/clients\/([^/]+)(?:\/|$)/);
+          if (m) {
+            const acc = await driveClientAccess(p, m[1]); if (acc.err) return { status: 403, jsonBody: { error: 'no access to this client' } };
+          } else if (!linkedContactId) {
+            return { status: 403, jsonBody: { error: 'a client folder or contact is required' } };
+          }
+        }
+        const params = [{ name: '@t', value: BCC_TENANT_ID }];
+        let where = 'c.tenantId = @t AND c.docType = "document"';
+        if (folder) { where += ' AND STARTSWITH(c.folder, @f)'; params.push({ name: '@f', value: folder }); }
+        if (linkedContactId) { where += ' AND c.linkedContactId = @lc'; params.push({ name: '@lc', value: linkedContactId }); }
+        const q = { query: 'SELECT * FROM c WHERE ' + where + ' ORDER BY c.createdAt DESC', parameters: params };
         const { resources } = await c.items.query(q).fetchAll();
         return { jsonBody: { items: resources } };
       } catch (err) {

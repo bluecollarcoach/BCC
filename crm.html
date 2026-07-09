@@ -803,33 +803,11 @@
             '</div>' +
           '</div>' +
 
-          // ---- Linked documents ----
-          (function () {
-            var docs = [];
-            for (var i = 0; i < localStorage.length; i++) {
-              var k = localStorage.key(i); if (!k || k.indexOf('bcc-document-') !== 0) continue;
-              try { var dd = JSON.parse(localStorage.getItem(k)); if (dd && dd.linkedContactId === c.id) docs.push(dd); } catch (e2) {}
-            }
-            var docsList = docs.length === 0
-              ? '<p class="muted" style="font-size:13px;">No documents linked to this contact yet.</p>'
-              : '<ul style="list-style:none;padding:0;margin:0;">' + docs.map(function (dd) {
-                  return '<li style="padding:8px 0;border-bottom:1px solid #f1efe9;font-size:13.5px;">' +
-                    (dd.storageKey
-                      ? '<a href="/api/documents/' + esc(dd.id) + '/download" target="_blank" rel="noreferrer" style="color:var(--ink);text-decoration:none;font-weight:600;">'
-                      : '<span style="color:var(--ink);font-weight:600;">') +
-                    esc(dd.name || '(no name)') +
-                    (dd.storageKey ? '</a>' : '</span>') +
-                    ' <span class="muted" style="font-size:11.5px;">· ' + esc(dd.folder || '/') + '</span>' +
-                  '</li>';
-                }).join('') + '</ul>';
-            return '<div class="card">' +
-              '<h4>Documents <button class="add" onclick="location.href=\'documents.html?contact=' + esc(c.id) + '\'">+ Upload</button></h4>' +
-              docsList +
-              (docs.length > 0
-                ? '<div style="margin-top:10px;font-size:12px;"><a href="documents.html?contact=' + esc(c.id) + '" style="color:var(--gold-deep);text-decoration:none;font-weight:700;">See all in Documents →</a></div>'
-                : '') +
-            '</div>';
-          })() +
+          // ---- Linked documents (fetched scoped by contact — see loadContactDocs) ----
+          '<div class="card">' +
+            '<h4>Documents <button class="add" onclick="location.href=\'documents.html?contact=' + esc(c.id) + '\'">+ Upload</button></h4>' +
+            '<div id="contactDocs"><p class="muted" style="font-size:13px;">Loading…</p></div>' +
+          '</div>' +
         '</div>' +
       '</div>';
 
@@ -962,6 +940,26 @@
         renderDetail(c.id);
       };
     });
+    loadContactDocs(c.id);
+  }
+  // Documents linked to a contact — fetched scoped (metadata is no longer synced
+  // to every browser via /api/data, which leaked other clients' file names/tags).
+  function loadContactDocs(contactId) {
+    var box = document.getElementById('contactDocs'); if (!box) return;
+    fetch('/api/documents?linkedContactId=' + encodeURIComponent(contactId), { credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : { items: [] }; })
+      .then(function (d) {
+        var box2 = document.getElementById('contactDocs'); if (!box2) return;
+        var docs = (d && d.items) || [];
+        if (!docs.length) { box2.innerHTML = '<p class="muted" style="font-size:13px;">No documents linked to this contact yet.</p>'; return; }
+        box2.innerHTML = '<ul style="list-style:none;padding:0;margin:0;">' + docs.map(function (dd) {
+          return '<li style="padding:8px 0;border-bottom:1px solid #f1efe9;font-size:13.5px;">' +
+            (dd.storageKey ? '<a href="/api/documents/' + esc(dd.id) + '/download" target="_blank" rel="noreferrer" style="color:var(--ink);text-decoration:none;font-weight:600;">' : '<span style="color:var(--ink);font-weight:600;">') +
+            esc(dd.name || '(no name)') + (dd.storageKey ? '</a>' : '</span>') +
+            ' <span class="muted" style="font-size:11.5px;">· ' + esc(dd.folder || '/') + '</span></li>';
+        }).join('') + '</ul><div style="margin-top:10px;font-size:12px;"><a href="documents.html?contact=' + esc(contactId) + '" style="color:var(--gold-deep);text-decoration:none;font-weight:700;">See all in Documents →</a></div>';
+      })
+      .catch(function () { var b = document.getElementById('contactDocs'); if (b) b.innerHTML = '<p class="muted" style="font-size:13px;">Could not load documents.</p>'; });
   }
 
   /* ===== Events (list mode) ===== */
