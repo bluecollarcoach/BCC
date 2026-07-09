@@ -4268,6 +4268,133 @@ app.http('qbo-monthly-report-ai', {
 });
 
 /**
+ * POST /api/planner/parse  (multipart: file — a Planner "Export plan to Excel" .xlsx, or .csv)
+ * Parses the plan into structured tasks (title, labels, assignee, due date, done, notes) for
+ * the in-app importer. Header-row is auto-detected and columns matched by name, so it also
+ * accepts a hand-made spreadsheet with a Title/Task name column. Admin-only; does NOT write
+ * anything — the browser maps labels → clients and creates the tasks itself.
+ */
+function plannerCellText(v) {
+  if (v == null) return '';
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  if (typeof v === 'object') {
+    if (Array.isArray(v.richText)) return v.richText.map(t => t.text || '').join('');
+    if (v.text != null) return String(v.text);
+    if (v.result != null) return String(v.result);
+    if (v.hyperlink && v.text != null) return String(v.text);
+    return '';
+  }
+  return String(v);
+}
+function plannerYmd(s) {
+  s = String(s || '').trim(); if (!s) return '';
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const d = new Date(s); return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
+}
+app.http('planner-parse', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'planner/parse',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    if (!(await isAppAdmin(p))) return forbidden('admin only — importing firm-wide tasks is an admin action');
+    try {
+      const form = await request.formData();
+      const file = form.get('file');
+      if (!file || typeof file.arrayBuffer !== 'function') return badRequest('file required');
+      if (file.size > 8 * 1024 * 1024) return badRequest('file too large (max 8 MB)');
+      const buf = Buffer.from(await file.arrayBuffer());
+      const name = String(file.name || '').toLowerCase();
+
+      // Build a 2-D array of cell text from the first worksheet (xlsx) or the CSV.
+      let grid = [];
+      const looksCsv = name.endsWith('.csv') || (buf.length > 3 && buf[0] !== 0x50); // xlsx starts with 'PK'
+      const ExcelJS = require('exceljs');
+      if (looksCsv) {
+        const text = buf.toString('utf8').replace(/^﻿/, '');
+        // Minimal CSV parse (quoted fields, commas, CRLF).
+        const parseCsv = (t) => {
+          const rows = []; let row = [], cur = '', q = false;
+          for (let i = 0; i < t.length; i++) {
+            const c = t[i];
+            if (q) { if (c === '"') { if (t[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += c; }
+            else if (c === '"') q = true;
+            else if (c === ',') { row.push(cur); cur = ''; }
+            else if (c === '\n') { row.push(cur); rows.push(row); row = []; cur = ''; }
+            else if (c === '\r') { /* skip */ }
+            else cur += c;
+          }
+          if (cur !== '' || row.length) { row.push(cur); rows.push(row); }
+          return rows;
+        };
+        grid = parseCsv(text);
+      } else {
+        const wb = new ExcelJS.Workbook();
+        await wb.xlsx.load(buf);
+        const ws = wb.worksheets[0];
+        if (!ws) return badRequest('no worksheet found in the file');
+        ws.eachRow({ includeEmpty: false }, (row) => {
+          const vals = [];
+          const n = row.cellCount || 0;
+          for (let ci = 1; ci <= n; ci++) vals.push(plannerCellText(row.getCell(ci).value));
+          grid.push(vals);
+        });
+      }
+      if (!grid.length) return badRequest('the file appears to be empty');
+
+      // Find the header row: the first row containing a Task-name / Title / Name cell.
+      let headerIdx = -1;
+      for (let i = 0; i < Math.min(grid.length, 15); i++) {
+        if ((grid[i] || []).some(c => /^(task ?name|title|name)$/i.test(String(c || '').trim()))) { headerIdx = i; break; }
+      }
+      if (headerIdx < 0) return { jsonBody: { ok: false, error: 'Couldn’t find a "Task name" / "Title" column. Use Planner’s "Export plan to Excel", or a sheet with a Title column.' } };
+      const headers = (grid[headerIdx] || []).map(h => String(h || '').trim());
+      const col = (rx) => headers.findIndex(h => rx.test(h));
+      const idx = {
+        title: col(/^(task ?name|title|name)$/i),
+        bucket: col(/bucket/i),
+        progress: col(/progress|status/i),
+        priority: col(/priority/i),
+        assignee: col(/assigned ?to/i),
+        due: col(/due ?date/i),
+        notes: col(/description|notes/i),
+        labels: col(/labels?|tags?/i),
+        completedDate: col(/completed ?date/i)
+      };
+
+      const tasks = [];
+      const labelCount = {};
+      for (let i = headerIdx + 1; i < grid.length; i++) {
+        const r = grid[i] || [];
+        const title = String((idx.title >= 0 ? r[idx.title] : r[0]) || '').trim();
+        if (!title) continue;
+        const labels = (idx.labels >= 0 ? String(r[idx.labels] || '') : '').split(/[;,]/).map(s => s.trim()).filter(Boolean);
+        labels.forEach(l => { labelCount[l] = (labelCount[l] || 0) + 1; });
+        const progress = idx.progress >= 0 ? String(r[idx.progress] || '') : '';
+        const completed = /complete|done/i.test(progress) || (idx.completedDate >= 0 && String(r[idx.completedDate] || '').trim() && plannerYmd(r[idx.completedDate]));
+        tasks.push({
+          title: title.slice(0, 300),
+          labels,
+          bucket: idx.bucket >= 0 ? String(r[idx.bucket] || '').trim().slice(0, 120) : '',
+          assignee: (idx.assignee >= 0 ? String(r[idx.assignee] || '') : '').split(/[;,]/)[0].trim().slice(0, 160),
+          dueDate: idx.due >= 0 ? plannerYmd(r[idx.due]) : '',
+          priority: idx.priority >= 0 ? String(r[idx.priority] || '').trim().slice(0, 40) : '',
+          notes: (idx.notes >= 0 ? String(r[idx.notes] || '') : '').trim().slice(0, 1000),
+          completed: !!completed
+        });
+      }
+      const labels = Object.keys(labelCount).map(l => ({ label: l, count: labelCount[l] })).sort((a, b) => b.count - a.count);
+      return { jsonBody: { ok: true, count: tasks.length, labels, unlabeled: tasks.filter(t => !t.labels.length).length, tasks } };
+    } catch (e) {
+      context.error('planner-parse', e);
+      return { status: 500, jsonBody: { ok: false, error: 'Could not read that file: ' + String(e && e.message || e) } };
+    }
+  })
+});
+
+/**
  * GET /api/integrations/qbo/companies/{realmId}/companyinfo
  * The connected company's profile from QuickBooks (legal/display name, email,
  * phone, website, address, fiscal-year end) — used to pre-fill Client info.

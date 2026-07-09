@@ -322,6 +322,7 @@
       <button class="btn btn-primary" id="connectBtn" type="button">+ Connect a company</button>
       <button class="btn btn-ghost" id="syncBtn" type="button">Sync all from QBO</button>
       <button class="btn btn-ghost" id="cashflowBtn" type="button">📈 90-day cash flow</button>
+      <button class="btn btn-ghost" id="importTasksBtn" type="button" style="display:none;">📋 Import tasks from Planner</button>
       <button class="btn btn-ghost" id="newBtn" type="button">+ Manual entry</button>
       <button class="btn btn-ghost" id="printBtn" type="button">Print report</button>
     </div>
@@ -1119,6 +1120,7 @@
   document.getElementById('printBtn').addEventListener('click', function () { window.print(); });
   document.getElementById('mgmtBtn').addEventListener('click', function () { if (!canManage()) return; managementMode = !managementMode; accessEditRealm = null; renderAll(); });
   document.getElementById('cashflowBtn').addEventListener('click', openCashflow);
+  (function () { var b = document.getElementById('importTasksBtn'); if (b) b.addEventListener('click', openPlannerImport); })();
   document.getElementById('yearFilter').addEventListener('change', renderTable);
   document.getElementById('companyFilter').addEventListener('change', function () { currentRealm = this.value; renderAll(); });
 
@@ -1126,6 +1128,120 @@
   var qboActiveReport = null;
   var _qboReportRealm = null; // which client the report output currently belongs to
   function money2(v) { var n = parseFloat(String(v == null ? '' : v).replace(/,/g, '')); return isNaN(n) ? (v == null ? '' : esc(v)) : ((n < 0 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString()); }
+
+  /* ===== Import tasks from Microsoft Planner (Excel export) ===== */
+  var _pi = { tasks: [], labels: [], map: {}, unlabeledRealm: '' };
+  function plannerNorm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\b(llc|inc|co|company|the|corp|corporation|ltd|llp)\b/g, ' ').replace(/\s+/g, ' ').trim(); }
+  function plannerSuggestRealm(label) {
+    var n = plannerNorm(label); if (!n) return '';
+    var hit = companies.filter(function (c) { return plannerNorm(c.companyName) === n; })[0]; if (hit) return hit.realmId;
+    hit = companies.filter(function (c) { var cn = plannerNorm(c.companyName); return cn && (cn.indexOf(n) >= 0 || n.indexOf(cn) >= 0); })[0]; if (hit) return hit.realmId;
+    hit = companies.filter(function (c) { var t = plannerNorm(c.companyName).split(' ')[0]; return t && t === n.split(' ')[0]; })[0]; return hit ? hit.realmId : '';
+  }
+  function plannerUpnFor(name) {
+    name = String(name || '').trim(); if (!name) return ''; var n = name.toLowerCase();
+    var hit = (usersDir || []).filter(function (u) { return String(u.displayName || '').toLowerCase() === n; })[0];
+    if (!hit) hit = (usersDir || []).filter(function (u) { var dn = String(u.displayName || '').toLowerCase(); return dn && (dn.indexOf(n) >= 0 || n.indexOf(dn) >= 0); })[0];
+    return hit ? String(hit.upn || hit.mail || '').toLowerCase() : '';
+  }
+  function companyOptions(sel) {
+    return '<option value="">— skip —</option>' + companies.slice().sort(function (a, b) { return String(a.companyName || '').localeCompare(String(b.companyName || '')); })
+      .map(function (c) { return '<option value="' + esc(c.realmId) + '"' + (String(c.realmId) === String(sel) ? ' selected' : '') + '>' + esc(c.companyName || c.realmId) + '</option>'; }).join('');
+  }
+  function openPlannerImport() {
+    _pi = { tasks: [], labels: [], map: {}, unlabeledRealm: '' };
+    var ov = document.createElement('div'); ov.id = 'pi_modal'; ov.className = 'em-modal-ov';
+    ov.innerHTML = '<div class="em-modal" style="max-width:820px;"><div class="em-modal-head"><div style="flex:1;min-width:0;"><div class="em-modal-subj">📋 Import tasks from Planner</div><div class="em-modal-from">Export a plan from Microsoft Planner (⋯ menu → <strong>Export plan to Excel</strong>), then upload it here. Tasks are matched to clients by their <strong>label</strong>.</div></div><button class="btn btn-ghost" id="pi_close" type="button" style="font-size:18px;min-height:34px;width:38px;">×</button></div>' +
+      '<div class="em-modal-body" id="pi_body"></div></div>';
+    document.body.appendChild(ov);
+    function close() { var m = document.getElementById('pi_modal'); if (m) m.remove(); document.removeEventListener('keydown', key); }
+    function key(e) { if (e.key === 'Escape') close(); }
+    document.addEventListener('keydown', key);
+    ov.addEventListener('click', function (e) { if (e.target === ov) close(); });
+    ov.querySelector('#pi_close').onclick = close;
+    ov._close = close;
+    piRenderUpload();
+  }
+  function piBody() { return document.getElementById('pi_body'); }
+  function piRenderUpload() {
+    piBody().innerHTML =
+      '<div style="padding:24px 4px;text-align:center;">' +
+        '<label class="btn btn-primary" for="pi_file" style="cursor:pointer;">Choose Planner Excel / CSV file</label>' +
+        '<input type="file" id="pi_file" accept=".xlsx,.xls,.csv" style="display:none;" />' +
+        '<div id="pi_msg" style="color:var(--muted);font-size:12.5px;margin-top:12px;">Accepts Planner’s “Export plan to Excel” (.xlsx) or a CSV/spreadsheet with a Title column.</div></div>';
+    document.getElementById('pi_file').addEventListener('change', function () { var f = this.files && this.files[0]; if (f) piUpload(f); });
+  }
+  function piUpload(file) {
+    if (file.size > 8 * 1024 * 1024) { document.getElementById('pi_msg').textContent = 'File too large (max 8 MB).'; return; }
+    piBody().innerHTML = '<div style="padding:26px;text-align:center;color:var(--muted);">Reading “' + esc(file.name) + '”…</div>';
+    var fd = new FormData(); fd.append('file', file);
+    fetch('/api/planner/parse', { method: 'POST', credentials: 'include', body: fd })
+      .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
+      .then(function (j) {
+        if (!j.ok) throw new Error(j.error || 'parse failed');
+        _pi.tasks = j.tasks || []; _pi.labels = j.labels || []; _pi.map = {};
+        _pi.labels.forEach(function (l) { _pi.map[l.label] = plannerSuggestRealm(l.label); });
+        piRenderMap(j);
+      })
+      .catch(function (e) { piBody().innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:12px;margin:8px 0;">' + esc(e.message) + '</div><div style="text-align:center;margin-top:10px;"><button class="btn btn-ghost" id="pi_retry" type="button">Try another file</button></div>'; var rb = document.getElementById('pi_retry'); if (rb) rb.onclick = piRenderUpload; });
+  }
+  function piRenderMap(j) {
+    var rows = _pi.labels.map(function (l) {
+      return '<tr><td style="padding:5px 8px;"><strong>' + esc(l.label) + '</strong> <span style="color:var(--muted);font-size:11.5px;">(' + l.count + ')</span></td>' +
+        '<td style="padding:5px 8px;"><select data-lbl="' + esc(l.label) + '" style="min-height:36px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:7px;padding:6px;font:inherit;max-width:280px;">' + companyOptions(_pi.map[l.label]) + '</select></td></tr>';
+    }).join('');
+    var unl = j.unlabeled ? ('<tr><td style="padding:5px 8px;color:var(--muted);">' + j.unlabeled + ' task' + (j.unlabeled === 1 ? '' : 's') + ' with <em>no label</em></td><td style="padding:5px 8px;"><select id="pi_unl" style="min-height:36px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:7px;padding:6px;font:inherit;max-width:280px;">' + companyOptions('') + '</select></td></tr>') : '';
+    piBody().innerHTML =
+      '<div style="font-size:13px;margin:4px 0 12px;">Found <strong>' + j.count + '</strong> task' + (j.count === 1 ? '' : 's') + ' across <strong>' + _pi.labels.length + '</strong> label' + (_pi.labels.length === 1 ? '' : 's') + '. Map each label to a client (I’ve guessed where I could):</div>' +
+      '<div style="max-height:320px;overflow:auto;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;"><table style="width:100%;border-collapse:collapse;"><thead><tr><th style="text-align:left;padding:6px 8px;font-size:11px;text-transform:uppercase;color:var(--muted);">Planner label</th><th style="text-align:left;padding:6px 8px;font-size:11px;text-transform:uppercase;color:var(--muted);">BCC client</th></tr></thead><tbody>' + rows + unl + '</tbody></table></div>' +
+      '<div id="pi_preview" style="font-size:12.5px;color:var(--muted);margin:12px 0;"></div>' +
+      '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;"><button class="btn btn-ghost" id="pi_back" type="button">← Different file</button><button class="btn btn-primary" id="pi_go" type="button">Import tasks</button></div>';
+    piBody().querySelectorAll('select[data-lbl]').forEach(function (s) { s.onchange = function () { _pi.map[s.getAttribute('data-lbl')] = s.value; piPreview(); }; });
+    var unlSel = document.getElementById('pi_unl'); if (unlSel) unlSel.onchange = function () { _pi.unlabeledRealm = unlSel.value; piPreview(); };
+    document.getElementById('pi_back').onclick = piRenderUpload;
+    document.getElementById('pi_go').onclick = piCommit;
+    piPreview();
+  }
+  function piPlan() {
+    var byClient = {}, skipped = 0;
+    _pi.tasks.forEach(function (t) {
+      var realms = [];
+      (t.labels || []).forEach(function (l) { var rid = _pi.map[l]; if (rid && realms.indexOf(rid) < 0) realms.push(rid); });
+      if (!realms.length && _pi.unlabeledRealm) realms = [_pi.unlabeledRealm];
+      if (!realms.length) { skipped++; return; }
+      realms.forEach(function (rid) { byClient[rid] = (byClient[rid] || 0) + 1; });
+    });
+    return { byClient: byClient, skipped: skipped };
+  }
+  function piPreview() {
+    var plan = piPlan(); var total = Object.keys(plan.byClient).reduce(function (s, k) { return s + plan.byClient[k]; }, 0);
+    var parts = Object.keys(plan.byClient).sort(function (a, b) { return plan.byClient[b] - plan.byClient[a]; }).map(function (k) { return esc(companyName(k)) + ': ' + plan.byClient[k]; });
+    var el = document.getElementById('pi_preview');
+    if (el) el.innerHTML = 'Will create <strong>' + total + '</strong> task' + (total === 1 ? '' : 's') + (parts.length ? ' — ' + parts.join(' · ') : '') + (plan.skipped ? ' <span style="color:var(--burgundy,#8a3b3b);">· ' + plan.skipped + ' skipped (unmapped label)</span>' : '');
+    var go = document.getElementById('pi_go'); if (go) go.disabled = total === 0;
+  }
+  function piCommit() {
+    var created = 0, byClient = {};
+    _pi.tasks.forEach(function (t) {
+      var realms = [];
+      (t.labels || []).forEach(function (l) { var rid = _pi.map[l]; if (rid && realms.indexOf(rid) < 0) realms.push(rid); });
+      if (!realms.length && _pi.unlabeledRealm) realms = [_pi.unlabeledRealm];
+      realms.forEach(function (rid) {
+        var id = 'bcc-task-' + rid + '-' + uid2();
+        var doc = { id: id, tenantId: 'blue-collar-coach', docType: 'client-task', realmId: rid, title: t.title, status: t.completed ? 'done' : 'open', assigneeUpn: plannerUpnFor(t.assignee), dueDate: t.dueDate || '', note: t.notes || '', source: 'planner', createdAt: nowIso(), updatedAt: nowIso(), createdBy: myUpn() };
+        if (t.completed) doc.doneAt = nowIso();
+        try { localStorage.setItem(id, JSON.stringify(doc)); created++; byClient[rid] = (byClient[rid] || 0) + 1; } catch (e) {}
+      });
+    });
+    if (window.bccAudit) window.bccAudit('client-task-create', { path: '/bookkeeping.html', meta: { source: 'planner-import', count: created } });
+    var parts = Object.keys(byClient).sort(function (a, b) { return byClient[b] - byClient[a]; }).map(function (k) { return '<li>' + esc(companyName(k)) + ' — <strong>' + byClient[k] + '</strong></li>'; }).join('');
+    piBody().innerHTML =
+      '<div style="text-align:center;padding:10px 0 14px;"><div style="font-size:34px;">✅</div><div style="font-family:\'Source Serif 4\',Georgia,serif;font-size:17px;font-weight:700;margin-top:6px;">Imported ' + created + ' task' + (created === 1 ? '' : 's') + '</div></div>' +
+      (parts ? '<ul style="max-height:240px;overflow:auto;margin:0 0 12px;padding-left:20px;font-size:13px;">' + parts + '</ul>' : '') +
+      '<div style="font-size:12px;color:var(--muted);margin-bottom:12px;">They’re syncing to the cloud now and appear in each client’s <strong>Tasks</strong> tab and 🔔 to-do count.</div>' +
+      '<div style="text-align:right;"><button class="btn btn-primary" id="pi_done" type="button">Done</button></div>';
+    document.getElementById('pi_done').onclick = function () { var m = document.getElementById('pi_modal'); if (m && m._close) m._close(); else if (m) m.remove(); renderAll(); };
+  }
 
   /* ===== Firm-wide 90-day cash flow projection ===== */
   function openCashflow() {
@@ -3298,6 +3414,7 @@
     var sb = document.getElementById('syncBtn'); if (sb) sb.style.display = (mgmt || currentRealm) ? '' : 'none'; // Sync is useful per-client too
     ['newBtn', 'printBtn'].forEach(function (id) { var b = document.getElementById(id); if (b) b.style.display = mgmt ? '' : 'none'; }); // manual entry + print are management-only
     var cf = document.getElementById('cashflowBtn'); if (cf) cf.style.display = (atRoot && canManage()) ? '' : 'none'; // cash flow: any manager, from the work queue or management view
+    var it = document.getElementById('importTasksBtn'); if (it) it.style.display = (mgmt && isAdmin) ? '' : 'none'; // firm-wide task seed: admin, from the management dashboard
     var mb = document.getElementById('mgmtBtn');
     if (mb) { mb.style.display = (atRoot && canManage()) ? '' : 'none'; mb.textContent = managementMode ? '← Working view' : 'Management dashboard →'; }
     var sub = document.getElementById('subline'); if (sub) sub.textContent = currentRealm ? '' : (mgmt ? 'Firm-wide snapshot across all companies.' : 'Your client work queue — open a company to do the books.');
