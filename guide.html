@@ -196,7 +196,10 @@
         <li><strong>Event &amp; session reminders</strong> — once at <strong>24 hours</strong> out and once at <strong>15 minutes</strong> out.</li>
         <li><strong>New chat messages</strong> in channels you belong to (when you're not already on the Chat page).</li>
         <li><strong>Deal / engagement changes</strong> — <em>admins only</em>: when anyone creates, edits, or moves an engagement card, every other admin is notified.</li>
+        <li><strong>Feedback replies</strong> — when a piece of feedback you submitted is marked resolved, you're notified that it was addressed.</li>
       </ul>
+      <h3>Feedback</h3>
+      <p>The <strong>💬 Feedback</strong> button in the top bar (also in the hamburger menu) lets anyone send a note, bug report, or idea — with an optional star rating. It records the page you were on. Submissions land in <a href="admin.html">Admin → Feedback</a>; when one is marked <strong>Resolved</strong>, the person who sent it gets a notification that it's been addressed.</p>
       <h3>Where they show up</h3>
       <ul>
         <li>In the <strong>bell panel</strong> (always) and as a <strong>toast</strong> while a tab is open.</li>
@@ -263,13 +266,13 @@
       <ul>
         <li><strong>Overview</strong> — quick actions and the client's open to-dos, plus a recent-activity strip.</li>
         <li><strong>Activity</strong> — a per-user feed of what changed for this client (new transactions, files, emails, tasks, etc.) over the last 7–90 days, with a "Just me" filter.</li>
-        <li><strong>New &amp; transactions</strong> — create an <strong>invoice</strong>, <strong>bill/expense</strong>, or <strong>customer payment</strong> straight into the client's QuickBooks, and <strong>Edit</strong> existing ones; add <strong>+ Customer / + Vendor / + Item / + Account</strong> on the spot. Every post shows a <strong>confirm dialog</strong> (it writes to live books) and is logged. Browse Transactions / Payments / Expenses / All Invoices / All Bills. <strong>📷 Scan receipt (AI)</strong> photographs or uploads a receipt and auto-fills a bill (vendor, date, line items, total), matching the vendor in QuickBooks when it can.</li>
-        <li><strong>Reports &amp; KPIs</strong> — financial-health tiles (months/days of cash, current ratio, working capital, revenue/COGS/OpEx/net, margin) plus live <strong>P&amp;L, Balance Sheet, A/R &amp; A/P aging</strong> and Customer/Vendor/Invoice/Bill lists, for the period and Cash/Accrual method you pick. <strong>Sync</strong> refreshes stored monthly snapshots.</li>
+        <li><strong>New &amp; transactions</strong> — create an <strong>invoice</strong>, an <strong>expense / purchase</strong> (already paid — cash or card), a <strong>bill</strong> (unpaid, A/P), or a <strong>customer payment</strong> straight into the client's QuickBooks, and <strong>Edit</strong> existing ones; add <strong>+ Customer / + Vendor / + Item / + Account</strong> on the spot. Every post shows a <strong>confirm dialog</strong> (it writes to live books) and is logged. Browse Transactions / Payments / Expenses / All Invoices / All Bills. <strong>📷 Scan receipt (AI)</strong> photographs or uploads a receipt and auto-fills the right transaction (vendor, date, line items, total), matching the vendor in QuickBooks when it can — and it <strong>keeps the sales tax</strong> as its own line so the posted total always matches the receipt.</li>
+        <li><strong>Reports &amp; KPIs</strong> — financial-health tiles (months/days of cash, current ratio, working capital, revenue/COGS/OpEx/net, margin) plus live financial statements — <strong>P&amp;L, Balance Sheet, Trial Balance, General Ledger, Statement of Cash Flows</strong> — <strong>A/R &amp; A/P aging (summary &amp; detail)</strong>, <strong>Customer / Vendor balances</strong>, <strong>Sales by Customer / by Product</strong>, and Invoice/Bill lists, for the period and Cash/Accrual method you pick. <strong>Sync</strong> refreshes stored monthly snapshots; the last-sync stamp shows the exact <strong>date and time</strong>.</li>
         <li><strong>Tasks</strong> — per-client to-dos with assignee and due date; overdue items flag red.</li>
-        <li><strong>Time</strong> — punch in/out and manual entries. For bookkeepers, time on the open client is also <strong>tracked automatically</strong> while you work; totals show in Admin → Bookkeeping time.</li>
+        <li><strong>Time</strong> — <strong>punch in/out</strong> and add <strong>manual entries</strong> (date, hours, note). Entries are <strong>saved on the server</strong>, so they follow you across devices and roll up into <strong>Admin → Bookkeeping time</strong> as <em>Logged (billable)</em>. Separately, for bookkeepers, time on the open client is <strong>tracked automatically</strong> while you work and shows there as <em>Active</em> — the two are reported side by side, never summed.</li>
         <li><strong>Files</strong> — see below.</li>
         <li><strong>Email</strong> — see below.</li>
-        <li><strong>Certified payroll</strong> — create and print <strong>Minnesota DLI</strong> certified-payroll reports (header, employees with daily ST/OT hours, rates, auto-totaled deductions, Statement of Compliance). <strong>Print MN form</strong> opens a print-ready version.</li>
+        <li><strong>Certified payroll</strong> — create and print <strong>Minnesota DLI</strong> certified-payroll reports (header, employees with daily ST/OT hours, rates, auto-totaled deductions, Statement of Compliance). <strong>Save</strong> stores a copy in the client's <strong>Files</strong> tagged <em>Certified Payroll</em> (so it's kept with the client and re-saving replaces the prior copy); <strong>Print MN form</strong> opens a print-ready version.</li>
         <li><strong>Customer info</strong> — full details (legal name, contact, EIN, fiscal year, payroll schedule, address, notes); autosaves.</li>
         <li><strong>Team &amp; access</strong> — admins set who can see this client and enable/disable it; others see a read-only note.</li>
       </ul>
@@ -278,9 +281,10 @@
       <p>The Files section keeps two clearly-separated areas:</p>
       <ul>
         <li><strong>🔒 Internal BCC files</strong> — private to Blue Collar Coach (the client can't see them). Upload with categories/tags; <strong>search, filter by category, and sort</strong> the list, which shows each file's <strong>uploader</strong> and date.</li>
-        <li><strong>☁️ Client's shared drive</strong> — link the client's own <strong>Google Drive</strong> or <strong>OneDrive</strong> using the login they set up for the firm. Once connected (the panel shows the connected account), browse folders, upload, and download the files you share with that client.</li>
+        <li><strong>☁️ Client's shared drive</strong> — link the client's own <strong>Google Drive</strong> or <strong>OneDrive</strong> using the login they set up for the firm. Once connected (the panel shows the connected account), browse folders, upload, and download the files you share with that client. If the drive shows connected but files won't load (a permissions / <em>403</em> error), the Drive scope wasn't granted — click <strong>Reconnect</strong> and, on the Google consent screen, be sure to <strong>check the box that grants access to Drive</strong>.</li>
       </ul>
       <p>Click any file to <strong>preview it right in the app</strong> — images, PDFs, and text open in a viewer, no download needed (Download and Open-in-new-tab are there if you want them).</p>
+      <div class="callout"><strong>Scanning tip:</strong> the AI receipt scanner reads photos (JPG/PNG), screenshots, and PDFs. iPhone <strong>HEIC</strong> photos can't be read directly — either take a <strong>screenshot</strong> of the receipt, or set <em>iPhone → Settings → Camera → Formats → “Most Compatible”</em> before shooting, then re-scan.</div>
 
       <h3>Email — a shared mailbox, in-app</h3>
       <p>Each client can have a <strong>dedicated shared mailbox</strong> (e.g. <code>mikesrepair@bluecollarcoach.us</code>): an admin creates the shared mailbox once in Microsoft 365 (free, no license) and enters the address on the client's Email tab. From then on the whole team works that mailbox <strong>without opening Outlook</strong>:</p>
@@ -370,6 +374,8 @@
       <h2>Activity Log</h2>
       <p class="lead">Who did what, when. Password-gated.</p>
       <p>Every save / delete / sign-in / integration test / chat moderation action fires a structured audit row. The feed filters by category (Admin / CRM / Sessions / Documents / Rates / My Day / Integrations / System) and by user. Sortable by time; clickable to drill in.</p>
+      <p><strong>Bookkeeping actions are recorded on the server</strong> at the moment they happen — posting to QuickBooks, attaching a file, sending a client email, uploading/deleting a document, and each nightly or manual <strong>QuickBooks sync</strong> — so the log is complete and accurate even if a browser is closed mid-action. Every row carries a full <strong>date-and-time</strong> stamp, and client-scoped actions also appear on that client's <strong>Activity</strong> tab in Bookkeeping.</p>
+      <p>Unexpected errors (server or in-browser) are captured to an <strong>error log</strong> that admins can review at <a href="admin.html">Admin → Errors</a>.</p>
       <p>Access is password-gated; an admin sets and rotates the password from <a href="admin.html">Admin → Security</a> (it's stored masked).</p>
     </section>
 
