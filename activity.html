@@ -250,7 +250,15 @@
     'integration-save':    { label:'Saved integration',  cat:'integration', ic:'&#128279;' },
     'integration-clear':   { label:'Cleared integration', cat:'integration', ic:'&#10005;' },
     // Auth / system
-    'signin-denied':       { label:'Sign-in denied (wrong domain)', cat:'system', ic:'&#128274;' }
+    'signin-denied':       { label:'Sign-in denied (wrong domain)', cat:'system', ic:'&#128274;' },
+    // Bookkeeping (server-side audit at the mutation point)
+    'qbo-write':           { label:'Posted to QuickBooks',        cat:'integration', ic:'&#129534;' },
+    'qbo-attach':          { label:'Attached a file in QuickBooks', cat:'integration', ic:'&#128206;' },
+    'qbo-sync':            { label:'Synced QuickBooks',           cat:'integration', ic:'&#128260;' },
+    'client-email-send':   { label:'Sent a client email',         cat:'integration', ic:'&#9993;' },
+    'client-file-upload':  { label:'Uploaded a client file',      cat:'doc', ic:'&#128206;' },
+    'client-file-delete':  { label:'Deleted a client file',       cat:'doc', ic:'&#10005;' },
+    'document-upload':     { label:'Uploaded a document',         cat:'doc', ic:'&#128206;' }
   };
 
   function classifyAction(action) {

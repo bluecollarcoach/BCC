@@ -1851,11 +1851,14 @@
   function actDesc(a) {
     var m = a.meta || {};
     switch (a.action) {
-      case 'qbo-write': return (m.op === 'update' ? 'Updated ' : 'Created ') + (m.entity || 'record') + (m.id ? (' #' + m.id) : '') + ' in QuickBooks';
+      case 'qbo-write': return (m.op === 'update' ? 'Updated ' : 'Created ') + (m.entity || 'record') + (m.docNumber ? (' #' + m.docNumber) : (m.id ? (' #' + m.id) : '')) + ' in QuickBooks';
       case 'qbo-attach': return 'Attached a file to a ' + (m.entity || 'transaction');
-      case 'client-email-send': return 'Sent an email' + (m.recipients ? (' (' + m.recipients + ' recipient' + (m.recipients === 1 ? '' : 's') + ')') : '');
-      case 'client-file-upload': return 'Uploaded a file' + (m.name ? (' — ' + m.name) : '');
+      case 'qbo-sync': return m.error ? ('QuickBooks sync failed — ' + m.error) : ('Synced QuickBooks' + (m.periodsBuilt ? (' (' + m.periodsBuilt + ' month' + (m.periodsBuilt === 1 ? '' : 's') + ')') : '') + (m.partial ? ' — partial' : '') + (m.trigger === 'nightly' ? ', nightly' : ''));
+      case 'client-email-send': return 'Sent an email' + (m.subject ? (' — ' + m.subject) : (m.recipients ? (' (' + m.recipients + ' recipient' + (m.recipients === 1 ? '' : 's') + ')') : ''));
+      case 'client-file-upload': return 'Uploaded a file' + (m.name || m.fileName ? (' — ' + (m.name || m.fileName)) : '');
       case 'client-file-delete': return 'Deleted a file';
+      case 'document-upload': return 'Uploaded a document' + (m.tags ? (' (' + m.tags + ')') : '');
+      case 'document-delete': return 'Deleted a document';
       case 'client-info-update': return 'Updated client info';
       case 'client-mailbox-set': return 'Changed the client mailbox';
       case 'client-task-create': return 'Added a task';

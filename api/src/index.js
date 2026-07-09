@@ -269,6 +269,31 @@ async function logError(where, err, extra) {
   } catch (_) {}
 }
 
+/**
+ * Server-side semantic audit. Writes the same docType:'audit' rows the browser
+ * emits via POST /api/audit, but from the TRUSTED server at the exact moment a
+ * mutation succeeds — so the activity log is authoritative and complete even when
+ * the client's audit call is lost, throttled, or the mutation came from the cron.
+ * Fire-and-forget: never awaited, never throws, mutation is already done.
+ */
+function logAudit(action, opts) {
+  try {
+    const o = opts || {};
+    container().items.create({
+      id: 'audit-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
+      tenantId: BCC_TENANT_ID, docType: 'audit', ts: new Date().toISOString(),
+      action: String(action || '').slice(0, 60),
+      user: String(o.user || 'system').slice(0, 160),
+      source: 'server',
+      path: o.path ? String(o.path).slice(0, 200) : null,
+      key: o.key ? String(o.key).slice(0, 80) : null,
+      meta: o.meta != null ? o.meta : null
+    }).catch(() => {});
+  } catch (_) {}
+}
+// Best-effort caller UPN for server audit rows (lowercased), '' if unauthenticated.
+function auditUser(request) { try { const p = principal(request); return String((p && (p.userDetails || p.userId)) || '').toLowerCase(); } catch (_) { return ''; } }
+
 function withAccessLog(handler) {
   return async (request, context) => {
     let response;
@@ -552,7 +577,7 @@ const ALLOWED_AUDIT_ACTIONS = new Set([
   // Issues / inbox
   'issue-report',
   // Bookkeeping client workspace (were being rejected → not recorded)
-  'qbo-write', 'qbo-attach',
+  'qbo-write', 'qbo-attach', 'qbo-sync',
   'client-info-update', 'client-mailbox-set',
   'client-task-create', 'client-task-delete',
   'time-punch-in', 'time-punch-out', 'time-entry-add', 'time-entry-delete',
@@ -1775,6 +1800,7 @@ app.http('drive-upload', {
         const r = await fetch('https://graph.microsoft.com/v1.0' + path, { method: 'PUT', headers: { Authorization: 'Bearer ' + dt.at, 'Content-Type': ct }, body: buf });
         if (!r.ok) throw new Error('OneDrive upload ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 160));
       }
+      logAudit('client-file-upload', { user: auditUser(request), path: '/api/integrations/drive/' + realmId + '/upload', meta: { realmId, provider: dt.doc.provider, fileName: String(file.name || '').slice(0, 160) } });
       return { jsonBody: { ok: true } };
     } catch (e) { context.error('drive-upload', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
@@ -2144,6 +2170,7 @@ app.http('integrations-qbo-sync', {
       }
 
       const out = await syncQboCompanies(c, fields, companyDocs, new Date());
+      out.forEach(o => logAudit('qbo-sync', { user: auditUser(request), meta: { realmId: o.realmId, companyName: o.companyName, periodsBuilt: o.periodsBuilt || 0, partial: !!o.partial, error: o.error, trigger: 'manual' } }));
       return { jsonBody: { ok: true, companies: out } };
     } catch (err) {
       context.error('qbo-sync error', err);
@@ -2302,6 +2329,7 @@ app.http('cron-qbo-sync', {
       const companyDocs = resources.filter(co => co && co.enabled !== false && co.refreshToken);
       if (!companyDocs.length) return { jsonBody: { ok: true, synced: 0, note: 'no connected companies' } };
       const out = await syncQboCompanies(c, fields, companyDocs, new Date());
+      out.forEach(o => logAudit('qbo-sync', { user: 'cron', meta: { realmId: o.realmId, companyName: o.companyName, periodsBuilt: o.periodsBuilt || 0, partial: !!o.partial, error: o.error, trigger: 'nightly' } }));
       const summary = out.map(o => ({ realmId: o.realmId, companyName: o.companyName, periodsBuilt: o.periodsBuilt, partial: o.partial, error: o.error }));
       context.log('cron-qbo-sync: synced ' + out.length + ' companies', JSON.stringify(summary));
       return { jsonBody: { ok: true, synced: out.length, companies: summary } };
@@ -2640,6 +2668,7 @@ app.http('msgraph-send-mail', {
         const detail = (await r.text()).slice(0, 300);
         return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')', detail } };
       }
+      logAudit('client-email-send', { user: auditUser(request), path: '/api/integrations/msgraph/send-mail', meta: { realmId: body.realmId ? String(body.realmId) : undefined, to: toList.filter(Boolean).slice(0, 5).map(e => String(e).slice(0, 120)), subject } });
       return { jsonBody: { ok: true } };
     } catch (e) {
       context.error('msgraph send-mail error', e);
@@ -3560,6 +3589,8 @@ app.http('qbo-write', {
       }
       const res = await ctx.apiPost('/' + entity, payload);
       const created = res[cap] || {};
+      // Authoritative server-side audit at the moment it posted to live books.
+      logAudit('qbo-write', { user: auditUser(request), path: '/api/integrations/qbo/companies/' + request.params.realmId + '/write', meta: { realmId: request.params.realmId, entity, op: b.op === 'update' ? 'update' : 'create', id: created.Id, docNumber: created.DocNumber, total: created.TotalAmt } });
       return { jsonBody: { ok: true, id: created.Id, docNumber: created.DocNumber, syncToken: created.SyncToken, total: created.TotalAmt } };
     } catch (e) { context.error('qbo-write', e); return { status: 502, jsonBody: { ok: false, error: String(e.message || e) } }; }
   })
@@ -3597,6 +3628,7 @@ app.http('qbo-attach', {
       const item = (res && res.AttachableResponse && res.AttachableResponse[0]) || {};
       if (item.Fault) return { status: 502, jsonBody: { ok: false, error: 'QBO attach fault', detail: JSON.stringify(item.Fault).slice(0, 300) } };
       const att = item.Attachable || {};
+      logAudit('qbo-attach', { user: auditUser(request), path: '/api/integrations/qbo/companies/' + request.params.realmId + '/attach', meta: { realmId: request.params.realmId, entity: entityType, id: entityId, fileName: att.FileName } });
       return { jsonBody: { ok: true, id: att.Id, fileName: att.FileName } };
     } catch (e) { context.error('qbo-attach', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
@@ -4628,6 +4660,10 @@ app.http('documents-list-create', {
       };
       await c.items.upsert(meta);
 
+      // Surface file uploads on the client's Activity tab (which filters meta.realmId)
+      // when the file lands in a /clients/<realm> folder.
+      const upRealm = (/^\/clients\/([^/]+)/.exec(String(meta.folder || '')) || [])[1];
+      logAudit('document-upload', { user: who, path: '/api/documents', key: meta.id, meta: { folder: meta.folder, tags: meta.tags, realmId: upRealm, linkedContactId: meta.linkedContactId || undefined } });
       return { jsonBody: { ok: true, id: meta.id, storageKey: storageKey, sizeBytes: meta.sizeBytes } };
     } catch (err) {
       context.error('documents upload error', err);
@@ -4665,6 +4701,8 @@ app.http('document-one', {
         } catch (be) { context.warn && context.warn('blob delete failed', be && be.message); }
       }
       try { await c.item(id, BCC_TENANT_ID).delete(); } catch (e) { if (e.code !== 404) throw e; }
+      const delRealm = (/^\/clients\/([^/]+)/.exec(String((meta && meta.folder) || '')) || [])[1];
+      logAudit('document-delete', { user: auditUser(request), path: '/api/documents/' + id, key: id, meta: { folder: meta && meta.folder, realmId: delRealm, linkedContactId: (meta && meta.linkedContactId) || undefined } });
       return { status: 204 };
     } catch (err) {
       context.error('document one error', err);
