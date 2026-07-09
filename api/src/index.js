@@ -4408,7 +4408,9 @@ function buildReportDocDef(b) {
   const fc = b.forecast || null, st = b.statements || {};
   const periodLabel = pdfSani(b.periodLabel || '');
   const prepStr = (() => { try { return new Date(b.preparedOn || Date.now()).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }); } catch (_) { return ''; } })();
-  const rule = { canvas: [{ type: 'line', x1: 0, y1: 0, x2: 531, y2: 0, lineWidth: 1, lineColor: '#c5a55a' }], margin: [0, 2, 0, 9] };
+  // A gold divider bar. A filled 1-row table flows reliably in-place (standalone
+  // canvas lines get mispositioned by pdfmake), so use that instead of a canvas line.
+  const mkRule = () => ({ table: { widths: ['*'], heights: [1.1], body: [[{ text: '', fillColor: '#c5a55a' }]] }, layout: 'noBorders', margin: [0, 3, 0, 9] });
   const kval = (v, dir, tone) => ({ columns: dir ? [{ width: 'auto', text: '' }, pdfTri(dir, tone), { text: pdfSani(v), bold: true, width: 'auto' }] : [{ text: pdfSani(v), bold: true, alignment: 'right' }], columnGap: 3 });
   const kbody = [];
   for (let i = 0; i < kpis.length; i += 2) {
@@ -4420,7 +4422,7 @@ function buildReportDocDef(b) {
     : [{ text: 'No observations recorded for this month.', italics: true, color: '#888', fontSize: 9 }];
   const content = [
     { text: 'BLUE COLLAR COACH', alignment: 'center', color: '#a8884a', bold: true, characterSpacing: 3, fontSize: 12, margin: [0, 2, 0, 2] },
-    rule,
+    mkRule(),
     { text: periodLabel.toUpperCase(), alignment: 'center', color: '#a8884a', bold: true, characterSpacing: 2.5, fontSize: 11, margin: [0, 0, 0, 5] },
     { text: [{ text: 'Monthly Financial Report\n', fontSize: 17 }, { text: 'for ' + name, fontSize: 17, bold: true }], alignment: 'center', margin: [0, 0, 0, 16] },
     { text: 'BLUE COLLAR COACH OBSERVATIONS', color: '#a8884a', bold: true, fontSize: 9, margin: [0, 0, 0, 6] },
@@ -4438,7 +4440,7 @@ function buildReportDocDef(b) {
     ['A/P Aging Detail - as of ' + pdfSani(b.periodEnd || ''), st.apAging]
   ];
   stmts.forEach(s => {
-    content.push({ text: pdfSani(s[0]), pageBreak: 'before', bold: true, fontSize: 13, color: '#23262b', margin: [0, 0, 0, 3] }, rule, pdfStmtTable(s[1]));
+    content.push({ text: pdfSani(s[0]), pageBreak: 'before', bold: true, fontSize: 13, color: '#23262b', margin: [0, 0, 0, 3] }, mkRule(), pdfStmtTable(s[1]));
   });
   return {
     pageSize: 'LETTER', pageMargins: [42, 42, 42, 48], defaultStyle: { font: 'Helvetica', fontSize: 10, color: '#23262b' },
