@@ -4296,10 +4296,14 @@ app.http('qbo-monthly-report-ai', {
         } } }, required: ['observations']
       } };
       const prompt = 'You are Blue Collar Coach writing the "Observations" for ' + companyName + '\'s ' + periodLabel + ' report. '
-        + 'Using ONLY these figures, write 5–7 VERY BRIEF bullet observations. Each MUST be a short phrase (max ~12 words), NOT a full sentence — like a headline. Include the key number. '
-        + 'For each bullet set dir (up/down/flat vs last month) and tone (good/bad/neutral for the business). '
-        + 'Order by importance: cash + runway, net income, revenue/margin, then debt (credit cards / line of credit / long-term), A/R, A/P, equity. Flag real risks (low cash, negative equity, rising debt, past-due A/P). '
-        + 'Do not invent anything not in the figures. Examples of the terse style: "Cash down to $11,962 — near-zero runway" (down/bad), "Net loss ($118K), retirement skewed it" (down/bad), "A/P up to $143K" (up/bad), "LOC paid down to $57K" (down/good).\n\nFigures:\n' + f.join('\n');
+        + 'Write 5-7 observations. CRITICAL RULES: each is ONE short line, MAX 14 words. State WHAT IT IS then WHAT IT SHOULD BE (or the action), separated by a dash. NO all-caps headers. NO full sentences. NO explanation. Just: current fact -> target/action. '
+        + 'For each set dir (up/down/flat vs last month) and tone (good/bad/neutral for the business). Order: cash+runway, net income, revenue/margin, debt (credit cards/LOC/long-term), A/R, A/P, equity. '
+        + 'Use ONLY these figures; invent nothing. FOLLOW THIS FORMAT EXACTLY (state - should-be):\n'
+        + '  "Cash 1.9 mo overhead - build to 2-3 mo" (flat/neutral)\n'
+        + '  "Net loss ($151K) YTD - needs several profitable months" (down/bad)\n'
+        + '  "A/R $752,922, flat - collect it; biggest cash lever" (flat/bad)\n'
+        + '  "LOC $600,261, maxed - top risk; pay down" (flat/bad)\n'
+        + '  "Gross margin 30% - hold or improve on billing" (up/good)\n\nFigures:\n' + f.join('\n');
       const model = process.env.AI_MODEL || 'claude-sonnet-4-6';
       const r = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST', headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
@@ -4317,6 +4321,196 @@ app.http('qbo-monthly-report-ai', {
       return { jsonBody: { ok: true, observations } };
     } catch (e) { context.error('qbo-monthly-report-ai', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
+});
+
+/* ===== Server-rendered monthly report PDF (pdfmake) =====
+ * The browser used to window.print() the HTML, which stamped the page with the
+ * browser's own header/footer (date, about:blank, "1/16") and broke the KPI grid
+ * across page boundaries. This renders a real PDF server-side: aligned tables,
+ * a one-page cover, vector trend-arrows (font-independent), and a professional
+ * page-numbered footer — no browser chrome. Built with the standard Helvetica
+ * font (no font files to bundle). */
+let _pdfPrinter = null;
+function pdfPrinter() {
+  if (_pdfPrinter) return _pdfPrinter;
+  const PdfPrinter = require('pdfmake');
+  _pdfPrinter = new PdfPrinter({ Helvetica: { normal: 'Helvetica', bold: 'Helvetica-Bold', italics: 'Helvetica-Oblique', bolditalics: 'Helvetica-BoldOblique' } });
+  return _pdfPrinter;
+}
+const PDF_TONE = { good: '#1f8a4c', bad: '#c0392b', neutral: '#b7791f' };
+// Helvetica is WinAnsi/Latin-1 only — map smart punctuation + drop anything outside it.
+function pdfSani(s) {
+  return String(s == null ? '' : s)
+    .replace(/[‘’′]/g, "'").replace(/[“”″]/g, '"')
+    .replace(/[–—]/g, '-').replace(/…/g, '...').replace(/≈/g, '~').replace(/×/g, 'x')
+    .replace(/[↑↓→▲▼▶▸►◀]/g, '').replace(/[^\x09\x0A\x0D\x20-\xFF]/g, '');
+}
+// A small colored trend triangle drawn as vector art (renders in any font).
+function pdfTri(dir, tone) {
+  const c = PDF_TONE[tone] || PDF_TONE.neutral;
+  const pts = dir === 'up' ? [{ x: 0, y: 6.5 }, { x: 6.5, y: 6.5 }, { x: 3.25, y: 1 }]
+    : dir === 'down' ? [{ x: 0, y: 1 }, { x: 6.5, y: 1 }, { x: 3.25, y: 6.5 }]
+      : [{ x: 1, y: 1 }, { x: 1, y: 6.5 }, { x: 6.5, y: 3.75 }];
+  return { canvas: [{ type: 'polyline', closePath: true, color: c, points: pts }], width: 8, margin: [0, 2.5, 0, 0] };
+}
+function pdfIsNumeric(v) { return /^\(?-?\$?[\d,]+(\.\d+)?\)?$/.test(String(v).trim()); }
+function pdfMoney(v) {
+  if (v == null || v === '') return '';
+  const s = String(v).trim();
+  if (!pdfIsNumeric(s)) return pdfSani(s); // dates / names / codes pass through
+  const neg = /^\(.*\)$/.test(s) || /^-/.test(s);
+  const n = parseFloat(s.replace(/[$,()\-]/g, ''));
+  if (isNaN(n)) return pdfSani(s);
+  const out = '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return neg ? '(' + out + ')' : out;
+}
+function pdfStmtTable(stmt) {
+  if (!stmt || !(stmt.rows || []).length) return { text: 'No data for this statement.', italics: true, color: '#888', fontSize: 9, margin: [0, 4, 0, 0] };
+  const cols = (stmt.columns || []).length ? stmt.columns : ['', 'Total'];
+  const ncol = Math.max(2, cols.length);
+  const widths = ['*']; for (let i = 1; i < ncol; i++) widths.push('auto');
+  const header = [];
+  for (let i = 0; i < ncol; i++) header.push({ text: pdfSani(cols[i] || (i === 0 ? '' : 'Total')), bold: true, alignment: i > 0 ? 'right' : 'left', fillColor: '#f7f1e3', fontSize: 7.5 });
+  const body = [header];
+  const boldRow = [];
+  (stmt.rows || []).forEach(row => {
+    const strong = row.type === 'summary' || row.type === 'header';
+    boldRow.push(strong);
+    const cells = [{ text: pdfSani(row.label || ''), margin: [(row.level || 0) * 9, 0, 0, 0], bold: strong, fontSize: 8, color: '#23262b' }];
+    const rc = row.cells || [];
+    for (let i = 1; i < ncol; i++) { const v = rc[i - 1]; const num = pdfIsNumeric(String(v == null ? '' : v)); cells.push({ text: v == null || v === '' ? '' : pdfMoney(v), alignment: num ? 'right' : 'left', bold: strong, fontSize: 8 }); }
+    body.push(cells);
+  });
+  return { table: { headerRows: 1, widths: widths, body: body }, layout: { hLineWidth: (i) => (i === 1 ? 0.6 : 0.35), vLineWidth: () => 0, hLineColor: () => '#e8e6df', paddingTop: () => 2.2, paddingBottom: () => 2.2, fillColor: (ri) => (ri > 0 && boldRow[ri - 1]) ? '#fbf9f4' : null } };
+}
+function pdfForecast(fc) {
+  const m = pdfMoney; const inf = fc.inflow || [0, 0, 0], outf = fc.outflow || [0, 0, 0], proj = fc.projected || [0, 0, 0], op = fc.opNet || 0;
+  const hcell = (t, a) => ({ text: t, bold: true, alignment: a || 'left', fontSize: 7.5, fillColor: '#f7f1e3' });
+  const row = (lbl, vals, o) => [{ text: lbl, fontSize: 8, bold: !!(o && o.b) }].concat(vals.map(v => ({ text: v, alignment: 'right', fontSize: 8, bold: !!(o && o.b), color: (o && o.c) || null })));
+  const body = [
+    [hcell('Projection'), hcell('Now', 'right'), hcell('+30 days', 'right'), hcell('+60 days', 'right'), hcell('+90 days', 'right')],
+    row('Expected collections (open A/R)', ['', '+' + m(inf[0]), '+' + m(inf[1]), '+' + m(inf[2])], { c: '#1f8a4c' }),
+    row('Scheduled payments (open A/P)', ['', '(' + m(outf[0]) + ')', '(' + m(outf[1]) + ')', '(' + m(outf[2]) + ')'], { c: '#c0392b' }),
+    row('Operating run-rate (rev - COGS - overhead)', ['', (op >= 0 ? '+' : '-') + m(Math.abs(op)), (op >= 0 ? '+' : '-') + m(Math.abs(op)), (op >= 0 ? '+' : '-') + m(Math.abs(op))], { c: op >= 0 ? '#1f8a4c' : '#c0392b' }),
+    row('Projected cash balance', [m(fc.cash), m(proj[0]), m(proj[1]), m(proj[2])], { b: true })
+  ];
+  return {
+    stack: [
+      { table: { headerRows: 1, widths: ['*', 'auto', 'auto', 'auto', 'auto'], body: body }, layout: { hLineWidth: (i) => (i === 1 ? 0.6 : 0.35), vLineWidth: () => 0, hLineColor: () => '#e0ddd4', paddingTop: () => 2.5, paddingBottom: () => 2.5 } },
+      { text: 'Based on the client\'s current open invoices & bills (bucketed by due date) plus the trailing-' + (fc.historyMonths || 12) + '-month operating run-rate (avg revenue - COGS - overhead ~ ' + m(op) + '/mo). A forecast from real receivables/payables - not a guarantee.', fontSize: 7.5, color: '#8a8577', margin: [0, 5, 0, 0] }
+    ]
+  };
+}
+function buildReportDocDef(b) {
+  const company = b.company || {}, name = pdfSani(company.legalName || company.name || 'Company');
+  const kpis = Array.isArray(b.kpis) ? b.kpis : [];
+  const obs = Array.isArray(b.observations) ? b.observations : [];
+  const fc = b.forecast || null, st = b.statements || {};
+  const periodLabel = pdfSani(b.periodLabel || '');
+  const prepStr = (() => { try { return new Date(b.preparedOn || Date.now()).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }); } catch (_) { return ''; } })();
+  const rule = { canvas: [{ type: 'line', x1: 0, y1: 0, x2: 531, y2: 0, lineWidth: 1, lineColor: '#c5a55a' }], margin: [0, 2, 0, 9] };
+  const kval = (v, dir, tone) => ({ columns: dir ? [{ width: 'auto', text: '' }, pdfTri(dir, tone), { text: pdfSani(v), bold: true, width: 'auto' }] : [{ text: pdfSani(v), bold: true, alignment: 'right' }], columnGap: 3 });
+  const kbody = [];
+  for (let i = 0; i < kpis.length; i += 2) {
+    const a = kpis[i], c = kpis[i + 1];
+    kbody.push([{ text: pdfSani(a.l), color: '#555', fontSize: 9 }, kval(a.v, a.dir, a.tone), c ? { text: pdfSani(c.l), color: '#555', fontSize: 9 } : '', c ? kval(c.v, c.dir, c.tone) : '']);
+  }
+  const obsStack = obs.length
+    ? obs.map(o => ({ columns: [o.dir ? pdfTri(o.dir, o.tone) : { text: '', width: 8 }, { text: pdfSani(o.text), width: '*', fontSize: 9.5 }], columnGap: 5, margin: [0, 0, 0, 4] }))
+    : [{ text: 'No observations recorded for this month.', italics: true, color: '#888', fontSize: 9 }];
+  const content = [
+    { text: 'BLUE COLLAR COACH', alignment: 'center', color: '#a8884a', bold: true, characterSpacing: 3, fontSize: 12, margin: [0, 2, 0, 2] },
+    rule,
+    { text: periodLabel.toUpperCase(), alignment: 'center', color: '#a8884a', bold: true, characterSpacing: 2.5, fontSize: 11, margin: [0, 0, 0, 5] },
+    { text: [{ text: 'Monthly Financial Report\n', fontSize: 17 }, { text: 'for ' + name, fontSize: 17, bold: true }], alignment: 'center', margin: [0, 0, 0, 16] },
+    { text: 'BLUE COLLAR COACH OBSERVATIONS', color: '#a8884a', bold: true, fontSize: 9, margin: [0, 0, 0, 6] },
+    { stack: obsStack, margin: [0, 0, 0, 13] },
+    { text: 'KEY FINANCIAL KPIS   ' + (periodLabel ? '·   ' + periodLabel : ''), color: '#a8884a', bold: true, fontSize: 9, margin: [0, 0, 0, 5] },
+    { table: { widths: ['*', 'auto', '*', 'auto'], body: kbody.length ? kbody : [[{ text: 'No KPIs.', colSpan: 4, italics: true, color: '#888' }, '', '', '']] }, layout: { hLineWidth: (i, node) => (i === 0 || i === node.table.body.length) ? 0 : 0.5, vLineWidth: () => 0, hLineColor: () => '#e6e5e1', paddingTop: () => 3.5, paddingBottom: () => 3.5, paddingLeft: (i) => i === 0 ? 0 : 10, paddingRight: () => 0 } }
+  ];
+  if (fc) content.push({ text: '90-DAY CASH FLOW FORECAST', color: '#a8884a', bold: true, fontSize: 9, margin: [0, 13, 0, 5] }, pdfForecast(fc));
+  content.push({ text: 'Prepared ' + pdfSani(prepStr) + '   ·   ' + pdfSani(b.method || 'Accrual') + ' basis   ·   For management use only', alignment: 'center', color: '#8a8577', fontSize: 8.5, margin: [0, 14, 0, 0] });
+  const stmts = [
+    ['Profit & Loss - ' + periodLabel, st.pl],
+    ['Balance Sheet - as of ' + pdfSani(b.periodEnd || ''), st.balanceSheet],
+    ['Statement of Cash Flows - ' + periodLabel, st.cashFlow],
+    ['A/R Aging Detail - as of ' + pdfSani(b.periodEnd || ''), st.arAging],
+    ['A/P Aging Detail - as of ' + pdfSani(b.periodEnd || ''), st.apAging]
+  ];
+  stmts.forEach(s => {
+    content.push({ text: pdfSani(s[0]), pageBreak: 'before', bold: true, fontSize: 13, color: '#23262b', margin: [0, 0, 0, 3] }, rule, pdfStmtTable(s[1]));
+  });
+  return {
+    pageSize: 'LETTER', pageMargins: [42, 42, 42, 48], defaultStyle: { font: 'Helvetica', fontSize: 10, color: '#23262b' },
+    info: { title: name + ' - ' + periodLabel + ' Report', author: 'Blue Collar Coach' },
+    footer: (cur, tot) => ({ margin: [42, 8, 42, 0], columns: [{ text: 'Blue Collar Coach', fontSize: 7.5, color: '#8a8577' }, { text: 'For management use only', fontSize: 7.5, color: '#8a8577', alignment: 'center' }, { text: 'Page ' + cur + ' of ' + tot, fontSize: 7.5, color: '#8a8577', alignment: 'right' }] }),
+    content: content
+  };
+}
+async function renderReportPdf(b) {
+  const doc = pdfPrinter().createPdfKitDocument(buildReportDocDef(b));
+  return await new Promise((resolve, reject) => {
+    const chunks = [];
+    doc.on('data', c => chunks.push(c));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+    doc.end();
+  });
+}
+/**
+ * POST /api/integrations/qbo/companies/{realmId}/monthly-report/pdf
+ * Renders the finished, styled PDF from the report data the browser already fetched
+ * (company/period, computed KPIs, observations, forecast, and the five statements).
+ * Pure layout — no QBO refetch. Access-scoped.
+ */
+app.http('qbo-monthly-report-pdf', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'integrations/qbo/companies/{realmId}/monthly-report/pdf',
+  handler: withAccessLog(async (request, context) => {
+    const ctx = await qboResolveAccess(request, request.params.realmId);
+    if (ctx.err) return ctx.err;
+    try {
+      const b = await request.json().catch(() => ({}));
+      const buf = await renderReportPdf(b);
+      logAudit('report-pdf', { user: auditUser(request), meta: { realmId: request.params.realmId, period: b.period } });
+      return { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="monthly-report.pdf"', 'X-Content-Type-Options': 'nosniff' }, body: buf };
+    } catch (e) { context.error('qbo-monthly-report-pdf', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+
+// TEMP (CRON_SECRET-gated): render a real company's report PDF headless to verify the
+// layout against live statements. Remove after.
+app.http('cron-report-pdf-check', {
+  methods: ['GET', 'POST'], authLevel: 'anonymous', route: 'cron/report-pdf-check',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
+    try {
+      const url = new URL(request.url); const realmId = String(url.searchParams.get('realmId') || '');
+      const m = String(url.searchParams.get('period') || '').match(/^(\d{4})-(\d{2})$/);
+      const per = m ? { y: +m[1], mo: +m[2] - 1 } : (function () { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return { y: d.getFullYear(), mo: d.getMonth() }; })();
+      const c = container(); const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      if (!comp) return { status: 404, jsonBody: { ok: false, error: 'no company' } };
+      const fields = await getIntegrationFields('qbo'); const { accessToken, base } = await qboAccessForCompany(comp, fields);
+      const apiGet = async (path) => { const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70'; const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } }); if (!r.ok) throw new Error('QBO ' + r.status); return r.json(); };
+      const data = await assembleMonthlyReport(apiGet, comp, per, 'Accrual'); const k = data.kpis;
+      const n0 = (x) => '$' + Math.round(x || 0).toLocaleString();
+      const kpis = [
+        { l: 'Cash on Hand', v: n0(k.cash), dir: 'flat', tone: 'neutral' },
+        { l: 'Monthly Net Income', v: n0(k.netIncome), dir: k.netIncome >= 0 ? 'up' : 'down', tone: k.netIncome >= 0 ? 'good' : 'bad' },
+        { l: 'Revenue', v: n0(k.revenue), dir: 'up', tone: 'good' },
+        { l: 'Gross Margin', v: Math.round((k.grossMargin || 0) * 100) + '%', dir: 'up', tone: 'good' },
+        { l: 'A/R Outstanding', v: n0(k.ar), dir: 'flat', tone: 'neutral' },
+        { l: 'A/P Balance', v: n0(k.ap), dir: 'flat', tone: 'bad' },
+        { l: 'Line of Credit', v: n0(k.lineOfCredit), dir: 'flat', tone: 'bad' },
+        { l: 'Total Equity', v: n0(k.equity), dir: 'flat', tone: 'neutral' }
+      ];
+      const obs = [{ text: 'Cash 1.9 mo overhead - build to 2-3 mo', dir: 'flat', tone: 'neutral' }, { text: 'YTD net loss - needs profitable months', dir: 'down', tone: 'bad' }, { text: 'A/R large & flat - collect it', dir: 'flat', tone: 'bad' }];
+      const buf = await renderReportPdf({ company: data.company, periodLabel: data.periodLabel, periodEnd: data.periodEnd, preparedOn: data.preparedOn, method: data.method, kpis, observations: obs, forecast: null, statements: data.statements });
+      return { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="check.pdf"' }, body: buf };
+    } catch (e) { context.error('cron-report-pdf-check', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  }
 });
 
 /**

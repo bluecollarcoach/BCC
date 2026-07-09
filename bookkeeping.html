@@ -1743,32 +1743,45 @@
       (forPrint ? '<script>window.onload=function(){setTimeout(function(){window.print();},300);}<\/script>' : '') +
       '</body></html>';
   }
+  // The finished report is now rendered to a real PDF server-side (clean tables,
+  // one-page cover, page-numbered footer, no browser print chrome). We POST the data
+  // the modal already has; the server just lays it out.
+  function mrPdfPayload() {
+    var d = _mr.data;
+    return { period: d.period, periodLabel: d.periodLabel, periodEnd: d.periodEnd, preparedOn: d.preparedOn, method: d.method, company: d.company, kpis: mrKpiList(d.kpis || {}), observations: _mr.obs, forecast: _mr.forecast, statements: d.statements };
+  }
+  function mrFetchPdf() {
+    return fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/monthly-report/pdf', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(mrPdfPayload()) })
+      .then(function (r) { if (!r.ok) return r.json().then(function (j) { throw new Error((j && j.error) || ('HTTP ' + r.status)); }); return r.blob(); });
+  }
   function printMonthlyReport() {
     if (!_mr.data) return;
     saveReportObservations(false);
-    var w = window.open('', '_blank');
-    if (!w) { (window.bccNotify || alert)('Allow pop-ups to open the report.', 'warn'); return; }
-    w.document.open(); w.document.write(monthlyReportDocHtml(_mr.data, _mr.obs, true)); w.document.close();
+    var btn = document.getElementById('mrPrint'), ot = btn.textContent; btn.disabled = true; btn.textContent = 'Building PDF…';
+    mrFetchPdf().then(function (blob) {
+      btn.disabled = false; btn.textContent = ot;
+      var u = URL.createObjectURL(blob); var w = window.open(u, '_blank');
+      if (!w) (window.bccNotify || alert)('Allow pop-ups to open the report PDF.', 'warn');
+      setTimeout(function () { URL.revokeObjectURL(u); }, 60000);
+    }).catch(function (e) { btn.disabled = false; btn.textContent = ot; (window.bccNotify || alert)('Could not build the PDF: ' + e.message, 'error', 7000); });
   }
   function saveMonthlyReportToFiles() {
     var d = _mr.data; if (!d) return;
     saveReportObservations(false);
-    var html = monthlyReportDocHtml(d, _mr.obs, false);
-    var fname = (d.company.legalName || d.company.name || 'Company') + ' ' + d.periodLabel + ' Report.html';
-    var fd = new FormData();
-    fd.append('file', new Blob([html], { type: 'text/html' }), fname);
-    fd.append('folder', (typeof clientFolder === 'function' ? clientFolder() : ('/clients/' + currentRealm)));
-    fd.append('tags', 'Monthly Report, financials');
+    var fname = (d.company.legalName || d.company.name || 'Company') + ' ' + d.periodLabel + ' Report.pdf';
     var btn = document.getElementById('mrSaveFile'), ot = btn.textContent; btn.disabled = true; btn.textContent = 'Saving…';
-    fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
-      .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
-      .then(function (j) {
-        btn.disabled = false; btn.textContent = ot;
-        if (window.bccAudit) window.bccAudit('client-file-upload', { key: j && j.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, name: fname, source: 'monthly-report' } });
-        if (window.bccNotifySaved) window.bccNotifySaved('Report filed to the client (tag: Monthly Report).');
-        if (typeof loadFiles === 'function') loadFiles();
-      })
-      .catch(function (e) { btn.disabled = false; btn.textContent = ot; (window.bccNotify || alert)('Couldn’t file the report: ' + e.message, 'error', 8000); });
+    mrFetchPdf().then(function (blob) {
+      var fd = new FormData();
+      fd.append('file', new Blob([blob], { type: 'application/pdf' }), fname);
+      fd.append('folder', (typeof clientFolder === 'function' ? clientFolder() : ('/clients/' + currentRealm)));
+      fd.append('tags', 'Monthly Report, financials');
+      return fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd }).then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); });
+    }).then(function (j) {
+      btn.disabled = false; btn.textContent = ot;
+      if (window.bccAudit) window.bccAudit('client-file-upload', { key: j && j.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, name: fname, source: 'monthly-report' } });
+      if (window.bccNotifySaved) window.bccNotifySaved('Report (PDF) filed to the client (tag: Monthly Report).');
+      if (typeof loadFiles === 'function') loadFiles();
+    }).catch(function (e) { btn.disabled = false; btn.textContent = ot; (window.bccNotify || alert)('Could not save the report: ' + e.message, 'error', 8000); });
   }
 
   /* ===== QuickBooks write: create/edit invoices, bills, payments ===== */
