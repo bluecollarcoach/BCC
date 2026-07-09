@@ -436,7 +436,8 @@
           <option value="">+ New…</option>
           <optgroup label="Transactions">
             <option value="tx:invoice">Invoice</option>
-            <option value="tx:bill">Bill / expense</option>
+            <option value="tx:purchase">Expense / purchase (already paid — cash or card)</option>
+            <option value="tx:bill">Bill (unpaid — you owe it, A/P)</option>
             <option value="tx:payment">Receive payment</option>
           </optgroup>
           <optgroup label="Records">
@@ -1394,13 +1395,22 @@
       var partyVal = (entity === 'invoice' ? (pre.CustomerRef && pre.CustomerRef.value) : (pre.VendorRef && pre.VendorRef.value)) || (seed && seed.party) || '';
       var html = '<div style="border:1px solid var(--chrome-mute);border-radius:10px;padding:14px;">' +
         '<div style="font-weight:700;margin-bottom:10px;">' + (edit ? 'Edit ' : 'New ') + esc(entity) + (edit && edit.docNumber ? (' #' + esc(edit.docNumber)) : '') + '</div>';
-      if (entity === 'invoice' || entity === 'bill') {
+      if (entity === 'invoice' || entity === 'bill' || entity === 'purchase') {
         var who = entity === 'invoice'
           ? '<label class="full">Customer<select id="tx_party">' + txOpt(refs.customers, partyVal) + '</select></label>'
-          : '<label class="full">Vendor<select id="tx_party">' + txOpt(refs.vendors, partyVal) + '</select></label>';
-        html += '<div class="ws-form" style="margin-bottom:10px;">' + who +
-          '<label>Date<input type="date" id="tx_date" value="' + esc(pre.TxnDate || (seed && seed.date) || today) + '" /></label>' +
-          '<label>Due date<input type="date" id="tx_due" value="' + esc(pre.DueDate || '') + '" /></label></div>' +
+          : '<label class="full">' + (entity === 'purchase' ? 'Vendor / payee (optional)' : 'Vendor') + '<select id="tx_party">' + txOpt(refs.vendors, partyVal) + '</select></label>';
+        var dateRow;
+        if (entity === 'purchase') {
+          // A purchase is money already spent — it needs the account it was paid FROM
+          // (bank or credit card), and has no due date (nothing is owed later).
+          var payAccts = (refs.accounts || []).filter(function (a) { return /bank|credit card/i.test(a.type || ''); });
+          dateRow = '<label class="full">Paid from (bank / credit card)<select id="tx_payacct">' + txOpt(payAccts.length ? payAccts : refs.accounts, '') + '</select></label>' +
+            '<label>Date<input type="date" id="tx_date" value="' + esc((seed && seed.date) || today) + '" /></label>';
+        } else {
+          dateRow = '<label>Date<input type="date" id="tx_date" value="' + esc(pre.TxnDate || (seed && seed.date) || today) + '" /></label>' +
+            '<label>Due date<input type="date" id="tx_due" value="' + esc(pre.DueDate || '') + '" /></label>';
+        }
+        html += '<div class="ws-form" style="margin-bottom:10px;">' + who + dateRow + '</div>' +
           '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Line items</div><div id="tx_lines"></div>' +
           '<button class="btn btn-ghost" id="tx_addline" type="button" style="margin-top:6px;font-size:12px;">+ Add line</button>' +
           '<div style="margin-top:14px;"><div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Attachment</div>' +
@@ -1420,7 +1430,7 @@
         host.innerHTML = '<div class="scan-split"><div class="scan-pane">' + html + '</div>' +
           '<div class="scan-pane scan-preview"><div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Scanned document</div>' + previewHtml(seed) + '</div></div>';
       } else { host.innerHTML = html; }
-      if (entity === 'invoice' || entity === 'bill') {
+      if (entity === 'invoice' || entity === 'bill' || entity === 'purchase') {
         var linesEl = document.getElementById('tx_lines');
         var draft = [];
         if (pre.Line && pre.Line.length) pre.Line.forEach(function (l) {
@@ -1439,7 +1449,15 @@
         var txFile = document.getElementById('tx_file'); var fnameEl = document.getElementById('tx_fname');
         if (_txnFile && fnameEl) fnameEl.textContent = _txnFile.name + ' (will attach)';
         if (txFile) { txFile.addEventListener('click', function () { this.value = ''; }); txFile.addEventListener('change', function () { var f = txFile.files && txFile.files[0]; if (f) { if (f.size > 25 * 1024 * 1024) { (window.bccNotify || alert)('File too large (max 25 MB).', 'warn'); txFile.value = ''; return; } _txnFile = f; if (fnameEl) fnameEl.textContent = f.name + ' (will attach)'; } }); }
-        document.getElementById('tx_save').onclick = function () { submitTxn(entity, { party: document.getElementById('tx_party').value, date: document.getElementById('tx_date').value, due: document.getElementById('tx_due').value, lines: draft }); };
+        document.getElementById('tx_save').onclick = function () {
+          var g = { party: document.getElementById('tx_party').value, date: document.getElementById('tx_date').value, lines: draft };
+          if (entity === 'purchase') {
+            var pa = document.getElementById('tx_payacct'); g.paymentAccountId = pa ? pa.value : '';
+            var acct = (refs.accounts || []).find(function (a) { return String(a.id) === String(g.paymentAccountId); });
+            g.paymentType = (acct && /credit card/i.test(acct.type || '')) ? 'CreditCard' : 'Cash';
+          } else { g.due = document.getElementById('tx_due').value; }
+          submitTxn(entity, g);
+        };
       } else {
         document.getElementById('tx_save').onclick = function () { submitTxn(entity, { party: document.getElementById('tx_party').value, amount: document.getElementById('tx_amount').value, date: document.getElementById('tx_date').value, deposit: document.getElementById('tx_deposit').value, invoiceId: document.getElementById('tx_invoiceId').value }); };
       }
@@ -1450,6 +1468,7 @@
     var fields;
     if (entity === 'invoice') { if (!g.party) { (window.bccNotify || alert)('Pick a customer.', 'warn'); return; } fields = { customerId: g.party, txnDate: g.date, dueDate: g.due, lines: g.lines.map(function (l) { return { itemId: l.itemId, desc: l.desc, amount: l.amount }; }) }; }
     else if (entity === 'bill') { if (!g.party) { (window.bccNotify || alert)('Pick a vendor.', 'warn'); return; } fields = { vendorId: g.party, txnDate: g.date, dueDate: g.due, lines: g.lines.map(function (l) { return { accountId: l.accountId, desc: l.desc, amount: l.amount }; }) }; }
+    else if (entity === 'purchase') { if (!g.paymentAccountId) { (window.bccNotify || alert)('Pick the bank / credit-card account it was paid from.', 'warn'); return; } if (!(g.lines || []).some(function (l) { return (parseFloat(l.amount) || 0) > 0 && l.accountId; })) { (window.bccNotify || alert)('Add at least one expense line (amount + account).', 'warn'); return; } fields = { vendorId: g.party || '', paymentAccountId: g.paymentAccountId, paymentType: g.paymentType || 'Cash', txnDate: g.date, lines: g.lines.map(function (l) { return { accountId: l.accountId, desc: l.desc, amount: l.amount }; }) }; }
     else { if (!g.party || !g.amount) { (window.bccNotify || alert)('Customer and amount required.', 'warn'); return; } fields = { customerId: g.party, totalAmt: g.amount, txnDate: g.date, depositAccountId: g.deposit, invoiceId: g.invoiceId }; }
     var verb = _txnEdit ? 'update' : 'create';
     var total = entity === 'payment' ? g.amount : (g.lines || []).reduce(function (s, l) { return s + (parseFloat(l.amount) || 0); }, 0);
@@ -1464,7 +1483,8 @@
         if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: currentRealm, entity: entity, op: verb, id: resp.id } });
         if (window.bccNotifySaved) window.bccNotifySaved(entity.charAt(0).toUpperCase() + entity.slice(1) + (verb === 'update' ? ' updated' : ' created') + (resp.docNumber ? (' #' + resp.docNumber) : '') + ' in QuickBooks.');
         var attachFile = _txnFile; _txnFile = null;
-        if (attachFile && (entity === 'invoice' || entity === 'bill') && resp.id) attachToEntity(entity === 'invoice' ? 'Invoice' : 'Bill', resp.id, attachFile, resp.docNumber);
+        var attachCap = { invoice: 'Invoice', bill: 'Bill', purchase: 'Purchase' }[entity];
+        if (attachFile && attachCap && resp.id) attachToEntity(attachCap, resp.id, attachFile, resp.docNumber);
         document.getElementById('qboWriteForm').innerHTML = ''; _txnEdit = null; _txnFormRealm = null;
         loadQboKpis();
         if (qboActiveReport) loadQboReport(qboActiveReport, null);
@@ -1546,6 +1566,23 @@
 
   /* ----- AI receipt/invoice capture ----- */
   function isExpenseAcct(a) { return a && (a.classification === 'Expense' || /expense|cost of goods/i.test(a.type || '')); }
+  // Build expense lines from an extracted receipt WITHOUT dropping sales tax. If the
+  // itemized lines + tax reconcile to the stated total, append the tax as its own
+  // line; if the lines don't reconcile at all, fall back to a single total line so
+  // the posted amount can never disagree with the receipt total.
+  function receiptLines(d, accountId) {
+    var total = (d.total != null && d.total !== '') ? Number(d.total) : null;
+    var tax = Number(d.tax) || 0;
+    var items = (d.lineItems || []).filter(function (li) { return li && li.amount != null && li.amount !== ''; })
+      .map(function (li) { return { desc: li.description || '', amount: Number(li.amount) || 0, accountId: accountId }; });
+    if (items.length) {
+      var sum = items.reduce(function (s, l) { return s + (Number(l.amount) || 0); }, 0);
+      if (tax > 0 && total != null && Math.abs(sum + tax - total) < 0.01) { items.push({ desc: 'Sales tax', amount: tax, accountId: accountId }); sum += tax; }
+      if (total != null && Math.abs(sum - total) >= 0.01) items = [{ desc: d.suggestedCategory || 'Purchase', amount: total, accountId: accountId }];
+      return items.map(function (l) { return { desc: l.desc, amount: String(l.amount), accountId: l.accountId }; });
+    }
+    return [{ desc: d.suggestedCategory || (d.vendorName ? ('Purchase — ' + d.vendorName) : 'Expense'), amount: (total != null ? String(total) : ''), accountId: accountId }];
+  }
   function normName(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\b(llc|inc|co|company|the|corp|corporation|ltd|incorporated)\b/g, ' ').replace(/\s+/g, ' ').trim(); }
   function fuzzyVendorMatch(name, vendors) {
     var n = normName(name); if (!n) return '';
@@ -1604,29 +1641,31 @@
             var accountId = d.expenseAccountId || '';
             if (accountId && !(refs.accounts || []).some(function (a) { return String(a.id) === String(accountId); })) accountId = '';
             if (!accountId) { var exp = (refs.accounts || []).filter(isExpenseAcct); if (exp.length) accountId = exp[0].id; }
-            var lines = (d.lineItems && d.lineItems.length)
-              ? d.lineItems.map(function (li) { return { desc: li.description || '', amount: (li.amount != null ? li.amount : ''), accountId: accountId }; })
-              : [{ desc: d.suggestedCategory || (d.vendorName ? ('Purchase — ' + d.vendorName) : 'Expense'), amount: (d.total != null ? d.total : ''), accountId: accountId }];
+            var lines = receiptLines(d, accountId);
             var seedBase = { date: d.date || '', lines: lines, preview: dataUrl, previewType: previewType, file: file };
             var tot = (d.total != null ? (' · $' + Number(d.total).toLocaleString()) : '');
+            // A "receipt" is paid at the point of sale (cash/card) → post as a Purchase
+            // (expense, no A/P). An "invoice" is billed with terms → post as a Bill (A/P).
+            var txnEntity = (d.docType === 'receipt') ? 'purchase' : 'bill';
+            var nextStep = (txnEntity === 'purchase') ? 'Pick the account it was paid from, then post.' : 'Review & post.';
             var vendorId = d.matchedVendorId || '';
             if (vendorId && !(refs.vendors || []).some(function (v) { return String(v.id) === String(vendorId); })) vendorId = '';
             if (!vendorId && d.vendorName) vendorId = fuzzyVendorMatch(d.vendorName, refs.vendors); // reuse existing before creating
             if (vendorId) {
-              openTxnForm('bill', null, Object.assign({ party: vendorId }, seedBase));
-              if (window.bccNotifySaved) window.bccNotifySaved('Filled from ' + (d.docType || 'document') + tot + ' · matched existing vendor. Review & post.');
+              openTxnForm(txnEntity, null, Object.assign({ party: vendorId }, seedBase));
+              if (window.bccNotifySaved) window.bccNotifySaved('Filled from ' + (d.docType || 'document') + tot + ' · matched existing vendor. ' + nextStep);
             } else if (d.vendorName) {
               if (host) host.innerHTML = '<div style="padding:14px;color:var(--muted);">Creating vendor “' + esc(d.vendorName) + '”…</div>';
               createVendorAuto(d.vendorName, function (newId) {
-                openTxnForm('bill', null, Object.assign({ party: newId || '' }, seedBase));
-                if (window.bccNotifySaved) window.bccNotifySaved('Filled from receipt' + tot + '. Created vendor “' + d.vendorName + '”. Review & post.');
+                openTxnForm(txnEntity, null, Object.assign({ party: newId || '' }, seedBase));
+                if (window.bccNotifySaved) window.bccNotifySaved('Filled from receipt' + tot + '. Created vendor “' + d.vendorName + '”. ' + nextStep);
               }, function (err) {
-                openTxnForm('bill', null, seedBase);
+                openTxnForm(txnEntity, null, seedBase);
                 (window.bccNotify || alert)('Filled from receipt' + tot + '. Couldn’t auto-create vendor (' + err + ') — pick one or use + Vendor.', 'warn', 8000);
               });
             } else {
-              openTxnForm('bill', null, seedBase);
-              (window.bccNotify || alert)('Filled from receipt' + tot + '. Pick a vendor.', 'info', 6000);
+              openTxnForm(txnEntity, null, seedBase);
+              (window.bccNotify || alert)('Filled from receipt' + tot + '. ' + (txnEntity === 'purchase' ? 'Pick the account it was paid from (vendor optional).' : 'Pick a vendor.'), 'info', 6000);
             }
           });
         })

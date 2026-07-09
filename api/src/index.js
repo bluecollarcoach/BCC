@@ -3494,7 +3494,7 @@ app.http('qbo-write', {
       const b = await request.json().catch(() => ({}));
       const entity = String(b.entity || '').toLowerCase();
       const f = b.fields || {};
-      const cap = { invoice: 'Invoice', bill: 'Bill', payment: 'Payment', customer: 'Customer', vendor: 'Vendor', item: 'Item', account: 'Account' }[entity];
+      const cap = { invoice: 'Invoice', bill: 'Bill', purchase: 'Purchase', payment: 'Payment', customer: 'Customer', vendor: 'Vendor', item: 'Item', account: 'Account' }[entity];
       if (!cap) return badRequest('unsupported entity: ' + entity);
       let payload;
       if (entity === 'invoice') {
@@ -3513,6 +3513,19 @@ app.http('qbo-write', {
         if (!f.vendorId || !lines.length) return badRequest('vendor and at least one line required');
         payload = { VendorRef: { value: String(f.vendorId) }, Line: lines };
         if (f.txnDate) payload.TxnDate = f.txnDate; if (f.dueDate) payload.DueDate = f.dueDate;
+      } else if (entity === 'purchase') {
+        // A Purchase is money ALREADY SPENT (cash/check/card) — booked straight to an
+        // expense, paid FROM a bank/credit-card account. Unlike a Bill it creates no
+        // A/P liability, which is the correct treatment for a paid point-of-sale receipt.
+        const lines = (f.lines || []).filter(l => l && (l.amount || l.accountId)).map(l => ({
+          DetailType: 'AccountBasedExpenseLineDetail', Amount: Number(l.amount) || 0, Description: l.desc || undefined,
+          AccountBasedExpenseLineDetail: { AccountRef: { value: String(l.accountId) } }
+        }));
+        if (!f.paymentAccountId || !lines.length) return badRequest('payment account and at least one line required');
+        const payType = ['Cash', 'Check', 'CreditCard'].includes(String(f.paymentType)) ? String(f.paymentType) : 'Cash';
+        payload = { PaymentType: payType, AccountRef: { value: String(f.paymentAccountId) }, Line: lines };
+        if (f.vendorId) payload.EntityRef = { value: String(f.vendorId), type: 'Vendor' };
+        if (f.txnDate) payload.TxnDate = f.txnDate;
       } else if (entity === 'payment') {
         if (!f.customerId || !f.totalAmt) return badRequest('customer and amount required');
         payload = { CustomerRef: { value: String(f.customerId) }, TotalAmt: Number(f.totalAmt) || 0 };
