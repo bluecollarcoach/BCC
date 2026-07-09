@@ -45,7 +45,7 @@ const ADMIN_KEYS      = new Set(['bcc-admin-config-v1']); // writable only by us
 // tokens (bcc-qbo-company-*, bcc-clientdrive-*), per-client mailbox config, and
 // server-only time. The generic /api/data path must NEVER create, overwrite, or
 // delete these (they each have an admin/allow-list-gated endpoint of their own).
-const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-emailmeta-', 'bcc-financial-period-', 'bcc-usernotif-', 'bcc-feedback-', 'bcc-errorlog-'];
+const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-bkentry-', 'bcc-emailmeta-', 'bcc-financial-period-', 'bcc-usernotif-', 'bcc-feedback-', 'bcc-errorlog-'];
 // Sentinel allowedUserUpns value meaning "admins only" — a non-matching UPN, so
 // every existing access check (allow.length && who not in allow → deny) denies
 // non-admins automatically, while admins bypass the allow-list. New companies
@@ -309,7 +309,7 @@ app.http('data', {
           if (!isPcKey(key)) return badRequest('invalid key');
           // These are access-scoped / server-owned — never serve them by direct
           // key (financials, per-user notifications, feedback have their own APIs).
-          if (/^bcc-(financial-period|usernotif|feedback|errorlog)-/.test(String(key))) return { jsonBody: { key, data: null } };
+          if (/^bcc-(financial-period|usernotif|feedback|errorlog|bkentry)-/.test(String(key))) return { jsonBody: { key, data: null } };
           // Integration docs hold OAuth client secrets / tokens — redact for non-admins.
           const keyRedact = key.startsWith('bcc-integration-') && !(await isAppAdmin(p));
           try {
@@ -327,7 +327,7 @@ app.http('data', {
           // financial-period is excluded by ID PREFIX (not docType) — legacy docs
           // pushed via /api/data nest docType under .data, so a docType filter
           // would miss them and leak client books. Served only via qbo-periods.
-          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "client-drive"))',
+          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND NOT STARTSWITH(c.id, "bcc-bkentry-") AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "bk-entry" AND c.docType != "client-drive"))',
           parameters: [{ name: '@t', value: BCC_TENANT_ID }]
         };
         const { resources } = await c.items.query(q).fetchAll();
@@ -1340,23 +1340,120 @@ app.http('bookkeeping-time-report', {
       const from = u.searchParams.get('from') || '0000-00-00';
       const to = u.searchParams.get('to') || '9999-99-99';
       const c = container();
-      const { resources } = await c.items.query({
-        query: 'SELECT c.userUpn, c.userName, c.realmId, c.companyName, c.day, c.seconds FROM c WHERE c.tenantId=@t AND c.docType="bk-time" AND c.day>=@f AND c.day<=@to',
-        parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@f', value: from }, { name: '@to', value: to }]
-      }).fetchAll();
+      // Two independent signals, kept separate so admins can tell them apart:
+      //   seconds       = passive AUTO-tracked active time (bk-time docs)
+      //   loggedSeconds = explicit MANUAL/punch entries a bookkeeper logged (bk-entry, minutes)
+      const [autoRes, logRes] = await Promise.all([
+        c.items.query({
+          query: 'SELECT c.userUpn, c.userName, c.realmId, c.companyName, c.day, c.seconds FROM c WHERE c.tenantId=@t AND c.docType="bk-time" AND c.day>=@f AND c.day<=@to',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@f', value: from }, { name: '@to', value: to }]
+        }).fetchAll(),
+        c.items.query({
+          query: 'SELECT c.userUpn, c.userName, c.realmId, c.companyName, c.day, c.minutes FROM c WHERE c.tenantId=@t AND c.docType="bk-entry" AND c.day>=@f AND c.day<=@to',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@f', value: from }, { name: '@to', value: to }]
+        }).fetchAll()
+      ]);
       const byCompany = {}, byUser = {};
-      for (const r of resources) {
-        const s = r.seconds || 0;
-        const cc = byCompany[r.realmId] || (byCompany[r.realmId] = { realmId: r.realmId, companyName: r.companyName || r.realmId, seconds: 0, users: {} });
-        cc.seconds += s; cc.users[r.userUpn] = (cc.users[r.userUpn] || 0) + s;
+      const bump = (r, secs, field) => {
+        const cc = byCompany[r.realmId] || (byCompany[r.realmId] = { realmId: r.realmId, companyName: r.companyName || r.realmId, seconds: 0, loggedSeconds: 0, users: {} });
+        cc[field] += secs;
+        const cu = cc.users[r.userUpn] || (cc.users[r.userUpn] = { seconds: 0, loggedSeconds: 0 });
+        cu[field] += secs;
         if (r.companyName) cc.companyName = r.companyName;
-        const uu = byUser[r.userUpn] || (byUser[r.userUpn] = { userUpn: r.userUpn, userName: r.userName || r.userUpn, seconds: 0 });
-        uu.seconds += s; if (r.userName) uu.userName = r.userName;
-      }
-      const companies = Object.keys(byCompany).map(k => { const x = byCompany[k]; return { realmId: x.realmId, companyName: x.companyName, seconds: x.seconds, users: Object.keys(x.users).map(u2 => ({ userUpn: u2, seconds: x.users[u2] })).sort((a, b) => b.seconds - a.seconds) }; }).sort((a, b) => b.seconds - a.seconds);
-      const users = Object.keys(byUser).map(k => byUser[k]).sort((a, b) => b.seconds - a.seconds);
+        const uu = byUser[r.userUpn] || (byUser[r.userUpn] = { userUpn: r.userUpn, userName: r.userName || r.userUpn, seconds: 0, loggedSeconds: 0 });
+        uu[field] += secs; if (r.userName) uu.userName = r.userName;
+      };
+      for (const r of autoRes.resources) bump(r, r.seconds || 0, 'seconds');
+      for (const r of logRes.resources) bump(r, Math.round((r.minutes || 0) * 60), 'loggedSeconds');
+      const companies = Object.keys(byCompany).map(k => { const x = byCompany[k]; return { realmId: x.realmId, companyName: x.companyName, seconds: x.seconds, loggedSeconds: x.loggedSeconds, users: Object.keys(x.users).map(u2 => ({ userUpn: u2, seconds: x.users[u2].seconds, loggedSeconds: x.users[u2].loggedSeconds })).sort((a, b) => (b.seconds + b.loggedSeconds) - (a.seconds + a.loggedSeconds)) }; }).sort((a, b) => (b.seconds + b.loggedSeconds) - (a.seconds + a.loggedSeconds));
+      const users = Object.keys(byUser).map(k => byUser[k]).sort((a, b) => (b.seconds + b.loggedSeconds) - (a.seconds + a.loggedSeconds));
       return { jsonBody: { ok: true, from, to, companies, users } };
     } catch (err) { context.error('bookkeeping-time-report', err); return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } }; }
+  })
+});
+
+/**
+ * /api/bookkeeping/entry  — server-persisted MANUAL time entries (and manual
+ * punch-clock stops). Distinct from the passive auto-tracker (bk-time docs): these
+ * are explicit, billable time a bookkeeper logs against a client. Stored as
+ * bcc-bkentry-* docs so they (a) survive a browser/device change and show in the
+ * client Time tab, and (b) roll up into Admin → Bookkeeping time as "logged".
+ *   POST                     — create an entry {realmId, companyName, minutes, day, note, source, start, end}
+ *   GET  ?realmId=<realm>    — list entries for a client the caller can access
+ *   DELETE /{id}             — delete own entry (admins can delete anyone's)
+ */
+app.http('bookkeeping-entry', {
+  methods: ['GET', 'POST', 'DELETE'],
+  authLevel: 'anonymous',
+  route: 'bookkeeping/entry/{id?}',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const who = String(p.userDetails || p.userId || '').toLowerCase();
+    const admin = await isAppAdmin(p);
+    const c = container();
+    const chicagoToday = () => { try { return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' }); } catch (e) { return new Date().toISOString().slice(0, 10); } };
+    try {
+      if (request.method === 'GET') {
+        const realmId = String(new URL(request.url).searchParams.get('realmId') || '');
+        if (!realmId) return { status: 400, jsonBody: { ok: false, error: 'realmId required' } };
+        const acc = await driveClientAccess(p, realmId);
+        if (acc.err) return acc.err;
+        const { resources } = await c.items.query({
+          query: 'SELECT c.id, c.realmId, c.companyName, c.userUpn, c.userName, c.day, c.minutes, c.note, c.source, c.start, c["end"], c.createdAt FROM c WHERE c.tenantId=@t AND c.docType="bk-entry" AND c.realmId=@r',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@r', value: realmId }]
+        }).fetchAll();
+        resources.sort((a, b) => String(b.start || b.day || '').localeCompare(String(a.start || a.day || '')));
+        return { jsonBody: { ok: true, entries: resources } };
+      }
+
+      if (request.method === 'DELETE') {
+        const id = request.params.id;
+        if (!id || !/^bcc-bkentry-[A-Za-z0-9._@-]+$/.test(id)) return { status: 400, jsonBody: { ok: false, error: 'bad id' } };
+        const existing = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+        if (!existing || existing.docType !== 'bk-entry') return { jsonBody: { ok: true, deleted: 0 } };
+        if (!admin && String(existing.userUpn || '').toLowerCase() !== who) return { status: 403, jsonBody: { ok: false, error: 'not your entry' } };
+        await c.item(id, BCC_TENANT_ID).delete().catch(() => {});
+        return { jsonBody: { ok: true, deleted: 1 } };
+      }
+
+      // POST — only bookkeepers + admins can log billable time.
+      const cfg = await getAdminCfg();
+      const rec = (cfg && Array.isArray(cfg.users) ? cfg.users : []).find(u =>
+        (u.upn || '').toLowerCase() === who || (u.email || '').toLowerCase() === who);
+      if (!admin && !(rec && rec.landingPage === 'bookkeeping.html')) return { status: 403, jsonBody: { ok: false, error: 'not a bookkeeper' } };
+
+      const b = await request.json().catch(() => ({}));
+      const realmId = String(b.realmId || ''); if (!realmId) return { status: 400, jsonBody: { ok: false, error: 'realmId required' } };
+      const acc = await driveClientAccess(p, realmId);
+      if (acc.err) return acc.err;
+
+      let minutes = Math.round(Number(b.minutes) || 0);
+      if (!(minutes > 0)) return { status: 400, jsonBody: { ok: false, error: 'minutes required' } };
+      if (minutes > 16 * 60) minutes = 16 * 60; // sane per-entry ceiling (anti-inflation)
+
+      // Validate the day: YYYY-MM-DD, never in the future (Central), default today.
+      const today = chicagoToday();
+      let day = String(b.day || '').slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) day = today;
+      if (day > today) day = today;
+
+      const source = b.source === 'punch' ? 'punch' : 'manual';
+      const name = p.userDetails || who;
+      const eid = 'bcc-bkentry-' + sanitizeUpn(who) + '-' + realmId + '-' + crypto.randomUUID();
+      const doc = {
+        id: eid, tenantId: BCC_TENANT_ID, docType: 'bk-entry',
+        realmId, companyName: String(b.companyName || (acc.comp && acc.comp.companyName) || ''),
+        userUpn: who, userName: name, day, minutes,
+        note: String(b.note || '').slice(0, 500), source,
+        start: (typeof b.start === 'string' && b.start) ? b.start.slice(0, 40) : (day + 'T12:00:00.000Z'),
+        end: (typeof b.end === 'string' && b.end) ? b.end.slice(0, 40) : null,
+        createdAt: new Date().toISOString()
+      };
+      await c.items.create(doc);
+      return { jsonBody: { ok: true, entry: doc } };
+    } catch (err) { context.error('bookkeeping-entry', err); return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } }; }
   })
 });
 
