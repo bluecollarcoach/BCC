@@ -1101,40 +1101,6 @@ app.http('feedback', {
   })
 });
 
-// TEMP (CRON_SECRET-gated): read + resolve feedback headless (no admin session available
-// from the assistant). GET lists; POST {id,status,note} sets status and, on newly-resolved,
-// notifies the submitter with `note` as the message. Remove after use.
-app.http('cron-feedback', {
-  methods: ['GET', 'POST'],
-  authLevel: 'anonymous',
-  route: 'cron/feedback',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad secret' } };
-    const c = container();
-    try {
-      if (request.method === 'GET') {
-        const { resources } = await c.items.query({ query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC', parameters: [{ name: '@t', value: BCC_TENANT_ID }] }).fetchAll();
-        return { jsonBody: { ok: true, feedback: resources } };
-      }
-      const b = await request.json().catch(() => ({}));
-      const id = String(b.id || ''); if (id.indexOf('bcc-feedback-') !== 0) return { status: 400, jsonBody: { ok: false, error: 'bad id' } };
-      const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-      if (!doc) return { status: 404, jsonBody: { ok: false, error: 'not found' } };
-      const st = String(b.status || 'resolved').toLowerCase();
-      if (['new', 'reviewed', 'resolved'].indexOf(st) < 0) return { status: 400, jsonBody: { ok: false, error: 'bad status' } };
-      const wasResolved = doc.status === 'resolved';
-      doc.status = st; doc.reviewedBy = 'claude (assistant)'; doc.updatedAt = new Date().toISOString();
-      await c.items.upsert(doc);
-      if (st === 'resolved' && !wasResolved && doc.userUpn) {
-        const msg = String(b.note || doc.message || '');
-        await notifyUser(c, doc.userUpn, { title: '✅ Your feedback was addressed', body: (msg.length > 180 ? msg.slice(0, 180) + '…' : msg), url: doc.page || '/', tag: 'fbdone-' + doc.id });
-      }
-      return { jsonBody: { ok: true, id: doc.id, status: doc.status, notified: (st === 'resolved' && !wasResolved && !!doc.userUpn) } };
-    } catch (e) { context.error('cron-feedback', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
-  }
-});
-
 /**
  * In-app notifications (bell), per-user.
  *   GET  /api/notifications   — the caller's unread notifications.
