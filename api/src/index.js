@@ -45,7 +45,7 @@ const ADMIN_KEYS      = new Set(['bcc-admin-config-v1']); // writable only by us
 // tokens (bcc-qbo-company-*, bcc-clientdrive-*), per-client mailbox config, and
 // server-only time. The generic /api/data path must NEVER create, overwrite, or
 // delete these (they each have an admin/allow-list-gated endpoint of their own).
-const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-bkentry-', 'bcc-emailmeta-', 'bcc-financial-period-', 'bcc-usernotif-', 'bcc-feedback-', 'bcc-errorlog-'];
+const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-bkentry-', 'bcc-emailmeta-', 'bcc-financial-period-', 'bcc-usernotif-', 'bcc-feedback-', 'bcc-errorlog-', 'bcc-report-'];
 // Sentinel allowedUserUpns value meaning "admins only" — a non-matching UPN, so
 // every existing access check (allow.length && who not in allow → deny) denies
 // non-admins automatically, while admins bypass the allow-list. New companies
@@ -334,7 +334,7 @@ app.http('data', {
           if (!isPcKey(key)) return badRequest('invalid key');
           // These are access-scoped / server-owned — never serve them by direct
           // key (financials, per-user notifications, feedback have their own APIs).
-          if (/^bcc-(financial-period|usernotif|feedback|errorlog|bkentry)-/.test(String(key))) return { jsonBody: { key, data: null } };
+          if (/^bcc-(financial-period|usernotif|feedback|errorlog|bkentry|report)-/.test(String(key))) return { jsonBody: { key, data: null } };
           // Integration docs hold OAuth client secrets / tokens — redact for non-admins.
           const keyRedact = key.startsWith('bcc-integration-') && !(await isAppAdmin(p));
           try {
@@ -352,7 +352,7 @@ app.http('data', {
           // financial-period is excluded by ID PREFIX (not docType) — legacy docs
           // pushed via /api/data nest docType under .data, so a docType filter
           // would miss them and leak client books. Served only via qbo-periods.
-          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND NOT STARTSWITH(c.id, "bcc-bkentry-") AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "bk-entry" AND c.docType != "client-drive"))',
+          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND NOT STARTSWITH(c.id, "bcc-bkentry-") AND NOT STARTSWITH(c.id, "bcc-report-") AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "bk-entry" AND c.docType != "monthly-report" AND c.docType != "client-drive"))',
           parameters: [{ name: '@t', value: BCC_TENANT_ID }]
         };
         const { resources } = await c.items.query(q).fetchAll();
@@ -1520,7 +1520,7 @@ function signOAuthState(obj) {
   const sig = crypto.createHmac('sha256', driveStateSecret()).update(body).digest('base64url').slice(0, 24);
   return body + '.' + sig;
 }
-function verifyOAuthState(state) {
+function verifyOAuthState(state, channel) {
   try {
     const s = String(state || ''); const i = s.lastIndexOf('.');
     if (i < 1) return null;
@@ -1529,6 +1529,10 @@ function verifyOAuthState(state) {
     if (!sig || sig.length !== expect.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expect))) return null;
     const obj = JSON.parse(Buffer.from(body, 'base64url').toString());
     if (!obj || !obj.t || (Date.now() - Number(obj.t)) > 15 * 60 * 1000) return null;
+    // Channel binding: a state minted for one provider must not be replayable into
+    // another provider's callback (e.g. a non-admin qbo/msgraph-connect state injected
+    // into a marketing callback). When a channel is expected, it must match exactly.
+    if (channel && obj.ch !== channel) return null;
     return obj;
   } catch (e) { return null; }
 }
@@ -1554,7 +1558,7 @@ async function driveClientAccess(p, realmId) {
 // download, or delete it. Non-client documents (the shared Documents module, CRM) stay
 // team-visible. Returns an async predicate that caches the per-realm access decision so
 // filtering a list doesn't re-check the same client repeatedly.
-function docFolderRealm(meta) { return (/^\/clients\/([^/]+)/.exec(String((meta && meta.folder) || '')) || [])[1] || null; }
+function docFolderRealm(meta) { return (/^\/clients\/([^/]+)/i.exec(String((meta && meta.folder) || '')) || [])[1] || null; }
 async function docAccessFilter(p) {
   const admin = await isAppAdmin(p);
   const cache = new Map(); // realm -> boolean
@@ -2496,8 +2500,8 @@ app.http('msgraph-connect', {
     const tenantId = process.env.AZURE_TENANT_ID;
     const origin = publicOrigin(request);
     const redirectUri = origin + '/api/integrations/msgraph/callback';
-    // Signed state binds the saved token to the user who started the flow.
-    const state = signOAuthState({ upn: p.userDetails || p.userId, t: Date.now() });
+    // Signed state binds the saved token to the user who started the flow + the channel.
+    const state = signOAuthState({ ch: 'msgraph', upn: p.userDetails || p.userId, t: Date.now() });
     const authUrl = msGraphTenantAuthUrl(tenantId) + '/oauth2/v2.0/authorize?' + new URLSearchParams({
       client_id: clientId,
       response_type: 'code',
@@ -2527,7 +2531,7 @@ app.http('msgraph-callback', {
       // Require a valid HMAC-signed state; bind the saved token to the UPN carried
       // in that tamper-proof state (an attacker can no longer choose the UPN). The
       // principal cookie is enforced only when present on the redirect.
-      const st = verifyOAuthState(state);
+      const st = verifyOAuthState(state, 'msgraph');
       if (!st || !st.upn) {
         return { status: 302, headers: { Location: '/admin.html?msgraph=error&detail=' + encodeURIComponent('invalid or expired sign-in — start the connect again') } };
       }
@@ -3018,7 +3022,7 @@ app.http('qbo-connect', {
       const origin = publicOrigin(request);
       const redirectUri = origin + '/api/integrations/qbo/callback';
       const env = fields.environment === 'production' ? 'production' : 'sandbox';
-      const state = signOAuthState({ upn: p.userDetails || p.userId, env, t: Date.now() });
+      const state = signOAuthState({ ch: 'qbo', upn: p.userDetails || p.userId, env, t: Date.now() });
       const authUrl = 'https://appcenter.intuit.com/connect/oauth2?' + new URLSearchParams({
         client_id: fields.clientId,
         response_type: 'code',
@@ -3064,7 +3068,7 @@ app.http('qbo-callback', {
     // 15 min; carries the firm UPN that started the connect). The principal cookie
     // may or may not ride along on the Intuit redirect, so we enforce it only when
     // present rather than hard-failing a known-good flow.
-    const st = verifyOAuthState(state);
+    const st = verifyOAuthState(state, 'qbo');
     if (!st || !st.upn) return { status: 302, headers: { Location: '/bookkeeping.html?qbo=error&detail=' + encodeURIComponent('invalid or expired sign-in — start the connect again') } };
     if (p && (!domainAllowed(p) || String(st.upn).toLowerCase() !== String(p.userDetails || p.userId || '').toLowerCase())) {
       return { status: 302, headers: { Location: '/bookkeeping.html?qbo=error&detail=' + encodeURIComponent('sign-in mismatch — start the connect again') } };
@@ -3332,6 +3336,25 @@ function findByGroup(flat, group) {
 function findByLabel(flat, rx) {
   const r = (flat.rows || []).find(x => rx.test(String(x.label || '')));
   return r ? reportNum((r.cells || [])[r.cells.length - 1]) : null;
+}
+// Sum every DATA row whose label matches (e.g. multiple "Line of Credit (…)" accounts).
+// Excludes summary rows so a section total isn't double-counted with its sub-lines.
+function sumDataByLabel(flat, rx) {
+  return (flat.rows || []).filter(x => x.type === 'data' && rx.test(String(x.label || '')))
+    .reduce((s, x) => s + reportNum((x.cells || [])[x.cells.length - 1]), 0);
+}
+// Individual non-zero DATA lines whose section group matches (e.g. the specific
+// long-term-debt accounts: "SBA Loan", "Mortgage", "Equipment Loan").
+function linesByGroupRx(flat, rx, limit) {
+  const out = [];
+  for (const x of (flat.rows || [])) {
+    if (x.type !== 'data' || !rx.test(String(x.group || ''))) continue;
+    const amt = reportNum((x.cells || [])[x.cells.length - 1]);
+    if (Math.abs(amt) < 0.005) continue;
+    out.push({ label: String(x.label || '').trim(), amount: amt });
+    if (limit && out.length >= limit) break;
+  }
+  return out;
 }
 
 app.http('qbo-report', {
@@ -4055,6 +4078,187 @@ app.http('qbo-kpis', {
 });
 
 /**
+ * /api/integrations/qbo/companies/{realmId}/monthly-report
+ *   GET ?period=YYYY-MM&method=accrual — the full dataset for the branded monthly report:
+ *     company + period, computed KPIs (with prior-month comparison + YTD), the five
+ *     statements (P&L, Balance Sheet, Cash Flow, A/R & A/P aging detail), and the saved
+ *     Blue Collar Coach observations. Default period = the latest COMPLETE month.
+ *   POST { period, observations:[...] } — save the observations narrative for that month.
+ * Access-scoped (qboResolveAccess): an assigned bookkeeper can generate their client's
+ * report. The KPI set + observations are the same on every company's report.
+ */
+const REPORT_CC_APR = 0.20; // credit-card interest estimate (annualized) shown in the KPI note
+app.http('qbo-monthly-report', {
+  methods: ['GET', 'POST'],
+  authLevel: 'anonymous',
+  route: 'integrations/qbo/companies/{realmId}/monthly-report',
+  handler: withAccessLog(async (request, context) => {
+    const realmId = request.params.realmId;
+    const ctx = await qboResolveAccess(request, realmId);
+    if (ctx.err) return ctx.err;
+    const c = container();
+    const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    const iso = (d) => d.toISOString().slice(0, 10);
+    const resolvePeriod = (s) => {
+      const m = String(s || '').match(/^(\d{4})-(\d{2})$/);
+      if (m) return { y: +m[1], mo: Math.max(0, Math.min(11, +m[2] - 1)) };
+      const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); // latest complete month
+      return { y: d.getFullYear(), mo: d.getMonth() };
+    };
+    const docId = (period) => 'bcc-report-' + realmId + '-' + period;
+
+    try {
+      if (request.method === 'POST') {
+        const b = await request.json().catch(() => ({}));
+        const per = resolvePeriod(b.period);
+        const period = per.y + '-' + String(per.mo + 1).padStart(2, '0');
+        const observations = Array.isArray(b.observations)
+          ? b.observations.map(s => String(s || '').slice(0, 600)).filter(Boolean).slice(0, 40) : [];
+        const who = String((ctx.p && (ctx.p.userDetails || ctx.p.userId)) || '').toLowerCase();
+        await c.items.upsert({ id: docId(period), tenantId: BCC_TENANT_ID, docType: 'monthly-report', realmId, period, observations, updatedAt: new Date().toISOString(), updatedBy: who });
+        logAudit('report-save', { user: who, path: '/api/integrations/qbo/companies/' + realmId + '/monthly-report', meta: { realmId, period } });
+        return { jsonBody: { ok: true, period, observations } };
+      }
+
+      const url = new URL(request.url);
+      const method = (url.searchParams.get('method') || 'accrual').toLowerCase() === 'cash' ? 'Cash' : 'Accrual';
+      const per = resolvePeriod(url.searchParams.get('period'));
+      const period = per.y + '-' + String(per.mo + 1).padStart(2, '0');
+      const mStart = new Date(per.y, per.mo, 1), mEnd = new Date(per.y, per.mo + 1, 0);
+      const pmStart = new Date(per.y, per.mo - 1, 1), pmEnd = new Date(per.y, per.mo, 0);
+      const yStart = new Date(per.y, 0, 1);
+      const periodLabel = MONTHS[per.mo] + ' ' + per.y;
+      const priorLabel = MONTHS[(per.mo + 11) % 12] + ' ' + (per.mo === 0 ? per.y - 1 : per.y);
+
+      const plUrl = (a, b) => '/reports/ProfitAndLoss?start_date=' + iso(a) + '&end_date=' + iso(b) + '&accounting_method=' + method;
+      const bsUrl = (d) => '/reports/BalanceSheet?as_of=' + iso(d) + '&accounting_method=' + method;
+      // Two waves of 4 — a burst of 8 to one realm trips QBO's per-realm rate limit.
+      const [plCur, plPrior, plYtd, bsCur] = await Promise.all([
+        ctx.apiGet(plUrl(mStart, mEnd)).then(flattenQboReport),
+        ctx.apiGet(plUrl(pmStart, pmEnd)).then(flattenQboReport).catch(() => null),
+        ctx.apiGet(plUrl(yStart, mEnd)).then(flattenQboReport).catch(() => null),
+        ctx.apiGet(bsUrl(mEnd)).then(flattenQboReport)
+      ]);
+      const [bsPrior, cashFlow, arAging, apAging] = await Promise.all([
+        ctx.apiGet(bsUrl(pmEnd)).then(flattenQboReport).catch(() => null),
+        ctx.apiGet('/reports/CashFlow?start_date=' + iso(mStart) + '&end_date=' + iso(mEnd) + '&accounting_method=' + method).then(flattenQboReport).catch(() => null),
+        ctx.apiGet('/reports/AgedReceivableDetail?report_date=' + iso(mEnd)).then(flattenQboReport).catch(() => null),
+        ctx.apiGet('/reports/AgedPayableDetail?report_date=' + iso(mEnd)).then(flattenQboReport).catch(() => null)
+      ]);
+
+      const plRevenue = (pl) => pl ? ((findByGroup(pl, 'Income') ?? findByLabel(pl, /total income/i)) || 0) : 0;
+      const plCogs = (pl) => pl ? ((findByGroup(pl, 'COGS') ?? findByLabel(pl, /total cost of goods sold|total cogs/i)) || 0) : 0;
+      const plOpex = (pl) => pl ? ((findByGroup(pl, 'Expenses') ?? findByLabel(pl, /total expenses/i)) || 0) : 0;
+      const plNet = (pl) => pl ? ((findByGroup(pl, 'NetIncome') ?? (plRevenue(pl) - plCogs(pl) - plOpex(pl))) || 0) : 0;
+      const revenue = plRevenue(plCur), cogs = plCogs(plCur), opex = plOpex(plCur), netIncome = plNet(plCur);
+      const grossProfit = revenue - cogs;
+
+      const bsCash = (bs) => bs ? ((findByLabel(bs, /total bank accounts?/i) ?? findByLabel(bs, /bank accounts?/i) ?? findByLabel(bs, /checking|savings|cash on hand|^cash$/i)) || 0) : 0;
+      const bsAR = (bs) => bs ? ((findByGroup(bs, 'AR') ?? findByLabel(bs, /total accounts receivable/i) ?? findByLabel(bs, /accounts receivable \(a\/r\)/i)) || 0) : 0;
+      const bsAP = (bs) => bs ? ((findByGroup(bs, 'AP') ?? findByLabel(bs, /total accounts payable/i) ?? findByLabel(bs, /accounts payable \(a\/p\)/i)) || 0) : 0;
+      const bsCC = (bs) => bs ? ((findByGroup(bs, 'CreditCard') ?? findByLabel(bs, /total credit cards?/i)) || 0) : 0;
+      const bsCA = (bs) => bs ? ((findByGroup(bs, 'TotalCurrentAssets') ?? findByLabel(bs, /total current assets/i)) || 0) : 0;
+      const bsCL = (bs) => bs ? ((findByGroup(bs, 'TotalCurrentLiabilities') ?? findByLabel(bs, /total current liabilities/i)) || 0) : 0;
+      const bsLTL = (bs) => bs ? ((findByGroup(bs, 'TotalLongTermLiabilities') ?? findByLabel(bs, /total long.?term liabilities/i)) || 0) : 0;
+      const bsEquity = (bs) => bs ? ((findByGroup(bs, 'TotalEquity') ?? findByLabel(bs, /^total equity$/i)) || 0) : 0;
+      const bsInventory = (bs) => bs ? (findByLabel(bs, /total inventory|^inventory$|inventory asset/i) || 0) : 0;
+      const bsLOC = (bs) => bs ? sumDataByLabel(bs, /line of credit/i) : 0;
+
+      const cash = bsCash(bsCur), ar = bsAR(bsCur), ap = bsAP(bsCur), cc = bsCC(bsCur);
+      const currentAssets = bsCA(bsCur), currentLiabilities = bsCL(bsCur);
+      const monthlyBurn = opex;
+      const monthsOfCash = monthlyBurn > 0 ? Math.round((cash / monthlyBurn) * 10) / 10 : null;
+      const currentRatio = currentLiabilities > 0 ? Math.round((currentAssets / currentLiabilities) * 100) / 100 : null;
+
+      const saved = await c.item(docId(period), BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      const info = ctx.comp || {};
+      return { jsonBody: {
+        ok: true, realmId, method, period, periodLabel, priorLabel,
+        periodEnd: iso(mEnd), preparedOn: new Date().toISOString(),
+        company: { name: info.companyName || realmId, legalName: info.legalName || info.companyName || '' },
+        kpis: {
+          cash, cashPrior: bsCash(bsPrior), monthsOfCash, monthlyBurn,
+          revenue, revenuePrior: plPrior ? plRevenue(plPrior) : null,
+          cogs, grossProfit, grossMargin: revenue ? grossProfit / revenue : null,
+          opex, netIncome, netIncomePrior: plPrior ? plNet(plPrior) : null, netIncomeYtd: plYtd ? plNet(plYtd) : null,
+          ar, arPrior: bsAR(bsPrior), ap, apPrior: bsAP(bsPrior),
+          creditCards: cc, creditCardsPrior: bsCC(bsPrior), ccInterestAnnual: cc > 0 ? Math.round(cc * REPORT_CC_APR) : 0, ccApr: REPORT_CC_APR,
+          lineOfCredit: bsLOC(bsCur), lineOfCreditPrior: bsLOC(bsPrior),
+          longTermDebt: bsLTL(bsCur), longTermDebtPrior: bsLTL(bsPrior),
+          equity: bsEquity(bsCur), equityPrior: bsEquity(bsPrior),
+          currentAssets, currentLiabilities, currentRatio, workingCapital: currentAssets - currentLiabilities,
+          inventory: bsInventory(bsCur), debtLines: linesByGroupRx(bsCur, /longtermliab/i, 6)
+        },
+        statements: { pl: plCur, balanceSheet: bsCur, cashFlow, arAging, apAging },
+        observations: saved && Array.isArray(saved.observations) ? saved.observations : null,
+        observationsUpdatedAt: saved ? saved.updatedAt : null,
+        observationsBy: saved ? saved.updatedBy : null
+      } };
+    } catch (e) {
+      context.error('qbo-monthly-report error', e);
+      return { status: 502, jsonBody: { ok: false, error: String(e.message || e) } };
+    }
+  })
+});
+
+/**
+ * POST /api/integrations/qbo/companies/{realmId}/monthly-report/ai-draft  { kpis, companyName, periodLabel }
+ * Drafts the "Blue Collar Coach Observations" bullets from the computed KPIs (Claude).
+ * The client posts the KPIs it already fetched (no second QBO round-trip); the coach
+ * reviews/edits the draft before saving. Requires ANTHROPIC_API_KEY.
+ */
+app.http('qbo-monthly-report-ai', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'integrations/qbo/companies/{realmId}/monthly-report/ai-draft',
+  handler: withAccessLog(async (request, context) => {
+    const ctx = await qboResolveAccess(request, request.params.realmId);
+    if (ctx.err) return ctx.err;
+    const key = process.env.ANTHROPIC_API_KEY;
+    if (!key) return { jsonBody: { ok: false, needsKey: true, error: 'AI not configured — add ANTHROPIC_API_KEY in the app settings.' } };
+    try {
+      const b = await request.json().catch(() => ({}));
+      const k = b.kpis || {};
+      const companyName = String(b.companyName || (ctx.comp && ctx.comp.companyName) || 'the company').slice(0, 120);
+      const periodLabel = String(b.periodLabel || '').slice(0, 40);
+      const money = (n) => n == null ? 'n/a' : ('$' + Math.round(n).toLocaleString());
+      const vs = (cur, prior, label) => label + ': ' + money(cur) + (prior != null ? (' (prior ' + money(prior) + ')') : '');
+      const f = [];
+      f.push('Revenue: ' + money(k.revenue) + (k.revenuePrior != null ? (' vs ' + money(k.revenuePrior) + ' prior') : ''));
+      f.push('Gross profit: ' + money(k.grossProfit) + (k.grossMargin != null ? (' (' + Math.round(k.grossMargin * 100) + '% margin)') : ''));
+      f.push('Net income this month: ' + money(k.netIncome) + (k.netIncomePrior != null ? (' vs ' + money(k.netIncomePrior) + ' prior') : ''));
+      if (k.netIncomeYtd != null) f.push('Net income YTD: ' + money(k.netIncomeYtd));
+      f.push('Cash on hand: ' + money(k.cash) + (k.cashPrior != null ? (' (prior ' + money(k.cashPrior) + ')') : '') + (k.monthsOfCash != null ? (' — about ' + k.monthsOfCash + ' months of overhead') : ''));
+      if (k.ar) f.push(vs(k.ar, k.arPrior, 'A/R outstanding'));
+      if (k.ap) f.push(vs(k.ap, k.apPrior, 'A/P balance'));
+      if (k.creditCards) f.push(vs(k.creditCards, k.creditCardsPrior, 'Credit card balance') + (k.ccInterestAnnual ? (' — est ~' + money(k.ccInterestAnnual) + '/yr interest') : ''));
+      if (k.lineOfCredit) f.push(vs(k.lineOfCredit, k.lineOfCreditPrior, 'Line of credit'));
+      if (k.longTermDebt) f.push(vs(k.longTermDebt, k.longTermDebtPrior, 'Long-term debt'));
+      (k.debtLines || []).forEach(d => { if (d && d.label) f.push('  - ' + d.label + ': ' + money(d.amount)); });
+      f.push(vs(k.equity, k.equityPrior, 'Total equity'));
+      if (k.currentRatio != null) f.push('Current ratio: ' + k.currentRatio);
+      if (k.inventory) f.push('Inventory: ' + money(k.inventory));
+
+      const tool = { name: 'write_observations', description: 'Return the observation bullets.', input_schema: { type: 'object', properties: { observations: { type: 'array', items: { type: 'string' } } }, required: ['observations'] } };
+      const prompt = 'You are Blue Collar Coach, a bookkeeper/advisor writing the "Observations" for ' + companyName + '\'s ' + periodLabel + ' monthly financial report. '
+        + 'Using ONLY these figures, write 6–9 concise, plain-English bullet points a blue-collar small-business owner would find useful. '
+        + 'Lead with the most important: revenue/margin trend vs prior month, net income (and what drove it), cash position and runway, then notable moves in credit cards / line of credit / long-term debt, A/R and A/P, and equity. '
+        + 'Flag real risks directly (low/critical cash, insolvency/negative equity, rising debt, past-due A/P). Be specific with the numbers; do not invent anything not in the figures. Keep each bullet to one or two sentences.\n\nFigures:\n' + f.join('\n');
+      const model = process.env.AI_MODEL || 'claude-sonnet-4-6';
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST', headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+        body: JSON.stringify({ model, max_tokens: 1500, tools: [tool], tool_choice: { type: 'tool', name: 'write_observations' }, messages: [{ role: 'user', content: prompt }] })
+      });
+      if (!r.ok) { const t = (await r.text().catch(() => '')).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'AI error ' + r.status, detail: t } }; }
+      const j = await r.json();
+      const tu = (j.content || []).find(x => x.type === 'tool_use');
+      const observations = (tu && tu.input && Array.isArray(tu.input.observations)) ? tu.input.observations.map(s => String(s || '').slice(0, 600)).filter(Boolean) : [];
+      return { jsonBody: { ok: true, observations } };
+    } catch (e) { context.error('qbo-monthly-report-ai', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+
+/**
  * GET /api/integrations/qbo/companies/{realmId}/companyinfo
  * The connected company's profile from QuickBooks (legal/display name, email,
  * phone, website, address, fiscal-year end) — used to pre-fill Client info.
@@ -4255,7 +4459,7 @@ app.http('googleads-connect', {
     }
     const origin = publicOrigin(request);
     const redirectUri = origin + '/api/integrations/google-ads/callback';
-    const state = signOAuthState({ upn: p.userDetails || p.userId, t: Date.now() });
+    const state = signOAuthState({ ch: 'google-ads', upn: p.userDetails || p.userId, t: Date.now() });
     const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams({
       client_id: r.fields.clientId,
       response_type: 'code',
@@ -4279,7 +4483,7 @@ app.http('googleads-callback', {
     const err = url.searchParams.get('error');
     if (err) return { status: 302, headers: { Location: '/admin.html?google-ads=' + encodeURIComponent(err) + '#integrations' } };
     if (!code) return { status: 400, jsonBody: { error: 'missing code' } };
-    if (!verifyOAuthState(url.searchParams.get('state'))) return { status: 302, headers: { Location: '/admin.html?google-ads=error&detail=' + encodeURIComponent('security check failed (invalid/expired request) — retry from Admin → Integrations') + '#integrations' } };
+    if (!verifyOAuthState(url.searchParams.get('state'), 'google-ads')) return { status: 302, headers: { Location: '/admin.html?google-ads=error&detail=' + encodeURIComponent('security check failed (invalid/expired request) — retry from Admin → Integrations') + '#integrations' } };
     try {
       const fields = await getIntegrationFields('google-ads');
       const redirectUri = publicOrigin(request) + '/api/integrations/google-ads/callback';
@@ -4321,7 +4525,7 @@ app.http('linkedin-connect', {
     }
     const origin = publicOrigin(request);
     const redirectUri = origin + '/api/integrations/linkedin/callback';
-    const state = signOAuthState({ upn: p.userDetails || p.userId, t: Date.now() });
+    const state = signOAuthState({ ch: 'linkedin', upn: p.userDetails || p.userId, t: Date.now() });
     // r_ads + r_ads_reporting require Marketing Developer Platform access.
     // r_basicprofile/email work for any new app without extra approval.
     const scope = (r.fields.scope || 'r_organization_social r_ads r_ads_reporting r_emailaddress').trim();
@@ -4346,7 +4550,7 @@ app.http('linkedin-callback', {
     const err = url.searchParams.get('error');
     if (err) return { status: 302, headers: { Location: '/admin.html?linkedin=' + encodeURIComponent(err) + '#integrations' } };
     if (!code) return { status: 400, jsonBody: { error: 'missing code' } };
-    if (!verifyOAuthState(url.searchParams.get('state'))) return { status: 302, headers: { Location: '/admin.html?linkedin=error&detail=' + encodeURIComponent('security check failed (invalid/expired request) — retry from Admin → Integrations') + '#integrations' } };
+    if (!verifyOAuthState(url.searchParams.get('state'), 'linkedin')) return { status: 302, headers: { Location: '/admin.html?linkedin=error&detail=' + encodeURIComponent('security check failed (invalid/expired request) — retry from Admin → Integrations') + '#integrations' } };
     try {
       const fields = await getIntegrationFields('linkedin');
       const redirectUri = publicOrigin(request) + '/api/integrations/linkedin/callback';
@@ -4394,7 +4598,7 @@ app.http('meta-connect', {
     }
     const origin = publicOrigin(request);
     const redirectUri = origin + '/api/integrations/meta/callback';
-    const state = signOAuthState({ upn: p.userDetails || p.userId, t: Date.now() });
+    const state = signOAuthState({ ch: 'meta', upn: p.userDetails || p.userId, t: Date.now() });
     const scope = (r.fields.scope || 'ads_read,business_management,read_insights,pages_read_engagement').trim();
     const authUrl = 'https://www.facebook.com/v18.0/dialog/oauth?' + new URLSearchParams({
       client_id: r.fields.clientId,
@@ -4417,7 +4621,7 @@ app.http('meta-callback', {
     const err = url.searchParams.get('error');
     if (err) return { status: 302, headers: { Location: '/admin.html?meta=' + encodeURIComponent(err) + '#integrations' } };
     if (!code) return { status: 400, jsonBody: { error: 'missing code' } };
-    if (!verifyOAuthState(url.searchParams.get('state'))) return { status: 302, headers: { Location: '/admin.html?meta=error&detail=' + encodeURIComponent('security check failed (invalid/expired request) — retry from Admin → Integrations') + '#integrations' } };
+    if (!verifyOAuthState(url.searchParams.get('state'), 'meta')) return { status: 302, headers: { Location: '/admin.html?meta=error&detail=' + encodeURIComponent('security check failed (invalid/expired request) — retry from Admin → Integrations') + '#integrations' } };
     try {
       const fields = await getIntegrationFields('meta');
       const redirectUri = publicOrigin(request) + '/api/integrations/meta/callback';
@@ -4467,7 +4671,7 @@ app.http('mailchimp-connect', {
     }
     const origin = publicOrigin(request);
     const redirectUri = origin + '/api/integrations/mailchimp/callback';
-    const state = signOAuthState({ upn: p.userDetails || p.userId, t: Date.now() });
+    const state = signOAuthState({ ch: 'mailchimp', upn: p.userDetails || p.userId, t: Date.now() });
     const authUrl = 'https://login.mailchimp.com/oauth2/authorize?' + new URLSearchParams({
       response_type: 'code',
       client_id: r.fields.clientId,
@@ -4488,7 +4692,7 @@ app.http('mailchimp-callback', {
     const err = url.searchParams.get('error');
     if (err) return { status: 302, headers: { Location: '/admin.html?mailchimp=' + encodeURIComponent(err) + '#integrations' } };
     if (!code) return { status: 400, jsonBody: { error: 'missing code' } };
-    if (!verifyOAuthState(url.searchParams.get('state'))) return { status: 302, headers: { Location: '/admin.html?mailchimp=error&detail=' + encodeURIComponent('security check failed (invalid/expired request) — retry from Admin → Integrations') + '#integrations' } };
+    if (!verifyOAuthState(url.searchParams.get('state'), 'mailchimp')) return { status: 302, headers: { Location: '/admin.html?mailchimp=error&detail=' + encodeURIComponent('security check failed (invalid/expired request) — retry from Admin → Integrations') + '#integrations' } };
     try {
       const fields = await getIntegrationFields('mailchimp');
       const redirectUri = publicOrigin(request) + '/api/integrations/mailchimp/callback';
@@ -4613,7 +4817,7 @@ app.http('documents-list-create', {
         if (!(await isAppAdmin(p))) {
           // Non-admins may only list a client folder they can access, or a contact's
           // docs. Anything broader (all folders, or /clients/ with no realm) is denied.
-          const m = folder.match(/^\/clients\/([^/]+)(?:\/|$)/);
+          const m = folder.match(/^\/clients\/([^/]+)(?:\/|$)/i);
           if (m) {
             const acc = await driveClientAccess(p, m[1]); if (acc.err) return { status: 403, jsonBody: { error: 'no access to this client' } };
           } else if (!linkedContactId) {
