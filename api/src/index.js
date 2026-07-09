@@ -1101,6 +1101,40 @@ app.http('feedback', {
   })
 });
 
+// TEMP (CRON_SECRET-gated): read + resolve feedback headless (no admin session available
+// from the assistant). GET lists; POST {id,status,note} sets status and, on newly-resolved,
+// notifies the submitter with `note` as the message. Remove after use.
+app.http('cron-feedback', {
+  methods: ['GET', 'POST'],
+  authLevel: 'anonymous',
+  route: 'cron/feedback',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad secret' } };
+    const c = container();
+    try {
+      if (request.method === 'GET') {
+        const { resources } = await c.items.query({ query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC', parameters: [{ name: '@t', value: BCC_TENANT_ID }] }).fetchAll();
+        return { jsonBody: { ok: true, feedback: resources } };
+      }
+      const b = await request.json().catch(() => ({}));
+      const id = String(b.id || ''); if (id.indexOf('bcc-feedback-') !== 0) return { status: 400, jsonBody: { ok: false, error: 'bad id' } };
+      const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      if (!doc) return { status: 404, jsonBody: { ok: false, error: 'not found' } };
+      const st = String(b.status || 'resolved').toLowerCase();
+      if (['new', 'reviewed', 'resolved'].indexOf(st) < 0) return { status: 400, jsonBody: { ok: false, error: 'bad status' } };
+      const wasResolved = doc.status === 'resolved';
+      doc.status = st; doc.reviewedBy = 'claude (assistant)'; doc.updatedAt = new Date().toISOString();
+      await c.items.upsert(doc);
+      if (st === 'resolved' && !wasResolved && doc.userUpn) {
+        const msg = String(b.note || doc.message || '');
+        await notifyUser(c, doc.userUpn, { title: '✅ Your feedback was addressed', body: (msg.length > 180 ? msg.slice(0, 180) + '…' : msg), url: doc.page || '/', tag: 'fbdone-' + doc.id });
+      }
+      return { jsonBody: { ok: true, id: doc.id, status: doc.status, notified: (st === 'resolved' && !wasResolved && !!doc.userUpn) } };
+    } catch (e) { context.error('cron-feedback', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  }
+});
+
 /**
  * In-app notifications (bell), per-user.
  *   GET  /api/notifications   — the caller's unread notifications.
@@ -4150,14 +4184,18 @@ async function assembleMonthlyReport(apiGet, comp, per, method) {
       cash, cashPrior: bsCash(bsPrior), monthsOfCash, monthlyBurn,
       revenue, revenuePrior: plPrior ? plRevenue(plPrior) : null,
       cogs, grossProfit, grossMargin: revenue ? grossProfit / revenue : null,
+      grossMarginPrior: plPrior && plRevenue(plPrior) ? (plRevenue(plPrior) - plCogs(plPrior)) / plRevenue(plPrior) : null,
       opex, netIncome, netIncomePrior: plPrior ? plNet(plPrior) : null, netIncomeYtd: plYtd ? plNet(plYtd) : null,
       ar, arPrior: bsAR(bsPrior), ap, apPrior: bsAP(bsPrior),
       creditCards: cc, creditCardsPrior: bsCC(bsPrior), ccInterestAnnual: cc > 0 ? Math.round(cc * REPORT_CC_APR) : 0, ccApr: REPORT_CC_APR,
       lineOfCredit: bsLOC(bsCur), lineOfCreditPrior: bsLOC(bsPrior),
       longTermDebt: bsLTL(bsCur), longTermDebtPrior: bsLTL(bsPrior),
       equity: bsEquity(bsCur), equityPrior: bsEquity(bsPrior),
-      currentAssets, currentLiabilities, currentRatio, workingCapital: currentAssets - currentLiabilities,
-      inventory: bsInventory(bsCur), debtLines: linesByGroupRx(bsCur, /longtermliab/i, 6)
+      currentAssets, currentLiabilities, currentRatio,
+      currentRatioPrior: bsPrior && bsCL(bsPrior) > 0 ? Math.round((bsCA(bsPrior) / bsCL(bsPrior)) * 100) / 100 : null,
+      workingCapital: currentAssets - currentLiabilities,
+      workingCapitalPrior: bsPrior ? bsCA(bsPrior) - bsCL(bsPrior) : null,
+      inventory: bsInventory(bsCur), inventoryPrior: bsInventory(bsPrior), debtLines: linesByGroupRx(bsCur, /longtermliab/i, 6)
     },
     statements: { pl: plCur, balanceSheet: bsCur, cashFlow, arAging, apAging }
   };
@@ -4186,8 +4224,12 @@ app.http('qbo-monthly-report', {
         const b = await request.json().catch(() => ({}));
         const per = resolvePeriod(b.period);
         const period = per.y + '-' + String(per.mo + 1).padStart(2, '0');
+        // Observations are structured {text, dir, tone}; tolerate legacy plain strings.
         const observations = Array.isArray(b.observations)
-          ? b.observations.map(s => String(s || '').slice(0, 600)).filter(Boolean).slice(0, 40) : [];
+          ? b.observations.slice(0, 40).map(o => (typeof o === 'string')
+              ? { text: o.slice(0, 600), dir: 'flat', tone: 'neutral' }
+              : { text: String((o && o.text) || '').slice(0, 600), dir: ['up', 'down', 'flat'].indexOf(o && o.dir) >= 0 ? o.dir : 'flat', tone: ['good', 'bad', 'neutral'].indexOf(o && o.tone) >= 0 ? o.tone : 'neutral' }
+            ).filter(o => o.text) : [];
         const who = String((ctx.p && (ctx.p.userDetails || ctx.p.userId)) || '').toLowerCase();
         await c.items.upsert({ id: docId(period), tenantId: BCC_TENANT_ID, docType: 'monthly-report', realmId, period, observations, updatedAt: new Date().toISOString(), updatedBy: who });
         logAudit('report-save', { user: who, path: '/api/integrations/qbo/companies/' + realmId + '/monthly-report', meta: { realmId, period } });
@@ -4248,20 +4290,34 @@ app.http('qbo-monthly-report-ai', {
       if (k.currentRatio != null) f.push('Current ratio: ' + k.currentRatio);
       if (k.inventory) f.push('Inventory: ' + money(k.inventory));
 
-      const tool = { name: 'write_observations', description: 'Return the observation bullets.', input_schema: { type: 'object', properties: { observations: { type: 'array', items: { type: 'string' } } }, required: ['observations'] } };
-      const prompt = 'You are Blue Collar Coach, a bookkeeper/advisor writing the "Observations" for ' + companyName + '\'s ' + periodLabel + ' monthly financial report. '
-        + 'Using ONLY these figures, write 6–9 concise, plain-English bullet points a blue-collar small-business owner would find useful. '
-        + 'Lead with the most important: revenue/margin trend vs prior month, net income (and what drove it), cash position and runway, then notable moves in credit cards / line of credit / long-term debt, A/R and A/P, and equity. '
-        + 'Flag real risks directly (low/critical cash, insolvency/negative equity, rising debt, past-due A/P). Be specific with the numbers; do not invent anything not in the figures. Keep each bullet to one or two sentences.\n\nFigures:\n' + f.join('\n');
+      const tool = { name: 'write_observations', description: 'Return the brief observation bullets with a trend + tone each.', input_schema: {
+        type: 'object', properties: { observations: { type: 'array', items: {
+          type: 'object', properties: {
+            text: { type: 'string', description: 'ONE brief observation — a short phrase, max ~12 words, NOT a full sentence. Include the key number.' },
+            dir: { type: 'string', enum: ['up', 'down', 'flat'], description: 'trend vs last month' },
+            tone: { type: 'string', enum: ['good', 'bad', 'neutral'], description: 'is this good, bad, or neutral for the business' }
+          }, required: ['text', 'dir', 'tone']
+        } } }, required: ['observations']
+      } };
+      const prompt = 'You are Blue Collar Coach writing the "Observations" for ' + companyName + '\'s ' + periodLabel + ' report. '
+        + 'Using ONLY these figures, write 5–7 VERY BRIEF bullet observations. Each MUST be a short phrase (max ~12 words), NOT a full sentence — like a headline. Include the key number. '
+        + 'For each bullet set dir (up/down/flat vs last month) and tone (good/bad/neutral for the business). '
+        + 'Order by importance: cash + runway, net income, revenue/margin, then debt (credit cards / line of credit / long-term), A/R, A/P, equity. Flag real risks (low cash, negative equity, rising debt, past-due A/P). '
+        + 'Do not invent anything not in the figures. Examples of the terse style: "Cash down to $11,962 — near-zero runway" (down/bad), "Net loss ($118K), retirement skewed it" (down/bad), "A/P up to $143K" (up/bad), "LOC paid down to $57K" (down/good).\n\nFigures:\n' + f.join('\n');
       const model = process.env.AI_MODEL || 'claude-sonnet-4-6';
       const r = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST', headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-        body: JSON.stringify({ model, max_tokens: 1500, tools: [tool], tool_choice: { type: 'tool', name: 'write_observations' }, messages: [{ role: 'user', content: prompt }] })
+        body: JSON.stringify({ model, max_tokens: 1200, tools: [tool], tool_choice: { type: 'tool', name: 'write_observations' }, messages: [{ role: 'user', content: prompt }] })
       });
       if (!r.ok) { const t = (await r.text().catch(() => '')).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'AI error ' + r.status, detail: t } }; }
       const j = await r.json();
       const tu = (j.content || []).find(x => x.type === 'tool_use');
-      const observations = (tu && tu.input && Array.isArray(tu.input.observations)) ? tu.input.observations.map(s => String(s || '').slice(0, 600)).filter(Boolean) : [];
+      const raw = (tu && tu.input && Array.isArray(tu.input.observations)) ? tu.input.observations : [];
+      const observations = raw.map(o => ({
+        text: String((o && o.text) || '').slice(0, 200),
+        dir: ['up', 'down', 'flat'].indexOf(o && o.dir) >= 0 ? o.dir : 'flat',
+        tone: ['good', 'bad', 'neutral'].indexOf(o && o.tone) >= 0 ? o.tone : 'neutral'
+      })).filter(o => o.text);
       return { jsonBody: { ok: true, observations } };
     } catch (e) { context.error('qbo-monthly-report-ai', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
@@ -4459,7 +4515,9 @@ app.http('qbo-cashflow', {
       const { resources: comps } = await c.items.query({ query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="qbo-company" ORDER BY c.companyName', parameters: [{ name: '@t', value: BCC_TENANT_ID }] }).fetchAll();
       const admin = await isAppAdmin(p);
       const who = String(p.userDetails || p.userId || '').toLowerCase();
+      const wantRealm = String((new URL(request.url)).searchParams.get('realmId') || ''); // one company (e.g. the monthly report)
       const visible = comps.filter(co => {
+        if (wantRealm && String(co.realmId) !== wantRealm) return false;
         if (admin) return true;
         if (co.enabled === false) return false;
         const allow = (co.allowedUserUpns || []).map(u => String(u).toLowerCase());

@@ -1501,26 +1501,49 @@
     return neg ? '(' + s + ')' : s;
   }
   function mrMoney0(n) { if (n == null) return '—'; var neg = n < 0, s = '$' + Math.round(Math.abs(n)).toLocaleString(); return neg ? '(' + s + ')' : s; }
+  // Trend arrows, colored green/amber/red for good/neutral/bad.
+  var MR_TONE = { good: '#1f8a4c', bad: '#c0392b', neutral: '#b7791f' };
+  function mrArrow(dir) { return dir === 'up' ? '▲' : dir === 'down' ? '▼' : dir === 'flat' ? '▶' : ''; }
+  function mrArrowHtml(dir, tone) { return dir ? '<span style="color:' + (MR_TONE[tone] || MR_TONE.neutral) + ';font-weight:bold;">' + mrArrow(dir) + '</span>' : ''; }
+  // dir = which way it moved vs prior; tone = whether that move is good/bad/neutral,
+  // given the KPI's polarity ('up-good', 'up-bad', or 'neutral' when direction alone isn't a verdict).
+  function mrTrend(cur, prior, pol) {
+    if (cur == null || prior == null || pol === 'none') return { dir: '', tone: 'neutral' };
+    var diff = cur - prior, base = Math.abs(prior) > 1 ? Math.abs(prior) : 1;
+    if (Math.abs(diff) / base < 0.02) return { dir: 'flat', tone: 'neutral' };
+    var dir = diff > 0 ? 'up' : 'down';
+    if (pol === 'neutral') return { dir: dir, tone: 'neutral' };
+    var good = (pol === 'up-good') === (dir === 'up');
+    return { dir: dir, tone: good ? 'good' : 'bad' };
+  }
+  function mrCoerceObs(o) {
+    if (typeof o === 'string') return { text: o, dir: '', tone: 'neutral' };
+    return { text: String((o && o.text) || ''), dir: ['up', 'down', 'flat'].indexOf(o && o.dir) >= 0 ? o.dir : '', tone: ['good', 'bad', 'neutral'].indexOf(o && o.tone) >= 0 ? o.tone : 'neutral' };
+  }
   // The KPI set that must appear on every report; conditional lines only when non-zero.
   function mrKpiList(k) {
     var out = [];
-    var cmp = function (cur, prior) { if (prior == null || cur == null) return ''; if (Math.abs(cur - prior) < 0.5) return 'flat'; return (cur > prior ? 'up from ' : 'down from ') + mrMoney0(prior); };
-    out.push({ l: 'Cash on Hand', v: mrMoney0(k.cash), n: [(k.monthsOfCash != null ? ((k.monthsOfCash <= 0 ? '~0' : k.monthsOfCash) + ' mo overhead') : ''), cmp(k.cash, k.cashPrior)].filter(Boolean).join(' · ') });
-    out.push({ l: 'Monthly Net Income', v: mrMoney0(k.netIncome), n: cmp(k.netIncome, k.netIncomePrior) });
-    out.push({ l: 'Revenue', v: mrMoney0(k.revenue), n: cmp(k.revenue, k.revenuePrior) });
-    if (k.grossMargin != null) out.push({ l: 'Gross Margin', v: Math.round(k.grossMargin * 100) + '%', n: '' });
-    if (k.netIncomeYtd != null) out.push({ l: 'Net Income YTD', v: mrMoney0(k.netIncomeYtd), n: '' });
-    if (k.ar) out.push({ l: 'A/R Outstanding', v: mrMoney0(k.ar), n: cmp(k.ar, k.arPrior) });
-    if (k.ap) out.push({ l: 'A/P Balance', v: mrMoney0(k.ap), n: cmp(k.ap, k.apPrior) });
-    if (k.creditCards) out.push({ l: 'Credit Card Balance', v: mrMoney0(k.creditCards), n: cmp(k.creditCards, k.creditCardsPrior) });
-    if (k.ccInterestAnnual) out.push({ l: 'CC Interest (annualized)', v: '~' + mrMoney0(k.ccInterestAnnual) + '/yr', n: 'est ' + Math.round((k.ccApr || 0.2) * 100) + '% APR' });
-    if (k.lineOfCredit) out.push({ l: 'Line of Credit', v: mrMoney0(k.lineOfCredit), n: cmp(k.lineOfCredit, k.lineOfCreditPrior) });
-    if (k.longTermDebt) out.push({ l: 'Long-Term Debt', v: mrMoney0(k.longTermDebt), n: cmp(k.longTermDebt, k.longTermDebtPrior) });
-    (k.debtLines || []).forEach(function (dl) { if (dl && dl.label) out.push({ l: dl.label, v: mrMoney0(dl.amount), n: '' }); });
-    out.push({ l: 'Total Equity', v: mrMoney0(k.equity), n: cmp(k.equity, k.equityPrior) });
-    if (k.currentRatio != null) out.push({ l: 'Current Ratio', v: String(k.currentRatio), n: '' });
-    if (k.inventory) out.push({ l: 'Inventory', v: mrMoney0(k.inventory), n: '' });
-    if (k.workingCapital != null) out.push({ l: 'Working Capital', v: mrMoney0(k.workingCapital), n: '' });
+    var add = function (l, v, customN, cur, prior, pol) {
+      var t = mrTrend(cur, prior, pol);
+      var n = customN || (prior != null && pol !== 'none' ? ('was ' + mrMoney0(prior)) : '');
+      out.push({ l: l, v: v, n: n, dir: t.dir, tone: t.tone });
+    };
+    add('Cash on Hand', mrMoney0(k.cash), (k.monthsOfCash != null ? ((k.monthsOfCash <= 0 ? '~0' : k.monthsOfCash) + ' mo overhead') : ''), k.cash, k.cashPrior, 'up-good');
+    add('Monthly Net Income', mrMoney0(k.netIncome), '', k.netIncome, k.netIncomePrior, 'up-good');
+    add('Revenue', mrMoney0(k.revenue), '', k.revenue, k.revenuePrior, 'up-good');
+    if (k.grossMargin != null) add('Gross Margin', Math.round(k.grossMargin * 100) + '%', (k.grossMarginPrior != null ? ('was ' + Math.round(k.grossMarginPrior * 100) + '%') : ''), k.grossMargin, k.grossMarginPrior, 'up-good');
+    if (k.netIncomeYtd != null) add('Net Income YTD', mrMoney0(k.netIncomeYtd), '', null, null, 'none');
+    if (k.ar) add('A/R Outstanding', mrMoney0(k.ar), '', k.ar, k.arPrior, 'neutral');
+    if (k.ap) add('A/P Balance', mrMoney0(k.ap), '', k.ap, k.apPrior, 'up-bad');
+    if (k.creditCards) add('Credit Card Balance', mrMoney0(k.creditCards), '', k.creditCards, k.creditCardsPrior, 'up-bad');
+    if (k.ccInterestAnnual) add('CC Interest (annualized)', '~' + mrMoney0(k.ccInterestAnnual) + '/yr', 'est ' + Math.round((k.ccApr || 0.2) * 100) + '% APR', null, null, 'none');
+    if (k.lineOfCredit) add('Line of Credit', mrMoney0(k.lineOfCredit), '', k.lineOfCredit, k.lineOfCreditPrior, 'up-bad');
+    if (k.longTermDebt) add('Long-Term Debt', mrMoney0(k.longTermDebt), '', k.longTermDebt, k.longTermDebtPrior, 'up-bad');
+    (k.debtLines || []).forEach(function (dl) { if (dl && dl.label) add(dl.label, mrMoney0(dl.amount), '', null, null, 'none'); });
+    add('Total Equity', mrMoney0(k.equity), '', k.equity, k.equityPrior, 'up-good');
+    if (k.currentRatio != null) add('Current Ratio', String(k.currentRatio), '', k.currentRatio, k.currentRatioPrior, 'up-good');
+    if (k.inventory) add('Inventory', mrMoney0(k.inventory), '', k.inventory, k.inventoryPrior, 'neutral');
+    if (k.workingCapital != null) add('Working Capital', mrMoney0(k.workingCapital), '', k.workingCapital, k.workingCapitalPrior, 'up-good');
     return out;
   }
   function openMonthlyReport() {
@@ -1558,40 +1581,67 @@
   function closeMonthlyReport() { var ov = document.getElementById('mrOverlay'); if (ov) ov.style.display = 'none'; }
   function mrBtns(disabled) { ['mrPrint', 'mrSaveFile', 'mrSaveObs'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = disabled; }); }
   function loadMonthlyReport(period) {
-    _mr.period = period;
+    _mr.period = period; _mr.forecast = null;
     var body = document.getElementById('mrBody'), st = document.getElementById('mrStatus');
-    body.innerHTML = '<div style="color:var(--muted);padding:22px;text-align:center;">Pulling QuickBooks statements &amp; computing KPIs…</div>';
+    body.innerHTML = '<div style="color:var(--muted);padding:22px;text-align:center;">Pulling QuickBooks statements, KPIs &amp; cash-flow forecast…</div>';
     if (st) st.textContent = ''; mrBtns(true);
     var method = (typeof qboRange === 'function' ? qboRange().method : 'accrual');
-    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/monthly-report?period=' + encodeURIComponent(period) + '&method=' + method, { credentials: 'include' })
-      .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
-      .then(function (d) {
-        _mr.data = d; _mr.obs = (d.observations || []).slice();
-        renderMrBody();
-        if (st) st.textContent = d.periodLabel + ' · ' + d.method + ' basis' + (d.observationsUpdatedAt ? ' · notes saved' : '');
-        mrBtns(false);
-      })
-      .catch(function (e) { body.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:12px;">Couldn’t build the report: ' + esc(e.message) + '</div>'; });
+    var base = '/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm);
+    Promise.all([
+      fetch(base + '/monthly-report?period=' + encodeURIComponent(period) + '&method=' + method, { credentials: 'include' })
+        .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); }),
+      // Forward-looking forecast is as-of-today (current open A/R/A/P + run-rate); best-effort.
+      fetch('/api/integrations/qbo/cashflow?realmId=' + encodeURIComponent(currentRealm), { credentials: 'include' })
+        .then(function (r) { return r.ok ? r.json() : { ok: false }; }).catch(function () { return { ok: false }; })
+    ]).then(function (res) {
+      var d = res[0], cf = res[1];
+      _mr.data = d; _mr.obs = (d.observations || []).map(mrCoerceObs);
+      _mr.forecast = (cf && cf.ok && cf.companies && cf.companies[0] && !cf.companies[0].error) ? cf.companies[0] : null;
+      renderMrBody();
+      if (st) st.textContent = d.periodLabel + ' · ' + d.method + ' basis' + (d.observationsUpdatedAt ? ' · notes saved' : '') + (_mr.forecast ? ' · forecast ✓' : '');
+      mrBtns(false);
+    }).catch(function (e) { body.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:12px;">Couldn’t build the report: ' + esc(e.message) + '</div>'; });
   }
+  function mrHdr(t) { return '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--gold-deep,#a8884a);">' + t + '</div>'; }
   function renderMrBody() {
     var d = _mr.data, k = d.kpis || {};
     var kpiHtml = mrKpiList(k).map(function (r) {
-      return '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:5px 0;border-bottom:1px dotted var(--chrome-mute,#e6e5e1);font-size:13px;">' +
-        '<span style="color:var(--muted);">' + esc(r.l) + '</span>' +
-        '<span style="text-align:right;"><strong>' + esc(r.v) + '</strong>' + (r.n ? '<span style="display:block;font-size:10.5px;color:var(--muted);font-weight:400;">' + esc(r.n) + '</span>' : '') + '</span></div>';
+      return '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:5px 0;border-bottom:1px dotted rgba(0,0,0,.08);font-size:13px;">' +
+        '<span style="color:#5a5347;">' + esc(r.l) + '</span>' +
+        '<span style="text-align:right;white-space:nowrap;">' + (r.dir ? mrArrowHtml(r.dir, r.tone) + ' ' : '') + '<strong>' + esc(r.v) + '</strong>' + (r.n ? '<span style="display:block;font-size:10px;color:var(--muted);font-weight:400;">' + esc(r.n) + '</span>' : '') + '</span></div>';
     }).join('');
+    var fc = _mr.forecast;
+    var fcHtml = fc
+      ? '<div style="font-size:12.5px;color:var(--muted);margin:8px 0 14px;">90-day forecast: cash ' + money2(fc.cash) + ' → <strong style="color:' + (fc.projected90 >= fc.cash ? MR_TONE.good : MR_TONE.bad) + ';">' + money2(fc.projected90) + '</strong> &nbsp;(expected collections ' + money2(fc.in90) + ' − scheduled payments ' + money2(fc.out90) + ' + operating run-rate)</div>'
+      : '<div style="font-size:12px;color:var(--muted);margin:8px 0 14px;">90-day cash-flow forecast unavailable for this client (needs open A/R / A/P data).</div>';
     document.getElementById('mrBody').innerHTML =
       '<div style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;font-weight:700;">' + esc(d.company.legalName || d.company.name) + '</div>' +
-      '<div style="color:var(--muted);font-size:12.5px;margin-bottom:14px;">' + esc(d.periodLabel) + ' · includes P&amp;L, Balance Sheet, Cash Flows, A/R &amp; A/P aging detail</div>' +
-      '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--gold-deep,#a8884a);margin-bottom:4px;">Key Financial KPIs</div>' +
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 22px;margin-bottom:16px;">' + kpiHtml + '</div>' +
-      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0 4px;">' +
-        '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--gold-deep,#a8884a);">Blue Collar Coach Observations</div>' +
+      '<div style="color:var(--muted);font-size:12.5px;margin-bottom:14px;">' + esc(d.periodLabel) + ' · P&amp;L, Balance Sheet, Cash Flows, A/R &amp; A/P aging + 90-day forecast</div>' +
+      mrHdr('Key Financial KPIs') +
+      '<div style="border:1.5px solid #c5a55a;border-radius:10px;padding:10px 14px;background:var(--gold-tint,#f7f1e3);margin:5px 0 2px;"><div style="display:grid;grid-template-columns:1fr 1fr;gap:0 20px;">' + kpiHtml + '</div></div>' +
+      fcHtml +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0 6px;">' + mrHdr('Observations (brief bullets)') +
         '<button id="mrAiBtn" type="button" class="btn btn-ghost" style="font-size:12px;min-height:30px;">✨ Draft with AI</button></div>' +
-      '<textarea id="mrObs" rows="9" placeholder="One observation per line — e.g. Cash dropped to $11,962 — near-zero runway; collections critical." style="width:100%;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;padding:10px;font:inherit;font-size:13px;line-height:1.5;resize:vertical;box-sizing:border-box;">' + esc((_mr.obs || []).join('\n')) + '</textarea>' +
-      '<div style="font-size:11px;color:var(--muted);margin-top:4px;">These print at the top of the report. Review the AI draft before sending — it’s your professional judgment, not the model’s.</div>';
-    document.getElementById('mrObs').addEventListener('input', function () { _mr.obs = this.value.split('\n').map(function (s) { return s.trim(); }).filter(Boolean); });
+      '<div id="mrObsList"></div>' +
+      '<div style="font-size:11px;color:var(--muted);margin-top:6px;">Each bullet prints with a colored trend arrow. Click the <strong>arrow</strong> to change direction (▲ up / ▼ down / ▶ flat); click the <strong>dot</strong> to change good&nbsp;/&nbsp;neutral&nbsp;/&nbsp;bad. Review the AI draft — it’s your professional judgment, not the model’s.</div>';
+    renderObsList();
     document.getElementById('mrAiBtn').onclick = aiDraftObservations;
+  }
+  function renderObsList() {
+    var el = document.getElementById('mrObsList'); if (!el) return;
+    var rows = (_mr.obs || []).map(function (o, i) {
+      return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">' +
+        '<button type="button" data-odir="' + i + '" title="Trend direction" style="min-width:34px;min-height:34px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:6px;background:#fff;font-weight:bold;font-size:14px;cursor:pointer;color:' + (MR_TONE[o.tone] || MR_TONE.neutral) + ';">' + (mrArrow(o.dir) || '–') + '</button>' +
+        '<button type="button" data-otone="' + i + '" title="Good / neutral / bad" style="min-width:22px;min-height:34px;border:1px solid rgba(0,0,0,.15);border-radius:6px;cursor:pointer;background:' + (MR_TONE[o.tone] || MR_TONE.neutral) + ';"></button>' +
+        '<input data-otext="' + i + '" value="' + esc(o.text) + '" placeholder="Brief observation…" style="flex:1;min-height:34px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:6px;padding:6px 8px;font:inherit;font-size:13px;box-sizing:border-box;" />' +
+        '<button type="button" data-odel="' + i + '" title="Remove" style="min-width:30px;min-height:34px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:6px;background:#fff;color:var(--muted);cursor:pointer;">×</button></div>';
+    }).join('');
+    el.innerHTML = rows + '<button type="button" id="mrObsAdd" class="btn btn-ghost" style="font-size:12px;min-height:30px;margin-top:2px;">+ Add observation</button>';
+    el.querySelectorAll('[data-odir]').forEach(function (b) { b.onclick = function () { var i = +b.getAttribute('data-odir'), seq = ['up', 'down', 'flat']; _mr.obs[i].dir = seq[(seq.indexOf(_mr.obs[i].dir) + 1) % 3]; renderObsList(); }; });
+    el.querySelectorAll('[data-otone]').forEach(function (b) { b.onclick = function () { var i = +b.getAttribute('data-otone'), seq = ['good', 'neutral', 'bad']; _mr.obs[i].tone = seq[(seq.indexOf(_mr.obs[i].tone) + 1) % 3]; renderObsList(); }; });
+    el.querySelectorAll('[data-otext]').forEach(function (inp) { inp.oninput = function () { _mr.obs[+inp.getAttribute('data-otext')].text = inp.value; }; });
+    el.querySelectorAll('[data-odel]').forEach(function (b) { b.onclick = function () { _mr.obs.splice(+b.getAttribute('data-odel'), 1); renderObsList(); }; });
+    var add = document.getElementById('mrObsAdd'); if (add) add.onclick = function () { _mr.obs.push({ text: '', dir: 'flat', tone: 'neutral' }); renderObsList(); };
   }
   function aiDraftObservations() {
     var d = _mr.data; if (!d) return;
@@ -1602,9 +1652,9 @@
         btn.disabled = false; btn.textContent = ot;
         if (j && j.needsKey) { (window.bccNotify || alert)('AI isn’t configured — an admin must add ANTHROPIC_API_KEY.', 'warn', 7000); return; }
         if (!j || !j.ok || !(j.observations || []).length) { (window.bccNotify || alert)((j && j.error) || 'AI draft failed.', 'error'); return; }
-        _mr.obs = j.observations.slice();
-        var ta = document.getElementById('mrObs'); if (ta) ta.value = _mr.obs.join('\n');
-        if (window.bccNotify) window.bccNotify('Draft ready — review &amp; edit before sending.', 'success');
+        _mr.obs = j.observations.map(mrCoerceObs);
+        renderObsList();
+        if (window.bccNotify) window.bccNotify('Draft ready — review & edit before sending.', 'success');
       })
       .catch(function (e) { btn.disabled = false; btn.textContent = ot; (window.bccNotify || alert)('AI draft failed: ' + e.message, 'error'); });
   }
@@ -1627,10 +1677,26 @@
     }).join('');
     return '<table class="mr-stmt"><thead>' + head + '</thead><tbody>' + body + '</tbody></table>';
   }
+  function mrTrCls(tone) { return 'tr tr-' + (tone === 'good' || tone === 'bad' ? tone : 'neutral'); }
+  function mrForecastSection() {
+    var fc = _mr.forecast; if (!fc) return '';
+    var m = mrMoney;
+    var inf = fc.inflow || [0, 0, 0], outf = fc.outflow || [0, 0, 0], proj = fc.projected || [0, 0, 0], op = fc.opNet || 0;
+    var td = function (v, cls) { return '<td class="num' + (cls ? (' ' + cls) : '') + '">' + (v == null ? '' : v) + '</td>'; };
+    var runCell = td((op >= 0 ? '+' : '−') + m(Math.abs(op)), op >= 0 ? 'pos' : 'neg');
+    var rows =
+      '<tr><td>Expected collections (open A/R)</td>' + td('') + td('+' + m(inf[0]), 'pos') + td('+' + m(inf[1]), 'pos') + td('+' + m(inf[2]), 'pos') + '</tr>' +
+      '<tr><td>Scheduled payments (open A/P)</td>' + td('') + td('(' + m(outf[0]) + ')', 'neg') + td('(' + m(outf[1]) + ')', 'neg') + td('(' + m(outf[2]) + ')', 'neg') + '</tr>' +
+      '<tr><td>Operating run-rate (rev − COGS − overhead)</td>' + td('') + runCell + runCell + runCell + '</tr>' +
+      '<tr class="sum"><td>Projected cash balance</td>' + td(m(fc.cash)) + td(m(proj[0])) + td(m(proj[1])) + td(m(proj[2])) + '</tr>';
+    return '<div class="section"><h2>90-Day Cash Flow Forecast</h2>' +
+      '<table class="mr-stmt fc"><thead><tr><th>Projection</th><th class="num">Now</th><th class="num">+30 days</th><th class="num">+60 days</th><th class="num">+90 days</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '<p class="fcnote">Based on the client’s <strong>current open invoices &amp; bills</strong> (bucketed by due date) plus the trailing-' + (fc.historyMonths || 12) + '-month operating run-rate (avg revenue − COGS − overhead ≈ ' + m(op) + '/mo). A forecast from real receivables/payables — not a guarantee.</p></div>';
+  }
   function monthlyReportDocHtml(d, obs, forPrint) {
     var k = d.kpis || {}, origin = window.location.origin;
-    var kpiTiles = mrKpiList(k).map(function (r) { return '<div class="kpi"><span class="kl">' + escHtml(r.l) + '</span><span class="kv">' + escHtml(r.v) + (r.n ? '<em class="kn">' + escHtml(r.n) + '</em>' : '') + '</span></div>'; }).join('');
-    var obsList = (obs && obs.length) ? ('<ul>' + obs.map(function (o) { return '<li>' + escHtml(o) + '</li>'; }).join('') + '</ul>') : '<p class="muted">No observations recorded for this month.</p>';
+    var kpiTiles = mrKpiList(k).map(function (r) { return '<div class="kpi"><span class="kl">' + escHtml(r.l) + '</span><span class="kv">' + (r.dir ? '<span class="' + mrTrCls(r.tone) + '">' + mrArrow(r.dir) + '</span> ' : '') + escHtml(r.v) + (r.n ? '<em class="kn">' + escHtml(r.n) + '</em>' : '') + '</span></div>'; }).join('');
+    var obsList = (obs && obs.length) ? ('<ul>' + obs.map(function (o) { var oo = mrCoerceObs(o); return '<li>' + (oo.dir ? '<span class="' + mrTrCls(oo.tone) + '">' + mrArrow(oo.dir) + '</span> ' : '') + escHtml(oo.text) + '</li>'; }).join('') + '</ul>') : '<p class="muted">No observations recorded for this month.</p>';
     var prepStr = new Date(d.preparedOn || Date.now()).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
     var stmts = [
       ['Profit &amp; Loss — ' + escHtml(d.periodLabel), d.statements.pl],
@@ -1640,19 +1706,23 @@
       ['A/P Aging Detail — as of ' + escHtml(d.periodEnd), d.statements.apAging]
     ];
     var stmtHtml = stmts.map(function (s) { return '<section class="stmt"><h2>' + s[0] + '</h2>' + mrStmtTable(s[1]) + '</section>'; }).join('');
-    var css = '@page{size:letter;margin:.6in;} *{box-sizing:border-box;} '
-      + 'body{font-family:Georgia,"Times New Roman",serif;color:#23262b;margin:0;font-size:12px;line-height:1.5;} '
-      + '.brand{text-align:center;margin:4px 0 16px;} .brand img{max-height:60px;max-width:250px;} '
-      + '.period{text-align:center;font-size:14px;letter-spacing:.2em;text-transform:uppercase;color:#a8884a;font-weight:bold;margin-bottom:6px;} '
-      + 'h1.cover{text-align:center;font-size:22px;margin:0 0 20px;font-weight:normal;line-height:1.3;} h1.cover span{font-weight:bold;} '
-      + '.section{margin:0 auto 16px;max-width:640px;} '
-      + '.section h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#a8884a;border-bottom:2px solid #c5a55a;padding-bottom:4px;margin:0 0 9px;font-family:Arial,Helvetica,sans-serif;} '
-      + '.obs ul{margin:0;padding-left:20px;} .obs li{margin-bottom:6px;} '
-      + '.kpis{display:grid;grid-template-columns:1fr 1fr;gap:2px 26px;} '
-      + '.kpi{display:flex;justify-content:space-between;align-items:baseline;gap:10px;border-bottom:1px dotted #ddd;padding:4px 0;} '
-      + '.kpi .kl{color:#555;} .kpi .kv{font-weight:bold;font-family:Arial,Helvetica,sans-serif;text-align:right;white-space:nowrap;} '
+    var css = '@page{size:letter;margin:.55in;} *{box-sizing:border-box;} '
+      + 'body{font-family:Georgia,"Times New Roman",serif;color:#23262b;margin:0;font-size:12px;line-height:1.45;} '
+      + '.brand{text-align:center;margin:2px 0 14px;} .brand img{max-height:56px;max-width:240px;} '
+      + '.period{text-align:center;font-size:14px;letter-spacing:.2em;text-transform:uppercase;color:#a8884a;font-weight:bold;margin-bottom:5px;} '
+      + 'h1.cover{text-align:center;font-size:21px;margin:0 0 16px;font-weight:normal;line-height:1.3;} h1.cover span{font-weight:bold;} '
+      + '.section{margin:0 auto 14px;max-width:660px;} '
+      + '.section h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#a8884a;border-bottom:2px solid #c5a55a;padding-bottom:4px;margin:0 0 8px;font-family:Arial,Helvetica,sans-serif;} '
+      + '.tr{font-family:Arial,Helvetica,sans-serif;font-weight:bold;} .tr-good{color:#1f8a4c;} .tr-bad{color:#c0392b;} .tr-neutral{color:#b7791f;} '
+      + '.obs ul{margin:0;padding-left:2px;list-style:none;} .obs li{margin-bottom:5px;padding-left:2px;} '
+      + '.kpibox{border:1.5px solid #c5a55a;border-radius:9px;background:#fdfbf5;padding:8px 16px;} '
+      + '.kpis{display:grid;grid-template-columns:1fr 1fr;gap:1px 30px;} '
+      + '.kpi{display:flex;justify-content:space-between;align-items:baseline;gap:10px;border-bottom:1px dotted rgba(0,0,0,.12);padding:4px 0;} '
+      + '.kpi .kl{color:#5a5347;} .kpi .kv{font-weight:bold;font-family:Arial,Helvetica,sans-serif;text-align:right;white-space:nowrap;} '
       + '.kpi .kn{display:block;font-weight:normal;font-style:normal;color:#6b7077;font-size:9px;} '
-      + '.prepared{text-align:center;color:#6b7077;font-size:11px;margin:22px auto 0;max-width:640px;padding-top:10px;border-top:1px solid #e6e5e1;} '
+      + '.fcnote{color:#6b7077;font-size:9.5px;margin:6px 0 0;} '
+      + 'table.fc td.pos{color:#1f8a4c;} table.fc td.neg{color:#c0392b;} '
+      + '.prepared{text-align:center;color:#6b7077;font-size:11px;margin:20px auto 0;max-width:660px;padding-top:10px;border-top:1px solid #e6e5e1;} '
       + '.stmt{page-break-before:always;padding-top:4px;} '
       + '.stmt h2{font-size:15px;font-family:Arial,Helvetica,sans-serif;color:#23262b;border-bottom:2px solid #c5a55a;padding-bottom:5px;margin:0 0 10px;} '
       + 'table.mr-stmt{width:100%;border-collapse:collapse;font-size:10.5px;font-family:Arial,Helvetica,sans-serif;} '
@@ -1666,7 +1736,8 @@
       '<div class="period">' + escHtml(d.periodLabel) + '</div>' +
       '<h1 class="cover">Monthly Financial Report<br><span>for ' + escHtml(d.company.legalName || d.company.name) + '</span></h1>' +
       '<div class="section obs"><h2>Blue Collar Coach Observations</h2>' + obsList + '</div>' +
-      '<div class="section"><h2>Key Financial KPIs · ' + escHtml(d.periodLabel) + '</h2><div class="kpis">' + kpiTiles + '</div></div>' +
+      '<div class="section"><h2>Key Financial KPIs · ' + escHtml(d.periodLabel) + '</h2><div class="kpibox"><div class="kpis">' + kpiTiles + '</div></div></div>' +
+      mrForecastSection() +
       '<div class="prepared">Prepared ' + escHtml(prepStr) + ' &nbsp;·&nbsp; ' + escHtml(d.method) + ' basis &nbsp;·&nbsp; For management use only</div>' +
       stmtHtml +
       (forPrint ? '<script>window.onload=function(){setTimeout(function(){window.print();},300);}<\/script>' : '') +
