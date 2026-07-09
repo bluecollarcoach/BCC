@@ -4162,45 +4162,6 @@ async function assembleMonthlyReport(apiGet, comp, per, method) {
     statements: { pl: plCur, balanceSheet: bsCur, cashFlow, arAging, apAging }
   };
 }
-// TEMP verification (CRON_SECRET-gated): dump the computed KPIs for one company/month so
-// the report figures can be checked headless against known-good statements. Remove after.
-app.http('cron-report-check', {
-  methods: ['GET', 'POST'],
-  authLevel: 'anonymous',
-  route: 'cron/report-check',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad secret' } };
-    try {
-      const url = new URL(request.url);
-      const realmId = String(url.searchParams.get('realmId') || '');
-      const m = String(url.searchParams.get('period') || '').match(/^(\d{4})-(\d{2})$/);
-      const per = m ? { y: +m[1], mo: +m[2] - 1 } : (function () { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return { y: d.getFullYear(), mo: d.getMonth() }; })();
-      const c = container();
-      const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-      if (!comp) return { status: 404, jsonBody: { ok: false, error: 'no company' } };
-      const fields = await getIntegrationFields('qbo');
-      const { accessToken, base } = await qboAccessForCompany(comp, fields);
-      const apiGet = async (path) => {
-        const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70';
-        const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
-        if (!r.ok) throw new Error('QBO ' + r.status);
-        return r.json();
-      };
-      const data = await assembleMonthlyReport(apiGet, comp, per, 'Accrual');
-      let raw = null;
-      if (String(url.searchParams.get('raw') || '') === '1') {
-        const mStart = new Date(per.y, per.mo, 1), mEnd = new Date(per.y, per.mo + 1, 0);
-        const iso = (d) => d.toISOString().slice(0, 10);
-        const bs = flattenQboReport(await apiGet('/reports/BalanceSheet?as_of=' + iso(mEnd) + '&accounting_method=Accrual'));
-        const pl = flattenQboReport(await apiGet('/reports/ProfitAndLoss?start_date=' + iso(mStart) + '&end_date=' + iso(mEnd) + '&accounting_method=Accrual'));
-        const trim = (rows) => (rows || []).map(r => ({ l: r.label, v: (r.cells || []).slice(-1)[0], g: r.group, t: r.type }));
-        raw = { bs: trim(bs.rows), pl: trim(pl.rows) };
-      }
-      return { jsonBody: { ok: true, company: data.company, period: data.period, kpis: data.kpis, raw } };
-    } catch (e) { context.error('cron-report-check', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
-  }
-});
 app.http('qbo-monthly-report', {
   methods: ['GET', 'POST'],
   authLevel: 'anonymous',
