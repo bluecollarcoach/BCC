@@ -4188,7 +4188,16 @@ app.http('cron-report-check', {
         return r.json();
       };
       const data = await assembleMonthlyReport(apiGet, comp, per, 'Accrual');
-      return { jsonBody: { ok: true, company: data.company, period: data.period, kpis: data.kpis } };
+      let raw = null;
+      if (String(url.searchParams.get('raw') || '') === '1') {
+        const mStart = new Date(per.y, per.mo, 1), mEnd = new Date(per.y, per.mo + 1, 0);
+        const iso = (d) => d.toISOString().slice(0, 10);
+        const bs = flattenQboReport(await apiGet('/reports/BalanceSheet?as_of=' + iso(mEnd) + '&accounting_method=Accrual'));
+        const pl = flattenQboReport(await apiGet('/reports/ProfitAndLoss?start_date=' + iso(mStart) + '&end_date=' + iso(mEnd) + '&accounting_method=Accrual'));
+        const trim = (rows) => (rows || []).map(r => ({ l: r.label, v: (r.cells || []).slice(-1)[0], g: r.group, t: r.type }));
+        raw = { bs: trim(bs.rows), pl: trim(pl.rows) };
+      }
+      return { jsonBody: { ok: true, company: data.company, period: data.period, kpis: data.kpis, raw } };
     } catch (e) { context.error('cron-report-check', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   }
 });
