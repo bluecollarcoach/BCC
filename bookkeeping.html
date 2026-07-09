@@ -462,10 +462,21 @@
         <optgroup label="Financial statements">
           <option value="pl">Profit &amp; Loss</option>
           <option value="balancesheet">Balance Sheet</option>
+          <option value="trial-balance">Trial Balance</option>
+          <option value="general-ledger">General Ledger</option>
+          <option value="cash-flow">Statement of Cash Flows</option>
         </optgroup>
         <optgroup label="Aging">
-          <option value="ar-aging">A/R Aging</option>
-          <option value="ap-aging">A/P Aging</option>
+          <option value="ar-aging">A/R Aging (summary)</option>
+          <option value="ar-aging-detail">A/R Aging (detail)</option>
+          <option value="ap-aging">A/P Aging (summary)</option>
+          <option value="ap-aging-detail">A/P Aging (detail)</option>
+          <option value="customer-balances">Customer balances</option>
+          <option value="vendor-balances">Vendor balances</option>
+        </optgroup>
+        <optgroup label="Sales">
+          <option value="sales-by-customer">Sales by Customer</option>
+          <option value="sales-by-item">Sales by Product/Service</option>
         </optgroup>
         <optgroup label="Transactions">
           <option value="transactions">All transactions</option>
@@ -1338,7 +1349,7 @@
     var sel = document.getElementById('qboReportSel'); if (sel && sel.value !== type) sel.value = type; // keep the dropdown in sync (e.g. on programmatic refresh)
     var rg = qboRange();
     var q = 'type=' + encodeURIComponent(type) + '&method=' + rg.method;
-    var RANGE_TYPES = { pl:1, transactions:1, payments:1, expenses:1, 'all-invoices':1, 'all-bills':1 };
+    var RANGE_TYPES = { pl:1, transactions:1, payments:1, expenses:1, 'all-invoices':1, 'all-bills':1, 'trial-balance':1, 'general-ledger':1, 'cash-flow':1, 'sales-by-customer':1, 'sales-by-item':1 };
     if (RANGE_TYPES[type]) q += '&from=' + rg.from + '&to=' + rg.to;
     else if (type === 'balancesheet') q += '&asOf=' + rg.to;
     var out = document.getElementById('qboReportOut');

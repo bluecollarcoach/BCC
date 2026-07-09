@@ -2055,8 +2055,17 @@ app.http('integrations-qbo-sync', {
   })
 });
 
+// Fetch with an abort timeout so one hung QBO request can't stall the whole sync.
+async function qboFetch(url, opts, ms) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms || 20000);
+  try { return await fetch(url, Object.assign({}, opts, { signal: ctrl.signal })); }
+  finally { clearTimeout(timer); }
+}
+
 // Sync the last 12 months of P&L + Balance Sheet into financial-period docs for
-// each company. Shared by the manual endpoint and the nightly cron job.
+// each company. Shared by the manual endpoint and the nightly cron job. The 12
+// months for a company run CONCURRENTLY (12x faster than the old serial loop).
 async function syncQboCompanies(c, fields, companyDocs, now) {
       const basic = Buffer.from(fields.clientId + ':' + fields.clientSecret).toString('base64');
       const out = [];
@@ -2070,12 +2079,15 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
         const base = env === 'production' ? 'https://quickbooks.api.intuit.com' : 'https://sandbox-quickbooks.api.intuit.com';
 
         // refresh token → access token (per company)
-        const tokR = await fetch('https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer', {
-          method: 'POST',
-          headers: { 'Authorization': 'Basic ' + basic, 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: comp.refreshToken }).toString()
-        });
-        if (!tokR.ok) { out.push({ realmId: comp.realmId, companyName: comp.companyName, error: 'token refresh failed (' + tokR.status + ')' }); continue; }
+        let tokR;
+        try {
+          tokR = await qboFetch('https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer', {
+            method: 'POST',
+            headers: { 'Authorization': 'Basic ' + basic, 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: comp.refreshToken }).toString()
+          });
+        } catch (_) { out.push({ realmId: comp.realmId, companyName: comp.companyName, error: 'token refresh timed out' }); continue; }
+        if (!tokR.ok) { out.push({ realmId: comp.realmId, companyName: comp.companyName, error: 'token refresh failed (' + tokR.status + ')', needsReauth: tokR.status === 400 || tokR.status === 401 }); continue; }
         const tok = await tokR.json();
         const accessToken = tok.access_token;
         if (tok.refresh_token && tok.refresh_token !== comp.refreshToken) {
@@ -2087,26 +2099,23 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
           catch (e) { console.error('qbo-sync refresh-token persist FAILED for realm ' + comp.realmId + ':', e && e.message || e); }
         }
 
-        // last 12 calendar months of P&L
-        const periods = [];
-        const diag = { firstStatus: null, firstBody: null };
-        for (let i = 0; i < 12; i++) {
+        // Fetch all 12 months concurrently (each month = P&L + Balance Sheet), with
+        // a per-request timeout so one hung report can't stall the whole sync.
+        const hdr = { headers: { 'Authorization': 'Bearer ' + accessToken, 'Accept': 'application/json' } };
+        const monthResults = await Promise.all(Array.from({ length: 12 }, async (_, i) => {
           const target = new Date(now.getFullYear(), now.getMonth() - i, 1);
           const startStr = target.toISOString().slice(0, 10);
           const end = new Date(target.getFullYear(), target.getMonth() + 1, 0);
           const endStr = end.toISOString().slice(0, 10);
-          const hdr = { headers: { 'Authorization': 'Bearer ' + accessToken, 'Accept': 'application/json' } };
           const plUrl = base + '/v3/company/' + encodeURIComponent(comp.realmId) + '/reports/ProfitAndLoss?start_date=' + startStr + '&end_date=' + endStr + '&accounting_method=Accrual&minorversion=70';
           const bsUrl = base + '/v3/company/' + encodeURIComponent(comp.realmId) + '/reports/BalanceSheet?as_of=' + endStr + '&accounting_method=Accrual&minorversion=70';
-          // P&L + Balance Sheet fetched concurrently per month (keeps sync time ~flat despite 2x the reports).
-          const [r, br] = await Promise.all([fetch(plUrl, hdr), fetch(bsUrl, hdr).catch(() => null)]);
-          if (i === 0) { diag.firstStatus = r.status; if (!r.ok) diag.firstBody = (await r.text().catch(() => '')).slice(0, 400); }
-          if (!r.ok) continue;
+          let r = null, br = null;
+          try { [r, br] = await Promise.all([qboFetch(plUrl, hdr), qboFetch(bsUrl, hdr).catch(() => null)]); } catch (_) { return { i, status: 0, body: 'timeout' }; }
+          const status = r ? r.status : 0;
+          if (!r || !r.ok) return { i, status, body: r ? (await r.text().catch(() => '')).slice(0, 400) : 'timeout' };
           const j = await r.json().catch(() => null);
-          // Parse the P&L by EXACT QBO group (Income / COGS / Expenses / NetIncome).
-          // The old loose /income/i regex also matched the computed NetIncome and
-          // NetOperatingIncome rows, double-counting them and inflating revenue
-          // (even going negative). This mirrors the qbo-kpis parser.
+          // Parse the P&L by EXACT QBO group (mirrors the qbo-kpis parser; a loose
+          // /income/i also matched the computed NetIncome rows and inflated revenue).
           let income = 0, cogs = 0, opex = 0, net = 0;
           try {
             const pl = flattenQboReport(j);
@@ -2115,8 +2124,6 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
             opex   = (findByGroup(pl, 'Expenses') ?? findByLabel(pl, /total expenses/i)) || 0;
             net    = (findByGroup(pl, 'NetIncome') ?? (income - cogs - opex)) || 0;
           } catch (_) {}
-          // Balance-sheet snapshot as of month-end (fetched above), so cash /
-          // current ratio / working capital have monthly history for the trends.
           let cash = 0, ca = 0, cl = 0, bsOk = false;
           try {
             if (br && br.ok) {
@@ -2131,25 +2138,26 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
           const per = {
             id: 'bcc-financial-period-' + comp.realmId + '-' + periodKey,
             tenantId: BCC_TENANT_ID, docType: 'financial-period',
-            realmId: comp.realmId, companyName: comp.companyName,
-            period: periodKey,
-            revenueCents: Math.round(income * 100),
-            cogsCents: Math.round(cogs * 100),
-            expensesCents: Math.round(opex * 100),
-            netCents: Math.round(net * 100),
+            realmId: comp.realmId, companyName: comp.companyName, period: periodKey,
+            revenueCents: Math.round(income * 100), cogsCents: Math.round(cogs * 100),
+            expensesCents: Math.round(opex * 100), netCents: Math.round(net * 100),
             source: 'qbo', syncedAt: new Date().toISOString()
           };
           // Only record balance-sheet metrics when the BS actually loaded — a failed
-          // fetch must not persist a fake $0 (it corrupts current ratio / working capital).
+          // fetch must not persist a fake $0 (corrupts current ratio / working capital).
           if (bsOk) { per.cashCents = Math.round(cash * 100); per.currentAssetsCents = Math.round(ca * 100); per.currentLiabilitiesCents = Math.round(cl * 100); }
-          periods.push(per);
-        }
-        for (const per of periods) { try { await c.items.upsert(per); } catch (_) {} }
+          return { i, status, per };
+        }));
+        const m0 = monthResults.find(x => x.i === 0) || {};
+        const diag = { firstStatus: m0.status || null, firstBody: (m0.status && m0.status !== 200) ? (m0.body || null) : null };
+        const periods = monthResults.filter(x => x.per).map(x => x.per);
+        const failedMonths = monthResults.filter(x => !x.per).length;
+        await Promise.all(periods.map(per => c.items.upsert(per).catch(() => {})));
         comp.lastSyncAt = new Date().toISOString();
         comp.updatedAt = comp.lastSyncAt;
         try { await c.items.upsert(comp); } catch (_) {}
-        try { await c.items.upsert({ id: 'bcc-qbo-debug-sync', tenantId: BCC_TENANT_ID, docType: 'qbo-debug', at: new Date().toISOString(), realmId: comp.realmId, env, base, periodsBuilt: periods.length, firstStatus: diag.firstStatus, firstBody: diag.firstBody }); } catch (_) {}
-        out.push({ realmId: comp.realmId, companyName: comp.companyName, periodsBuilt: periods.length, firstStatus: diag.firstStatus, firstBody: diag.firstBody, periods });
+        try { await c.items.upsert({ id: 'bcc-qbo-debug-sync-' + comp.realmId, tenantId: BCC_TENANT_ID, docType: 'qbo-debug', at: new Date().toISOString(), realmId: comp.realmId, env, base, periodsBuilt: periods.length, failedMonths, firstStatus: diag.firstStatus, firstBody: diag.firstBody }); } catch (_) {}
+        out.push({ realmId: comp.realmId, companyName: comp.companyName, periodsBuilt: periods.length, partial: failedMonths > 0, firstStatus: diag.firstStatus, firstBody: diag.firstBody, periods });
       }
   return out;
 }
@@ -3219,6 +3227,35 @@ app.http('qbo-report', {
         }
         case 'ar-aging': { data = flattenQboReport(await apiGet('/reports/AgedReceivables')); data.kind = 'report'; break; }
         case 'ap-aging': { data = flattenQboReport(await apiGet('/reports/AgedPayables')); data.kind = 'report'; break; }
+        case 'ar-aging-detail': { data = flattenQboReport(await apiGet('/reports/AgedReceivableDetail')); data.kind = 'report'; break; }
+        case 'ap-aging-detail': { data = flattenQboReport(await apiGet('/reports/AgedPayableDetail')); data.kind = 'report'; break; }
+        case 'trial-balance': {
+          const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
+          data = flattenQboReport(await apiGet('/reports/TrialBalance?start_date=' + from + '&end_date=' + to + '&accounting_method=' + method));
+          data.range = { from, to, method }; data.kind = 'report'; break;
+        }
+        case 'general-ledger': {
+          const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
+          data = flattenQboReport(await apiGet('/reports/GeneralLedger?start_date=' + from + '&end_date=' + to + '&accounting_method=' + method + '&columns=tx_date,txn_type,doc_num,name,memo,split_acc,subt_nat_amount'));
+          data.range = { from, to, method }; data.kind = 'report'; break;
+        }
+        case 'cash-flow': {
+          const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
+          data = flattenQboReport(await apiGet('/reports/CashFlow?start_date=' + from + '&end_date=' + to));
+          data.range = { from, to }; data.kind = 'report'; break;
+        }
+        case 'sales-by-customer': {
+          const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
+          data = flattenQboReport(await apiGet('/reports/CustomerSales?start_date=' + from + '&end_date=' + to + '&accounting_method=' + method));
+          data.range = { from, to, method }; data.kind = 'report'; break;
+        }
+        case 'sales-by-item': {
+          const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
+          data = flattenQboReport(await apiGet('/reports/ItemSales?start_date=' + from + '&end_date=' + to + '&accounting_method=' + method));
+          data.range = { from, to, method }; data.kind = 'report'; break;
+        }
+        case 'customer-balances': { data = flattenQboReport(await apiGet('/reports/CustomerBalance')); data.kind = 'report'; break; }
+        case 'vendor-balances': { data = flattenQboReport(await apiGet('/reports/VendorBalance')); data.kind = 'report'; break; }
         case 'customers': { data = { kind: 'list', items: (await queryAll('SELECT Id, DisplayName, Balance, Active FROM Customer')).map(x => ({ name: x.DisplayName, balance: x.Balance, active: x.Active !== false })) }; break; }
         case 'vendors': { data = { kind: 'list', items: (await queryAll('SELECT Id, DisplayName, Balance, Active FROM Vendor')).map(x => ({ name: x.DisplayName, balance: x.Balance, active: x.Active !== false })) }; break; }
         case 'invoices': { data = { kind: 'list', editable: 'invoice', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, CustomerRef FROM Invoice WHERE Balance > '0'")).map(x => ({ id: x.Id, doc: x.DocNumber, name: x.CustomerRef && x.CustomerRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance })) }; break; }
