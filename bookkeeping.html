@@ -353,7 +353,7 @@
   <div class="kpi-grid" id="finKpi">
     <div class="kpi"><div class="label">Last month revenue</div><div class="value" id="kpiRev">—</div><div id="kpiRevSpark"></div><div class="delta flat" id="kpiRevD">no prior period</div></div>
     <div class="kpi"><div class="label">Last month expenses</div><div class="value" id="kpiExp">—</div><div id="kpiExpSpark"></div><div class="delta flat" id="kpiExpD">no prior period</div></div>
-    <div class="kpi"><div class="label">Net</div><div class="value" id="kpiNet">—</div><div id="kpiNetSpark"></div><div class="delta flat" id="kpiNetD">—</div></div>
+    <div class="kpi"><div class="label">Last month net</div><div class="value" id="kpiNet">—</div><div id="kpiNetSpark"></div><div class="delta flat" id="kpiNetD">—</div></div>
     <div class="kpi"><div class="label">YTD net</div><div class="value" id="kpiYtd">—</div><div id="kpiYtdSpark"></div><div class="delta flat" id="kpiYtdD"></div></div>
   </div>
 
@@ -731,9 +731,9 @@
       setDelta(document.getElementById('kpiNetD'), net>=0?'profitable overall':'net loss', net>=0?'up':'down');
       // YTD net across all companies, current year.
       var year = (new Date()).getFullYear().toString();
-      var yNet=0; allPeriods().forEach(function(p){ if(p.period&&p.period.indexOf(year)===0){ yNet += netOf(p);} });
+      var yNet=0; allPeriods().forEach(function(p){ if(p.period&&p.period.indexOf(year)===0&&!periodInProgress(p.period)){ yNet += netOf(p);} });
       document.getElementById('kpiYtd').textContent = dollars(yNet);
-      setDelta(document.getElementById('kpiYtdD'), year + ' · all companies');
+      setDelta(document.getElementById('kpiYtdD'), year + ' · closed months · all companies');
       return;
     }
     // Single company.
@@ -752,15 +752,18 @@
     dlt(document.getElementById('kpiExpD'), prev?pct(exp, prev.expensesCents):null);
     dlt(document.getElementById('kpiNetD'), prev?pct(net, netOf(prev)):null);
     var year = (new Date()).getFullYear().toString();
-    var ytdNet=0; all.forEach(function(p){ if(p.period&&p.period.indexOf(year)===0){ ytdNet += netOf(p);} });
+    // YTD net through the last CLOSED month ONLY — never the in-progress current month.
+    // Including a partial current month double-dips it and disagrees with the monthly report.
+    var ytdNet=0; closed.forEach(function(p){ if(p.period&&p.period.indexOf(year)===0){ ytdNet += netOf(p);} });
     document.getElementById('kpiYtd').textContent = dollars(ytdNet);
-    setDelta(document.getElementById('kpiYtdD'), year + ' · ' + companyName(currentRealm));
+    var ytdThru = (last && last.period && last.period.indexOf(year)===0) ? (' · through ' + MR_MONTHS[(+last.period.slice(5,7)||1)-1]) : '';
+    setDelta(document.getElementById('kpiYtdD'), year + ytdThru);
     // Trend lines from the last 12 synced months (oldest→newest), with hover values.
     var L = kpiMonths(), fM = function (x) { return money2(x); };
     setSpark('kpiRevSpark', sparkline(kpiSeries(function (p) { return (p.revenueCents || 0) / 100; }), { labels: L, fmt: fM }));
     setSpark('kpiExpSpark', sparkline(kpiSeries(function (p) { return (p.expensesCents || 0) / 100; }), { labels: L, fmt: fM }));
     setSpark('kpiNetSpark', sparkline(kpiSeries(function (p) { return netOf(p) / 100; }), { labels: L, fmt: fM }));
-    var yp = all.slice().sort(function (a, b) { return (a.period || '').localeCompare(b.period || ''); }).filter(function (p) { return p.period && p.period.indexOf(year) === 0; });
+    var yp = all.slice().sort(function (a, b) { return (a.period || '').localeCompare(b.period || ''); }).filter(function (p) { return p.period && p.period.indexOf(year) === 0 && !periodInProgress(p.period); });
     var yrun = 0; setSpark('kpiYtdSpark', sparkline(yp.map(function (p) { yrun += netOf(p) / 100; return yrun; }), { labels: yp.map(function (p) { return p.period; }), fmt: fM }));
   }
 
@@ -1401,9 +1404,10 @@
       tp.style.top = Math.max(4, e.clientY - 30) + 'px';
     } else if (_sparkTip) { _sparkTip.style.display = 'none'; }
   }, { passive: true });
-  // Last-12-months series for one company, oldest→newest, mapped by fn(period).
+  // Last-12 CLOSED months for one company, oldest→newest, mapped by fn(period).
+  // Excludes the in-progress current month so trends/KPIs reflect completed periods only.
   function kpiSeries(fn) {
-    return periodsFor(currentRealm).slice().sort(function (a, b) { return (a.period || '').localeCompare(b.period || ''); }).slice(-12).map(fn);
+    return periodsFor(currentRealm).slice().filter(function (p) { return !periodInProgress(p.period); }).sort(function (a, b) { return (a.period || '').localeCompare(b.period || ''); }).slice(-12).map(fn);
   }
   function kpiMonths() { return kpiSeries(function (p) { return p.period; }); }
   function loadQboKpis() {
