@@ -2064,13 +2064,24 @@ async function qboFetch(url, opts, ms) {
 }
 
 // Sync the last 12 months of P&L + Balance Sheet into financial-period docs for
-// each company. Shared by the manual endpoint and the nightly cron job. The 12
-// months for a company run CONCURRENTLY (12x faster than the old serial loop).
+// each company. Shared by the manual endpoint and the nightly cron. COMPANIES run
+// in parallel (different realms = independent QBO limits) for speed; MONTHS within
+// a company run serially (a 24-request burst to ONE realm gets throttled).
 async function syncQboCompanies(c, fields, companyDocs, now) {
-      const basic = Buffer.from(fields.clientId + ':' + fields.clientSecret).toString('base64');
-      const out = [];
+  const basic = Buffer.from(fields.clientId + ':' + fields.clientSecret).toString('base64');
+  const queue = companyDocs.slice();
+  const out = [];
+  async function worker() {
+    while (queue.length) {
+      const comp = queue.shift();
+      try { out.push(await syncOneCompany(comp)); }
+      catch (e) { out.push({ realmId: comp && comp.realmId, companyName: comp && comp.companyName, error: String(e && e.message || e) }); }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(4, queue.length) || 1 }, worker));
+  return out;
 
-      for (const comp of companyDocs) {
+  async function syncOneCompany(comp) {
         // comp.environment is authoritative (stamped at connect time). The shared
         // connector field must NOT override a company upward to production —
         // otherwise flipping the connector to production re-points existing
@@ -2086,8 +2097,8 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
             headers: { 'Authorization': 'Basic ' + basic, 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
             body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: comp.refreshToken }).toString()
           });
-        } catch (_) { out.push({ realmId: comp.realmId, companyName: comp.companyName, error: 'token refresh timed out' }); continue; }
-        if (!tokR.ok) { out.push({ realmId: comp.realmId, companyName: comp.companyName, error: 'token refresh failed (' + tokR.status + ')', needsReauth: tokR.status === 400 || tokR.status === 401 }); continue; }
+        } catch (_) { return { realmId: comp.realmId, companyName: comp.companyName, error: 'token refresh timed out' }; }
+        if (!tokR.ok) { return { realmId: comp.realmId, companyName: comp.companyName, error: 'token refresh failed (' + tokR.status + ')', needsReauth: tokR.status === 400 || tokR.status === 401 }; }
         const tok = await tokR.json();
         const accessToken = tok.access_token;
         if (tok.refresh_token && tok.refresh_token !== comp.refreshToken) {
@@ -2099,8 +2110,9 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
           catch (e) { console.error('qbo-sync refresh-token persist FAILED for realm ' + comp.realmId + ':', e && e.message || e); }
         }
 
-        // Fetch all 12 months concurrently (each month = P&L + Balance Sheet), with
-        // a per-request timeout so one hung report can't stall the whole sync.
+        // Each month = P&L + Balance Sheet, with a per-request timeout so one hung
+        // report can't stall the sync. Months run SERIALLY (below) to stay under the
+        // per-realm QBO rate limit; parallelism happens ACROSS companies instead.
         const hdr = { headers: { 'Authorization': 'Bearer ' + accessToken, 'Accept': 'application/json' } };
         const fetchMonth = async (i) => {
           const target = new Date(now.getFullYear(), now.getMonth() - i, 1);
@@ -2148,15 +2160,12 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
           if (bsOk) { per.cashCents = Math.round(cash * 100); per.currentAssetsCents = Math.round(ca * 100); per.currentLiabilitiesCents = Math.round(cl * 100); }
           return { i, status, per };
         };
-        let monthResults = await Promise.all(Array.from({ length: 12 }, (_, i) => fetchMonth(i)));
-        // Retry throttled months SEQUENTIALLY with backoff — QBO throttles the initial
-        // 24-request burst; a slow serial second/third pass recovers the stragglers
-        // without re-tripping the limit (500ms → 2s → 4.5s between attempts).
+        // Months serial: 2 concurrent requests per realm max — never throttled, so no
+        // retry pass is needed. One light retry catches a rare transient month.
+        const monthResults = [];
+        for (let i = 0; i < 12; i++) monthResults.push(await fetchMonth(i));
         for (let k = 0; k < 12; k++) {
-          for (let attempt = 1; attempt <= 3 && !monthResults[k].per; attempt++) {
-            await new Promise(res => setTimeout(res, 500 * attempt * attempt));
-            monthResults[k] = await fetchMonth(monthResults[k].i);
-          }
+          if (!monthResults[k].per) monthResults[k] = await fetchMonth(monthResults[k].i);
         }
         const m0 = monthResults.find(x => x.i === 0) || {};
         const diag = { firstStatus: m0.status || null, firstBody: (m0.status && m0.status !== 200) ? (m0.body || null) : null };
@@ -2167,9 +2176,8 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
         comp.updatedAt = comp.lastSyncAt;
         try { await c.items.upsert(comp); } catch (_) {}
         try { await c.items.upsert({ id: 'bcc-qbo-debug-sync-' + comp.realmId, tenantId: BCC_TENANT_ID, docType: 'qbo-debug', at: new Date().toISOString(), realmId: comp.realmId, env, base, periodsBuilt: periods.length, failedMonths, firstStatus: diag.firstStatus, firstBody: diag.firstBody }); } catch (_) {}
-        out.push({ realmId: comp.realmId, companyName: comp.companyName, periodsBuilt: periods.length, partial: failedMonths > 0, firstStatus: diag.firstStatus, firstBody: diag.firstBody, periods });
-      }
-  return out;
+        return { realmId: comp.realmId, companyName: comp.companyName, periodsBuilt: periods.length, partial: failedMonths > 0, firstStatus: diag.firstStatus, firstBody: diag.firstBody, periods };
+  }
 }
 
 /**
