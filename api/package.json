@@ -12,6 +12,7 @@
     "@azure/functions": "^4.6.0",
     "@azure/storage-blob": "^12.31.0",
     "exceljs": "^4.4.0",
+    "pdfmake": "^0.2.20",
     "web-push": "^3.6.7"
   },
   "engines": {
