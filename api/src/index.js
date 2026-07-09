@@ -1758,24 +1758,33 @@ app.http('drive-files', {
     const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
     try {
       const dt = await driveDocAndToken(realmId); if (dt.err) return dt.err;
-      const folderId = new URL(request.url).searchParams.get('folderId') || '';
+      const sp = new URL(request.url).searchParams;
+      const folderId = sp.get('folderId') || '';
+      const search = String(sp.get('q') || '').trim().slice(0, 100); // search files by name across the drive
       let items = [];
       const root = dt.doc.root || null;
       if (dt.doc.provider === 'google') {
         const start = folderId || (root && root.folderId) || 'root';
-        const q = encodeURIComponent("'" + start + "' in parents and trashed=false");
+        // When searching, match by name across the accessible drive; otherwise list this folder.
+        const gq = search
+          ? "name contains '" + search.replace(/['\\]/g, ' ') + "' and trashed=false"
+          : "'" + start + "' in parents and trashed=false";
+        const q = encodeURIComponent(gq);
         const r = await fetch('https://www.googleapis.com/drive/v3/files?q=' + q + '&fields=files(id,name,mimeType,modifiedTime,size,webViewLink)&pageSize=300&orderBy=folder,name&supportsAllDrives=true&includeItemsFromAllDrives=true', { headers: { Authorization: 'Bearer ' + dt.at } });
         if (!r.ok) {
           if (r.status === 403) return { jsonBody: { ok: false, needsReconnect: true, provider: 'google', account: dt.doc.account, error: 'Google Drive access isn’t authorized for this connection (the Drive permission was not granted). Disconnect and reconnect ' + (dt.doc.account || 'the account') + ', approving “See, edit, create and delete all your Google Drive files.”' } };
           throw new Error('Google Drive ' + r.status);
         }
         const j = await r.json();
-        items = (j.files || []).map(f => ({ id: f.id, name: f.name, folder: f.mimeType === 'application/vnd.google-apps.folder', size: f.size ? Number(f.size) : null, modified: f.modifiedTime || null, webUrl: f.webViewLink || null }));
+        items = (j.files || []).map(f => ({ id: f.id, name: f.name, folder: f.mimeType === 'application/vnd.google-apps.folder', mimeType: f.mimeType || null, size: f.size ? Number(f.size) : null, modified: f.modifiedTime || null, webUrl: f.webViewLink || null }));
       } else {
         let path;
-        if (root && root.driveId) { path = '/drives/' + root.driveId + '/items/' + encodeURIComponent(folderId || root.itemId) + '/children'; }
+        if (search) {
+          if (root && root.driveId) path = "/drives/" + root.driveId + "/root/search(q='" + encodeURIComponent(search) + "')";
+          else path = "/me/drive/root/search(q='" + encodeURIComponent(search) + "')";
+        } else if (root && root.driveId) { path = '/drives/' + root.driveId + '/items/' + encodeURIComponent(folderId || root.itemId) + '/children'; }
         else { path = folderId ? ('/me/drive/items/' + encodeURIComponent(folderId) + '/children') : '/me/drive/root/children'; }
-        const r = await fetch('https://graph.microsoft.com/v1.0' + path + '?$top=300&$select=id,name,folder,size,lastModifiedDateTime,webUrl', { headers: { Authorization: 'Bearer ' + dt.at } });
+        const r = await fetch('https://graph.microsoft.com/v1.0' + path + (path.indexOf('?') >= 0 ? '&' : '?') + '$top=300&$select=id,name,folder,file,size,lastModifiedDateTime,webUrl', { headers: { Authorization: 'Bearer ' + dt.at } });
         if (!r.ok) {
           const detail = (await r.text().catch(() => '')).slice(0, 160);
           // No landing folder set + the account has no personal OneDrive → tell the UI to ask for the shared-folder link.
@@ -1783,7 +1792,7 @@ app.http('drive-files', {
           throw new Error('OneDrive ' + r.status + (detail ? (': ' + detail) : ''));
         }
         const j = await r.json();
-        items = (j.value || []).map(f => ({ id: f.id, name: f.name, folder: !!f.folder, size: f.size || null, modified: f.lastModifiedDateTime || null, webUrl: f.webUrl || null }));
+        items = (j.value || []).map(f => ({ id: f.id, name: f.name, folder: !!f.folder, mimeType: (f.file && f.file.mimeType) || null, size: f.size || null, modified: f.lastModifiedDateTime || null, webUrl: f.webUrl || null }));
       }
       items.sort((a, b) => ((b.folder ? 1 : 0) - (a.folder ? 1 : 0)) || String(a.name).localeCompare(b.name));
       return { jsonBody: { ok: true, provider: dt.doc.provider, account: dt.doc.account, folderId, items } };
@@ -1800,18 +1809,39 @@ app.http('drive-download', {
     const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
     try {
       const dt = await driveDocAndToken(realmId); if (dt.err) return dt.err;
-      const odRoot = dt.doc.root && dt.doc.root.driveId;
-      const mediaUrl = dt.doc.provider === 'google'
-        ? ('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fileId) + '?alt=media&supportsAllDrives=true')
-        : ('https://graph.microsoft.com/v1.0' + (odRoot ? ('/drives/' + dt.doc.root.driveId) : '/me/drive') + '/items/' + encodeURIComponent(fileId) + '/content');
+      const uq = new URL(request.url).searchParams;
+      const wantInlineReq = uq.get('inline') === '1'; // preview request
+      const name = (uq.get('name') || 'download').replace(/[^a-zA-Z0-9._ -]+/g, '_').slice(0, 120);
+      const renderableName = /\.(pdf|png|jpe?g|gif|webp|bmp|txt|csv)$/i.test(name);
+      let mediaUrl, forceCt = null;
+      if (dt.doc.provider === 'google') {
+        // Google-native docs (Docs/Sheets/Slides/Drawings) can't be fetched with alt=media
+        // — export them to PDF so they can be previewed AND downloaded. Look up the type.
+        let gmime = '';
+        try { const mr = await fetch('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fileId) + '?fields=mimeType&supportsAllDrives=true', { headers: { Authorization: 'Bearer ' + dt.at } }); if (mr.ok) gmime = (await mr.json()).mimeType || ''; } catch (_) {}
+        if (/^application\/vnd\.google-apps\.(document|spreadsheet|presentation|drawing)$/.test(gmime)) {
+          mediaUrl = 'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fileId) + '/export?mimeType=application%2Fpdf&supportsAllDrives=true';
+          forceCt = 'application/pdf';
+        } else {
+          mediaUrl = 'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fileId) + '?alt=media&supportsAllDrives=true';
+        }
+      } else {
+        const odRoot = dt.doc.root && dt.doc.root.driveId;
+        const bpath = 'https://graph.microsoft.com/v1.0' + (odRoot ? ('/drives/' + dt.doc.root.driveId) : '/me/drive') + '/items/' + encodeURIComponent(fileId) + '/content';
+        // On a PREVIEW request for a non-natively-renderable file (Office, etc.), ask Graph
+        // to convert to PDF so it shows inline. Downloads still get the original bytes.
+        const convert = wantInlineReq && !renderableName;
+        mediaUrl = bpath + (convert ? '?format=pdf' : '');
+        if (convert) forceCt = 'application/pdf';
+      }
       const r = await fetch(mediaUrl, { headers: { Authorization: 'Bearer ' + dt.at } });
       if (!r.ok) return { status: 502, jsonBody: { ok: false, error: 'download failed (' + r.status + ')' } };
       const buf = Buffer.from(await r.arrayBuffer());
-      const uq = new URL(request.url).searchParams;
-      const name = (uq.get('name') || 'download').replace(/[^a-zA-Z0-9._ -]+/g, '_').slice(0, 120);
-      const ct = r.headers.get('content-type') || 'application/octet-stream';
-      const wantInline = uq.get('inline') === '1' && inlineOk(ct);
-      return { status: 200, headers: { 'Content-Type': ct, 'Content-Disposition': (wantInline ? 'inline' : 'attachment') + '; filename="' + name + '"', 'X-Content-Type-Options': 'nosniff' }, body: buf };
+      const ct = forceCt || r.headers.get('content-type') || 'application/octet-stream';
+      const wantInline = wantInlineReq && inlineOk(ct);
+      // When we converted to PDF, give the inline file a .pdf name so the browser renders it.
+      const dispName = (forceCt === 'application/pdf' && !/\.pdf$/i.test(name)) ? (name.replace(/\.[^.]+$/, '') + '.pdf') : name;
+      return { status: 200, headers: { 'Content-Type': ct, 'Content-Disposition': (wantInline ? 'inline' : 'attachment') + '; filename="' + dispName + '"', 'X-Content-Type-Options': 'nosniff' }, body: buf };
     } catch (e) { context.error('drive-download', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });

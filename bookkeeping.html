@@ -2583,7 +2583,7 @@
   }
 
   /* ---- Shared client drive (Google Drive / OneDrive) ---- */
-  var _driveProvider = '', _driveAccount = '', _driveFolder = '', _driveStack = [], _driveRootName = '';
+  var _driveProvider = '', _driveAccount = '', _driveFolder = '', _driveStack = [], _driveRootName = '', _driveSearch = '';
   function loadDrive() {
     var area = document.getElementById('drive-area'); if (!area) return;
     var realmAt = currentRealm;
@@ -2607,7 +2607,7 @@
             '<div class="fs-body">' + btns + '</div></div>';
           return;
         }
-        _driveProvider = s.provider; _driveAccount = s.account || ''; _driveRootName = s.rootName || ''; _driveStack = []; _driveFolder = '';
+        _driveProvider = s.provider; _driveAccount = s.account || ''; _driveRootName = s.rootName || ''; _driveStack = []; _driveFolder = ''; _driveSearch = '';
         renderDriveBrowser();
       })
       .catch(function () { if (area) area.innerHTML = ''; });
@@ -2628,9 +2628,12 @@
           '<div class="fs-crumbs" style="font-size:13px;">' + crumbs + '</div>' +
           '<div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-ghost" id="drv_setroot" type="button" style="font-size:12px;">📁 ' + (_driveRootName ? 'Change folder' : 'Set folder') + '</button><label class="btn btn-ghost" for="drv_file" style="cursor:pointer;font-size:12px;">⬆ Upload here</label><button class="btn btn-ghost" id="drv_disc" type="button" style="font-size:12px;">Disconnect</button></div>' +
         '</div>' +
+        '<input id="drv_search" type="search" placeholder="🔍 Search this drive by file name…" value="' + esc(_driveSearch) + '" style="width:100%;box-sizing:border-box;min-height:38px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;padding:8px 10px;font:inherit;font-size:13px;margin-bottom:10px;" />' +
         '<input type="file" id="drv_file" style="display:none;" />' +
         '<div id="drv_list"><div style="color:var(--muted);">Loading…</div></div>' +
       '</div></div>';
+    var ds = document.getElementById('drv_search');
+    if (ds) { var dsT = null; ds.addEventListener('input', function () { var v = ds.value.trim(); clearTimeout(dsT); dsT = setTimeout(function () { if (v === _driveSearch) return; _driveSearch = v; loadDriveFiles(); }, 300); }); }
     document.getElementById('drv_setroot').onclick = function () { showSetRootForm(document.getElementById('drv_list'), null); };
     area.querySelectorAll('[data-crumb]').forEach(function (b) {
       b.onclick = function () { var i = +b.getAttribute('data-crumb'); if (i < 0) { _driveStack = []; _driveFolder = ''; } else { _driveStack = _driveStack.slice(0, i + 1); _driveFolder = _driveStack[i].id; } renderDriveBrowser(); };
@@ -2642,10 +2645,18 @@
     var df = document.getElementById('drv_file'); df.onchange = function () { var f = df.files && df.files[0]; if (f) driveUpload(f); };
     loadDriveFiles();
   }
+  function drivePreviewMime(it) {
+    var m = it.mimeType || '';
+    if (/application\/vnd\.google-apps\.(document|spreadsheet|presentation|drawing)/.test(m)) return 'application/pdf'; // exported to PDF by the proxy
+    var renderable = /^image\//.test(m) || m === 'application/pdf' || /^text\/(plain|csv)/.test(m) || /\.(pdf|png|jpe?g|gif|webp|txt|csv)$/i.test(it.name || '');
+    if (_driveProvider === 'onedrive' && !renderable) return 'application/pdf'; // Graph converts on preview
+    return m;
+  }
   function loadDriveFiles() {
     var list = document.getElementById('drv_list'); if (!list) return;
-    list.innerHTML = '<div style="color:var(--muted);">Loading…</div>';
-    fetch('/api/integrations/drive/' + encodeURIComponent(currentRealm) + '/files?folderId=' + encodeURIComponent(_driveFolder), { credentials: 'include' })
+    list.innerHTML = '<div style="color:var(--muted);">' + (_driveSearch ? 'Searching…' : 'Loading…') + '</div>';
+    var url = '/api/integrations/drive/' + encodeURIComponent(currentRealm) + '/files?folderId=' + encodeURIComponent(_driveFolder) + (_driveSearch ? '&q=' + encodeURIComponent(_driveSearch) : '');
+    fetch(url, { credentials: 'include' })
       .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
       .then(function (resp) {
         if (resp && resp.needsRoot) { showSetRootForm(list, resp); return; }
@@ -2658,13 +2669,15 @@
         }
         if (!resp || !resp.ok) { list.innerHTML = '<div style="color:var(--burgundy);font-size:13px;">' + esc((resp && resp.error) || 'Could not load drive') + '</div>'; return; }
         var items = resp.items || [];
-        if (!items.length) { list.innerHTML = '<div style="color:var(--muted);padding:8px 0;">This folder is empty.</div>'; return; }
-        list.innerHTML = '<table><tbody>' + items.map(function (it) {
+        var head = _driveSearch ? '<div style="font-size:12px;color:var(--muted);margin-bottom:6px;">' + items.length + ' result' + (items.length === 1 ? '' : 's') + ' for “' + esc(_driveSearch) + '” · <a href="#" id="drv_clear" style="color:var(--gold-deep);font-weight:600;">clear</a></div>' : '';
+        if (!items.length) { list.innerHTML = head + '<div style="color:var(--muted);padding:8px 0;">' + (_driveSearch ? 'No files match your search.' : 'This folder is empty.') + '</div>'; var cl0 = document.getElementById('drv_clear'); if (cl0) cl0.onclick = function (e) { e.preventDefault(); _driveSearch = ''; renderDriveBrowser(); }; return; }
+        list.innerHTML = head + '<table><tbody>' + items.map(function (it) {
           if (it.folder) return '<tr><td><button type="button" class="fs-folder" data-folder="' + esc(it.id) + '" data-fname="' + esc(it.name) + '">📁 ' + esc(it.name) + '</button></td><td></td></tr>';
           var kb = it.size ? (Math.max(1, Math.round(it.size / 1024)) + ' KB') : '';
-          return '<tr><td><a class="fs-file" href="/api/integrations/drive/' + encodeURIComponent(currentRealm) + '/download/' + encodeURIComponent(it.id) + '?name=' + encodeURIComponent(it.name) + '" data-pvname="' + esc(it.name) + '" data-pvmime="">📄 ' + esc(it.name) + '</a></td><td style="text-align:right;color:var(--muted);font-size:12px;">' + esc(kb) + '</td></tr>';
+          return '<tr><td><a class="fs-file" href="/api/integrations/drive/' + encodeURIComponent(currentRealm) + '/download/' + encodeURIComponent(it.id) + '?name=' + encodeURIComponent(it.name) + '" data-pvname="' + esc(it.name) + '" data-pvmime="' + esc(drivePreviewMime(it)) + '">📄 ' + esc(it.name) + '</a></td><td style="text-align:right;color:var(--muted);font-size:12px;">' + esc(kb) + '</td></tr>';
         }).join('') + '</tbody></table>';
-        list.querySelectorAll('[data-folder]').forEach(function (b) { b.onclick = function () { _driveStack.push({ id: b.getAttribute('data-folder'), name: b.getAttribute('data-fname') }); _driveFolder = b.getAttribute('data-folder'); renderDriveBrowser(); }; });
+        var cl = document.getElementById('drv_clear'); if (cl) cl.onclick = function (e) { e.preventDefault(); _driveSearch = ''; renderDriveBrowser(); };
+        list.querySelectorAll('[data-folder]').forEach(function (b) { b.onclick = function () { _driveSearch = ''; _driveStack.push({ id: b.getAttribute('data-folder'), name: b.getAttribute('data-fname') }); _driveFolder = b.getAttribute('data-folder'); renderDriveBrowser(); }; });
         wirePreviews(list, '&');
       })
       .catch(function () { list.innerHTML = '<div style="color:var(--burgundy);font-size:13px;">Could not load drive.</div>'; });
