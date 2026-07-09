@@ -2149,9 +2149,15 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
           return { i, status, per };
         };
         let monthResults = await Promise.all(Array.from({ length: 12 }, (_, i) => fetchMonth(i)));
-        // Retry throttled months SEQUENTIALLY — QBO throttles a 24-request burst, so a
-        // slow serial second pass recovers the few that failed without re-tripping it.
-        for (let k = 0; k < 12; k++) { if (!monthResults[k].per) { await new Promise(res => setTimeout(res, 400)); monthResults[k] = await fetchMonth(monthResults[k].i); } }
+        // Retry throttled months SEQUENTIALLY with backoff — QBO throttles the initial
+        // 24-request burst; a slow serial second/third pass recovers the stragglers
+        // without re-tripping the limit (500ms → 2s → 4.5s between attempts).
+        for (let k = 0; k < 12; k++) {
+          for (let attempt = 1; attempt <= 3 && !monthResults[k].per; attempt++) {
+            await new Promise(res => setTimeout(res, 500 * attempt * attempt));
+            monthResults[k] = await fetchMonth(monthResults[k].i);
+          }
+        }
         const m0 = monthResults.find(x => x.i === 0) || {};
         const diag = { firstStatus: m0.status || null, firstBody: (m0.status && m0.status !== 200) ? (m0.body || null) : null };
         const periods = monthResults.filter(x => x.per).map(x => x.per);
