@@ -646,37 +646,24 @@ app.http('audit', {
       // for bookkeepers goes through the access-gated /api/audit/client/{realmId}.
       if (!(await isAppAdmin(p))) return forbidden('admin only');
       const url = new URL(request.url);
-      const limit = Math.max(1, Math.min(parseInt(url.searchParams.get('limit') || '500', 10) || 500, 2000));
-      const since = url.searchParams.get('since');
+      // Default 1000, up to 5000 per page; older history is reachable via `before`.
+      const limit = Math.max(1, Math.min(parseInt(url.searchParams.get('limit') || '1000', 10) || 1000, 5000));
+      const since = url.searchParams.get('since');   // rows at/after this ts (newest window)
+      const before = url.searchParams.get('before'); // rows strictly before this ts (older page cursor)
       const docTypes = (url.searchParams.get('types') || 'audit,access')
         .split(',').map(s => s.trim()).filter(s => s === 'audit' || s === 'access');
       if (!docTypes.length) docTypes.push('audit');
       const typeList = docTypes.map(t => '"' + t + '"').join(',');
-      let q;
-      if (since) {
-        q = {
-          query: 'SELECT TOP @n c.id, c.ts, c.docType, c.action, c.user, c.ip, c.userAgent, '
-               + 'c.path, c.method, c.status, c.key, c.meta '
-               + 'FROM c WHERE c.tenantId = @t AND c.docType IN (' + typeList + ') AND c.ts >= @since '
-               + 'ORDER BY c.ts DESC',
-          parameters: [
-            { name: '@n', value: limit },
-            { name: '@t', value: BCC_TENANT_ID },
-            { name: '@since', value: since }
-          ]
-        };
-      } else {
-        q = {
-          query: 'SELECT TOP @n c.id, c.ts, c.docType, c.action, c.user, c.ip, c.userAgent, '
-               + 'c.path, c.method, c.status, c.key, c.meta '
-               + 'FROM c WHERE c.tenantId = @t AND c.docType IN (' + typeList + ') '
-               + 'ORDER BY c.ts DESC',
-          parameters: [
-            { name: '@n', value: limit },
-            { name: '@t', value: BCC_TENANT_ID }
-          ]
-        };
-      }
+      const params = [{ name: '@n', value: limit }, { name: '@t', value: BCC_TENANT_ID }];
+      let where = 'c.tenantId = @t AND c.docType IN (' + typeList + ')';
+      if (since)  { where += ' AND c.ts >= @since';  params.push({ name: '@since', value: since }); }
+      if (before) { where += ' AND c.ts < @before';  params.push({ name: '@before', value: before }); }
+      const q = {
+        query: 'SELECT TOP @n c.id, c.ts, c.docType, c.action, c.user, c.ip, c.userAgent, '
+             + 'c.path, c.method, c.status, c.key, c.meta '
+             + 'FROM c WHERE ' + where + ' ORDER BY c.ts DESC',
+        parameters: params
+      };
       const { resources } = await c.items.query(q).fetchAll();
       return { jsonBody: { items: resources } };
     } catch (err) {

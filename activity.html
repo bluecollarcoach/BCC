@@ -293,10 +293,15 @@
   var rows = [];
   var qInput, categoryFilter, userFilter, feedEl, subline;
 
+  var PAGE = 1000;                     // rows per fetch
+  var _loadingMore = false, _exhausted = false;
+  function oldestTs() { var t = null; rows.forEach(function (r) { var s = r.ts || r.createdAt; if (s && (t === null || s < t)) t = s; }); return t; }
+
   async function load() {
     feedEl.innerHTML = '<div class="empty"><div class="big">Loading…</div></div>';
+    _exhausted = false; _loadingMore = false;
     try {
-      var r = await fetch('/api/audit', { credentials: 'include' });
+      var r = await fetch('/api/audit?limit=' + PAGE, { credentials: 'include' });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       var j = await r.json();
       rows = (j && j.items) || j || [];
@@ -305,6 +310,28 @@
       feedEl.innerHTML = '<div class="empty"><div class="big">Couldn\'t load</div><div>' + esc(e.message) + '</div></div>';
       return;
     }
+    if (rows.length < PAGE) _exhausted = true;   // fewer than a full page = no more history
+    populateUserFilter();
+    render();
+  }
+
+  // Fetch the next older page using a `before` timestamp cursor and append it.
+  async function loadOlder() {
+    if (_loadingMore || _exhausted) return;
+    var cursor = oldestTs();
+    if (!cursor) { _exhausted = true; render(); return; }
+    _loadingMore = true; render();
+    try {
+      var r = await fetch('/api/audit?limit=' + PAGE + '&before=' + encodeURIComponent(cursor), { credentials: 'include' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      var j = await r.json();
+      var older = (j && j.items) || [];
+      var seen = {}; rows.forEach(function (x) { if (x.id) seen[x.id] = true; });
+      var fresh = older.filter(function (x) { return !(x.id && seen[x.id]); });
+      if (older.length < PAGE || !fresh.length) _exhausted = true;
+      rows = rows.concat(fresh);
+    } catch (e) { /* keep what we already have */ }
+    _loadingMore = false;
     populateUserFilter();
     render();
   }
@@ -340,8 +367,9 @@
       return;
     }
 
+    var RENDER_CAP = 5000;
     var html = '';
-    matched.slice(0, 500).forEach(function (r) {
+    matched.slice(0, RENDER_CAP).forEach(function (r) {
       var ts = r.ts || r._ts || r.createdAt;
       if (typeof ts === 'number' && ts < 1e12) ts = ts * 1000;
       var date = ts ? new Date(ts) : null;
@@ -352,7 +380,10 @@
         info = { label: r.method + ' ' + r.path, cat: 'system', ic: '&#128279;' };
         what = info.label;
         metaLine = (r.status ? 'HTTP ' + r.status : '') + (r.ms != null ? ' · ' + r.ms + 'ms' : '');
-        who = r.userDetails || '(anonymous)';
+        // Access rows store the authenticated user in `user` (not `userDetails`).
+        // Reading only userDetails made EVERY access row show "(anonymous)" even
+        // though the caller was authenticated (SWA blocks unauth /api/* at the gate).
+        who = r.user || r.userDetails || '(anonymous)';
       } else {
         info = classifyAction(r.action || '(unknown)');
         what = info.label;
@@ -391,7 +422,12 @@
           '</div>' +
         '</div>';
     });
-    feedEl.innerHTML = html;
+    var footer = '';
+    if (matched.length > RENDER_CAP) footer += '<div class="empty" style="padding:12px;">Showing the newest ' + RENDER_CAP + ' of ' + matched.length + ' matches — narrow with search or filters to see the rest.</div>';
+    if (!_exhausted) footer += '<div style="text-align:center;padding:16px;"><button class="btn btn-ghost" id="loadOlderBtn" type="button"' + (_loadingMore ? ' disabled' : '') + '>' + (_loadingMore ? 'Loading…' : 'Load older activity') + '</button></div>';
+    else if (rows.length) footer += '<div class="empty" style="padding:12px;color:var(--muted);font-size:12px;">— beginning of recorded history —</div>';
+    feedEl.innerHTML = html + footer;
+    var lb = document.getElementById('loadOlderBtn'); if (lb) lb.onclick = loadOlder;
   }
 
   /* ===== Init ===== */
