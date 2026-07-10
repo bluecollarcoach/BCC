@@ -1614,7 +1614,7 @@
   function closeMonthlyReport() { var ov = document.getElementById('mrOverlay'); if (ov) ov.style.display = 'none'; }
   function mrBtns(disabled) { ['mrPrint', 'mrSaveFile', 'mrSaveObs'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = disabled; }); }
   function loadMonthlyReport(period) {
-    _mr.period = period; _mr.forecast = null; _mr.fcManual = null;
+    _mr.period = period; _mr.forecast = null; _mr.fcManual = null; _mr.fcInclude = true;
     var body = document.getElementById('mrBody'), st = document.getElementById('mrStatus');
     body.innerHTML = '<div style="color:var(--muted);padding:22px;text-align:center;">Pulling QuickBooks statements, KPIs &amp; cash-flow forecast…</div>';
     if (st) st.textContent = ''; mrBtns(true);
@@ -1763,45 +1763,57 @@
       row('Pay existing A/P', outf, '-') + row(costsLbl, nc, '-') + projRow +
       '</tbody></table>';
   }
-  // Full forecast block: header + toggle + (when on) the editor inputs + the live table + note.
+  // Full forecast block: an "Include in report" master toggle, then (when included) the
+  // "Refine with my pipeline" control + editor inputs + live table + note.
   function renderMrForecast() {
     var host = document.getElementById('mrForecast'); if (!host) return;
     var fc = _mr.forecast;
     if (!fc) { host.innerHTML = '<div style="font-size:12px;color:var(--muted);">90-day cash-flow forecast unavailable for this client (needs open A/R / A/P data).</div>'; return; }
+    var include = _mr.fcInclude !== false;
     var mo = _mr.fcManual || { on: false, billings: [0, 0, 0], cogsPct: 0, overhead: 0 };
-    var inputStyle = 'width:100%;min-height:32px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:6px;padding:4px 6px;font:inherit;font-size:12px;text-align:right;box-sizing:border-box;';
-    var editor = '';
-    if (mo.on) {
-      var billInputs = [0, 1, 2].map(function (i) {
-        return '<td style="padding:3px 6px;width:26%;"><input data-fcbill="' + i + '" type="number" min="0" step="1000" value="' + esc(mo.billings[i]) + '" style="' + inputStyle + '" /></td>';
-      }).join('');
-      var monthHdr = ['+30 days', '+60 days', '+90 days'].map(function (h) {
-        return '<td style="text-align:right;padding:1px 6px;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.03em;">' + h + '</td>';
-      }).join('');
-      editor = '<div style="border:1px dashed #c5a55a;border-radius:8px;padding:8px 10px;margin-top:8px;background:rgba(197,165,90,.06);">' +
-        '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
-          '<tr><td style="padding:1px 6px;"></td>' + monthHdr + '</tr>' +
-          '<tr><td style="padding:3px 6px;color:#5a5347;">Expected revenue<br><span style="font-size:10px;color:var(--muted);">billed &amp; collected that month</span></td>' + billInputs + '</tr>' +
-        '</table>' +
-        '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;align-items:center;">' +
-          '<label style="font-size:12px;color:#5a5347;">COGS&nbsp;% (run rate) <input data-fccogs type="number" min="0" max="100" step="0.5" value="' + esc(mo.cogsPct) + '" style="width:74px;min-height:32px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:6px;padding:4px 6px;font:inherit;font-size:12px;text-align:right;" /></label>' +
-          '<label style="font-size:12px;color:#5a5347;">Overhead&nbsp;$/mo <input data-fcoh type="number" min="0" step="500" value="' + esc(mo.overhead) + '" style="width:104px;min-height:32px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:6px;padding:4px 6px;font:inherit;font-size:12px;text-align:right;" /></label>' +
-          '<span style="font-size:11px;color:var(--muted);">COGS is auto-computed at this % of the revenue you enter.</span>' +
-        '</div></div>';
+    var chk = function (id, on, label) { return '<label style="font-size:12px;color:#5a5347;display:flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap;"><input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + ' style="width:16px;height:16px;" /> ' + label + '</label>'; };
+    var header = '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 4px;">' + mrHdr('90-Day Cash Flow Forecast') + chk('mrFcInclude', include, 'Include in report') + '</div>';
+    var bodyHtml;
+    if (!include) {
+      bodyHtml = '<div style="font-size:12px;color:var(--muted);padding:6px 2px;">The 90-day cash flow forecast will be left out of this report. Re-check <strong>Include in report</strong> to add it back.</div>';
+    } else {
+      var inputStyle = 'width:100%;min-height:32px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:6px;padding:4px 6px;font:inherit;font-size:12px;text-align:right;box-sizing:border-box;';
+      var editor = '';
+      if (mo.on) {
+        var billInputs = [0, 1, 2].map(function (i) {
+          return '<td style="padding:3px 6px;width:26%;"><input data-fcbill="' + i + '" type="number" min="0" step="1000" value="' + esc(mo.billings[i]) + '" style="' + inputStyle + '" /></td>';
+        }).join('');
+        var monthHdr = ['+30 days', '+60 days', '+90 days'].map(function (h) {
+          return '<td style="text-align:right;padding:1px 6px;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.03em;">' + h + '</td>';
+        }).join('');
+        editor = '<div style="border:1px dashed #c5a55a;border-radius:8px;padding:8px 10px;margin-top:4px;background:rgba(197,165,90,.06);">' +
+          '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
+            '<tr><td style="padding:1px 6px;"></td>' + monthHdr + '</tr>' +
+            '<tr><td style="padding:3px 6px;color:#5a5347;">Expected revenue<br><span style="font-size:10px;color:var(--muted);">billed &amp; collected that month</span></td>' + billInputs + '</tr>' +
+          '</table>' +
+          '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;align-items:center;">' +
+            '<label style="font-size:12px;color:#5a5347;">COGS&nbsp;% (run rate) <input data-fccogs type="number" min="0" max="100" step="0.5" value="' + esc(mo.cogsPct) + '" style="width:74px;min-height:32px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:6px;padding:4px 6px;font:inherit;font-size:12px;text-align:right;" /></label>' +
+            '<label style="font-size:12px;color:#5a5347;">Overhead&nbsp;$/mo <input data-fcoh type="number" min="0" step="500" value="' + esc(mo.overhead) + '" style="width:104px;min-height:32px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:6px;padding:4px 6px;font:inherit;font-size:12px;text-align:right;" /></label>' +
+            '<span style="font-size:11px;color:var(--muted);">COGS is auto-computed at this % of the revenue you enter.</span>' +
+          '</div></div>';
+      }
+      var note = mo.on
+        ? '<div style="font-size:11px;color:var(--muted);margin-top:6px;">Existing invoices &amp; bills are still scheduled separately by due date. The revenue above is the <strong>new</strong> business you expect to bill and collect each month; COGS runs at your % margin plus overhead. A forecast, not a guarantee.</div>'
+        : '<div style="font-size:11px;color:var(--muted);margin-top:6px;">Auto forecast: open A/R/A/P by due date + the trailing-' + (fc.historyMonths || 12) + '-month run-rate (revenue ' + money2(fc.avgRevenue) + '/mo, COGS ' + (Math.round((fc.cogsRatio || 0) * 1000) / 10) + '%, overhead ' + money2(fc.avgOverhead) + '/mo). Turn on <strong>Refine</strong> to enter your own pipeline.</div>';
+      var refineRow = '<div style="display:flex;justify-content:flex-end;margin:0 0 2px;">' + chk('mrFcToggle', mo.on, 'Refine with my pipeline') + '</div>';
+      bodyHtml = refineRow + editor + '<div id="mrFcOut"></div>' + note;
     }
-    var note = mo.on
-      ? '<div style="font-size:11px;color:var(--muted);margin-top:6px;">Existing invoices &amp; bills are still scheduled separately by due date. The revenue above is the <strong>new</strong> business you expect to bill and collect each month; COGS runs at your % margin plus overhead. A forecast, not a guarantee.</div>'
-      : '<div style="font-size:11px;color:var(--muted);margin-top:6px;">Auto forecast: open A/R/A/P by due date + the trailing-' + (fc.historyMonths || 12) + '-month run-rate (revenue ' + money2(fc.avgRevenue) + '/mo, COGS ' + (Math.round((fc.cogsRatio || 0) * 1000) / 10) + '%, overhead ' + money2(fc.avgOverhead) + '/mo). Turn on <strong>Refine</strong> to enter your own pipeline.</div>';
-    host.innerHTML =
-      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 4px;">' + mrHdr('90-Day Cash Flow Forecast') +
-        '<label style="font-size:12px;color:#5a5347;display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="mrFcToggle"' + (mo.on ? ' checked' : '') + ' style="width:16px;height:16px;" /> Refine with my pipeline</label></div>' +
-      editor + '<div id="mrFcOut"></div>' + note;
-    var tg = document.getElementById('mrFcToggle');
-    if (tg) tg.onchange = function () { if (_mr.fcManual) { _mr.fcManual.on = this.checked; } renderMrForecast(); };
-    host.querySelectorAll('[data-fcbill]').forEach(function (inp) { inp.oninput = function () { _mr.fcManual.billings[+inp.getAttribute('data-fcbill')] = inp.value; renderMrFcOut(); }; });
-    var cg = host.querySelector('[data-fccogs]'); if (cg) cg.oninput = function () { _mr.fcManual.cogsPct = cg.value; renderMrFcOut(); };
-    var oh = host.querySelector('[data-fcoh]'); if (oh) oh.oninput = function () { _mr.fcManual.overhead = oh.value; renderMrFcOut(); };
-    renderMrFcOut();
+    host.innerHTML = header + bodyHtml;
+    var inc = document.getElementById('mrFcInclude');
+    if (inc) inc.onchange = function () { _mr.fcInclude = this.checked; renderMrForecast(); };
+    if (include) {
+      var tg = document.getElementById('mrFcToggle');
+      if (tg) tg.onchange = function () { if (_mr.fcManual) { _mr.fcManual.on = this.checked; } renderMrForecast(); };
+      host.querySelectorAll('[data-fcbill]').forEach(function (inp) { inp.oninput = function () { _mr.fcManual.billings[+inp.getAttribute('data-fcbill')] = inp.value; renderMrFcOut(); }; });
+      var cg = host.querySelector('[data-fccogs]'); if (cg) cg.oninput = function () { _mr.fcManual.cogsPct = cg.value; renderMrFcOut(); };
+      var oh = host.querySelector('[data-fcoh]'); if (oh) oh.oninput = function () { _mr.fcManual.overhead = oh.value; renderMrFcOut(); };
+      renderMrFcOut();
+    }
   }
   function saveReportObservations(notify) {
     var d = _mr.data; if (!d) return Promise.resolve();
@@ -1893,7 +1905,7 @@
   // the modal already has; the server just lays it out.
   function mrPdfPayload() {
     var d = _mr.data;
-    return { period: d.period, periodLabel: d.periodLabel, periodEnd: d.periodEnd, preparedOn: d.preparedOn, method: d.method, company: d.company, kpis: mrKpiList(d.kpis || {}, d.goals), observations: _mr.obs, forecast: mrForecastEffective(), statements: d.statements };
+    return { period: d.period, periodLabel: d.periodLabel, periodEnd: d.periodEnd, preparedOn: d.preparedOn, method: d.method, company: d.company, kpis: mrKpiList(d.kpis || {}, d.goals), observations: _mr.obs, forecast: (_mr.fcInclude === false ? null : mrForecastEffective()), statements: d.statements };
   }
   function mrFetchPdf() {
     return fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/monthly-report/pdf', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(mrPdfPayload()) })
