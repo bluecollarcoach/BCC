@@ -4118,6 +4118,7 @@ app.http('qbo-kpis', {
  * report. The KPI set + observations are the same on every company's report.
  */
 const REPORT_CC_APR = 0.20; // credit-card interest estimate (annualized) shown in the KPI note
+const REPORT_LOC_APR = 0.12; // line-of-credit interest estimate (annualized), a reasonable business-LOC rate
 // Health goals used to color KPI values green(good)/red(bad). Admin-editable (bcc-report-goals);
 // these are the sensible defaults. A value >= target = good; < floor = bad; between = neutral.
 const REPORT_GOAL_DEFAULTS = { monthsCash: 3, monthsCashMin: 1, currentRatio: 1.5, currentRatioMin: 1, grossMargin: 0.30, grossMarginMin: 0.15, netMargin: 0.05, netMarginMin: 0 };
@@ -4237,6 +4238,7 @@ async function assembleMonthlyReport(apiGet, comp, per, method) {
       arOver90, apOver90, retainage: bsRetainage(bsCur), retainagePrior: bsRetainage(bsPrior),
       creditCards: cc, creditCardsPrior: bsCC(bsPrior), ccInterestAnnual: cc > 0 ? Math.round(cc * REPORT_CC_APR) : 0, ccApr: REPORT_CC_APR,
       lineOfCredit: bsLOC(bsCur), lineOfCreditPrior: bsLOC(bsPrior),
+      locInterestAnnual: bsLOC(bsCur) > 0 ? Math.round(bsLOC(bsCur) * REPORT_LOC_APR) : 0, locApr: REPORT_LOC_APR,
       longTermDebt: bsLTL(bsCur), longTermDebtPrior: bsLTL(bsPrior),
       equity: bsEquity(bsCur), equityPrior: bsEquity(bsPrior),
       currentAssets, currentLiabilities, currentRatio,
@@ -4552,26 +4554,6 @@ app.http('qbo-monthly-report-pdf', {
       return { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="monthly-report.pdf"', 'X-Content-Type-Options': 'nosniff' }, body: buf };
     } catch (e) { context.error('qbo-monthly-report-pdf', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
-});
-
-// TEMP (CRON_SECRET-gated): return a company's assembled report KPIs + fact observations. Remove after.
-app.http('cron-report-data', {
-  methods: ['GET'], authLevel: 'anonymous', route: 'cron/report-data',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
-    try {
-      const url = new URL(request.url); const realmId = String(url.searchParams.get('realmId') || '');
-      const mm = String(url.searchParams.get('period') || '').match(/^(\d{4})-(\d{2})$/);
-      const per = mm ? { y: +mm[1], mo: +mm[2] - 1 } : (function () { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return { y: d.getFullYear(), mo: d.getMonth() }; })();
-      const c = container(); const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-      if (!comp) return { status: 404, jsonBody: { ok: false, error: 'no company' } };
-      const fields = await getIntegrationFields('qbo'); const { accessToken, base } = await qboAccessForCompany(comp, fields);
-      const apiGet = async (path) => { const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70'; const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } }); if (!r.ok) throw new Error('QBO ' + r.status); return r.json(); };
-      const data = await assembleMonthlyReport(apiGet, comp, per, 'Accrual');
-      return { jsonBody: { ok: true, periodLabel: data.periodLabel, kpis: data.kpis, observations: factObservations(data.kpis) } };
-    } catch (e) { context.error('cron-report-data', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
-  }
 });
 
 /**

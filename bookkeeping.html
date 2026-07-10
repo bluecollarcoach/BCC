@@ -1570,6 +1570,7 @@
     if (k.creditCards) add('Credit Card Balance', mrMoney0(k.creditCards), '', k.creditCards, k.creditCardsPrior, 'up-bad');
     if (k.ccInterestAnnual) add('CC Interest (annualized)', '~' + mrMoney0(k.ccInterestAnnual) + '/yr', 'est ' + Math.round((k.ccApr || 0.2) * 100) + '% APR', null, null, 'none');
     if (k.lineOfCredit) add('Line of Credit', mrMoney0(k.lineOfCredit), '', k.lineOfCredit, k.lineOfCreditPrior, 'up-bad');
+    if (k.locInterestAnnual) add('LOC Interest (annualized)', '~' + mrMoney0(k.locInterestAnnual) + '/yr', 'est ' + Math.round((k.locApr || 0.12) * 100) + '% APR', null, null, 'none');
     if (k.longTermDebt) add('Long-Term Debt', mrMoney0(k.longTermDebt), '', k.longTermDebt, k.longTermDebtPrior, 'up-bad');
     (k.debtLines || []).forEach(function (dl) { if (dl && dl.label) add(dl.label, mrMoney0(dl.amount), '', null, null, 'none'); });
     add('Total Equity', mrMoney0(k.equity), '', k.equity, k.equityPrior, 'up-good', 'posneg', k.equity);
