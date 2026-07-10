@@ -2291,7 +2291,8 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
           const end = new Date(target.getFullYear(), target.getMonth() + 1, 0);
           const endStr = end.toISOString().slice(0, 10);
           const plUrl = base + '/v3/company/' + encodeURIComponent(comp.realmId) + '/reports/ProfitAndLoss?start_date=' + startStr + '&end_date=' + endStr + '&accounting_method=Accrual&minorversion=70';
-          const bsUrl = base + '/v3/company/' + encodeURIComponent(comp.realmId) + '/reports/BalanceSheet?as_of=' + endStr + '&accounting_method=Accrual&minorversion=70';
+          // as_of is ignored by QBO (returns the current period) — use start_date+end_date. See bsReportQuery.
+          const bsUrl = base + '/v3/company/' + encodeURIComponent(comp.realmId) + '/reports/BalanceSheet?start_date=' + endStr.slice(0, 4) + '-01-01&end_date=' + endStr + '&accounting_method=Accrual&minorversion=70';
           let r = null, br = null;
           try { [r, br] = await Promise.all([qboFetch(plUrl, hdr), qboFetch(bsUrl, hdr).catch(() => null)]); } catch (_) { return { i, status: 0, body: 'timeout' }; }
           const status = r ? r.status : 0;
@@ -3350,6 +3351,18 @@ function flattenQboReport(rep) {
   })(((rep || {}).Rows || {}).Row || [], 0, null);
   return { title: ((rep || {}).Header || {}).ReportName || '', columns, rows };
 }
+// Build the QBO BalanceSheet report path for a point-in-time "as of" date.
+// CRITICAL (proven 2026-07-09): QBO's BalanceSheet report SILENTLY IGNORES `as_of` and
+// always returns its default (current) period — so two different `as_of=` requests come
+// back identical. Point-in-time balances require start_date + end_date, where end_date is
+// the true as-of date. start_date = Jan 1 of that year gives a standard fiscal-YTD split;
+// the account balances themselves are cumulative as-of end_date regardless of start_date
+// (only the equity "Net Income vs Retained Earnings" split is affected, not any total).
+function bsReportQuery(endDateStr, method) {
+  const yr = String(endDateStr).slice(0, 4);
+  const m = method === 'Cash' ? 'Cash' : 'Accrual';
+  return '/reports/BalanceSheet?start_date=' + yr + '-01-01&end_date=' + endDateStr + '&accounting_method=' + m;
+}
 // Sum the numeric value of a flattened report row by its QBO group code (e.g.
 // "TotalCurrentAssets"), tolerant of label fallbacks.
 function reportNum(s) { const n = parseFloat(String(s == null ? '' : s).replace(/,/g, '')); return isNaN(n) ? 0 : n; }
@@ -3432,7 +3445,7 @@ app.http('qbo-report', {
         }
         case 'balancesheet': {
           const asOf = url.searchParams.get('asOf') || today;
-          data = flattenQboReport(await apiGet('/reports/BalanceSheet?as_of=' + asOf + '&accounting_method=' + method));
+          data = flattenQboReport(await apiGet(bsReportQuery(asOf, method)));
           data.range = { asOf, method }; data.kind = 'report'; break;
         }
         case 'ar-aging': { data = flattenQboReport(await apiGet('/reports/AgedReceivables')); data.kind = 'report'; break; }
@@ -4064,7 +4077,7 @@ app.http('qbo-kpis', {
       const asOf = url.searchParams.get('asOf') || new Date().toISOString().slice(0, 10);
       const burnMonths = Math.max(1, Math.min(12, parseInt(url.searchParams.get('burnMonths') || '3', 10) || 3));
 
-      const bs = flattenQboReport(await apiGet('/reports/BalanceSheet?as_of=' + asOf + '&accounting_method=' + method));
+      const bs = flattenQboReport(await apiGet(bsReportQuery(asOf, method)));
       const cash = (findByLabel(bs, /total bank account/i) ?? findByLabel(bs, /bank account/i) ?? findByLabel(bs, /checking|savings|cash on hand|^cash$/i)) || 0;
       const currentAssets = (findByGroup(bs, 'TotalCurrentAssets') ?? findByLabel(bs, /total current assets/i)) || 0;
       const currentLiabilities = (findByGroup(bs, 'TotalCurrentLiabilities') ?? findByLabel(bs, /total current liabilities/i)) || 0;
@@ -4199,7 +4212,23 @@ app.http('cron-bs-diag', {
         try { results[key] = snap(await apiGet(variants[key])); }
         catch (e) { results[key] = { error: String((e && e.message) || e).slice(0, 140) }; }
       }
-      return { jsonBody: { ok: true, company: comp.companyName || comp.legalName || realmId, results } };
+      // End-to-end: run the real assembler for the requested period and echo current-vs-prior KPI pairs.
+      let assembled = null;
+      try {
+        const pm = String(new URL(request.url).searchParams.get('period') || '2026-06');
+        const per = { y: parseInt(pm.slice(0, 4), 10), mo: parseInt(pm.slice(5, 7), 10) - 1 };
+        const rep = await assembleMonthlyReport(apiGet, comp, per, 'Accrual');
+        const k = rep.kpis || {};
+        assembled = {
+          period: pm,
+          cash: k.cash, cashPrior: k.cashPrior,
+          ar: k.ar, arPrior: k.arPrior,
+          ap: k.ap, apPrior: k.apPrior,
+          equity: k.equity, equityPrior: k.equityPrior,
+          currentRatio: k.currentRatio, currentRatioPrior: k.currentRatioPrior
+        };
+      } catch (e) { assembled = { error: String((e && e.message) || e).slice(0, 160) }; }
+      return { jsonBody: { ok: true, company: comp.companyName || comp.legalName || realmId, results, assembled } };
     } catch (e) { context.error('cron-bs-diag', e); return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } }; }
   }
 });
@@ -4219,7 +4248,7 @@ async function assembleMonthlyReport(apiGet, comp, per, method) {
   const priorLabel = MONTHS[(per.mo + 11) % 12] + ' ' + (per.mo === 0 ? per.y - 1 : per.y);
 
   const plUrl = (a, b) => '/reports/ProfitAndLoss?start_date=' + iso(a) + '&end_date=' + iso(b) + '&accounting_method=' + method;
-  const bsUrl = (d) => '/reports/BalanceSheet?as_of=' + iso(d) + '&accounting_method=' + method;
+  const bsUrl = (d) => bsReportQuery(iso(d), method);
   // Two waves of 4 — a burst of 8 to one realm trips QBO's per-realm rate limit.
   const [plCur, plPrior, plYtd, bsCur] = await Promise.all([
     apiGet(plUrl(mStart, mEnd)).then(flattenQboReport),
@@ -4862,7 +4891,7 @@ app.http('qbo-cashflow', {
             }
             return all;
           };
-          const bs = flattenQboReport(await apiGet('/reports/BalanceSheet?accounting_method=Accrual'));
+          const bs = flattenQboReport(await apiGet(bsReportQuery(new Date().toISOString().slice(0, 10), 'Accrual')));
           const cash = (findByLabel(bs, /total bank account/i) ?? findByLabel(bs, /bank account/i) ?? findByLabel(bs, /checking|savings|cash on hand|^cash$/i)) || 0;
           const invoices = await queryAll("SELECT Id, DueDate, TxnDate, Balance FROM Invoice WHERE Balance > '0'");
           const bills = await queryAll("SELECT Id, DueDate, TxnDate, Balance FROM Bill WHERE Balance > '0'");
