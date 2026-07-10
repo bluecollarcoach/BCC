@@ -2699,7 +2699,11 @@
     var isTxt = /^(txt|csv|log|md|json)$/.test(ext) || /^text\//.test(ct);
     var inner;
     if (isImg) inner = '<img src="' + esc(viewUrl) + '" alt="' + esc(name) + '" style="max-width:100%;max-height:72vh;display:block;margin:0 auto;border-radius:8px;" />';
-    else if (isPdf || isTxt) inner = '<iframe class="fp-frame" sandbox="allow-popups allow-popups-to-escape-sandbox" src="' + esc(viewUrl) + '"></iframe>';
+    // No sandbox: a scriptless sandbox makes Chrome refuse to load its built-in PDF viewer
+    // ("This page has been blocked by Chrome"). Safe here because the preview is served from a
+    // CROSS-ORIGIN blob SAS URL (isolated from our origin/cookies) and the server's inlineOk()
+    // gate never serves html/svg/xhtml inline — only images, PDF, and plain text/csv reach here.
+    else if (isPdf || isTxt) inner = '<iframe class="fp-frame" src="' + esc(viewUrl) + '"></iframe>';
     else inner = '<div style="padding:34px 20px;text-align:center;color:var(--muted);font-size:13.5px;">This file type can&rsquo;t be shown inline. Use <strong>Download</strong> to open it.</div>';
     var ov = document.createElement('div'); ov.id = 'fp_modal'; ov.className = 'em-modal-ov';
     ov.innerHTML = '<div class="em-modal" style="max-width:920px;"><div class="em-modal-head">' +
