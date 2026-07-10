@@ -164,6 +164,7 @@
     <button data-tab="company">Company Info</button>
     <button data-tab="security">Security</button>
     <button data-tab="bktime">Bookkeeping time</button>
+    <button data-tab="goals">Report goals</button>
     <button data-tab="data">Data &amp; Backups</button>
     <button data-tab="feedback">Feedback<span id="fbTabBadge" style="display:none;margin-left:6px;background:#c0392b;color:#fff;font-size:10.5px;font-weight:800;min-width:16px;height:16px;line-height:16px;border-radius:999px;padding:0 5px;vertical-align:middle;"></span></button>
     <button data-tab="errors">Errors</button>
@@ -356,6 +357,21 @@
     </div>
   </section>
 
+  <section class="panel-section" id="panel-goals">
+    <div class="card">
+      <h3>Monthly report goals</h3>
+      <p class="blurb">These targets color the KPI box on every client's monthly report — a value at or above its <strong>goal</strong> shows <span style="color:#1f8a4c;font-weight:700;">green</span>, below its <strong>floor</strong> shows <span style="color:#c0392b;font-weight:700;">red</span>, and in between stays neutral. Sensible defaults are set; adjust to your firm's standards.</p>
+      <div id="goalsForm" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;max-width:760px;">
+        <div style="opacity:.6;">Loading…</div>
+      </div>
+      <div style="margin-top:16px;display:flex;gap:10px;align-items:center;">
+        <button class="btn btn-primary" id="goalsSave" type="button">Save goals</button>
+        <button class="btn btn-ghost" id="goalsReset" type="button">Reset to defaults</button>
+        <span id="goalsStatus" style="font-size:12px;color:var(--muted);"></span>
+      </div>
+    </div>
+  </section>
+
   <section class="panel-section" id="panel-feedback">
     <div class="card">
       <h3>User feedback</h3>
@@ -463,8 +479,59 @@
       if (name === 'bktime') renderBkTime();
       if (name === 'feedback') renderFeedback();
       if (name === 'errors') renderErrors();
+      if (name === 'goals') loadGoals();
     });
   });
+
+  /* ===== Monthly report goals ===== */
+  var GOAL_FIELDS = [
+    { grp: 'Months of cash', goal: 'monthsCash', floor: 'monthsCashMin', step: '0.5', fmt: 'x' },
+    { grp: 'Current ratio', goal: 'currentRatio', floor: 'currentRatioMin', step: '0.1', fmt: 'x' },
+    { grp: 'Gross margin', goal: 'grossMargin', floor: 'grossMarginMin', step: '1', fmt: '%' },
+    { grp: 'Net margin', goal: 'netMargin', floor: 'netMarginMin', step: '1', fmt: '%' }
+  ];
+  var _goalDefaults = {};
+  function goalToInput(f, key, g) { var v = g[key]; if (v == null) return ''; return f.fmt === '%' ? Math.round(v * 100) : v; }
+  function inputToGoal(f, raw) { var n = parseFloat(raw); if (!isFinite(n)) return null; return f.fmt === '%' ? n / 100 : n; }
+  function renderGoalsForm(g) {
+    var suffix = function (f) { return f.fmt === '%' ? '%' : '×'; };
+    document.getElementById('goalsForm').innerHTML = GOAL_FIELDS.map(function (f) {
+      return '<div style="border:1px solid var(--chrome-mute);border-radius:9px;padding:12px 14px;">' +
+        '<div style="font-weight:700;font-size:13.5px;margin-bottom:8px;">' + esc(f.grp) + '</div>' +
+        '<label style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);margin-bottom:6px;">Goal (green at or above)<span><input type="number" step="' + f.step + '" id="goal_' + f.goal + '" value="' + goalToInput(f, f.goal, g) + '" style="width:80px;min-height:34px;padding:5px 7px;border:1px solid var(--chrome-mute);border-radius:6px;font:inherit;text-align:right;" /> ' + suffix(f) + '</span></label>' +
+        '<label style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);">Floor (red below)<span><input type="number" step="' + f.step + '" id="goal_' + f.floor + '" value="' + goalToInput(f, f.floor, g) + '" style="width:80px;min-height:34px;padding:5px 7px;border:1px solid var(--chrome-mute);border-radius:6px;font:inherit;text-align:right;" /> ' + suffix(f) + '</span></label>' +
+        '</div>';
+    }).join('');
+  }
+  function collectGoals() {
+    var out = {};
+    GOAL_FIELDS.forEach(function (f) {
+      [['goal', f.goal], ['floor', f.floor]].forEach(function (pair) {
+        var el = document.getElementById('goal_' + pair[1]); if (!el) return;
+        var v = inputToGoal(f, el.value); if (v != null) out[pair[1]] = v;
+      });
+    });
+    return out;
+  }
+  function loadGoals() {
+    var st = document.getElementById('goalsStatus'); if (st) st.textContent = '';
+    fetch('/api/report-goals', { credentials: 'include' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (!j || !j.ok) throw new Error((j && j.error) || 'failed'); _goalDefaults = j.defaults || {}; renderGoalsForm(j.goals || {}); })
+      .catch(function (e) { document.getElementById('goalsForm').innerHTML = '<div style="color:#6a1c1c;">Could not load goals: ' + esc(e.message) + '</div>'; });
+  }
+  (function () {
+    var sv = document.getElementById('goalsSave');
+    if (sv) sv.onclick = function () {
+      var st = document.getElementById('goalsStatus'); if (st) st.textContent = 'Saving…';
+      fetch('/api/report-goals', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ goals: collectGoals() }) })
+        .then(function (r) { return r.json(); })
+        .then(function (j) { if (st) st.textContent = (j && j.ok) ? 'Saved — reports now use these goals.' : ('Error: ' + ((j && j.error) || 'failed')); if (j && j.ok) renderGoalsForm(j.goals); })
+        .catch(function (e) { if (st) st.textContent = 'Error: ' + e.message; });
+    };
+    var rs = document.getElementById('goalsReset');
+    if (rs) rs.onclick = function () { renderGoalsForm(_goalDefaults); var st = document.getElementById('goalsStatus'); if (st) st.textContent = 'Reset to defaults — click Save to apply.'; };
+  })();
   (function () {
     var fr = document.getElementById('fbRefresh'); if (fr) fr.onclick = renderFeedback;
     var ff = document.getElementById('fbFilter'); if (ff) ff.onchange = renderFbList;

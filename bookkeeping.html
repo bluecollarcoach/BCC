@@ -1551,9 +1551,9 @@
     add('Revenue', mrMoney0(k.revenue), '', k.revenue, k.revenuePrior, 'up-good');
     if (k.grossMargin != null) add('Gross Margin', Math.round(k.grossMargin * 100) + '%', (k.grossMarginPrior != null ? ('was ' + Math.round(k.grossMarginPrior * 100) + '%') : ''), k.grossMargin, k.grossMarginPrior, 'up-good', 'grossMargin', k.grossMargin);
     if (k.netIncomeYtd != null) add('Net Income YTD', mrMoney0(k.netIncomeYtd), '', null, null, 'none', 'posneg', k.netIncomeYtd);
-    if (k.ar) add('A/R Outstanding', mrMoney0(k.ar), (k.arOver90 ? mrMoney0(k.arOver90) + ' over 90d' : ''), k.ar, k.arPrior, 'neutral');
+    if (k.ar) add('A/R Outstanding', mrMoney0(k.ar), (k.arOver90 > 0 ? mrMoney0(k.arOver90) + ' over 90d' : ''), k.ar, k.arPrior, 'neutral');
     if (k.retainage) add('Retainage', mrMoney0(k.retainage), '', k.retainage, k.retainagePrior, 'neutral');
-    if (k.ap) add('A/P Balance', mrMoney0(k.ap), (k.apOver90 ? mrMoney0(k.apOver90) + ' over 90d' : ''), k.ap, k.apPrior, 'up-bad');
+    if (k.ap) add('A/P Balance', mrMoney0(k.ap), (k.apOver90 > 0 ? mrMoney0(k.apOver90) + ' over 90d' : ''), k.ap, k.apPrior, 'up-bad');
     if (k.creditCards) add('Credit Card Balance', mrMoney0(k.creditCards), '', k.creditCards, k.creditCardsPrior, 'up-bad');
     if (k.ccInterestAnnual) add('CC Interest (annualized)', '~' + mrMoney0(k.ccInterestAnnual) + '/yr', 'est ' + Math.round((k.ccApr || 0.2) * 100) + '% APR', null, null, 'none');
     if (k.lineOfCredit) add('Line of Credit', mrMoney0(k.lineOfCredit), '', k.lineOfCredit, k.lineOfCreditPrior, 'up-bad');

@@ -4340,9 +4340,9 @@ function factObservations(k) {
   add('Net income', m(k.netIncome || 0), k.netIncome, k.netIncomePrior, 'up-good');
   if (k.netIncomeYtd != null) out.push({ text: 'YTD net ' + m(k.netIncomeYtd), dir: k.netIncomeYtd < 0 ? 'down' : 'up', tone: k.netIncomeYtd < 0 ? 'bad' : 'good' });
   add('Cash', m(k.cash || 0), k.cash, k.cashPrior, 'up-good');
-  if (k.ar) add('A/R', m(k.ar) + (k.arOver90 ? ' (' + m(k.arOver90) + ' over 90d)' : ''), k.ar, k.arPrior, 'neutral');
+  if (k.ar) add('A/R', m(k.ar) + (k.arOver90 > 0 ? ' (' + m(k.arOver90) + ' over 90d)' : ''), k.ar, k.arPrior, 'neutral');
   if (k.retainage) add('Retainage', m(k.retainage), k.retainage, k.retainagePrior, 'neutral');
-  if (k.ap) add('A/P', m(k.ap) + (k.apOver90 ? ' (' + m(k.apOver90) + ' over 90d)' : ''), k.ap, k.apPrior, 'up-bad');
+  if (k.ap) add('A/P', m(k.ap) + (k.apOver90 > 0 ? ' (' + m(k.apOver90) + ' over 90d)' : ''), k.ap, k.apPrior, 'up-bad');
   if (k.creditCards) add('Credit cards', m(k.creditCards), k.creditCards, k.creditCardsPrior, 'up-bad');
   if (k.lineOfCredit) add('Line of credit', m(k.lineOfCredit), k.lineOfCredit, k.lineOfCreditPrior, 'up-bad');
   if (k.longTermDebt) add('Long-term debt', m(k.longTermDebt), k.longTermDebt, k.longTermDebtPrior, 'up-bad');
@@ -4552,45 +4552,6 @@ app.http('qbo-monthly-report-pdf', {
       return { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="monthly-report.pdf"', 'X-Content-Type-Options': 'nosniff' }, body: buf };
     } catch (e) { context.error('qbo-monthly-report-pdf', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
-});
-
-// TEMP (CRON_SECRET-gated): render a company's report PDF headless to verify layout. Remove after.
-app.http('cron-report-pdf-check', {
-  methods: ['GET', 'POST'], authLevel: 'anonymous', route: 'cron/report-pdf-check',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
-    try {
-      const url = new URL(request.url); const realmId = String(url.searchParams.get('realmId') || '');
-      const mm = String(url.searchParams.get('period') || '').match(/^(\d{4})-(\d{2})$/);
-      const per = mm ? { y: +mm[1], mo: +mm[2] - 1 } : (function () { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return { y: d.getFullYear(), mo: d.getMonth() }; })();
-      const c = container(); const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-      if (!comp) return { status: 404, jsonBody: { ok: false, error: 'no company' } };
-      const fields = await getIntegrationFields('qbo'); const { accessToken, base } = await qboAccessForCompany(comp, fields);
-      const apiGet = async (path) => { const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70'; const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } }); if (!r.ok) throw new Error('QBO ' + r.status); return r.json(); };
-      const [data, goals] = await Promise.all([assembleMonthlyReport(apiGet, comp, per, 'Accrual'), getReportGoals()]);
-      if (url.searchParams.get('json') === '1') return { jsonBody: { ok: true, kpis: data.kpis, goals, observations: factObservations(data.kpis) } };
-      const k = data.kpis, n0 = x => '$' + Math.round(x || 0).toLocaleString();
-      const HT = (key, v) => { if (v == null) return 'neutral'; switch (key) { case 'monthsOfCash': return v >= goals.monthsCash ? 'good' : v < goals.monthsCashMin ? 'bad' : 'neutral'; case 'currentRatio': return v >= goals.currentRatio ? 'good' : v < goals.currentRatioMin ? 'bad' : 'neutral'; case 'grossMargin': return v >= goals.grossMargin ? 'good' : v < goals.grossMarginMin ? 'bad' : 'neutral'; case 'posneg': return v > 0 ? 'good' : v < 0 ? 'bad' : 'neutral'; default: return 'neutral'; } };
-      const kpis = [
-        { l: 'Months of Cash', v: String(Math.round(k.monthsOfCash || 0)), vt: HT('monthsOfCash', k.monthsOfCash) },
-        { l: 'Cash on Hand', v: n0(k.cash) },
-        { l: 'Monthly Net Income', v: n0(k.netIncome), vt: HT('posneg', k.netIncome) },
-        { l: 'Revenue', v: n0(k.revenue) },
-        { l: 'Gross Margin', v: Math.round((k.grossMargin || 0) * 100) + '%', vt: HT('grossMargin', k.grossMargin) },
-        { l: 'Net Income YTD', v: n0(k.netIncomeYtd), vt: HT('posneg', k.netIncomeYtd) },
-        { l: 'A/R Outstanding', v: n0(k.ar), n: k.arOver90 ? n0(k.arOver90) + ' over 90d' : '' }
-      ].concat(k.retainage ? [{ l: 'Retainage', v: n0(k.retainage) }] : []).concat([
-        { l: 'A/P Balance', v: n0(k.ap), n: k.apOver90 ? n0(k.apOver90) + ' over 90d' : '' },
-        { l: 'Current Ratio', v: String(k.currentRatio), vt: HT('currentRatio', k.currentRatio) },
-        { l: 'Total Equity', v: n0(k.equity), vt: HT('posneg', k.equity) }
-      ]);
-      const logo = await getReportLogo(request);
-      const fc = { cash: k.cash, inflow: [k.ar || 0, 0, 0], outflow: [k.ap || 0, 0, 0], newSales: [0, 300000, 300000], newCosts: [0, 250000, 250000], projected: [k.cash, k.cash + 100000, k.cash + 150000], in90: k.ar, out90: k.ap, newIn90: 600000, newOut90: 500000, avgRevenue: 300000, avgCOGS: 200000, avgOverhead: 50000, DSO: 50, DPO: 45, historyMonths: 12 };
-      const buf = await renderReportPdf({ company: data.company, periodLabel: data.periodLabel, periodEnd: data.periodEnd, preparedOn: data.preparedOn, method: data.method, goals, logo, kpis, observations: factObservations(k), forecast: fc, statements: data.statements });
-      return { status: 200, headers: { 'Content-Type': 'application/pdf' }, body: buf };
-    } catch (e) { context.error('cron-report-pdf-check', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
-  }
 });
 
 /**
