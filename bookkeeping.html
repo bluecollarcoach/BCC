@@ -1625,9 +1625,9 @@
       '<div style="border:1.5px solid #c5a55a;border-radius:10px;padding:10px 14px;background:var(--gold-tint,#f7f1e3);margin:5px 0 2px;"><div style="display:grid;grid-template-columns:1fr 1fr;gap:0 20px;">' + kpiHtml + '</div></div>' +
       fcHtml +
       '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0 6px;">' + mrHdr('Observations (brief bullets)') +
-        '<button id="mrAiBtn" type="button" class="btn btn-ghost" style="font-size:12px;min-height:30px;">✨ Draft with AI</button></div>' +
+        '<button id="mrAiBtn" type="button" class="btn btn-ghost" style="font-size:12px;min-height:30px;">↻ Fill from the numbers</button></div>' +
       '<div id="mrObsList"></div>' +
-      '<div style="font-size:11px;color:var(--muted);margin-top:6px;">Each bullet prints with a colored trend arrow. Click the <strong>arrow</strong> to change direction (▲ up / ▼ down / ▶ flat); click the <strong>dot</strong> to change good&nbsp;/&nbsp;neutral&nbsp;/&nbsp;bad. Review the AI draft — it’s your professional judgment, not the model’s.</div>';
+      '<div style="font-size:11px;color:var(--muted);margin-top:6px;">Bare facts pulled straight from the figures (no assumptions). Edit freely. Click the <strong>arrow</strong> to change direction (▲ up / ▼ down / ▶ flat); click the <strong>dot</strong> to change good&nbsp;/&nbsp;neutral&nbsp;/&nbsp;bad.</div>';
     renderObsList();
     document.getElementById('mrAiBtn').onclick = aiDraftObservations;
   }
@@ -1649,18 +1649,17 @@
   }
   function aiDraftObservations() {
     var d = _mr.data; if (!d) return;
-    var btn = document.getElementById('mrAiBtn'), ot = btn.textContent; btn.disabled = true; btn.textContent = 'Drafting…';
+    var btn = document.getElementById('mrAiBtn'), ot = btn.textContent; btn.disabled = true; btn.textContent = 'Filling…';
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/monthly-report/ai-draft', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kpis: d.kpis, companyName: d.company.legalName || d.company.name, periodLabel: d.periodLabel }) })
       .then(function (r) { return r.json(); })
       .then(function (j) {
         btn.disabled = false; btn.textContent = ot;
-        if (j && j.needsKey) { (window.bccNotify || alert)('AI isn’t configured — an admin must add ANTHROPIC_API_KEY.', 'warn', 7000); return; }
-        if (!j || !j.ok || !(j.observations || []).length) { (window.bccNotify || alert)((j && j.error) || 'AI draft failed.', 'error'); return; }
+        if (!j || !j.ok || !(j.observations || []).length) { (window.bccNotify || alert)((j && j.error) || 'Could not fill observations.', 'error'); return; }
         _mr.obs = j.observations.map(mrCoerceObs);
         renderObsList();
-        if (window.bccNotify) window.bccNotify('Draft ready — review & edit before sending.', 'success');
+        if (window.bccNotify) window.bccNotify('Filled from the numbers — edit any before saving.', 'success');
       })
-      .catch(function (e) { btn.disabled = false; btn.textContent = ot; (window.bccNotify || alert)('AI draft failed: ' + e.message, 'error'); });
+      .catch(function (e) { btn.disabled = false; btn.textContent = ot; (window.bccNotify || alert)('Could not fill observations: ' + e.message, 'error'); });
   }
   function saveReportObservations(notify) {
     var d = _mr.data; if (!d) return Promise.resolve();

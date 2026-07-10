@@ -4254,6 +4254,47 @@ app.http('qbo-monthly-report', {
  * The client posts the KPIs it already fetched (no second QBO round-trip); the coach
  * reviews/edits the draft before saving. Requires ANTHROPIC_API_KEY.
  */
+// Deterministic, KNOWN-ONLY observations straight from the numbers — bare facts,
+// no advice, no inference (never "maxed"/"risk"/"should"), guaranteed brief. The
+// trend arrow + color carry the sentiment; the text is just the figure + its change.
+function factObservations(k) {
+  k = k || {};
+  const out = [];
+  const m = (n) => (n < 0 ? '-$' : '$') + Math.round(Math.abs(n || 0)).toLocaleString();
+  // Change vs prior month: "unchanged", "up 59%", or "up from -$24,459" on a sign flip.
+  const chg = (cur, prior) => {
+    if (cur == null || prior == null) return { txt: '', dir: 'flat' };
+    const d = cur - prior;
+    if (Math.abs(d) < Math.max(1, Math.abs(prior) * 0.005)) return { txt: ', unchanged', dir: 'flat' };
+    const dir = d > 0 ? 'up' : 'down';
+    if (prior < 0 || cur < 0 || (prior !== 0 && (cur > 0) !== (prior > 0))) return { txt: ', ' + dir + ' from ' + m(prior), dir };
+    const pct = prior !== 0 ? Math.round(Math.abs(d) / Math.abs(prior) * 100) : null;
+    return { txt: ', ' + dir + (pct != null ? ' ' + pct + '%' : ''), dir };
+  };
+  const add = (label, valTxt, cur, prior, pol) => {
+    const c = chg(cur, prior);
+    const dir = c.dir || 'flat';
+    let tone = 'neutral';
+    if (dir !== 'flat' && pol && pol !== 'neutral') tone = ((pol === 'up-good') === (dir === 'up')) ? 'good' : 'bad';
+    out.push({ text: label + ' ' + valTxt + (c.txt || ''), dir, tone });
+  };
+  add('Revenue', m(k.revenue || 0), k.revenue, k.revenuePrior, 'up-good');
+  if (k.grossMargin != null) add('Gross margin', Math.round(k.grossMargin * 100) + '%', k.grossMargin, k.grossMarginPrior, 'up-good');
+  add('Net income', m(k.netIncome || 0), k.netIncome, k.netIncomePrior, 'up-good');
+  if (k.netIncomeYtd != null) out.push({ text: 'YTD net ' + m(k.netIncomeYtd), dir: k.netIncomeYtd < 0 ? 'down' : 'up', tone: k.netIncomeYtd < 0 ? 'bad' : 'good' });
+  add('Cash' + (k.monthsOfCash != null ? ' (' + k.monthsOfCash + ' mo overhead)' : ''), m(k.cash || 0), k.cash, k.cashPrior, 'up-good');
+  if (k.ar) add('A/R', m(k.ar), k.ar, k.arPrior, 'neutral');
+  if (k.ap) add('A/P', m(k.ap), k.ap, k.apPrior, 'up-bad');
+  if (k.creditCards) add('Credit cards', m(k.creditCards), k.creditCards, k.creditCardsPrior, 'up-bad');
+  if (k.lineOfCredit) add('Line of credit', m(k.lineOfCredit), k.lineOfCredit, k.lineOfCreditPrior, 'up-bad');
+  if (k.longTermDebt) add('Long-term debt', m(k.longTermDebt), k.longTermDebt, k.longTermDebtPrior, 'up-bad');
+  (k.debtLines || []).forEach(d => { if (d && d.label) out.push({ text: d.label + ' ' + m(d.amount || 0), dir: 'flat', tone: 'neutral' }); });
+  add('Equity', m(k.equity || 0), k.equity, k.equityPrior, 'up-good');
+  if (k.currentRatio != null) out.push({ text: 'Current ratio ' + k.currentRatio, dir: 'flat', tone: 'neutral' });
+  return out.map(o => ({ text: o.text.slice(0, 120), dir: o.dir, tone: o.tone }));
+}
+// "Fill from the numbers" — returns bare-fact observations. Deterministic (no AI):
+// the user asked for KNOWNS ONLY, briefly, with no assumptions.
 app.http('qbo-monthly-report-ai', {
   methods: ['POST'],
   authLevel: 'anonymous',
@@ -4261,66 +4302,35 @@ app.http('qbo-monthly-report-ai', {
   handler: withAccessLog(async (request, context) => {
     const ctx = await qboResolveAccess(request, request.params.realmId);
     if (ctx.err) return ctx.err;
-    const key = process.env.ANTHROPIC_API_KEY;
-    if (!key) return { jsonBody: { ok: false, needsKey: true, error: 'AI not configured — add ANTHROPIC_API_KEY in the app settings.' } };
     try {
       const b = await request.json().catch(() => ({}));
-      const k = b.kpis || {};
-      const companyName = String(b.companyName || (ctx.comp && ctx.comp.companyName) || 'the company').slice(0, 120);
-      const periodLabel = String(b.periodLabel || '').slice(0, 40);
-      const money = (n) => n == null ? 'n/a' : ('$' + Math.round(n).toLocaleString());
-      const vs = (cur, prior, label) => label + ': ' + money(cur) + (prior != null ? (' (prior ' + money(prior) + ')') : '');
-      const f = [];
-      f.push('Revenue: ' + money(k.revenue) + (k.revenuePrior != null ? (' vs ' + money(k.revenuePrior) + ' prior') : ''));
-      f.push('Gross profit: ' + money(k.grossProfit) + (k.grossMargin != null ? (' (' + Math.round(k.grossMargin * 100) + '% margin)') : ''));
-      f.push('Net income this month: ' + money(k.netIncome) + (k.netIncomePrior != null ? (' vs ' + money(k.netIncomePrior) + ' prior') : ''));
-      if (k.netIncomeYtd != null) f.push('Net income YTD: ' + money(k.netIncomeYtd));
-      f.push('Cash on hand: ' + money(k.cash) + (k.cashPrior != null ? (' (prior ' + money(k.cashPrior) + ')') : '') + (k.monthsOfCash != null ? (' — about ' + k.monthsOfCash + ' months of overhead') : ''));
-      if (k.ar) f.push(vs(k.ar, k.arPrior, 'A/R outstanding'));
-      if (k.ap) f.push(vs(k.ap, k.apPrior, 'A/P balance'));
-      if (k.creditCards) f.push(vs(k.creditCards, k.creditCardsPrior, 'Credit card balance') + (k.ccInterestAnnual ? (' — est ~' + money(k.ccInterestAnnual) + '/yr interest') : ''));
-      if (k.lineOfCredit) f.push(vs(k.lineOfCredit, k.lineOfCreditPrior, 'Line of credit'));
-      if (k.longTermDebt) f.push(vs(k.longTermDebt, k.longTermDebtPrior, 'Long-term debt'));
-      (k.debtLines || []).forEach(d => { if (d && d.label) f.push('  - ' + d.label + ': ' + money(d.amount)); });
-      f.push(vs(k.equity, k.equityPrior, 'Total equity'));
-      if (k.currentRatio != null) f.push('Current ratio: ' + k.currentRatio);
-      if (k.inventory) f.push('Inventory: ' + money(k.inventory));
-
-      const tool = { name: 'write_observations', description: 'Return the brief observation bullets with a trend + tone each.', input_schema: {
-        type: 'object', properties: { observations: { type: 'array', items: {
-          type: 'object', properties: {
-            text: { type: 'string', description: 'ONE brief observation — a short phrase, max ~12 words, NOT a full sentence. Include the key number.' },
-            dir: { type: 'string', enum: ['up', 'down', 'flat'], description: 'trend vs last month' },
-            tone: { type: 'string', enum: ['good', 'bad', 'neutral'], description: 'is this good, bad, or neutral for the business' }
-          }, required: ['text', 'dir', 'tone']
-        } } }, required: ['observations']
-      } };
-      const prompt = 'You are Blue Collar Coach writing the "Observations" for ' + companyName + '\'s ' + periodLabel + ' report. '
-        + 'Write 5-7 observations. CRITICAL RULES: each is ONE short line, MAX 14 words. State WHAT IT IS then WHAT IT SHOULD BE (or the action), separated by a dash. NO all-caps headers. NO full sentences. NO explanation. Just: current fact -> target/action. '
-        + 'For each set dir (up/down/flat vs last month) and tone (good/bad/neutral for the business). Order: cash+runway, net income, revenue/margin, debt (credit cards/LOC/long-term), A/R, A/P, equity. '
-        + 'Use ONLY these figures; invent nothing. FOLLOW THIS FORMAT EXACTLY (state - should-be):\n'
-        + '  "Cash 1.9 mo overhead - build to 2-3 mo" (flat/neutral)\n'
-        + '  "Net loss ($151K) YTD - needs several profitable months" (down/bad)\n'
-        + '  "A/R $752,922, flat - collect it; biggest cash lever" (flat/bad)\n'
-        + '  "LOC $600,261, maxed - top risk; pay down" (flat/bad)\n'
-        + '  "Gross margin 30% - hold or improve on billing" (up/good)\n\nFigures:\n' + f.join('\n');
-      const model = process.env.AI_MODEL || 'claude-sonnet-4-6';
-      const r = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST', headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-        body: JSON.stringify({ model, max_tokens: 1200, tools: [tool], tool_choice: { type: 'tool', name: 'write_observations' }, messages: [{ role: 'user', content: prompt }] })
-      });
-      if (!r.ok) { const t = (await r.text().catch(() => '')).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'AI error ' + r.status, detail: t } }; }
-      const j = await r.json();
-      const tu = (j.content || []).find(x => x.type === 'tool_use');
-      const raw = (tu && tu.input && Array.isArray(tu.input.observations)) ? tu.input.observations : [];
-      const observations = raw.map(o => ({
-        text: String((o && o.text) || '').slice(0, 200),
-        dir: ['up', 'down', 'flat'].indexOf(o && o.dir) >= 0 ? o.dir : 'flat',
-        tone: ['good', 'bad', 'neutral'].indexOf(o && o.tone) >= 0 ? o.tone : 'neutral'
-      })).filter(o => o.text);
-      return { jsonBody: { ok: true, observations } };
-    } catch (e) { context.error('qbo-monthly-report-ai', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+      return { jsonBody: { ok: true, observations: factObservations(b.kpis || {}) } };
+    } catch (e) { context.error('qbo-monthly-report-facts', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
+});
+
+// TEMP (CRON_SECRET-gated): overwrite a report's saved observations with the bare-fact
+// version (fixes reports drafted under the old verbose AI). Remove after.
+app.http('cron-report-obs-fix', {
+  methods: ['GET', 'POST'], authLevel: 'anonymous', route: 'cron/report-obs-fix',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
+    try {
+      const url = new URL(request.url); const realmId = String(url.searchParams.get('realmId') || '');
+      const mm = String(url.searchParams.get('period') || '').match(/^(\d{4})-(\d{2})$/);
+      const per = mm ? { y: +mm[1], mo: +mm[2] - 1 } : (function () { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return { y: d.getFullYear(), mo: d.getMonth() }; })();
+      const period = per.y + '-' + String(per.mo + 1).padStart(2, '0');
+      const c = container(); const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      if (!comp) return { status: 404, jsonBody: { ok: false, error: 'no company' } };
+      const fields = await getIntegrationFields('qbo'); const { accessToken, base } = await qboAccessForCompany(comp, fields);
+      const apiGet = async (path) => { const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70'; const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } }); if (!r.ok) throw new Error('QBO ' + r.status); return r.json(); };
+      const data = await assembleMonthlyReport(apiGet, comp, per, 'Accrual');
+      const observations = factObservations(data.kpis);
+      await c.items.upsert({ id: 'bcc-report-' + realmId + '-' + period, tenantId: BCC_TENANT_ID, docType: 'monthly-report', realmId, period, observations, updatedAt: new Date().toISOString(), updatedBy: 'facts' });
+      return { jsonBody: { ok: true, period, observations } };
+    } catch (e) { context.error('cron-report-obs-fix', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  }
 });
 
 /* ===== Server-rendered monthly report PDF (pdfmake) =====
@@ -4428,7 +4438,13 @@ function buildReportDocDef(b) {
     { text: 'BLUE COLLAR COACH OBSERVATIONS', color: '#a8884a', bold: true, fontSize: 9, margin: [0, 0, 0, 6] },
     { stack: obsStack, margin: [0, 0, 0, 13] },
     { text: 'KEY FINANCIAL KPIS   ' + (periodLabel ? '·   ' + periodLabel : ''), color: '#a8884a', bold: true, fontSize: 9, margin: [0, 0, 0, 5] },
-    { table: { widths: ['*', 'auto', '*', 'auto'], body: kbody.length ? kbody : [[{ text: 'No KPIs.', colSpan: 4, italics: true, color: '#888' }, '', '', '']] }, layout: { hLineWidth: (i, node) => (i === 0 || i === node.table.body.length) ? 0 : 0.5, vLineWidth: () => 0, hLineColor: () => '#e6e5e1', paddingTop: () => 3.5, paddingBottom: () => 3.5, paddingLeft: (i) => i === 0 ? 0 : 10, paddingRight: () => 0 } }
+    { table: { widths: ['*', 'auto', '*', 'auto'], body: kbody.length ? kbody : [[{ text: 'No KPIs.', colSpan: 4, italics: true, color: '#888' }, '', '', '']] }, layout: {
+      hLineWidth: (i, node) => (i === 0 || i === node.table.body.length) ? 1.3 : 0.5,
+      vLineWidth: (i, node) => (i === 0 || i === node.table.widths.length) ? 1.3 : 0,
+      hLineColor: (i, node) => (i === 0 || i === node.table.body.length) ? '#c5a55a' : '#ece3cc',
+      vLineColor: () => '#c5a55a', fillColor: () => '#fdfbf4',
+      paddingLeft: () => 12, paddingRight: () => 12, paddingTop: () => 4.5, paddingBottom: () => 4.5
+    }, margin: [0, 0, 0, 2] }
   ];
   if (fc) content.push({ text: '90-DAY CASH FLOW FORECAST', color: '#a8884a', bold: true, fontSize: 9, margin: [0, 13, 0, 5] }, pdfForecast(fc));
   content.push({ text: 'Prepared ' + pdfSani(prepStr) + '   ·   ' + pdfSani(b.method || 'Accrual') + ' basis   ·   For management use only', alignment: 'center', color: '#8a8577', fontSize: 8.5, margin: [0, 14, 0, 0] });
