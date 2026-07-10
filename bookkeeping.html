@@ -1574,7 +1574,7 @@
     if (k.longTermDebt) add('Long-Term Debt', mrMoney0(k.longTermDebt), '', k.longTermDebt, k.longTermDebtPrior, 'up-bad');
     (k.debtLines || []).forEach(function (dl) { if (dl && dl.label) add(dl.label, mrMoney0(dl.amount), '', null, null, 'none'); });
     add('Total Equity', mrMoney0(k.equity), '', k.equity, k.equityPrior, 'up-good', 'posneg', k.equity);
-    if (k.currentRatio != null) add('Current Ratio', String(k.currentRatio), '', k.currentRatio, k.currentRatioPrior, 'up-good', 'currentRatio', k.currentRatio);
+    if (k.currentRatio != null) add('Current Ratio', String(k.currentRatio), (k.currentRatioPrior != null ? ('was ' + k.currentRatioPrior) : ''), k.currentRatio, k.currentRatioPrior, 'up-good', 'currentRatio', k.currentRatio);
     if (k.inventory) add('Inventory', mrMoney0(k.inventory), '', k.inventory, k.inventoryPrior, 'neutral');
     if (k.workingCapital != null) add('Working Capital', mrMoney0(k.workingCapital), '', k.workingCapital, k.workingCapitalPrior, 'up-good', 'posneg', k.workingCapital);
     return out;
