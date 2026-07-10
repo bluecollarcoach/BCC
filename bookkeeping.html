@@ -1524,30 +1524,45 @@
     if (typeof o === 'string') return { text: o, dir: '', tone: 'neutral' };
     return { text: String((o && o.text) || ''), dir: ['up', 'down', 'flat'].indexOf(o && o.dir) >= 0 ? o.dir : '', tone: ['good', 'bad', 'neutral'].indexOf(o && o.tone) >= 0 ? o.tone : 'neutral' };
   }
+  // Value "health" tone (green good / red bad) vs the firm's goals — colors the KPI value.
+  function mrHealthTone(key, v, goals) {
+    if (v == null) return 'neutral'; goals = goals || {};
+    var g = function (name, def) { var x = Number(goals[name]); return isFinite(x) ? x : def; };
+    switch (key) {
+      case 'monthsOfCash': return v >= g('monthsCash', 3) ? 'good' : (v < g('monthsCashMin', 1) ? 'bad' : 'neutral');
+      case 'currentRatio': return v >= g('currentRatio', 1.5) ? 'good' : (v < g('currentRatioMin', 1) ? 'bad' : 'neutral');
+      case 'grossMargin': return v >= g('grossMargin', 0.30) ? 'good' : (v < g('grossMarginMin', 0.15) ? 'bad' : 'neutral');
+      case 'posneg': return v > 0 ? 'good' : (v < 0 ? 'bad' : 'neutral');
+      default: return 'neutral';
+    }
+  }
   // The KPI set that must appear on every report; conditional lines only when non-zero.
-  function mrKpiList(k) {
+  // vt = value-health tone (colors the value); tone = trend tone (colors the arrow).
+  function mrKpiList(k, goals) {
     var out = [];
-    var add = function (l, v, customN, cur, prior, pol) {
+    var add = function (l, v, customN, cur, prior, pol, hkey, hval) {
       var t = mrTrend(cur, prior, pol);
       var n = customN || (prior != null && pol !== 'none' ? ('was ' + mrMoney0(prior)) : '');
-      out.push({ l: l, v: v, n: n, dir: t.dir, tone: t.tone });
+      out.push({ l: l, v: v, n: n, dir: t.dir, tone: t.tone, vt: hkey ? mrHealthTone(hkey, hval, goals) : 'neutral' });
     };
-    add('Cash on Hand', mrMoney0(k.cash), (k.monthsOfCash != null ? ((k.monthsOfCash <= 0 ? '~0' : k.monthsOfCash) + ' mo overhead') : ''), k.cash, k.cashPrior, 'up-good');
-    add('Monthly Net Income', mrMoney0(k.netIncome), '', k.netIncome, k.netIncomePrior, 'up-good');
+    if (k.monthsOfCash != null) add('Months of Cash', String(Math.round(k.monthsOfCash)), (k.monthsOfCash) + ' mo (exact)', null, null, 'none', 'monthsOfCash', k.monthsOfCash);
+    add('Cash on Hand', mrMoney0(k.cash), '', k.cash, k.cashPrior, 'up-good');
+    add('Monthly Net Income', mrMoney0(k.netIncome), '', k.netIncome, k.netIncomePrior, 'up-good', 'posneg', k.netIncome);
     add('Revenue', mrMoney0(k.revenue), '', k.revenue, k.revenuePrior, 'up-good');
-    if (k.grossMargin != null) add('Gross Margin', Math.round(k.grossMargin * 100) + '%', (k.grossMarginPrior != null ? ('was ' + Math.round(k.grossMarginPrior * 100) + '%') : ''), k.grossMargin, k.grossMarginPrior, 'up-good');
-    if (k.netIncomeYtd != null) add('Net Income YTD', mrMoney0(k.netIncomeYtd), '', null, null, 'none');
-    if (k.ar) add('A/R Outstanding', mrMoney0(k.ar), '', k.ar, k.arPrior, 'neutral');
-    if (k.ap) add('A/P Balance', mrMoney0(k.ap), '', k.ap, k.apPrior, 'up-bad');
+    if (k.grossMargin != null) add('Gross Margin', Math.round(k.grossMargin * 100) + '%', (k.grossMarginPrior != null ? ('was ' + Math.round(k.grossMarginPrior * 100) + '%') : ''), k.grossMargin, k.grossMarginPrior, 'up-good', 'grossMargin', k.grossMargin);
+    if (k.netIncomeYtd != null) add('Net Income YTD', mrMoney0(k.netIncomeYtd), '', null, null, 'none', 'posneg', k.netIncomeYtd);
+    if (k.ar) add('A/R Outstanding', mrMoney0(k.ar), (k.arOver90 ? mrMoney0(k.arOver90) + ' over 90d' : ''), k.ar, k.arPrior, 'neutral');
+    if (k.retainage) add('Retainage', mrMoney0(k.retainage), '', k.retainage, k.retainagePrior, 'neutral');
+    if (k.ap) add('A/P Balance', mrMoney0(k.ap), (k.apOver90 ? mrMoney0(k.apOver90) + ' over 90d' : ''), k.ap, k.apPrior, 'up-bad');
     if (k.creditCards) add('Credit Card Balance', mrMoney0(k.creditCards), '', k.creditCards, k.creditCardsPrior, 'up-bad');
     if (k.ccInterestAnnual) add('CC Interest (annualized)', '~' + mrMoney0(k.ccInterestAnnual) + '/yr', 'est ' + Math.round((k.ccApr || 0.2) * 100) + '% APR', null, null, 'none');
     if (k.lineOfCredit) add('Line of Credit', mrMoney0(k.lineOfCredit), '', k.lineOfCredit, k.lineOfCreditPrior, 'up-bad');
     if (k.longTermDebt) add('Long-Term Debt', mrMoney0(k.longTermDebt), '', k.longTermDebt, k.longTermDebtPrior, 'up-bad');
     (k.debtLines || []).forEach(function (dl) { if (dl && dl.label) add(dl.label, mrMoney0(dl.amount), '', null, null, 'none'); });
-    add('Total Equity', mrMoney0(k.equity), '', k.equity, k.equityPrior, 'up-good');
-    if (k.currentRatio != null) add('Current Ratio', String(k.currentRatio), '', k.currentRatio, k.currentRatioPrior, 'up-good');
+    add('Total Equity', mrMoney0(k.equity), '', k.equity, k.equityPrior, 'up-good', 'posneg', k.equity);
+    if (k.currentRatio != null) add('Current Ratio', String(k.currentRatio), '', k.currentRatio, k.currentRatioPrior, 'up-good', 'currentRatio', k.currentRatio);
     if (k.inventory) add('Inventory', mrMoney0(k.inventory), '', k.inventory, k.inventoryPrior, 'neutral');
-    if (k.workingCapital != null) add('Working Capital', mrMoney0(k.workingCapital), '', k.workingCapital, k.workingCapitalPrior, 'up-good');
+    if (k.workingCapital != null) add('Working Capital', mrMoney0(k.workingCapital), '', k.workingCapital, k.workingCapitalPrior, 'up-good', 'posneg', k.workingCapital);
     return out;
   }
   function openMonthlyReport() {
@@ -1609,14 +1624,15 @@
   function mrHdr(t) { return '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--gold-deep,#a8884a);">' + t + '</div>'; }
   function renderMrBody() {
     var d = _mr.data, k = d.kpis || {};
-    var kpiHtml = mrKpiList(k).map(function (r) {
+    var kpiHtml = mrKpiList(k, d.goals).map(function (r) {
+      var vc = r.vt === 'good' ? MR_TONE.good : r.vt === 'bad' ? MR_TONE.bad : '#23262b';
       return '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:5px 0;border-bottom:1px dotted rgba(0,0,0,.08);font-size:13px;">' +
         '<span style="color:#5a5347;">' + esc(r.l) + '</span>' +
-        '<span style="text-align:right;white-space:nowrap;">' + (r.dir ? mrArrowHtml(r.dir, r.tone) + ' ' : '') + '<strong>' + esc(r.v) + '</strong>' + (r.n ? '<span style="display:block;font-size:10px;color:var(--muted);font-weight:400;">' + esc(r.n) + '</span>' : '') + '</span></div>';
+        '<span style="text-align:right;white-space:nowrap;">' + (r.dir ? mrArrowHtml(r.dir, r.tone) + ' ' : '') + '<strong style="color:' + vc + ';">' + esc(r.v) + '</strong>' + (r.n ? '<span style="display:block;font-size:10px;color:var(--muted);font-weight:400;">' + esc(r.n) + '</span>' : '') + '</span></div>';
     }).join('');
     var fc = _mr.forecast;
     var fcHtml = fc
-      ? '<div style="font-size:12.5px;color:var(--muted);margin:8px 0 14px;">90-day forecast: cash ' + money2(fc.cash) + ' → <strong style="color:' + (fc.projected90 >= fc.cash ? MR_TONE.good : MR_TONE.bad) + ';">' + money2(fc.projected90) + '</strong> &nbsp;(expected collections ' + money2(fc.in90) + ' − scheduled payments ' + money2(fc.out90) + ' + operating run-rate)</div>'
+      ? '<div style="font-size:12.5px;color:var(--muted);margin:8px 0 14px;">90-day forecast: cash ' + money2(fc.cash) + ' → <strong style="color:' + (fc.projected90 >= fc.cash ? MR_TONE.good : MR_TONE.bad) + ';">' + money2(fc.projected90) + '</strong> &nbsp;(collect A/R ' + money2(fc.in90) + ' + ongoing sales ' + money2(fc.newIn90) + ' − pay A/P ' + money2(fc.out90) + ' − ongoing costs ' + money2(fc.newOut90) + '; ~' + (fc.DSO || 0) + 'd A/R, ~' + (fc.DPO || 0) + 'd A/P)</div>'
       : '<div style="font-size:12px;color:var(--muted);margin:8px 0 14px;">90-day cash-flow forecast unavailable for this client (needs open A/R / A/P data).</div>';
     document.getElementById('mrBody').innerHTML =
       '<div style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;font-weight:700;">' + esc(d.company.legalName || d.company.name) + '</div>' +
@@ -1751,7 +1767,7 @@
   // the modal already has; the server just lays it out.
   function mrPdfPayload() {
     var d = _mr.data;
-    return { period: d.period, periodLabel: d.periodLabel, periodEnd: d.periodEnd, preparedOn: d.preparedOn, method: d.method, company: d.company, kpis: mrKpiList(d.kpis || {}), observations: _mr.obs, forecast: _mr.forecast, statements: d.statements };
+    return { period: d.period, periodLabel: d.periodLabel, periodEnd: d.periodEnd, preparedOn: d.preparedOn, method: d.method, company: d.company, kpis: mrKpiList(d.kpis || {}, d.goals), observations: _mr.obs, forecast: _mr.forecast, statements: d.statements };
   }
   function mrFetchPdf() {
     return fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/monthly-report/pdf', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(mrPdfPayload()) })

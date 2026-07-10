@@ -4118,6 +4118,49 @@ app.http('qbo-kpis', {
  * report. The KPI set + observations are the same on every company's report.
  */
 const REPORT_CC_APR = 0.20; // credit-card interest estimate (annualized) shown in the KPI note
+// Health goals used to color KPI values green(good)/red(bad). Admin-editable (bcc-report-goals);
+// these are the sensible defaults. A value >= target = good; < floor = bad; between = neutral.
+const REPORT_GOAL_DEFAULTS = { monthsCash: 3, monthsCashMin: 1, currentRatio: 1.5, currentRatioMin: 1, grossMargin: 0.30, grossMarginMin: 0.15, netMargin: 0.05, netMarginMin: 0 };
+async function getReportGoals() {
+  try {
+    const d = await container().item('bcc-report-goals', BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+    return Object.assign({}, REPORT_GOAL_DEFAULTS, (d && d.goals) || {});
+  } catch (e) { return Object.assign({}, REPORT_GOAL_DEFAULTS); }
+}
+// GET: current goals (any signed-in user, for report coloring). POST: admin saves goals.
+app.http('report-goals', {
+  methods: ['GET', 'POST'], authLevel: 'anonymous', route: 'report-goals',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    try {
+      if (request.method === 'GET') return { jsonBody: { ok: true, goals: await getReportGoals(), defaults: REPORT_GOAL_DEFAULTS } };
+      if (!(await isAppAdmin(p))) return forbidden('admin only');
+      const b = await request.json().catch(() => ({}));
+      const src = b.goals || {};
+      const goals = {};
+      Object.keys(REPORT_GOAL_DEFAULTS).forEach(k => { const v = Number(src[k]); goals[k] = isFinite(v) ? v : REPORT_GOAL_DEFAULTS[k]; });
+      await container().items.upsert({ id: 'bcc-report-goals', tenantId: BCC_TENANT_ID, docType: 'report-goals', goals, updatedAt: new Date().toISOString(), updatedBy: String(p.userDetails || '').toLowerCase() });
+      logAudit('report-goals-save', { user: auditUser(request), meta: goals });
+      return { jsonBody: { ok: true, goals } };
+    } catch (e) { context.error('report-goals', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+// Pull the "91 and over" grand-total from a QBO AgedReceivables/AgedPayables SUMMARY report.
+function agingOver90(rep) {
+  if (!rep) return null;
+  try {
+    const cols = (rep.Columns && rep.Columns.Column) || [];
+    let idx = -1;
+    for (let i = 0; i < cols.length; i++) { if (/91|over|>\s*90|90\s*\+|90 days plus/i.test(cols[i].ColTitle || '')) { idx = i; break; } }
+    if (idx < 0) return null;
+    const gt = ((rep.Rows && rep.Rows.Row) || []).find(r => r.group === 'GrandTotal' && r.Summary) || ((rep.Rows && rep.Rows.Row) || []).filter(r => r.Summary).slice(-1)[0];
+    if (!gt || !gt.Summary || !gt.Summary.ColData) return null;
+    const cd = gt.Summary.ColData[idx];
+    if (!cd || cd.value == null || cd.value === '') return null;
+    const n = parseFloat(String(cd.value).replace(/[$,()]/g, ''));
+    return isNaN(n) ? null : n;
+  } catch (e) { return null; }
+}
 // Build the full monthly-report dataset (KPIs + statements) for a company. Extracted so
 // both the access-scoped GET endpoint and the cron verification path share ONE code path.
 async function assembleMonthlyReport(apiGet, comp, per, method) {
@@ -4147,6 +4190,12 @@ async function assembleMonthlyReport(apiGet, comp, per, method) {
     apiGet('/reports/AgedReceivableDetail?report_date=' + iso(mEnd)).then(flattenQboReport).catch(() => null),
     apiGet('/reports/AgedPayableDetail?report_date=' + iso(mEnd)).then(flattenQboReport).catch(() => null)
   ]);
+  // Aging SUMMARY reports (raw) — for the 91+ days bucket total on A/R and A/P.
+  const [arSummary, apSummary] = await Promise.all([
+    apiGet('/reports/AgedReceivables?report_date=' + iso(mEnd)).catch(() => null),
+    apiGet('/reports/AgedPayables?report_date=' + iso(mEnd)).catch(() => null)
+  ]);
+  const arOver90 = agingOver90(arSummary), apOver90 = agingOver90(apSummary);
 
   const plRevenue = (pl) => pl ? ((findByGroup(pl, 'Income') ?? findByLabel(pl, /total income/i)) || 0) : 0;
   const plCogs = (pl) => pl ? ((findByGroup(pl, 'COGS') ?? findByLabel(pl, /total cost of goods sold|total cogs/i)) || 0) : 0;
@@ -4165,6 +4214,8 @@ async function assembleMonthlyReport(apiGet, comp, per, method) {
   const bsEquity = (bs) => bs ? ((findByGroup(bs, 'TotalEquity') ?? findByLabel(bs, /^total equity$/i)) || 0) : 0;
   const bsInventory = (bs) => bs ? (findByLabel(bs, /total inventory|^inventory$|inventory asset/i) || 0) : 0;
   const bsLOC = (bs) => bs ? sumDataByLabel(bs, /line of credit/i) : 0;
+  // Retainage / retention held (construction) — surfaced separately when the client tracks it.
+  const bsRetainage = (bs) => bs ? sumDataByLabel(bs, /retainage|retention receivable|retention held|contract retention/i) : 0;
 
   const cash = bsCash(bsCur), ar = bsAR(bsCur), ap = bsAP(bsCur), cc = bsCC(bsCur);
   const currentAssets = bsCA(bsCur), currentLiabilities = bsCL(bsCur);
@@ -4183,6 +4234,7 @@ async function assembleMonthlyReport(apiGet, comp, per, method) {
       grossMarginPrior: plPrior && plRevenue(plPrior) ? (plRevenue(plPrior) - plCogs(plPrior)) / plRevenue(plPrior) : null,
       opex, netIncome, netIncomePrior: plPrior ? plNet(plPrior) : null, netIncomeYtd: plYtd ? plNet(plYtd) : null,
       ar, arPrior: bsAR(bsPrior), ap, apPrior: bsAP(bsPrior),
+      arOver90, apOver90, retainage: bsRetainage(bsCur), retainagePrior: bsRetainage(bsPrior),
       creditCards: cc, creditCardsPrior: bsCC(bsPrior), ccInterestAnnual: cc > 0 ? Math.round(cc * REPORT_CC_APR) : 0, ccApr: REPORT_CC_APR,
       lineOfCredit: bsLOC(bsCur), lineOfCreditPrior: bsLOC(bsPrior),
       longTermDebt: bsLTL(bsCur), longTermDebtPrior: bsLTL(bsPrior),
@@ -4235,11 +4287,13 @@ app.http('qbo-monthly-report', {
       const url = new URL(request.url);
       const method = (url.searchParams.get('method') || 'accrual').toLowerCase() === 'cash' ? 'Cash' : 'Accrual';
       const per = resolvePeriod(url.searchParams.get('period'));
-      const data = await assembleMonthlyReport(ctx.apiGet, ctx.comp, per, method);
+      const [data, goals] = await Promise.all([assembleMonthlyReport(ctx.apiGet, ctx.comp, per, method), getReportGoals()]);
       const saved = await c.item(docId(data.period), BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-      data.observations = saved && Array.isArray(saved.observations) ? saved.observations : null;
+      // Default to bare-fact observations when none saved, so a report is never blank.
+      data.observations = (saved && Array.isArray(saved.observations) && saved.observations.length) ? saved.observations : factObservations(data.kpis);
       data.observationsUpdatedAt = saved ? saved.updatedAt : null;
       data.observationsBy = saved ? saved.updatedBy : null;
+      data.goals = goals;
       return { jsonBody: data };
     } catch (e) {
       context.error('qbo-monthly-report error', e);
@@ -4286,8 +4340,9 @@ function factObservations(k) {
   add('Net income', m(k.netIncome || 0), k.netIncome, k.netIncomePrior, 'up-good');
   if (k.netIncomeYtd != null) out.push({ text: 'YTD net ' + m(k.netIncomeYtd), dir: k.netIncomeYtd < 0 ? 'down' : 'up', tone: k.netIncomeYtd < 0 ? 'bad' : 'good' });
   add('Cash', m(k.cash || 0), k.cash, k.cashPrior, 'up-good');
-  if (k.ar) add('A/R', m(k.ar), k.ar, k.arPrior, 'neutral');
-  if (k.ap) add('A/P', m(k.ap), k.ap, k.apPrior, 'up-bad');
+  if (k.ar) add('A/R', m(k.ar) + (k.arOver90 ? ' (' + m(k.arOver90) + ' over 90d)' : ''), k.ar, k.arPrior, 'neutral');
+  if (k.retainage) add('Retainage', m(k.retainage), k.retainage, k.retainagePrior, 'neutral');
+  if (k.ap) add('A/P', m(k.ap) + (k.apOver90 ? ' (' + m(k.apOver90) + ' over 90d)' : ''), k.ap, k.apPrior, 'up-bad');
   if (k.creditCards) add('Credit cards', m(k.creditCards), k.creditCards, k.creditCardsPrior, 'up-bad');
   if (k.lineOfCredit) add('Line of credit', m(k.lineOfCredit), k.lineOfCredit, k.lineOfCreditPrior, 'up-bad');
   if (k.longTermDebt) add('Long-term debt', m(k.longTermDebt), k.longTermDebt, k.longTermDebtPrior, 'up-bad');
@@ -4372,20 +4427,24 @@ function pdfStmtTable(stmt) {
   return { table: { headerRows: 1, widths: widths, body: body }, layout: { hLineWidth: (i) => (i === 1 ? 0.6 : 0.35), vLineWidth: () => 0, hLineColor: () => '#e8e6df', paddingTop: () => 2.2, paddingBottom: () => 2.2, fillColor: (ri) => (ri > 0 && boldRow[ri - 1]) ? '#fbf9f4' : null } };
 }
 function pdfForecast(fc) {
-  const m = pdfMoney; const inf = fc.inflow || [0, 0, 0], outf = fc.outflow || [0, 0, 0], proj = fc.projected || [0, 0, 0], op = fc.opNet || 0;
+  const m = pdfMoney;
+  const inf = fc.inflow || [0, 0, 0], outf = fc.outflow || [0, 0, 0], proj = fc.projected || [0, 0, 0];
+  const nSales = fc.newSales || [0, 0, 0], nCosts = fc.newCosts || [0, 0, 0];
   const hcell = (t, a) => ({ text: t, bold: true, alignment: a || 'left', fontSize: 7.5, fillColor: '#f7f1e3' });
-  const row = (lbl, vals, o) => [{ text: lbl, fontSize: 8, bold: !!(o && o.b) }].concat(vals.map(v => ({ text: v, alignment: 'right', fontSize: 8, bold: !!(o && o.b), color: (o && o.c) || null })));
+  const posRow = (lbl, vals) => [{ text: lbl, fontSize: 8 }, { text: '', alignment: 'right', fontSize: 8 }].concat(vals.map(v => ({ text: '+' + m(v), alignment: 'right', fontSize: 8, color: '#1f8a4c' })));
+  const negRow = (lbl, vals) => [{ text: lbl, fontSize: 8 }, { text: '', alignment: 'right', fontSize: 8 }].concat(vals.map(v => ({ text: '(' + m(v) + ')', alignment: 'right', fontSize: 8, color: '#c0392b' })));
   const body = [
     [hcell('Projection'), hcell('Now', 'right'), hcell('+30 days', 'right'), hcell('+60 days', 'right'), hcell('+90 days', 'right')],
-    row('Expected collections (open A/R)', ['', '+' + m(inf[0]), '+' + m(inf[1]), '+' + m(inf[2])], { c: '#1f8a4c' }),
-    row('Scheduled payments (open A/P)', ['', '(' + m(outf[0]) + ')', '(' + m(outf[1]) + ')', '(' + m(outf[2]) + ')'], { c: '#c0392b' }),
-    row('Operating run-rate (rev - COGS - overhead)', ['', (op >= 0 ? '+' : '-') + m(Math.abs(op)), (op >= 0 ? '+' : '-') + m(Math.abs(op)), (op >= 0 ? '+' : '-') + m(Math.abs(op))], { c: op >= 0 ? '#1f8a4c' : '#c0392b' }),
-    row('Projected cash balance', [m(fc.cash), m(proj[0]), m(proj[1]), m(proj[2])], { b: true })
+    posRow('Collect existing A/R', inf),
+    posRow('Collect ongoing sales', nSales),
+    negRow('Pay existing A/P', outf),
+    negRow('Pay ongoing costs', nCosts),
+    [{ text: 'Projected cash balance', bold: true, fontSize: 8 }].concat([fc.cash, proj[0], proj[1], proj[2]].map(v => ({ text: m(v), alignment: 'right', bold: true, fontSize: 8, color: (v < 0 ? '#c0392b' : '#23262b') })))
   ];
   return {
     stack: [
-      { table: { headerRows: 1, widths: ['*', 'auto', 'auto', 'auto', 'auto'], body: body }, layout: { hLineWidth: (i) => (i === 1 ? 0.6 : 0.35), vLineWidth: () => 0, hLineColor: () => '#e0ddd4', paddingTop: () => 2.5, paddingBottom: () => 2.5 } },
-      { text: 'Based on the client\'s current open invoices & bills (bucketed by due date) plus the trailing-' + (fc.historyMonths || 12) + '-month operating run-rate (avg revenue - COGS - overhead ~ ' + m(op) + '/mo). A forecast from real receivables/payables - not a guarantee.', fontSize: 7.5, color: '#8a8577', margin: [0, 5, 0, 0] }
+      { table: { headerRows: 1, widths: ['*', 'auto', 'auto', 'auto', 'auto'], body: body }, layout: { hLineWidth: (i, node) => (i === 1 || i === node.table.body.length - 1 ? 0.6 : 0.35), vLineWidth: () => 0, hLineColor: () => '#e0ddd4', paddingTop: () => 2.5, paddingBottom: () => 2.5 } },
+      { text: 'Existing open invoices & bills are scheduled by due date. Ongoing sales and costs use the trailing-' + (fc.historyMonths || 12) + '-month averages (revenue ~ ' + m(fc.avgRevenue || 0) + '/mo, COGS ~ ' + m(fc.avgCOGS || 0) + '/mo, overhead ~ ' + m(fc.avgOverhead || 0) + '/mo), collected on the client\'s ~' + (fc.DSO || 0) + '-day A/R and paid on the ~' + (fc.DPO || 0) + '-day A/P cycle. A forecast, not a guarantee.', fontSize: 7.5, color: '#8a8577', margin: [0, 5, 0, 0] }
     ]
   };
 }
@@ -4399,17 +4458,20 @@ function buildReportDocDef(b) {
   // A gold divider bar. A filled 1-row table flows reliably in-place (standalone
   // canvas lines get mispositioned by pdfmake), so use that instead of a canvas line.
   const mkRule = () => ({ table: { widths: ['*'], heights: [1.1], body: [[{ text: '', fillColor: '#c5a55a' }]] }, layout: 'noBorders', margin: [0, 3, 0, 9] });
-  const kval = (v, dir, tone) => ({ columns: dir ? [{ width: 'auto', text: '' }, pdfTri(dir, tone), { text: pdfSani(v), bold: true, width: 'auto' }] : [{ text: pdfSani(v), bold: true, alignment: 'right' }], columnGap: 3 });
+  const valColor = (vt) => vt === 'good' ? '#1f8a4c' : vt === 'bad' ? '#c0392b' : '#23262b';
+  const kval = (v, dir, tone, vt) => ({ columns: dir ? [{ width: 'auto', text: '' }, pdfTri(dir, tone), { text: pdfSani(v), bold: true, width: 'auto', color: valColor(vt) }] : [{ text: pdfSani(v), bold: true, alignment: 'right', color: valColor(vt) }], columnGap: 3 });
   const kbody = [];
   for (let i = 0; i < kpis.length; i += 2) {
     const a = kpis[i], c = kpis[i + 1];
-    kbody.push([{ text: pdfSani(a.l), color: '#555', fontSize: 9 }, kval(a.v, a.dir, a.tone), c ? { text: pdfSani(c.l), color: '#555', fontSize: 9 } : '', c ? kval(c.v, c.dir, c.tone) : '']);
+    kbody.push([{ text: pdfSani(a.l), color: '#555', fontSize: 9 }, kval(a.v, a.dir, a.tone, a.vt), c ? { text: pdfSani(c.l), color: '#555', fontSize: 9 } : '', c ? kval(c.v, c.dir, c.tone, c.vt) : '']);
   }
   const obsStack = obs.length
     ? obs.map(o => ({ columns: [o.dir ? pdfTri(o.dir, o.tone) : { text: '', width: 8 }, { text: pdfSani(o.text), width: '*', fontSize: 9.5 }], columnGap: 5, margin: [0, 0, 0, 4] }))
     : [{ text: 'No observations recorded for this month.', italics: true, color: '#888', fontSize: 9 }];
   const content = [
-    { text: 'BLUE COLLAR COACH', alignment: 'center', color: '#a8884a', bold: true, characterSpacing: 3, fontSize: 12, margin: [0, 2, 0, 2] },
+    b.logo
+      ? { image: b.logo, width: 200, alignment: 'center', margin: [0, 0, 0, 4] }
+      : { text: 'BLUE COLLAR COACH', alignment: 'center', color: '#a8884a', bold: true, characterSpacing: 3, fontSize: 12, margin: [0, 2, 0, 2] },
     mkRule(),
     { text: periodLabel.toUpperCase(), alignment: 'center', color: '#a8884a', bold: true, characterSpacing: 2.5, fontSize: 11, margin: [0, 0, 0, 5] },
     { text: [{ text: 'Monthly Financial Report\n', fontSize: 17 }, { text: 'for ' + name, fontSize: 17, bold: true }], alignment: 'center', margin: [0, 0, 0, 16] },
@@ -4443,6 +4505,22 @@ function buildReportDocDef(b) {
     content: content
   };
 }
+// The BCC logo as a data URI for the PDF header. Fetched once from the app's own
+// static asset (anonymous-served) and cached; falls back to a text wordmark.
+let _reportLogo = null, _reportLogoTried = false;
+async function getReportLogo(request) {
+  if (_reportLogoTried) return _reportLogo;
+  _reportLogoTried = true;
+  try {
+    const origin = publicOrigin(request);
+    const r = await fetch(origin + '/bcc-logo-full.png');
+    if (r.ok) {
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (buf.length > 0 && buf.length < 600000) _reportLogo = 'data:image/png;base64,' + buf.toString('base64');
+    }
+  } catch (_) { }
+  return _reportLogo;
+}
 async function renderReportPdf(b) {
   const doc = pdfPrinter().createPdfKitDocument(buildReportDocDef(b));
   return await new Promise((resolve, reject) => {
@@ -4468,11 +4546,51 @@ app.http('qbo-monthly-report-pdf', {
     if (ctx.err) return ctx.err;
     try {
       const b = await request.json().catch(() => ({}));
+      b.logo = await getReportLogo(request);
       const buf = await renderReportPdf(b);
       logAudit('report-pdf', { user: auditUser(request), meta: { realmId: request.params.realmId, period: b.period } });
       return { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="monthly-report.pdf"', 'X-Content-Type-Options': 'nosniff' }, body: buf };
     } catch (e) { context.error('qbo-monthly-report-pdf', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
+});
+
+// TEMP (CRON_SECRET-gated): render a company's report PDF headless to verify layout. Remove after.
+app.http('cron-report-pdf-check', {
+  methods: ['GET', 'POST'], authLevel: 'anonymous', route: 'cron/report-pdf-check',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
+    try {
+      const url = new URL(request.url); const realmId = String(url.searchParams.get('realmId') || '');
+      const mm = String(url.searchParams.get('period') || '').match(/^(\d{4})-(\d{2})$/);
+      const per = mm ? { y: +mm[1], mo: +mm[2] - 1 } : (function () { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return { y: d.getFullYear(), mo: d.getMonth() }; })();
+      const c = container(); const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      if (!comp) return { status: 404, jsonBody: { ok: false, error: 'no company' } };
+      const fields = await getIntegrationFields('qbo'); const { accessToken, base } = await qboAccessForCompany(comp, fields);
+      const apiGet = async (path) => { const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70'; const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } }); if (!r.ok) throw new Error('QBO ' + r.status); return r.json(); };
+      const [data, goals] = await Promise.all([assembleMonthlyReport(apiGet, comp, per, 'Accrual'), getReportGoals()]);
+      if (url.searchParams.get('json') === '1') return { jsonBody: { ok: true, kpis: data.kpis, goals, observations: factObservations(data.kpis) } };
+      const k = data.kpis, n0 = x => '$' + Math.round(x || 0).toLocaleString();
+      const HT = (key, v) => { if (v == null) return 'neutral'; switch (key) { case 'monthsOfCash': return v >= goals.monthsCash ? 'good' : v < goals.monthsCashMin ? 'bad' : 'neutral'; case 'currentRatio': return v >= goals.currentRatio ? 'good' : v < goals.currentRatioMin ? 'bad' : 'neutral'; case 'grossMargin': return v >= goals.grossMargin ? 'good' : v < goals.grossMarginMin ? 'bad' : 'neutral'; case 'posneg': return v > 0 ? 'good' : v < 0 ? 'bad' : 'neutral'; default: return 'neutral'; } };
+      const kpis = [
+        { l: 'Months of Cash', v: String(Math.round(k.monthsOfCash || 0)), vt: HT('monthsOfCash', k.monthsOfCash) },
+        { l: 'Cash on Hand', v: n0(k.cash) },
+        { l: 'Monthly Net Income', v: n0(k.netIncome), vt: HT('posneg', k.netIncome) },
+        { l: 'Revenue', v: n0(k.revenue) },
+        { l: 'Gross Margin', v: Math.round((k.grossMargin || 0) * 100) + '%', vt: HT('grossMargin', k.grossMargin) },
+        { l: 'Net Income YTD', v: n0(k.netIncomeYtd), vt: HT('posneg', k.netIncomeYtd) },
+        { l: 'A/R Outstanding', v: n0(k.ar), n: k.arOver90 ? n0(k.arOver90) + ' over 90d' : '' }
+      ].concat(k.retainage ? [{ l: 'Retainage', v: n0(k.retainage) }] : []).concat([
+        { l: 'A/P Balance', v: n0(k.ap), n: k.apOver90 ? n0(k.apOver90) + ' over 90d' : '' },
+        { l: 'Current Ratio', v: String(k.currentRatio), vt: HT('currentRatio', k.currentRatio) },
+        { l: 'Total Equity', v: n0(k.equity), vt: HT('posneg', k.equity) }
+      ]);
+      const logo = await getReportLogo(request);
+      const fc = { cash: k.cash, inflow: [k.ar || 0, 0, 0], outflow: [k.ap || 0, 0, 0], newSales: [0, 300000, 300000], newCosts: [0, 250000, 250000], projected: [k.cash, k.cash + 100000, k.cash + 150000], in90: k.ar, out90: k.ap, newIn90: 600000, newOut90: 500000, avgRevenue: 300000, avgCOGS: 200000, avgOverhead: 50000, DSO: 50, DPO: 45, historyMonths: 12 };
+      const buf = await renderReportPdf({ company: data.company, periodLabel: data.periodLabel, periodEnd: data.periodEnd, preparedOn: data.preparedOn, method: data.method, goals, logo, kpis, observations: factObservations(k), forecast: fc, statements: data.statements });
+      return { status: 200, headers: { 'Content-Type': 'application/pdf' }, body: buf };
+    } catch (e) { context.error('cron-report-pdf-check', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  }
 });
 
 /**
@@ -4712,30 +4830,46 @@ app.http('qbo-cashflow', {
           invoices.forEach(iv => { const b = bucketOf(iv.DueDate || iv.TxnDate); const amt = Number(iv.Balance) || 0; if (b < 3) inflow[b] += amt; else inLater += amt; });
           bills.forEach(bl => { const b = bucketOf(bl.DueDate || bl.TxnDate); const amt = Number(bl.Balance) || 0; if (b < 3) outflow[b] += amt; else outLater += amt; });
           const round = n => Math.round(n * 100) / 100;
-          // Run-rate inputs from a live trailing-12-month P&L: default monthly
-          // revenue (rolling-12 avg), COGS ratio, and monthly overhead burn.
+          const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+          const bucketOfDay = (d) => d <= 30 ? 0 : d <= 60 ? 1 : d <= 90 ? 2 : -1;
+          // Trailing-12-month P&L → monthly-average revenue / COGS / overhead.
           const r12Start = new Date(today.getFullYear(), today.getMonth() - 11, 1).toISOString().slice(0, 10);
           const r12End = today.toISOString().slice(0, 10);
           const pl12 = flattenQboReport(await apiGet('/reports/ProfitAndLoss?start_date=' + r12Start + '&end_date=' + r12End + '&accounting_method=Accrual'));
           const rev12 = (findByGroup(pl12, 'Income') ?? findByLabel(pl12, /total income/i)) || 0;
           const cogs12 = (findByGroup(pl12, 'COGS') ?? findByLabel(pl12, /total cost of goods sold|total cogs/i)) || 0;
           const opex12 = (findByGroup(pl12, 'Expenses') ?? findByLabel(pl12, /total expenses/i)) || 0;
-          const avgRevenue = round(rev12 / 12);
-          const monthlyBurn = round(opex12 / 12);
+          const avgRevenue = round(rev12 / 12), avgCOGS = round(cogs12 / 12), avgOverhead = round(opex12 / 12);
+          const monthlyBurn = avgOverhead;
           const cogsRatio = rev12 > 0 ? Math.round((cogs12 / rev12) * 1000) / 1000 : 0;
           const historyMonths = 12;
-          // Default combined projection: existing A/R−A/P timing PLUS the run-rate
-          // operating net each month (revenue − COGS − burn). The frontend recomputes
-          // live when the owner edits revenue / COGS% / burn.
-          const opNet = round(avgRevenue * (1 - cogsRatio) - monthlyBurn);
+          // Average collection / payment delays from the current open balances.
+          const arBalance = round(inflow[0] + inflow[1] + inflow[2] + inLater);
+          const apBalance = round(outflow[0] + outflow[1] + outflow[2] + outLater);
+          const dailyRev = avgRevenue / 30, dailyCost = (avgCOGS + avgOverhead) / 30;
+          const DSO = dailyRev > 0 ? Math.round(clamp(arBalance / dailyRev, 0, 120)) : 30;
+          const DPO = dailyCost > 0 ? Math.round(clamp(apBalance / dailyCost, 0, 120)) : 30;
+          // Ongoing operations: NEW revenue is collected DSO days after it's earned; NEW
+          // COGS is paid DPO days after; overhead (payroll/rent) is paid ~mid-month. Existing
+          // A/R/A/P already carry the current pipeline (days 0..DSO / 0..DPO), so new business
+          // naturally back-fills collections/payments after that — no double-count.
+          const newSales = [0, 0, 0], newCosts = [0, 0, 0];
+          for (let f = 0; f < 4; f++) {
+            const bc = bucketOfDay(f * 30 + DSO); if (bc >= 0) newSales[bc] += avgRevenue;
+            const bp = bucketOfDay(f * 30 + DPO); if (bp >= 0) newCosts[bp] += avgCOGS;
+            const bo = bucketOfDay(f * 30 + 15); if (bo >= 0) newCosts[bo] += avgOverhead;
+          }
           const projected = []; let run = cash;
-          for (let i = 0; i < 3; i++) { run = run + inflow[i] - outflow[i] + opNet; projected.push(round(run)); }
+          for (let i = 0; i < 3; i++) { run = run + inflow[i] + newSales[i] - outflow[i] - newCosts[i]; projected.push(round(run)); }
+          const opNet = round(avgRevenue * (1 - cogsRatio) - monthlyBurn); // legacy net, for the interactive firm-wide modal
           return {
             realmId: comp.realmId, companyName: comp.companyName,
-            cash: round(cash), inflow: inflow.map(round), outflow: outflow.map(round), projected,
+            cash: round(cash), inflow: inflow.map(round), outflow: outflow.map(round),
+            newSales: newSales.map(round), newCosts: newCosts.map(round), projected,
             in90: round(inflow[0] + inflow[1] + inflow[2]), out90: round(outflow[0] + outflow[1] + outflow[2]),
+            newIn90: round(newSales[0] + newSales[1] + newSales[2]), newOut90: round(newCosts[0] + newCosts[1] + newCosts[2]),
             projected90: projected[2], net90: round(projected[2] - cash), inLater: round(inLater), outLater: round(outLater),
-            avgRevenue, cogsRatio, monthlyBurn, opNet, historyMonths
+            arBalance, apBalance, DSO, DPO, avgRevenue, avgCOGS, avgOverhead, cogsRatio, monthlyBurn, opNet, historyMonths
           };
         } catch (e) { return { realmId: comp.realmId, companyName: comp.companyName, error: String(e && e.message || e).slice(0, 140) }; }
       }));
