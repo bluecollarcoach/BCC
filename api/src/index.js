@@ -4477,24 +4477,56 @@ function pdfForecast(fc) {
   const m = pdfMoney;
   const inf = fc.inflow || [0, 0, 0], outf = fc.outflow || [0, 0, 0], proj = fc.projected || [0, 0, 0];
   const nSales = fc.newSales || [0, 0, 0], nCosts = fc.newCosts || [0, 0, 0];
+  const manual = !!fc.manual;
+  const salesLbl = manual ? 'Expected new revenue' : 'Collect ongoing sales';
+  const costsLbl = manual ? 'Expected COGS + overhead' : 'Pay ongoing costs';
   const hcell = (t, a) => ({ text: t, bold: true, alignment: a || 'left', fontSize: 7.5, fillColor: '#f7f1e3' });
   const posRow = (lbl, vals) => [{ text: lbl, fontSize: 8 }, { text: '', alignment: 'right', fontSize: 8 }].concat(vals.map(v => ({ text: '+' + m(v), alignment: 'right', fontSize: 8, color: '#1f8a4c' })));
   const negRow = (lbl, vals) => [{ text: lbl, fontSize: 8 }, { text: '', alignment: 'right', fontSize: 8 }].concat(vals.map(v => ({ text: '(' + m(v) + ')', alignment: 'right', fontSize: 8, color: '#c0392b' })));
   const body = [
     [hcell('Projection'), hcell('Now', 'right'), hcell('+30 days', 'right'), hcell('+60 days', 'right'), hcell('+90 days', 'right')],
     posRow('Collect existing A/R', inf),
-    posRow('Collect ongoing sales', nSales),
+    posRow(salesLbl, nSales),
     negRow('Pay existing A/P', outf),
-    negRow('Pay ongoing costs', nCosts),
+    negRow(costsLbl, nCosts),
     [{ text: 'Projected cash balance', bold: true, fontSize: 8 }].concat([fc.cash, proj[0], proj[1], proj[2]].map(v => ({ text: m(v), alignment: 'right', bold: true, fontSize: 8, color: (v < 0 ? '#c0392b' : '#23262b') })))
   ];
+  const bills = fc.billings || nSales;
+  const note = manual
+    ? 'Refined with the expected pipeline: new revenue +30 ' + m(bills[0] || 0) + ' / +60 ' + m(bills[1] || 0) + ' / +90 ' + m(bills[2] || 0) + ', with COGS at ' + (fc.cogsPct || 0) + '% of that (run-rate margin) and overhead ~ ' + m(fc.overheadMo || 0) + '/mo. Existing open invoices & bills are scheduled separately by due date. A forecast, not a guarantee.'
+    : 'Existing open invoices & bills are scheduled by due date. Ongoing sales and costs use the trailing-' + (fc.historyMonths || 12) + '-month averages (revenue ~ ' + m(fc.avgRevenue || 0) + '/mo, COGS ~ ' + m(fc.avgCOGS || 0) + '/mo, overhead ~ ' + m(fc.avgOverhead || 0) + '/mo), collected on the client\'s ~' + (fc.DSO || 0) + '-day A/R and paid on the ~' + (fc.DPO || 0) + '-day A/P cycle. A forecast, not a guarantee.';
   return {
     stack: [
       { table: { headerRows: 1, widths: ['*', 'auto', 'auto', 'auto', 'auto'], body: body }, layout: { hLineWidth: (i, node) => (i === 1 || i === node.table.body.length - 1 ? 0.6 : 0.35), vLineWidth: () => 0, hLineColor: () => '#e0ddd4', paddingTop: () => 2.5, paddingBottom: () => 2.5 } },
-      { text: 'Existing open invoices & bills are scheduled by due date. Ongoing sales and costs use the trailing-' + (fc.historyMonths || 12) + '-month averages (revenue ~ ' + m(fc.avgRevenue || 0) + '/mo, COGS ~ ' + m(fc.avgCOGS || 0) + '/mo, overhead ~ ' + m(fc.avgOverhead || 0) + '/mo), collected on the client\'s ~' + (fc.DSO || 0) + '-day A/R and paid on the ~' + (fc.DPO || 0) + '-day A/P cycle. A forecast, not a guarantee.', fontSize: 7.5, color: '#8a8577', margin: [0, 5, 0, 0] }
+      { text: note, fontSize: 7.5, color: '#8a8577', margin: [0, 5, 0, 0] }
     ]
   };
 }
+// TEMP (CRON_SECRET-gated): render a sample report PDF (auto or manual forecast) to verify
+// the 90-day forecast layout without needing the live modal. Remove after verification.
+app.http('cron-fc-pdf', {
+  methods: ['GET'], authLevel: 'anonymous', route: 'cron/fc-pdf',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
+    try {
+      const mode = String(new URL(request.url).searchParams.get('mode') || 'manual');
+      const base = { cash: 10000, inflow: [5000, 3000, 2000], outflow: [4000, 2000, 1000], historyMonths: 12, avgRevenue: 100000, avgCOGS: 60000, avgOverhead: 20000, DSO: 45, DPO: 30, cogsRatio: 0.6 };
+      const forecast = mode === 'auto'
+        ? Object.assign({ manual: false, newSales: [92000, 100000, 100000], newCosts: [78000, 80000, 80000], projected: [23000, 44000, 65000] }, base)
+        : Object.assign({ manual: true, billings: [120000, 80000, 150000], cogsPct: 60, overheadMo: 20000, newSales: [120000, 80000, 150000], newCosts: [92000, 68000, 110000], projected: [39000, 52000, 93000] }, base);
+      const payload = {
+        company: { legalName: 'Test Co LLC' }, periodLabel: 'June 2026', period: '2026-06', periodEnd: '2026-06-30', preparedOn: 1751000000000, method: 'Accrual',
+        kpis: [{ l: 'Cash on Hand', v: '$10,000', dir: 'up', tone: 'good', vt: 'good' }, { l: 'Revenue', v: '$100,000', dir: 'up', tone: 'good', vt: 'good' }],
+        observations: [{ text: 'Sample observation.', dir: 'flat', tone: 'neutral' }],
+        forecast, statements: {}
+      };
+      const buf = await renderReportPdf(payload);
+      return { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="fc-test.pdf"' }, body: buf };
+    } catch (e) { context.error('cron-fc-pdf', e); return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } }; }
+  }
+});
+
 function buildReportDocDef(b) {
   const company = b.company || {}, name = pdfSani(company.legalName || company.name || 'Company');
   const kpis = Array.isArray(b.kpis) ? b.kpis : [];

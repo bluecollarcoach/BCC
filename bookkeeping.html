@@ -1614,7 +1614,7 @@
   function closeMonthlyReport() { var ov = document.getElementById('mrOverlay'); if (ov) ov.style.display = 'none'; }
   function mrBtns(disabled) { ['mrPrint', 'mrSaveFile', 'mrSaveObs'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = disabled; }); }
   function loadMonthlyReport(period) {
-    _mr.period = period; _mr.forecast = null;
+    _mr.period = period; _mr.forecast = null; _mr.fcManual = null;
     var body = document.getElementById('mrBody'), st = document.getElementById('mrStatus');
     body.innerHTML = '<div style="color:var(--muted);padding:22px;text-align:center;">Pulling QuickBooks statements, KPIs &amp; cash-flow forecast…</div>';
     if (st) st.textContent = ''; mrBtns(true);
@@ -1630,6 +1630,7 @@
       var d = res[0], cf = res[1];
       _mr.data = d; _mr.obs = (d.observations || []).map(mrCoerceObs);
       _mr.forecast = (cf && cf.ok && cf.companies && cf.companies[0] && !cf.companies[0].error) ? cf.companies[0] : null;
+      mrInitManual(_mr.forecast);
       renderMrBody();
       if (st) st.textContent = d.periodLabel + ' · ' + d.method + ' basis' + (d.observationsUpdatedAt ? ' · notes saved' : '') + (_mr.forecast ? ' · forecast ✓' : '');
       mrBtns(false);
@@ -1644,20 +1645,17 @@
         '<span style="color:#5a5347;">' + esc(r.l) + '</span>' +
         '<span style="text-align:right;white-space:nowrap;">' + (r.dir ? mrArrowHtml(r.dir, r.tone) + ' ' : '') + '<strong style="color:' + vc + ';">' + esc(r.v) + '</strong>' + (r.n ? '<span style="display:block;font-size:10px;color:var(--muted);font-weight:400;">' + esc(r.n) + '</span>' : '') + '</span></div>';
     }).join('');
-    var fc = _mr.forecast;
-    var fcHtml = fc
-      ? '<div style="font-size:12.5px;color:var(--muted);margin:8px 0 14px;">90-day forecast: cash ' + money2(fc.cash) + ' → <strong style="color:' + (fc.projected90 >= fc.cash ? MR_TONE.good : MR_TONE.bad) + ';">' + money2(fc.projected90) + '</strong> &nbsp;(collect A/R ' + money2(fc.in90) + ' + ongoing sales ' + money2(fc.newIn90) + ' − pay A/P ' + money2(fc.out90) + ' − ongoing costs ' + money2(fc.newOut90) + '; ~' + (fc.DSO || 0) + 'd A/R, ~' + (fc.DPO || 0) + 'd A/P)</div>'
-      : '<div style="font-size:12px;color:var(--muted);margin:8px 0 14px;">90-day cash-flow forecast unavailable for this client (needs open A/R / A/P data).</div>';
     document.getElementById('mrBody').innerHTML =
       '<div style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;font-weight:700;">' + esc(d.company.legalName || d.company.name) + '</div>' +
       '<div style="color:var(--muted);font-size:12.5px;margin-bottom:14px;">' + esc(d.periodLabel) + ' · P&amp;L, Balance Sheet, Cash Flows, A/R &amp; A/P aging + 90-day forecast</div>' +
       mrHdr('Key Financial KPIs') +
       '<div style="border:1.5px solid #c5a55a;border-radius:10px;padding:10px 14px;background:var(--gold-tint,#f7f1e3);margin:5px 0 2px;"><div style="display:grid;grid-template-columns:1fr 1fr;gap:0 20px;">' + kpiHtml + '</div></div>' +
-      fcHtml +
+      '<div id="mrForecast" style="margin:12px 0 14px;"></div>' +
       '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0 6px;">' + mrHdr('Observations (brief bullets)') +
         '<button id="mrAiBtn" type="button" class="btn btn-ghost" style="font-size:12px;min-height:30px;">↻ Fill from the numbers</button></div>' +
       '<div id="mrObsList"></div>' +
       '<div style="font-size:11px;color:var(--muted);margin-top:6px;">Bare facts pulled straight from the figures (no assumptions). Edit freely. Click the <strong>arrow</strong> to change direction (▲ up / ▼ down / ▶ flat); click the <strong>dot</strong> to change good&nbsp;/&nbsp;neutral&nbsp;/&nbsp;bad.</div>';
+    renderMrForecast();
     renderObsList();
     document.getElementById('mrAiBtn').onclick = aiDraftObservations;
   }
@@ -1690,6 +1688,120 @@
         if (window.bccNotify) window.bccNotify('Filled from the numbers — edit any before saving.', 'success');
       })
       .catch(function (e) { btn.disabled = false; btn.textContent = ot; (window.bccNotify || alert)('Could not fill observations: ' + e.message, 'error'); });
+  }
+  // ===== 90-day cash-flow forecast: auto (run-rate) + optional manual pipeline override =====
+  // Seed the editable override from the model's trailing-12 averages so, untouched, it
+  // starts sensibly. Coach enters expected revenue per month; COGS = revenue × run-rate %.
+  function mrInitManual(fc) {
+    if (!fc) { _mr.fcManual = null; return; }
+    var avg = Math.max(0, Math.round(fc.avgRevenue || 0));
+    _mr.fcManual = {
+      on: false,
+      billings: [avg, avg, avg],
+      cogsPct: Math.round((fc.cogsRatio != null ? fc.cogsRatio : 0) * 1000) / 10, // one decimal
+      overhead: Math.max(0, Math.round(fc.avgOverhead || 0))
+    };
+  }
+  // The forecast object used for BOTH the on-screen table and the printed PDF. In auto mode
+  // it's the raw server forecast; in manual mode we recompute new-business sales/costs from
+  // the coach's per-month revenue at the run-rate COGS %, keeping existing A/R/A/P by due date.
+  function mrForecastEffective() {
+    var fc = _mr.forecast; if (!fc) return null;
+    var mo = _mr.fcManual;
+    if (!mo || !mo.on) return fc;
+    var r = function (n) { return Math.round((n || 0) * 100) / 100; };
+    var num = function (x) { var n = parseFloat(x); return isNaN(n) ? 0 : n; };
+    var inflow = fc.inflow || [0, 0, 0], outflow = fc.outflow || [0, 0, 0];
+    var cogsR = Math.max(0, num(mo.cogsPct)) / 100;
+    var oh = Math.max(0, num(mo.overhead));
+    var bills = [0, 1, 2].map(function (i) { return Math.max(0, num(mo.billings[i])); });
+    var newSales = [0, 0, 0], newCosts = [0, 0, 0], projected = [0, 0, 0];
+    var run = fc.cash || 0;
+    for (var i = 0; i < 3; i++) {
+      newSales[i] = r(bills[i]);
+      newCosts[i] = r(bills[i] * cogsR + oh);
+      run = run + num(inflow[i]) + newSales[i] - num(outflow[i]) - newCosts[i];
+      projected[i] = r(run);
+    }
+    return Object.assign({}, fc, {
+      manual: true, billings: bills.map(r), cogsPct: Math.round(cogsR * 1000) / 10, overheadMo: r(oh),
+      newSales: newSales, newCosts: newCosts, projected: projected,
+      newIn90: r(newSales[0] + newSales[1] + newSales[2]),
+      newOut90: r(newCosts[0] + newCosts[1] + newCosts[2]),
+      projected90: projected[2], net90: r(projected[2] - (fc.cash || 0))
+    });
+  }
+  // Re-render just the derived output (summary + table) — called on every keystroke so the
+  // editor inputs keep focus while the numbers below them update live.
+  function renderMrFcOut() {
+    var host = document.getElementById('mrFcOut'); if (!host) return;
+    var fc = _mr.forecast, eff = mrForecastEffective(), m = mrMoney;
+    var inf = eff.inflow || [0, 0, 0], outf = eff.outflow || [0, 0, 0], ns = eff.newSales || [0, 0, 0], nc = eff.newCosts || [0, 0, 0], pr = eff.projected || [0, 0, 0];
+    var manual = !!eff.manual;
+    var salesLbl = manual ? 'Expected new revenue' : 'Collect ongoing sales (run-rate)';
+    var costsLbl = manual ? 'Expected COGS + overhead' : 'Pay ongoing costs (run-rate)';
+    var col = 'text-align:right;padding:3px 6px;white-space:nowrap;font-variant-numeric:tabular-nums;';
+    var lcol = 'padding:3px 6px;color:#5a5347;';
+    function row(lbl, vals, sign) {
+      var cells = vals.map(function (v) {
+        var t = sign === '+' ? '+' + m(v) : sign === '-' ? '(' + m(v) + ')' : m(v);
+        var c = sign === '+' ? MR_TONE.good : sign === '-' ? MR_TONE.bad : '#23262b';
+        return '<td style="' + col + '"><span style="color:' + c + ';">' + t + '</span></td>';
+      }).join('');
+      return '<tr><td style="' + lcol + '">' + lbl + '</td><td style="' + col + '"></td>' + cells + '</tr>';
+    }
+    var projRow = '<tr style="border-top:1px solid #cfcabb;"><td style="' + lcol + '"><strong>Projected cash balance</strong></td>' +
+      [fc.cash, pr[0], pr[1], pr[2]].map(function (v) { return '<td style="' + col + '"><strong style="color:' + (v < 0 ? MR_TONE.bad : '#23262b') + ';">' + m(v) + '</strong></td>'; }).join('') + '</tr>';
+    var head = '<tr style="background:#f7f1e3;">' + ['Projection', 'Now', '+30 days', '+60 days', '+90 days'].map(function (h, i) {
+      return '<th style="text-align:' + (i ? 'right' : 'left') + ';padding:4px 6px;font-size:10px;text-transform:uppercase;letter-spacing:.03em;color:#8a7a4a;border-bottom:1px solid #c5a55a;">' + h + '</th>';
+    }).join('') + '</tr>';
+    var up = pr[2] >= (fc.cash || 0);
+    host.innerHTML =
+      '<div style="font-size:12.5px;color:var(--muted);margin:2px 0 0;">Cash ' + money2(fc.cash) + ' → <strong style="color:' + (up ? MR_TONE.good : MR_TONE.bad) + ';">' + money2(pr[2]) + '</strong> projected over 90 days</div>' +
+      '<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:6px;"><thead>' + head + '</thead><tbody>' +
+      row('Collect existing A/R', inf, '+') + row(salesLbl, ns, '+') +
+      row('Pay existing A/P', outf, '-') + row(costsLbl, nc, '-') + projRow +
+      '</tbody></table>';
+  }
+  // Full forecast block: header + toggle + (when on) the editor inputs + the live table + note.
+  function renderMrForecast() {
+    var host = document.getElementById('mrForecast'); if (!host) return;
+    var fc = _mr.forecast;
+    if (!fc) { host.innerHTML = '<div style="font-size:12px;color:var(--muted);">90-day cash-flow forecast unavailable for this client (needs open A/R / A/P data).</div>'; return; }
+    var mo = _mr.fcManual || { on: false, billings: [0, 0, 0], cogsPct: 0, overhead: 0 };
+    var inputStyle = 'width:100%;min-height:32px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:6px;padding:4px 6px;font:inherit;font-size:12px;text-align:right;box-sizing:border-box;';
+    var editor = '';
+    if (mo.on) {
+      var billInputs = [0, 1, 2].map(function (i) {
+        return '<td style="padding:3px 6px;width:26%;"><input data-fcbill="' + i + '" type="number" min="0" step="1000" value="' + esc(mo.billings[i]) + '" style="' + inputStyle + '" /></td>';
+      }).join('');
+      var monthHdr = ['+30 days', '+60 days', '+90 days'].map(function (h) {
+        return '<td style="text-align:right;padding:1px 6px;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.03em;">' + h + '</td>';
+      }).join('');
+      editor = '<div style="border:1px dashed #c5a55a;border-radius:8px;padding:8px 10px;margin-top:8px;background:rgba(197,165,90,.06);">' +
+        '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
+          '<tr><td style="padding:1px 6px;"></td>' + monthHdr + '</tr>' +
+          '<tr><td style="padding:3px 6px;color:#5a5347;">Expected revenue<br><span style="font-size:10px;color:var(--muted);">billed &amp; collected that month</span></td>' + billInputs + '</tr>' +
+        '</table>' +
+        '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;align-items:center;">' +
+          '<label style="font-size:12px;color:#5a5347;">COGS&nbsp;% (run rate) <input data-fccogs type="number" min="0" max="100" step="0.5" value="' + esc(mo.cogsPct) + '" style="width:74px;min-height:32px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:6px;padding:4px 6px;font:inherit;font-size:12px;text-align:right;" /></label>' +
+          '<label style="font-size:12px;color:#5a5347;">Overhead&nbsp;$/mo <input data-fcoh type="number" min="0" step="500" value="' + esc(mo.overhead) + '" style="width:104px;min-height:32px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:6px;padding:4px 6px;font:inherit;font-size:12px;text-align:right;" /></label>' +
+          '<span style="font-size:11px;color:var(--muted);">COGS is auto-computed at this % of the revenue you enter.</span>' +
+        '</div></div>';
+    }
+    var note = mo.on
+      ? '<div style="font-size:11px;color:var(--muted);margin-top:6px;">Existing invoices &amp; bills are still scheduled separately by due date. The revenue above is the <strong>new</strong> business you expect to bill and collect each month; COGS runs at your % margin plus overhead. A forecast, not a guarantee.</div>'
+      : '<div style="font-size:11px;color:var(--muted);margin-top:6px;">Auto forecast: open A/R/A/P by due date + the trailing-' + (fc.historyMonths || 12) + '-month run-rate (revenue ' + money2(fc.avgRevenue) + '/mo, COGS ' + (Math.round((fc.cogsRatio || 0) * 1000) / 10) + '%, overhead ' + money2(fc.avgOverhead) + '/mo). Turn on <strong>Refine</strong> to enter your own pipeline.</div>';
+    host.innerHTML =
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 4px;">' + mrHdr('90-Day Cash Flow Forecast') +
+        '<label style="font-size:12px;color:#5a5347;display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="mrFcToggle"' + (mo.on ? ' checked' : '') + ' style="width:16px;height:16px;" /> Refine with my pipeline</label></div>' +
+      editor + '<div id="mrFcOut"></div>' + note;
+    var tg = document.getElementById('mrFcToggle');
+    if (tg) tg.onchange = function () { if (_mr.fcManual) { _mr.fcManual.on = this.checked; } renderMrForecast(); };
+    host.querySelectorAll('[data-fcbill]').forEach(function (inp) { inp.oninput = function () { _mr.fcManual.billings[+inp.getAttribute('data-fcbill')] = inp.value; renderMrFcOut(); }; });
+    var cg = host.querySelector('[data-fccogs]'); if (cg) cg.oninput = function () { _mr.fcManual.cogsPct = cg.value; renderMrFcOut(); };
+    var oh = host.querySelector('[data-fcoh]'); if (oh) oh.oninput = function () { _mr.fcManual.overhead = oh.value; renderMrFcOut(); };
+    renderMrFcOut();
   }
   function saveReportObservations(notify) {
     var d = _mr.data; if (!d) return Promise.resolve();
@@ -1781,7 +1893,7 @@
   // the modal already has; the server just lays it out.
   function mrPdfPayload() {
     var d = _mr.data;
-    return { period: d.period, periodLabel: d.periodLabel, periodEnd: d.periodEnd, preparedOn: d.preparedOn, method: d.method, company: d.company, kpis: mrKpiList(d.kpis || {}, d.goals), observations: _mr.obs, forecast: _mr.forecast, statements: d.statements };
+    return { period: d.period, periodLabel: d.periodLabel, periodEnd: d.periodEnd, preparedOn: d.preparedOn, method: d.method, company: d.company, kpis: mrKpiList(d.kpis || {}, d.goals), observations: _mr.obs, forecast: mrForecastEffective(), statements: d.statements };
   }
   function mrFetchPdf() {
     return fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/monthly-report/pdf', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(mrPdfPayload()) })
