@@ -4591,43 +4591,6 @@ app.http('qbo-monthly-report-pdf', {
   })
 });
 
-// TEMP (CRON_SECRET-gated): full report data (kpis + observations + statements) for tie-out. Remove after.
-app.http('cron-report-data', {
-  methods: ['GET'], authLevel: 'anonymous', route: 'cron/report-data',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
-    try {
-      const url = new URL(request.url); const realmId = String(url.searchParams.get('realmId') || '');
-      const mm = String(url.searchParams.get('period') || '').match(/^(\d{4})-(\d{2})$/);
-      const per = mm ? { y: +mm[1], mo: +mm[2] - 1 } : (function () { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return { y: d.getFullYear(), mo: d.getMonth() }; })();
-      const c = container(); const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-      if (!comp) return { status: 404, jsonBody: { ok: false, error: 'no company' } };
-      const fields = await getIntegrationFields('qbo'); const { accessToken, base } = await qboAccessForCompany(comp, fields);
-      const apiGet = async (path) => { const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70'; const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } }); if (!r.ok) throw new Error('QBO ' + r.status); return r.json(); };
-      const [data, goals] = await Promise.all([assembleMonthlyReport(apiGet, comp, per, 'Accrual'), getReportGoals()]);
-      if (url.searchParams.get('pdf') === '1') {
-        const k = data.kpis, n0 = x => '$' + Math.round(x || 0).toLocaleString();
-        const HT = (key, v) => { if (v == null) return 'neutral'; switch (key) { case 'monthsOfCash': return v >= goals.monthsCash ? 'good' : v < goals.monthsCashMin ? 'bad' : 'neutral'; case 'currentRatio': return v >= goals.currentRatio ? 'good' : v < goals.currentRatioMin ? 'bad' : 'neutral'; case 'grossMargin': return v >= goals.grossMargin ? 'good' : v < goals.grossMarginMin ? 'bad' : 'neutral'; case 'posneg': return v > 0 ? 'good' : v < 0 ? 'bad' : 'neutral'; default: return 'neutral'; } };
-        const kpis = [
-          { l: 'Months of Cash', v: String(Math.round(k.monthsOfCash || 0)), n: (k.monthsOfCash) + ' mo (exact)', vt: HT('monthsOfCash', k.monthsOfCash) },
-          { l: 'Cash on Hand', v: n0(k.cash) },
-          { l: 'Monthly Net Income', v: n0(k.netIncome), vt: HT('posneg', k.netIncome) },
-          { l: 'Revenue', v: n0(k.revenue) },
-          { l: 'Gross Margin', v: Math.round((k.grossMargin || 0) * 100) + '%', vt: HT('grossMargin', k.grossMargin) },
-          { l: 'A/R Outstanding', v: n0(k.ar), n: k.arOver90 > 0 ? n0(k.arOver90) + ' over 90d' : '' },
-          { l: 'A/P Balance', v: n0(k.ap), n: k.apOver90 > 0 ? n0(k.apOver90) + ' over 90d' : '' },
-          { l: 'Current Ratio', v: String(k.currentRatio), vt: HT('currentRatio', k.currentRatio) }
-        ];
-        const logo = await getReportLogo(request);
-        const buf = await renderReportPdf({ company: data.company, periodLabel: data.periodLabel, periodEnd: data.periodEnd, preparedOn: data.preparedOn, method: data.method, goals, logo, kpis, observations: factObservations(k), forecast: null, statements: data.statements });
-        return { status: 200, headers: { 'Content-Type': 'application/pdf' }, body: buf };
-      }
-      return { jsonBody: { ok: true, periodLabel: data.periodLabel, kpis: data.kpis, observations: factObservations(data.kpis), statements: data.statements } };
-    } catch (e) { context.error('cron-report-data', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
-  }
-});
-
 /**
  * POST /api/planner/parse  (multipart: file — a Planner "Export plan to Excel" .xlsx, or .csv)
  * Parses the plan into structured tasks (title, labels, assignee, due date, done, notes) for
