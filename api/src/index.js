@@ -4502,31 +4502,6 @@ function pdfForecast(fc) {
     ]
   };
 }
-// TEMP (CRON_SECRET-gated): render a sample report PDF (auto or manual forecast) to verify
-// the 90-day forecast layout without needing the live modal. Remove after verification.
-app.http('cron-fc-pdf', {
-  methods: ['GET'], authLevel: 'anonymous', route: 'cron/fc-pdf',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
-    try {
-      const mode = String(new URL(request.url).searchParams.get('mode') || 'manual');
-      const base = { cash: 10000, inflow: [5000, 3000, 2000], outflow: [4000, 2000, 1000], historyMonths: 12, avgRevenue: 100000, avgCOGS: 60000, avgOverhead: 20000, DSO: 45, DPO: 30, cogsRatio: 0.6 };
-      const forecast = mode === 'auto'
-        ? Object.assign({ manual: false, newSales: [92000, 100000, 100000], newCosts: [78000, 80000, 80000], projected: [23000, 44000, 65000] }, base)
-        : Object.assign({ manual: true, billings: [120000, 80000, 150000], cogsPct: 60, overheadMo: 20000, newSales: [120000, 80000, 150000], newCosts: [92000, 68000, 110000], projected: [39000, 52000, 93000] }, base);
-      const payload = {
-        company: { legalName: 'Test Co LLC' }, periodLabel: 'June 2026', period: '2026-06', periodEnd: '2026-06-30', preparedOn: 1751000000000, method: 'Accrual',
-        kpis: [{ l: 'Cash on Hand', v: '$10,000', dir: 'up', tone: 'good', vt: 'good' }, { l: 'Revenue', v: '$100,000', dir: 'up', tone: 'good', vt: 'good' }],
-        observations: [{ text: 'Sample observation.', dir: 'flat', tone: 'neutral' }],
-        forecast, statements: {}
-      };
-      const buf = await renderReportPdf(payload);
-      return { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="fc-test.pdf"' }, body: buf };
-    } catch (e) { context.error('cron-fc-pdf', e); return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } }; }
-  }
-});
-
 function buildReportDocDef(b) {
   const company = b.company || {}, name = pdfSani(company.legalName || company.name || 'Company');
   const kpis = Array.isArray(b.kpis) ? b.kpis : [];
