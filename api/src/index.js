@@ -4162,6 +4162,48 @@ function agingOver90(rep) {
     return isNaN(n) ? null : n;
   } catch (e) { return null; }
 }
+// TEMP (CRON_SECRET-gated): probe whether QBO BalanceSheet honors as_of vs end_date. Remove after.
+app.http('cron-bs-diag', {
+  methods: ['GET'], authLevel: 'anonymous', route: 'cron/bs-diag',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
+    try {
+      const realmId = String(new URL(request.url).searchParams.get('realmId') || '');
+      const c = container();
+      const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      if (!comp) return { status: 404, jsonBody: { ok: false, error: 'no company for realm ' + realmId } };
+      const fields = await getIntegrationFields('qbo');
+      const { accessToken, base } = await qboAccessForCompany(comp, fields);
+      const apiGet = async (path) => {
+        const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70';
+        const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
+        if (!r.ok) throw new Error('QBO ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 160));
+        return r.json();
+      };
+      const snap = (bs) => {
+        const f = flattenQboReport(bs);
+        const cash = findByGroup(f, 'BankAccounts') ?? findByLabel(f, /total bank account/i) ?? findByLabel(f, /^cash/i);
+        const eq = findByGroup(f, 'Equity') ?? findByLabel(f, /^total equity$/i);
+        const ar = findByGroup(f, 'AR') ?? findByLabel(f, /accounts receivable/i);
+        return { header: ((bs.Header && bs.Header.StartPeriod) || '?') + '..' + ((bs.Header && bs.Header.EndPeriod) || '?'), cash, equity: eq, ar };
+      };
+      const variants = {
+        'as_of=2026-05-31': '/reports/BalanceSheet?as_of=2026-05-31&accounting_method=Accrual',
+        'as_of=2026-06-30': '/reports/BalanceSheet?as_of=2026-06-30&accounting_method=Accrual',
+        'end_date=2026-05-31': '/reports/BalanceSheet?start_date=2026-01-01&end_date=2026-05-31&accounting_method=Accrual',
+        'end_date=2026-06-30': '/reports/BalanceSheet?start_date=2026-01-01&end_date=2026-06-30&accounting_method=Accrual'
+      };
+      const results = {};
+      for (const key of Object.keys(variants)) {
+        try { results[key] = snap(await apiGet(variants[key])); }
+        catch (e) { results[key] = { error: String((e && e.message) || e).slice(0, 140) }; }
+      }
+      return { jsonBody: { ok: true, company: comp.companyName || comp.legalName || realmId, results } };
+    } catch (e) { context.error('cron-bs-diag', e); return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } }; }
+  }
+});
+
 // Build the full monthly-report dataset (KPIs + statements) for a company. Extracted so
 // both the access-scoped GET endpoint and the cron verification path share ONE code path.
 async function assembleMonthlyReport(apiGet, comp, per, method) {
