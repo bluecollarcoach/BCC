@@ -4493,7 +4493,7 @@ function pdfForecast(fc) {
   ];
   const bills = fc.billings || nSales;
   const note = manual
-    ? 'Refined with the expected pipeline: new revenue +30 ' + m(bills[0] || 0) + ' / +60 ' + m(bills[1] || 0) + ' / +90 ' + m(bills[2] || 0) + ', with COGS at ' + (fc.cogsPct || 0) + '% of that (run-rate margin) and overhead ~ ' + m(fc.overheadMo || 0) + '/mo. Existing open invoices & bills are scheduled separately by due date. A forecast, not a guarantee.'
+    ? 'Refined with the expected pipeline: new revenue +30 ' + m(bills[0] || 0) + ' / +60 ' + m(bills[1] || 0) + ' / +90 ' + m(bills[2] || 0) + ' (new work collected, on top of open A/R), with COGS at ' + (fc.cogsPct || 0) + '% of that (run-rate cost ratio) and overhead ~ ' + m(fc.overheadMo || 0) + '/mo. Existing open invoices & bills are scheduled separately by due date. A forecast, not a guarantee.'
     : 'Existing open invoices & bills are scheduled by due date. Ongoing sales and costs use the trailing-' + (fc.historyMonths || 12) + '-month averages (revenue ~ ' + m(fc.avgRevenue || 0) + '/mo, COGS ~ ' + m(fc.avgCOGS || 0) + '/mo, overhead ~ ' + m(fc.avgOverhead || 0) + '/mo), collected on the client\'s ~' + (fc.DSO || 0) + '-day A/R and paid on the ~' + (fc.DPO || 0) + '-day A/P cycle. A forecast, not a guarantee.';
   return {
     stack: [

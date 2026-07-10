@@ -1690,14 +1690,19 @@
       .catch(function (e) { btn.disabled = false; btn.textContent = ot; (window.bccNotify || alert)('Could not fill observations: ' + e.message, 'error'); });
   }
   // ===== 90-day cash-flow forecast: auto (run-rate) + optional manual pipeline override =====
-  // Seed the editable override from the model's trailing-12 averages so, untouched, it
-  // starts sensibly. Coach enters expected revenue per month; COGS = revenue × run-rate %.
+  // Seed billings from the auto model's NEW-business collections (fc.newSales), which the
+  // server already positions by the DSO lag so they DON'T overlap the existing open A/R that
+  // is scheduled on its own line. Seeding the raw run-rate (avgRevenue) instead would
+  // double-count: it would add a full month of collections on top of the A/R that same
+  // revenue becomes. With this seed, toggling Refine on WITHOUT edits ≈ the auto forecast;
+  // the coach then overwrites each month with the real new work they expect to collect.
   function mrInitManual(fc) {
     if (!fc) { _mr.fcManual = null; return; }
-    var avg = Math.max(0, Math.round(fc.avgRevenue || 0));
+    var ns = fc.newSales || [0, 0, 0];
+    var r0 = function (n) { return Math.max(0, Math.round(n || 0)); };
     _mr.fcManual = {
       on: false,
-      billings: [avg, avg, avg],
+      billings: [r0(ns[0]), r0(ns[1]), r0(ns[2])],
       cogsPct: Math.round((fc.cogsRatio != null ? fc.cogsRatio : 0) * 1000) / 10, // one decimal
       overhead: Math.max(0, Math.round(fc.avgOverhead || 0))
     };
@@ -1789,7 +1794,7 @@
         editor = '<div style="border:1px dashed #c5a55a;border-radius:8px;padding:8px 10px;margin-top:4px;background:rgba(197,165,90,.06);">' +
           '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
             '<tr><td style="padding:1px 6px;"></td>' + monthHdr + '</tr>' +
-            '<tr><td style="padding:3px 6px;color:#5a5347;">Expected revenue<br><span style="font-size:10px;color:var(--muted);">billed &amp; collected that month</span></td>' + billInputs + '</tr>' +
+            '<tr><td style="padding:3px 6px;color:#5a5347;">Expected new revenue<br><span style="font-size:10px;color:var(--muted);">new work collected that month — on top of open A/R</span></td>' + billInputs + '</tr>' +
           '</table>' +
           '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;align-items:center;">' +
             '<label style="font-size:12px;color:#5a5347;">COGS&nbsp;% (run rate) <input data-fccogs type="number" min="0" max="100" step="0.5" value="' + esc(mo.cogsPct) + '" style="width:74px;min-height:32px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:6px;padding:4px 6px;font:inherit;font-size:12px;text-align:right;" /></label>' +
@@ -1798,7 +1803,7 @@
           '</div></div>';
       }
       var note = mo.on
-        ? '<div style="font-size:11px;color:var(--muted);margin-top:6px;">Existing invoices &amp; bills are still scheduled separately by due date. The revenue above is the <strong>new</strong> business you expect to bill and collect each month; COGS runs at your % margin plus overhead. A forecast, not a guarantee.</div>'
+        ? '<div style="font-size:11px;color:var(--muted);margin-top:6px;">Open A/R &amp; A/P are scheduled separately by due date. Enter the <strong>new</strong> business you expect to collect each month (seeded from the run-rate, excluding what’s already in A/R); COGS runs at your cost&nbsp;% plus overhead. A forecast, not a guarantee.</div>'
         : '<div style="font-size:11px;color:var(--muted);margin-top:6px;">Auto forecast: open A/R/A/P by due date + the trailing-' + (fc.historyMonths || 12) + '-month run-rate (revenue ' + money2(fc.avgRevenue) + '/mo, COGS ' + (Math.round((fc.cogsRatio || 0) * 1000) / 10) + '%, overhead ' + money2(fc.avgOverhead) + '/mo). Turn on <strong>Refine</strong> to enter your own pipeline.</div>';
       var refineRow = '<div style="display:flex;justify-content:flex-end;margin:0 0 2px;">' + chk('mrFcToggle', mo.on, 'Refine with my pipeline') + '</div>';
       bodyHtml = refineRow + editor + '<div id="mrFcOut"></div>' + note;
