@@ -4218,9 +4218,28 @@ async function assembleMonthlyReport(apiGet, comp, per, method) {
   // Retainage / retention held (construction) — surfaced separately when the client tracks it.
   const bsRetainage = (bs) => bs ? sumDataByLabel(bs, /retainage|retention receivable|retention held|contract retention/i) : 0;
 
-  const cash = bsCash(bsCur), ar = bsAR(bsCur), ap = bsAP(bsCur), cc = bsCC(bsCur);
+  const cash = bsCash(bsCur), ap = bsAP(bsCur), cc = bsCC(bsCur);
   const currentAssets = bsCA(bsCur), currentLiabilities = bsCL(bsCur);
-  const monthlyBurn = opex;
+  // If the client NESTS Retainage under the Accounts Receivable group, the A/R group
+  // total already includes it — subtract so "A/R Outstanding" is trade A/R and Retainage
+  // stands on its own (no double-count). When retainage is a separate account, ar is unchanged.
+  const retUnderAR = (() => {
+    const rows = (bsCur && bsCur.rows) || []; let arLvl = -1;
+    for (const r of rows) {
+      const lvl = r.level || 0, lab = String(r.label || '');
+      if (r.type === 'header' && /accounts receivable|^a\/r\b/i.test(lab)) { arLvl = lvl; continue; }
+      if (arLvl >= 0 && lvl <= arLvl && r.type !== 'data') arLvl = -1;
+      if (arLvl >= 0 && lvl > arLvl && /retainage|retention/i.test(lab)) return true;
+    }
+    return false;
+  })();
+  const retainage = bsRetainage(bsCur), retainagePrior = bsPrior ? bsRetainage(bsPrior) : null;
+  const arRaw = bsAR(bsCur), arPriorRaw = bsPrior ? bsAR(bsPrior) : null;
+  const ar = retUnderAR ? arRaw - retainage : arRaw;
+  const arPrior = (arPriorRaw == null) ? null : (retUnderAR ? arPriorRaw - (retainagePrior || 0) : arPriorRaw);
+  // Months-of-cash burn = AVERAGE monthly overhead (YTD ÷ months elapsed), so a lumpy
+  // one-off month (e.g. an annual premium or bonus run) doesn't distort the runway.
+  const monthlyBurn = (plYtd && plOpex(plYtd) > 0) ? Math.round((plOpex(plYtd) / (per.mo + 1)) * 100) / 100 : opex;
   const monthsOfCash = monthlyBurn > 0 ? Math.round((cash / monthlyBurn) * 10) / 10 : null;
   const currentRatio = currentLiabilities > 0 ? Math.round((currentAssets / currentLiabilities) * 100) / 100 : null;
 
@@ -4229,23 +4248,23 @@ async function assembleMonthlyReport(apiGet, comp, per, method) {
     periodEnd: iso(mEnd), preparedOn: new Date().toISOString(),
     company: { name: comp.companyName || realmId, legalName: comp.legalName || comp.companyName || '' },
     kpis: {
-      cash, cashPrior: bsCash(bsPrior), monthsOfCash, monthlyBurn,
+      cash, cashPrior: bsPrior ? bsCash(bsPrior) : null, monthsOfCash, monthlyBurn,
       revenue, revenuePrior: plPrior ? plRevenue(plPrior) : null,
       cogs, grossProfit, grossMargin: revenue ? grossProfit / revenue : null,
       grossMarginPrior: plPrior && plRevenue(plPrior) ? (plRevenue(plPrior) - plCogs(plPrior)) / plRevenue(plPrior) : null,
       opex, netIncome, netIncomePrior: plPrior ? plNet(plPrior) : null, netIncomeYtd: plYtd ? plNet(plYtd) : null,
-      ar, arPrior: bsAR(bsPrior), ap, apPrior: bsAP(bsPrior),
-      arOver90, apOver90, retainage: bsRetainage(bsCur), retainagePrior: bsRetainage(bsPrior),
-      creditCards: cc, creditCardsPrior: bsCC(bsPrior), ccInterestAnnual: cc > 0 ? Math.round(cc * REPORT_CC_APR) : 0, ccApr: REPORT_CC_APR,
-      lineOfCredit: bsLOC(bsCur), lineOfCreditPrior: bsLOC(bsPrior),
+      ar, arPrior, ap, apPrior: bsPrior ? bsAP(bsPrior) : null,
+      arOver90, apOver90, retainage, retainagePrior,
+      creditCards: cc, creditCardsPrior: bsPrior ? bsCC(bsPrior) : null, ccInterestAnnual: cc > 0 ? Math.round(cc * REPORT_CC_APR) : 0, ccApr: REPORT_CC_APR,
+      lineOfCredit: bsLOC(bsCur), lineOfCreditPrior: bsPrior ? bsLOC(bsPrior) : null,
       locInterestAnnual: bsLOC(bsCur) > 0 ? Math.round(bsLOC(bsCur) * REPORT_LOC_APR) : 0, locApr: REPORT_LOC_APR,
-      longTermDebt: bsLTL(bsCur), longTermDebtPrior: bsLTL(bsPrior),
-      equity: bsEquity(bsCur), equityPrior: bsEquity(bsPrior),
+      longTermDebt: bsLTL(bsCur), longTermDebtPrior: bsPrior ? bsLTL(bsPrior) : null,
+      equity: bsEquity(bsCur), equityPrior: bsPrior ? bsEquity(bsPrior) : null,
       currentAssets, currentLiabilities, currentRatio,
       currentRatioPrior: bsPrior && bsCL(bsPrior) > 0 ? Math.round((bsCA(bsPrior) / bsCL(bsPrior)) * 100) / 100 : null,
       workingCapital: currentAssets - currentLiabilities,
       workingCapitalPrior: bsPrior ? bsCA(bsPrior) - bsCL(bsPrior) : null,
-      inventory: bsInventory(bsCur), inventoryPrior: bsInventory(bsPrior), debtLines: linesByGroupRx(bsCur, /longtermliab/i, 6)
+      inventory: bsInventory(bsCur), inventoryPrior: bsPrior ? bsInventory(bsPrior) : null, debtLines: linesByGroupRx(bsCur, /longtermliab/i, 6)
     },
     statements: { pl: plCur, balanceSheet: bsCur, cashFlow, arAging, apAging }
   };
@@ -4338,9 +4357,13 @@ function factObservations(k) {
     out.push({ text: (label + ' ' + valTxt + chgTxt).slice(0, 120), dir, tone });
   };
   add('Revenue', m(k.revenue || 0), k.revenue, k.revenuePrior, 'up-good');
-  if (k.grossMargin != null) add('Gross margin', pctFmt(k.grossMargin), k.grossMargin, k.grossMarginPrior, 'up-good', { fromFmt: pctFmt, fromOnly: true });
+  // Compare gross margin on the WHOLE-percent value it displays, so it never reads
+  // "30%, up from 30%" when the two rounded percents are identical.
+  if (k.grossMargin != null) add('Gross margin', pctFmt(k.grossMargin), Math.round(k.grossMargin * 100) / 100, k.grossMarginPrior != null ? Math.round(k.grossMarginPrior * 100) / 100 : null, 'up-good', { fromFmt: pctFmt, fromOnly: true });
   add('Net income', m(k.netIncome || 0), k.netIncome, k.netIncomePrior, 'up-good');
-  if (k.netIncomeYtd != null) out.push({ text: 'YTD net ' + m(k.netIncomeYtd), dir: k.netIncomeYtd < 0 ? 'down' : 'up', tone: k.netIncomeYtd < 0 ? 'bad' : 'good' });
+  // YTD net is a static figure (not a month-over-month change), so no directional arrow —
+  // color still flags a loss (red) vs profit (green).
+  if (k.netIncomeYtd != null) out.push({ text: 'YTD net ' + m(k.netIncomeYtd), dir: 'flat', tone: k.netIncomeYtd < 0 ? 'bad' : 'good' });
   add('Cash', m(k.cash || 0), k.cash, k.cashPrior, 'up-good');
   if (k.ar) add('A/R', m(k.ar) + (k.arOver90 > 0 ? ' (' + m(k.arOver90) + ' over 90d)' : ''), k.ar, k.arPrior, 'neutral');
   if (k.retainage) add('Retainage', m(k.retainage), k.retainage, k.retainagePrior, 'neutral');
@@ -4414,8 +4437,14 @@ function pdfStmtTable(stmt) {
   const cols = (stmt.columns || []).length ? stmt.columns : ['', 'Total'];
   const ncol = Math.max(2, cols.length);
   const widths = ['*']; for (let i = 1; i < ncol; i++) widths.push('auto');
+  // Only MONEY columns get $-formatted. In aging detail the columns are Date /
+  // Transaction Type / Num / Customer / Due Date / Amount / Open Balance — so a
+  // "Num" like 61 must render as "61", not "$61.00". A single-value statement
+  // (P&L / BS / cash flow) has exactly one value column, which is always money.
+  const moneyRx = /amount|balance|total|debit|credit|payment|paid|net |income|expense|cost|value|\bamt\b|\$/i;
+  const isMoneyCol = (i) => i > 0 && (ncol === 2 || moneyRx.test(String(cols[i] || '')));
   const header = [];
-  for (let i = 0; i < ncol; i++) header.push({ text: pdfSani(cols[i] || (i === 0 ? '' : 'Total')), bold: true, alignment: i > 0 ? 'right' : 'left', fillColor: '#f7f1e3', fontSize: 7.5 });
+  for (let i = 0; i < ncol; i++) header.push({ text: pdfSani(cols[i] || (i === 0 ? '' : 'Total')), bold: true, alignment: (i > 0 && isMoneyCol(i)) ? 'right' : 'left', fillColor: '#f7f1e3', fontSize: 7.5 });
   const body = [header];
   const boldRow = [];
   (stmt.rows || []).forEach(row => {
@@ -4423,7 +4452,10 @@ function pdfStmtTable(stmt) {
     boldRow.push(strong);
     const cells = [{ text: pdfSani(row.label || ''), margin: [(row.level || 0) * 9, 0, 0, 0], bold: strong, fontSize: 8, color: '#23262b' }];
     const rc = row.cells || [];
-    for (let i = 1; i < ncol; i++) { const v = rc[i - 1]; const num = pdfIsNumeric(String(v == null ? '' : v)); cells.push({ text: v == null || v === '' ? '' : pdfMoney(v), alignment: num ? 'right' : 'left', bold: strong, fontSize: 8 }); }
+    for (let i = 1; i < ncol; i++) {
+      const v = rc[i - 1]; const money = isMoneyCol(i);
+      cells.push({ text: (v == null || v === '') ? '' : (money ? pdfMoney(v) : pdfSani(v)), alignment: money ? 'right' : 'left', bold: strong, fontSize: 8 });
+    }
     body.push(cells);
   });
   return { table: { headerRows: 1, widths: widths, body: body }, layout: { hLineWidth: (i) => (i === 1 ? 0.6 : 0.35), vLineWidth: () => 0, hLineColor: () => '#e8e6df', paddingTop: () => 2.2, paddingBottom: () => 2.2, fillColor: (ri) => (ri > 0 && boldRow[ri - 1]) ? '#fbf9f4' : null } };
@@ -4461,11 +4493,14 @@ function buildReportDocDef(b) {
   // canvas lines get mispositioned by pdfmake), so use that instead of a canvas line.
   const mkRule = () => ({ table: { widths: ['*'], heights: [1.1], body: [[{ text: '', fillColor: '#c5a55a' }]] }, layout: 'noBorders', margin: [0, 3, 0, 9] });
   const valColor = (vt) => vt === 'good' ? '#1f8a4c' : vt === 'bad' ? '#c0392b' : '#23262b';
-  const kval = (v, dir, tone, vt) => ({ columns: dir ? [{ width: 'auto', text: '' }, pdfTri(dir, tone), { text: pdfSani(v), bold: true, width: 'auto', color: valColor(vt) }] : [{ text: pdfSani(v), bold: true, alignment: 'right', color: valColor(vt) }], columnGap: 3 });
+  const kval = (v, dir, tone, vt, note) => {
+    const valRow = { columns: dir ? [{ width: 'auto', text: '' }, pdfTri(dir, tone), { text: pdfSani(v), bold: true, width: 'auto', color: valColor(vt) }] : [{ text: pdfSani(v), bold: true, alignment: 'right', color: valColor(vt) }], columnGap: 3 };
+    return note ? { stack: [valRow, { text: pdfSani(note), fontSize: 6.5, color: '#8a8577', alignment: 'right' }] } : valRow;
+  };
   const kbody = [];
   for (let i = 0; i < kpis.length; i += 2) {
     const a = kpis[i], c = kpis[i + 1];
-    kbody.push([{ text: pdfSani(a.l), color: '#555', fontSize: 9 }, kval(a.v, a.dir, a.tone, a.vt), c ? { text: pdfSani(c.l), color: '#555', fontSize: 9 } : '', c ? kval(c.v, c.dir, c.tone, c.vt) : '']);
+    kbody.push([{ text: pdfSani(a.l), color: '#555', fontSize: 9 }, kval(a.v, a.dir, a.tone, a.vt, a.n), c ? { text: pdfSani(c.l), color: '#555', fontSize: 9 } : '', c ? kval(c.v, c.dir, c.tone, c.vt, c.n) : '']);
   }
   const obsStack = obs.length
     ? obs.map(o => ({ columns: [o.dir ? pdfTri(o.dir, o.tone) : { text: '', width: 8 }, { text: pdfSani(o.text), width: '*', fontSize: 9.5 }], columnGap: 5, margin: [0, 0, 0, 4] }))
@@ -4570,7 +4605,24 @@ app.http('cron-report-data', {
       if (!comp) return { status: 404, jsonBody: { ok: false, error: 'no company' } };
       const fields = await getIntegrationFields('qbo'); const { accessToken, base } = await qboAccessForCompany(comp, fields);
       const apiGet = async (path) => { const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70'; const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } }); if (!r.ok) throw new Error('QBO ' + r.status); return r.json(); };
-      const data = await assembleMonthlyReport(apiGet, comp, per, 'Accrual');
+      const [data, goals] = await Promise.all([assembleMonthlyReport(apiGet, comp, per, 'Accrual'), getReportGoals()]);
+      if (url.searchParams.get('pdf') === '1') {
+        const k = data.kpis, n0 = x => '$' + Math.round(x || 0).toLocaleString();
+        const HT = (key, v) => { if (v == null) return 'neutral'; switch (key) { case 'monthsOfCash': return v >= goals.monthsCash ? 'good' : v < goals.monthsCashMin ? 'bad' : 'neutral'; case 'currentRatio': return v >= goals.currentRatio ? 'good' : v < goals.currentRatioMin ? 'bad' : 'neutral'; case 'grossMargin': return v >= goals.grossMargin ? 'good' : v < goals.grossMarginMin ? 'bad' : 'neutral'; case 'posneg': return v > 0 ? 'good' : v < 0 ? 'bad' : 'neutral'; default: return 'neutral'; } };
+        const kpis = [
+          { l: 'Months of Cash', v: String(Math.round(k.monthsOfCash || 0)), n: (k.monthsOfCash) + ' mo (exact)', vt: HT('monthsOfCash', k.monthsOfCash) },
+          { l: 'Cash on Hand', v: n0(k.cash) },
+          { l: 'Monthly Net Income', v: n0(k.netIncome), vt: HT('posneg', k.netIncome) },
+          { l: 'Revenue', v: n0(k.revenue) },
+          { l: 'Gross Margin', v: Math.round((k.grossMargin || 0) * 100) + '%', vt: HT('grossMargin', k.grossMargin) },
+          { l: 'A/R Outstanding', v: n0(k.ar), n: k.arOver90 > 0 ? n0(k.arOver90) + ' over 90d' : '' },
+          { l: 'A/P Balance', v: n0(k.ap), n: k.apOver90 > 0 ? n0(k.apOver90) + ' over 90d' : '' },
+          { l: 'Current Ratio', v: String(k.currentRatio), vt: HT('currentRatio', k.currentRatio) }
+        ];
+        const logo = await getReportLogo(request);
+        const buf = await renderReportPdf({ company: data.company, periodLabel: data.periodLabel, periodEnd: data.periodEnd, preparedOn: data.preparedOn, method: data.method, goals, logo, kpis, observations: factObservations(k), forecast: null, statements: data.statements });
+        return { status: 200, headers: { 'Content-Type': 'application/pdf' }, body: buf };
+      }
       return { jsonBody: { ok: true, periodLabel: data.periodLabel, kpis: data.kpis, observations: factObservations(data.kpis), statements: data.statements } };
     } catch (e) { context.error('cron-report-data', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   }
@@ -4834,12 +4886,14 @@ app.http('qbo-cashflow', {
           const DPO = dailyCost > 0 ? Math.round(clamp(apBalance / dailyCost, 0, 120)) : 30;
           // Ongoing operations: NEW revenue is collected DSO days after it's earned; NEW
           // COGS is paid DPO days after; overhead (payroll/rent) is paid ~mid-month. Existing
-          // A/R/A/P already carry the current pipeline (days 0..DSO / 0..DPO), so new business
-          // naturally back-fills collections/payments after that — no double-count.
+          // A/R/A/P already carry the current pipeline. New revenue earned in forecast-month f
+          // is earned around that month's MIDPOINT (day f*30+15) and collected DSO days later,
+          // i.e. at day f*30 + 15 + DSO — which lands AFTER the existing-A/R window (~day DSO),
+          // so it back-fills rather than double-counting this month's collections. Same for costs.
           const newSales = [0, 0, 0], newCosts = [0, 0, 0];
           for (let f = 0; f < 4; f++) {
-            const bc = bucketOfDay(f * 30 + DSO); if (bc >= 0) newSales[bc] += avgRevenue;
-            const bp = bucketOfDay(f * 30 + DPO); if (bp >= 0) newCosts[bp] += avgCOGS;
+            const bc = bucketOfDay(f * 30 + 15 + DSO); if (bc >= 0) newSales[bc] += avgRevenue;
+            const bp = bucketOfDay(f * 30 + 15 + DPO); if (bp >= 0) newCosts[bp] += avgCOGS;
             const bo = bucketOfDay(f * 30 + 15); if (bo >= 0) newCosts[bo] += avgOverhead;
           }
           const projected = []; let run = cash;
