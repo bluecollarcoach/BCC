@@ -4311,30 +4311,6 @@ app.http('qbo-monthly-report-ai', {
   })
 });
 
-// TEMP (CRON_SECRET-gated): overwrite a report's saved observations with the bare-fact
-// version (fixes reports drafted under the old verbose AI). Remove after.
-app.http('cron-report-obs-fix', {
-  methods: ['GET', 'POST'], authLevel: 'anonymous', route: 'cron/report-obs-fix',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
-    try {
-      const url = new URL(request.url); const realmId = String(url.searchParams.get('realmId') || '');
-      const mm = String(url.searchParams.get('period') || '').match(/^(\d{4})-(\d{2})$/);
-      const per = mm ? { y: +mm[1], mo: +mm[2] - 1 } : (function () { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return { y: d.getFullYear(), mo: d.getMonth() }; })();
-      const period = per.y + '-' + String(per.mo + 1).padStart(2, '0');
-      const c = container(); const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-      if (!comp) return { status: 404, jsonBody: { ok: false, error: 'no company' } };
-      const fields = await getIntegrationFields('qbo'); const { accessToken, base } = await qboAccessForCompany(comp, fields);
-      const apiGet = async (path) => { const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70'; const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } }); if (!r.ok) throw new Error('QBO ' + r.status); return r.json(); };
-      const data = await assembleMonthlyReport(apiGet, comp, per, 'Accrual');
-      const observations = factObservations(data.kpis);
-      await c.items.upsert({ id: 'bcc-report-' + realmId + '-' + period, tenantId: BCC_TENANT_ID, docType: 'monthly-report', realmId, period, observations, updatedAt: new Date().toISOString(), updatedBy: 'facts' });
-      return { jsonBody: { ok: true, period, observations } };
-    } catch (e) { context.error('cron-report-obs-fix', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
-  }
-});
-
 /* ===== Server-rendered monthly report PDF (pdfmake) =====
  * The browser used to window.print() the HTML, which stamped the page with the
  * browser's own header/footer (date, about:blank, "1/16") and broke the KPI grid
