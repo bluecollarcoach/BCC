@@ -4556,6 +4556,26 @@ app.http('qbo-monthly-report-pdf', {
   })
 });
 
+// TEMP (CRON_SECRET-gated): full report data (kpis + observations + statements) for tie-out. Remove after.
+app.http('cron-report-data', {
+  methods: ['GET'], authLevel: 'anonymous', route: 'cron/report-data',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
+    try {
+      const url = new URL(request.url); const realmId = String(url.searchParams.get('realmId') || '');
+      const mm = String(url.searchParams.get('period') || '').match(/^(\d{4})-(\d{2})$/);
+      const per = mm ? { y: +mm[1], mo: +mm[2] - 1 } : (function () { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return { y: d.getFullYear(), mo: d.getMonth() }; })();
+      const c = container(); const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      if (!comp) return { status: 404, jsonBody: { ok: false, error: 'no company' } };
+      const fields = await getIntegrationFields('qbo'); const { accessToken, base } = await qboAccessForCompany(comp, fields);
+      const apiGet = async (path) => { const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70'; const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } }); if (!r.ok) throw new Error('QBO ' + r.status); return r.json(); };
+      const data = await assembleMonthlyReport(apiGet, comp, per, 'Accrual');
+      return { jsonBody: { ok: true, periodLabel: data.periodLabel, kpis: data.kpis, observations: factObservations(data.kpis), statements: data.statements } };
+    } catch (e) { context.error('cron-report-data', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  }
+});
+
 /**
  * POST /api/planner/parse  (multipart: file — a Planner "Export plan to Excel" .xlsx, or .csv)
  * Parses the plan into structured tasks (title, labels, assignee, due date, done, notes) for
