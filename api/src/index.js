@@ -4261,37 +4261,39 @@ function factObservations(k) {
   k = k || {};
   const out = [];
   const m = (n) => (n < 0 ? '-$' : '$') + Math.round(Math.abs(n || 0)).toLocaleString();
-  // Change vs prior month: "unchanged", "up 59%", or "up from -$24,459" on a sign flip.
-  const chg = (cur, prior) => {
-    if (cur == null || prior == null) return { txt: '', dir: 'flat' };
-    const d = cur - prior;
-    if (Math.abs(d) < Math.max(1, Math.abs(prior) * 0.005)) return { txt: ', unchanged', dir: 'flat' };
-    const dir = d > 0 ? 'up' : 'down';
-    if (prior < 0 || cur < 0 || (prior !== 0 && (cur > 0) !== (prior > 0))) return { txt: ', ' + dir + ' from ' + m(prior), dir };
-    const pct = prior !== 0 ? Math.round(Math.abs(d) / Math.abs(prior) * 100) : null;
-    return { txt: ', ' + dir + (pct != null ? ' ' + pct + '%' : ''), dir };
-  };
-  const add = (label, valTxt, cur, prior, pol) => {
-    const c = chg(cur, prior);
-    const dir = c.dir || 'flat';
+  const pctFmt = (n) => Math.round(n * 100) + '%';
+  // opts.fromFmt formats the prior value; opts.fromOnly always shows "from <prior>"
+  // (used for ratios/percents, where a relative % change reads confusingly).
+  const add = (label, valTxt, cur, prior, pol, opts) => {
+    opts = opts || {};
+    const fromFmt = opts.fromFmt || m;
+    let dir = 'flat', chgTxt = '';
+    if (cur != null && prior != null) {
+      const d = cur - prior, thr = Math.abs(prior) * 0.005; // 0.5% = "unchanged" (works for $ and ratios)
+      if (Math.abs(d) <= thr) { chgTxt = ', unchanged'; }
+      else {
+        dir = d > 0 ? 'up' : 'down';
+        const flip = prior <= 0 || cur <= 0 || ((cur > 0) !== (prior > 0));
+        chgTxt = (opts.fromOnly || flip) ? (', ' + dir + ' from ' + fromFmt(prior)) : (', ' + dir + ' ' + Math.round(Math.abs(d) / Math.abs(prior) * 100) + '%');
+      }
+    }
     let tone = 'neutral';
     if (dir !== 'flat' && pol && pol !== 'neutral') tone = ((pol === 'up-good') === (dir === 'up')) ? 'good' : 'bad';
-    out.push({ text: label + ' ' + valTxt + (c.txt || ''), dir, tone });
+    out.push({ text: (label + ' ' + valTxt + chgTxt).slice(0, 120), dir, tone });
   };
   add('Revenue', m(k.revenue || 0), k.revenue, k.revenuePrior, 'up-good');
-  if (k.grossMargin != null) add('Gross margin', Math.round(k.grossMargin * 100) + '%', k.grossMargin, k.grossMarginPrior, 'up-good');
+  if (k.grossMargin != null) add('Gross margin', pctFmt(k.grossMargin), k.grossMargin, k.grossMarginPrior, 'up-good', { fromFmt: pctFmt, fromOnly: true });
   add('Net income', m(k.netIncome || 0), k.netIncome, k.netIncomePrior, 'up-good');
   if (k.netIncomeYtd != null) out.push({ text: 'YTD net ' + m(k.netIncomeYtd), dir: k.netIncomeYtd < 0 ? 'down' : 'up', tone: k.netIncomeYtd < 0 ? 'bad' : 'good' });
-  add('Cash' + (k.monthsOfCash != null ? ' (' + k.monthsOfCash + ' mo overhead)' : ''), m(k.cash || 0), k.cash, k.cashPrior, 'up-good');
+  add('Cash', m(k.cash || 0), k.cash, k.cashPrior, 'up-good');
   if (k.ar) add('A/R', m(k.ar), k.ar, k.arPrior, 'neutral');
   if (k.ap) add('A/P', m(k.ap), k.ap, k.apPrior, 'up-bad');
   if (k.creditCards) add('Credit cards', m(k.creditCards), k.creditCards, k.creditCardsPrior, 'up-bad');
   if (k.lineOfCredit) add('Line of credit', m(k.lineOfCredit), k.lineOfCredit, k.lineOfCreditPrior, 'up-bad');
   if (k.longTermDebt) add('Long-term debt', m(k.longTermDebt), k.longTermDebt, k.longTermDebtPrior, 'up-bad');
-  (k.debtLines || []).forEach(d => { if (d && d.label) out.push({ text: d.label + ' ' + m(d.amount || 0), dir: 'flat', tone: 'neutral' }); });
   add('Equity', m(k.equity || 0), k.equity, k.equityPrior, 'up-good');
-  if (k.currentRatio != null) out.push({ text: 'Current ratio ' + k.currentRatio, dir: 'flat', tone: 'neutral' });
-  return out.map(o => ({ text: o.text.slice(0, 120), dir: o.dir, tone: o.tone }));
+  if (k.currentRatio != null) add('Current ratio', String(k.currentRatio), k.currentRatio, k.currentRatioPrior, 'up-good', { fromFmt: (n) => String(n), fromOnly: true });
+  return out;
 }
 // "Fill from the numbers" — returns bare-fact observations. Deterministic (no AI):
 // the user asked for KNOWNS ONLY, briefly, with no assumptions.
