@@ -4554,58 +4554,6 @@ app.http('qbo-monthly-report-pdf', {
   })
 });
 
-// TEMP (CRON_SECRET-gated): probe each QBO report call for a realm to find the 400. Remove after.
-app.http('cron-qbo-diag', {
-  methods: ['GET'], authLevel: 'anonymous', route: 'cron/qbo-diag',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
-    try {
-      const url = new URL(request.url);
-      const c = container();
-      const wantAll = url.searchParams.get('all') === '1';
-      let realms;
-      if (wantAll) {
-        const { resources } = await c.items.query({ query: 'SELECT c.realmId, c.companyName FROM c WHERE c.tenantId=@t AND c.docType="qbo-company"', parameters: [{ name: '@t', value: BCC_TENANT_ID }] }).fetchAll();
-        realms = resources;
-      } else realms = [{ realmId: String(url.searchParams.get('realmId') || '') }];
-      const mm = String(url.searchParams.get('period') || '').match(/^(\d{4})-(\d{2})$/);
-      const per = mm ? { y: +mm[1], mo: +mm[2] - 1 } : (function () { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return { y: d.getFullYear(), mo: d.getMonth() }; })();
-      const iso = (d) => d.toISOString().slice(0, 10);
-      const mEnd = iso(new Date(per.y, per.mo + 1, 0)), mStart = iso(new Date(per.y, per.mo, 1));
-      const fields = await getIntegrationFields('qbo');
-      const out = [];
-      for (const rr of realms) {
-        const realmId = rr.realmId;
-        const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-        if (!comp) { out.push({ realmId, error: 'no company' }); continue; }
-        let accessToken, base;
-        try { ({ accessToken, base } = await qboAccessForCompany(comp, fields)); } catch (e) { out.push({ realmId, companyName: comp.companyName, tokenError: String(e && e.message || e) }); continue; }
-        const call = async (path) => {
-          try {
-            const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70';
-            const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
-            return r.ok ? r.status : (r.status + ':' + (await r.text().catch(() => '')).slice(0, 120));
-          } catch (e) { return 'throw:' + String(e && e.message || e).slice(0, 80); }
-        };
-        const paths = {
-          pl: '/reports/ProfitAndLoss?start_date=' + mStart + '&end_date=' + mEnd + '&accounting_method=Accrual',
-          bs: '/reports/BalanceSheet?as_of=' + mEnd + '&accounting_method=Accrual',
-          arDetail: '/reports/AgedReceivableDetail?report_date=' + mEnd,
-          apDetail: '/reports/AgedPayableDetail?report_date=' + mEnd,
-          arSummary: '/reports/AgedReceivables?report_date=' + mEnd,
-          apSummary: '/reports/AgedPayables?report_date=' + mEnd,
-          cashFlow: '/reports/CashFlow?start_date=' + mStart + '&end_date=' + mEnd + '&accounting_method=Accrual'
-        };
-        const res = { realmId, companyName: comp.companyName };
-        for (const key of Object.keys(paths)) res[key] = await call(paths[key]);
-        out.push(res);
-      }
-      return { jsonBody: { ok: true, period: per.y + '-' + String(per.mo + 1).padStart(2, '0'), results: out } };
-    } catch (e) { context.error('cron-qbo-diag', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
-  }
-});
-
 /**
  * POST /api/planner/parse  (multipart: file — a Planner "Export plan to Excel" .xlsx, or .csv)
  * Parses the plan into structured tasks (title, labels, assignee, due date, done, notes) for

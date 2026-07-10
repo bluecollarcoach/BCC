@@ -574,6 +574,19 @@
     var c = companies.filter(function (x) { return x.realmId === realm; })[0];
     return c ? (c.companyName || ('Company ' + realm)) : (realm || '—');
   }
+  // Turn a raw QBO error into a plain-English message. Intuit's code 10000
+  // ("application error") on every report = a QuickBooks-side issue with THAT
+  // company's books — not our app — so say so instead of dumping the fault JSON.
+  function qboFriendly(msg) {
+    msg = String(msg || '');
+    if (/10000|application error has occurred|"Fault"/i.test(msg)) {
+      return 'QuickBooks couldn’t generate this company’s reports right now (Intuit error 10000). This is on the QuickBooks side — the rest of this client’s workspace still works. Try again shortly; if it keeps failing, open a Profit & Loss directly in QuickBooks — if that errors too, there’s a problematic transaction in the books to fix (or contact Intuit support).';
+    }
+    if (/needsReauth|reconnect|QBO 401|token refresh (failed|timed out)/i.test(msg)) {
+      return 'QuickBooks needs reconnecting for this company — an admin can reconnect it from the Management dashboard.';
+    }
+    return 'QuickBooks: ' + msg;
+  }
 
   function loadCompanies() {
     return fetch('/api/integrations/qbo/companies', { credentials: 'include' })
@@ -1028,7 +1041,7 @@
     var from = period + '-01';
     var to = period + '-' + String(new Date(+y, m, 0).getDate()).padStart(2, '0');
     var realmAt = currentRealm;
-    function fail(b, e) { if (b) b.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:14px;font-size:13px;">QuickBooks: ' + esc(e.message) + '</div>'; }
+    function fail(b, e) { if (b) b.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:14px;font-size:13px;">' + esc(qboFriendly(e && e.message)) + '</div>'; }
     function showPnl() {
       var b = document.getElementById('pnl_body'); if (!b) return; b.innerHTML = '<div style="color:var(--muted);padding:20px;">Loading from QuickBooks…</div>';
       fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/report?type=pl&method=accrual&from=' + from + '&to=' + to, { credentials: 'include' })
@@ -1442,7 +1455,7 @@
           kpiTile('Net margin', k.netMargin == null ? '—' : (k.netMargin * 100).toFixed(1) + '%', 'trailing ' + resp.burnMonths + ' mo', (k.netMargin != null && k.netMargin < 0 ? 'down' : 'up'), sparkline(sMargin, { labels: L, fmt: fPct }));
         document.getElementById('qboKpiNote').textContent = 'As of ' + resp.asOf + ' · ' + resp.method + ' basis · trend = last 12 synced months · monthly overhead ' + money2(k.monthlyBurn) + ' (avg of ' + resp.burnMonths + ' mo, COGS excluded).';
       })
-      .catch(function (e) { tiles.innerHTML = ''; document.getElementById('qboKpiNote').innerHTML = '<span style="color:var(--burgundy);">QuickBooks: ' + esc(e.message) + '</span>'; });
+      .catch(function (e) { tiles.innerHTML = ''; document.getElementById('qboKpiNote').innerHTML = '<span style="color:var(--burgundy);">' + esc(qboFriendly(e && e.message)) + '</span>'; });
   }
   function qboRefresh() { if (!currentRealm) return; loadQboKpis(); if (qboActiveReport) loadQboReport(qboActiveReport, null); }
   function renderReport(resp, drillable) {
@@ -1481,7 +1494,7 @@
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/report?' + q, { credentials: 'include' })
       .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
       .then(function (resp) { out.innerHTML = renderReport(resp); wireTxEdit(out, resp.data); })
-      .catch(function (e) { out.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:10px;font-size:13px;">QuickBooks: ' + esc(e.message) + '</div>'; });
+      .catch(function (e) { out.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:10px;font-size:13px;">' + esc(qboFriendly(e && e.message)) + '</div>'; });
   }
 
   /* ===== Branded monthly financial report (one-click) ===== */
@@ -1619,7 +1632,7 @@
       renderMrBody();
       if (st) st.textContent = d.periodLabel + ' · ' + d.method + ' basis' + (d.observationsUpdatedAt ? ' · notes saved' : '') + (_mr.forecast ? ' · forecast ✓' : '');
       mrBtns(false);
-    }).catch(function (e) { body.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:12px;">Couldn’t build the report: ' + esc(e.message) + '</div>'; });
+    }).catch(function (e) { body.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:12px;">' + esc(qboFriendly(e && e.message)) + '</div>'; });
   }
   function mrHdr(t) { return '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--gold-deep,#a8884a);">' + t + '</div>'; }
   function renderMrBody() {
