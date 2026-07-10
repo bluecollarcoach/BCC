@@ -3364,6 +3364,8 @@
     var header = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;">' +
       '<h3 style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;margin:0;">Payroll #' + esc(cprDraft.payrollNo || '') + ' — ' + esc(companyName(currentRealm)) + '</h3>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-ghost" id="cpr_back" type="button">← Back</button>' +
+      '<button class="btn btn-ghost" id="cpr_autofill" type="button" title="Upload a payroll register or timesheet (PDF, photo, or Excel/CSV) and let AI pre-fill the employees and hours for you to review">✨ Auto-fill from a file</button>' +
+      '<input type="file" id="cpr_file" accept=".pdf,.png,.jpg,.jpeg,.webp,.csv,.xlsx,.xls,image/*" style="display:none;" />' +
       '<button class="btn btn-ghost" id="cpr_print" type="button">Print MN form</button>' +
       '<button class="btn btn-primary" id="cpr_save" type="button">Save</button></div></div>';
 
@@ -3411,6 +3413,58 @@
     document.getElementById('cpr_back').onclick = document.getElementById('cpr_back2').onclick = function () { cprEditingId = null; cprDraft = null; renderPayroll(); };
     document.getElementById('cpr_save').onclick = document.getElementById('cpr_save2').onclick = cprSave;
     document.getElementById('cpr_print').onclick = function () { cprSave(true); printCpr(cprDraft); };
+    var afb = document.getElementById('cpr_autofill'); if (afb) afb.onclick = function () { var fi = document.getElementById('cpr_file'); if (fi) fi.click(); };
+    var afi = document.getElementById('cpr_file'); if (afi) afi.onchange = cprAutofill;
+  }
+  // ===== CPR auto-fill: upload a payroll register/timesheet → AI pre-fills the form for review =====
+  function cprEmpFromExtract(x) {
+    x = x || {};
+    var e = blankEmp();
+    var s = function (v) { return (v === 0 || v == null || v === '') ? '' : String(v).trim(); };
+    var money = function (v) { var n = parseFloat(v); return (isNaN(n) || n === 0) ? '' : String(Math.round(n * 100) / 100); };
+    var days = function (arr) { var out = ['', '', '', '', '', '', '']; if (Array.isArray(arr)) { for (var i = 0; i < 7; i++) { var n = parseFloat(arr[i]); out[i] = (!isNaN(n) && n !== 0) ? String(n) : ''; } } return out; };
+    e.name = s(x.name); e.address = s(x.address); e.idNumber = s(x.idNumber);
+    e.exemptions = s(x.exemptions); e.classification = s(x.classification); e.apprentice = !!x.apprentice;
+    e.st = days(x.st); e.ot = days(x.ot);
+    e.stRate = money(x.stRate); e.otRate = money(x.otRate); e.grossThisPeriod = money(x.grossThisPeriod);
+    e.dedFica = money(x.dedFica); e.dedFed = money(x.dedFed); e.dedState = money(x.dedState);
+    e.dedOther1Label = s(x.dedOther1Label); e.dedOther1 = money(x.dedOther1);
+    e.dedOther2Label = s(x.dedOther2Label); e.dedOther2 = money(x.dedOther2);
+    return e;
+  }
+  function cprEmpIsBlank(e) {
+    if (!e) return true;
+    if ((e.name || '').trim() || (e.classification || '').trim() || (e.grossThisPeriod || '').trim()) return false;
+    if ((e.st || []).some(function (x) { return x; }) || (e.ot || []).some(function (x) { return x; })) return false;
+    return true;
+  }
+  function cprApplyExtract(data) {
+    data = data || {};
+    ['weekStart', 'payPeriodEnd', 'projectName'].forEach(function (f) { if (!String(cprDraft[f] || '').trim() && data[f]) cprDraft[f] = String(data[f]).trim(); });
+    var emps = (data.employees || []).map(cprEmpFromExtract).filter(function (e) { return (e.name || '').trim(); });
+    if (!emps.length) return 0;
+    var existing = cprDraft.employees || [];
+    cprDraft.employees = existing.every(cprEmpIsBlank) ? emps : existing.concat(emps);
+    return emps.length;
+  }
+  function cprAutofill(ev) {
+    var file = ev.target.files && ev.target.files[0]; ev.target.value = '';
+    if (!file) return;
+    if (file.size > 12 * 1024 * 1024) { (window.bccNotify || alert)('That file is over 12 MB — export a smaller PDF or the Excel/CSV instead.', 'warn'); return; }
+    var btn = document.getElementById('cpr_autofill'), ot = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = 'Reading…'; }
+    var fd = new FormData(); fd.append('file', file);
+    fetch('/api/ai/extract-cpr', { method: 'POST', credentials: 'include', body: fd })
+      .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'Server error.' }; }); })
+      .then(function (j) {
+        if (btn) { btn.disabled = false; btn.textContent = ot; }
+        if (!j || !j.ok) { (window.bccNotify || alert)((j && (j.error || (j.needsKey ? 'AI is not configured — an admin needs to add the AI key.' : ''))) || 'Could not read that file.', 'error', 8000); return; }
+        var n = cprApplyExtract(j.data);
+        if (!n) { (window.bccNotify || alert)('No employees were found in that file. Try the payroll register that lists each employee and their hours.', 'warn', 8000); return; }
+        renderPayroll();
+        if (window.bccNotify) window.bccNotify('Pre-filled ' + n + ' employee' + (n === 1 ? '' : 's') + ' from the file — please review every value (especially daily hours and rates) before saving.', 'success', 9000);
+      })
+      .catch(function (e) { if (btn) { btn.disabled = false; btn.textContent = ot; } (window.bccNotify || alert)('Could not read that file: ' + e.message, 'error', 8000); });
   }
 
   function cprEmpCard(e, i, wd) {

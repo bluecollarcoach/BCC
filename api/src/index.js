@@ -3867,6 +3867,131 @@ app.http('ai-extract-receipt', {
 });
 
 /**
+ * POST /api/ai/extract-cpr  (multipart: file — a payroll register/timesheet: PDF, image, or xlsx/csv)
+ * Sends the file to Claude and returns structured certified-payroll data (employees, daily
+ * hours ST/OT, rates, gross, deductions, week dates) to auto-fill the certified-payroll form.
+ * The coach REVIEWS every value before saving/printing. Requires ANTHROPIC_API_KEY.
+ */
+app.http('ai-extract-cpr', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'ai/extract-cpr',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const key = process.env.ANTHROPIC_API_KEY;
+    if (!key) return { jsonBody: { ok: false, needsKey: true, error: 'AI not configured — add ANTHROPIC_API_KEY in the app settings.' } };
+    try {
+      const form = await request.formData();
+      const file = form.get('file');
+      if (!file || typeof file.arrayBuffer !== 'function') return badRequest('file required');
+      const buf = Buffer.from(await file.arrayBuffer());
+      if (buf.length > 12 * 1024 * 1024) return badRequest('file too large (max 12 MB)');
+      const name = String(file.name || '').toLowerCase();
+      const mt = (file.type || '').toLowerCase();
+      const sniffed = sniffMediaType(buf);
+      const isPdf = sniffed === 'application/pdf' || /pdf/.test(mt) || name.endsWith('.pdf');
+      const isImage = /^image\/(png|jpeg|gif|webp)$/.test(sniffed || '') || (/(png|jpe?g|webp|gif)/.test(mt) && !isPdf);
+      const isSheet = !isPdf && !isImage && (name.endsWith('.xlsx') || name.endsWith('.xls') || name.endsWith('.csv') || (buf.length > 1 && buf[0] === 0x50 && buf[1] === 0x4b) || /csv|excel|spreadsheet/.test(mt));
+      if (sniffed === 'image/heic' || /heic|heif/.test(mt)) {
+        return { jsonBody: { ok: false, error: 'That looks like an iPhone HEIC photo the reader can’t open. Take a screenshot instead, or export the payroll as PDF or Excel.' } };
+      }
+      let srcBlock;
+      if (isPdf) {
+        srcBlock = { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: buf.toString('base64') } };
+      } else if (isImage) {
+        const mediaType = /^image\/(png|jpeg|gif|webp)$/.test(sniffed || '') ? sniffed : (mt.replace('image/jpg', 'image/jpeg') || 'image/jpeg');
+        srcBlock = { type: 'image', source: { type: 'base64', media_type: mediaType, data: buf.toString('base64') } };
+      } else if (isSheet) {
+        let table = '';
+        const looksCsv = name.endsWith('.csv') || (buf.length > 3 && !(buf[0] === 0x50 && buf[1] === 0x4b));
+        if (looksCsv) {
+          table = buf.toString('utf8').replace(/^﻿/, '');
+        } else {
+          const ExcelJS = require('exceljs');
+          const wb = new ExcelJS.Workbook(); await wb.xlsx.load(buf);
+          const rows = [];
+          (wb.worksheets || []).forEach(ws => {
+            ws.eachRow({ includeEmpty: false }, (row) => {
+              const vals = []; const n = row.cellCount || 0;
+              for (let ci = 1; ci <= n; ci++) vals.push(plannerCellText(row.getCell(ci).value));
+              if (vals.some(v => String(v || '').trim())) rows.push(vals.join(' | '));
+            });
+          });
+          table = rows.join('\n');
+        }
+        table = table.slice(0, 60000);
+        if (!table.trim()) return badRequest('the spreadsheet appears to be empty');
+        srcBlock = { type: 'text', text: 'Payroll register / timesheet rows (columns separated by | ):\n\n' + table };
+      } else {
+        return { jsonBody: { ok: false, error: 'Unsupported file. Upload the payroll register / timesheet as a PDF, an image (PNG/JPG), or an Excel/CSV file.' } };
+      }
+      const emp = {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Employee full name' },
+          address: { type: 'string', description: 'Home address if shown' },
+          idNumber: { type: 'string', description: 'Employee ID or the LAST 4 digits of SSN only — NEVER a full SSN' },
+          exemptions: { type: 'string', description: 'Number of withholding exemptions/allowances' },
+          classification: { type: 'string', description: 'Work classification / trade, e.g. Carpenter, Laborer, Operator' },
+          apprentice: { type: 'boolean' },
+          st: { type: 'array', items: { type: 'number' }, description: '7 straight-time hour values, Sunday..Saturday (index 0=Sunday), 0 where none. EMPTY [] if only weekly totals are given.' },
+          ot: { type: 'array', items: { type: 'number' }, description: '7 overtime hour values, Sunday..Saturday. EMPTY [] if only weekly totals are given.' },
+          stRate: { type: 'number', description: 'Straight-time hourly base rate' },
+          otRate: { type: 'number', description: 'Overtime hourly rate (usually 1.5x straight)' },
+          grossThisPeriod: { type: 'number', description: 'Gross pay for the pay period (all projects)' },
+          dedFica: { type: 'number', description: 'FICA / Social Security + Medicare withheld' },
+          dedFed: { type: 'number', description: 'Federal income tax withheld' },
+          dedState: { type: 'number', description: 'State income tax withheld' },
+          dedOther1Label: { type: 'string' }, dedOther1: { type: 'number' },
+          dedOther2Label: { type: 'string' }, dedOther2: { type: 'number' }
+        },
+        required: ['name']
+      };
+      const tool = {
+        name: 'record_cpr',
+        description: 'Record the certified-payroll data extracted from the payroll register / timesheet.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            weekStart: { type: 'string', description: 'First day (Sunday) of the work week, YYYY-MM-DD, only if determinable' },
+            payPeriodEnd: { type: 'string', description: 'Pay period end date, YYYY-MM-DD, only if shown' },
+            projectName: { type: 'string', description: 'Project/job name and location, only if shown' },
+            employees: { type: 'array', items: emp }
+          },
+          required: ['employees']
+        }
+      };
+      const instr = 'This file is a payroll register or timesheet used to prepare a CERTIFIED PAYROLL (Davis-Bacon / prevailing-wage) report. Extract every worker and their hours. Rules: '
+        + '(1) Daily hours go in 7-element arrays aligned Sunday..Saturday (index 0 = Sunday); use 0 where there are no hours. '
+        + 'If the source gives ONLY weekly totals with no per-day breakdown, return st and ot as EMPTY arrays [] — do NOT invent a daily split. '
+        + '(2) Keep straight-time and overtime separate; a 1.5x rate column is overtime. '
+        + '(3) NEVER output a full Social Security Number — use an employee ID or the last 4 digits only for idNumber. '
+        + '(4) All money/hours are plain numbers (no $ signs or commas). '
+        + '(5) Set weekStart / payPeriodEnd / projectName only if they actually appear in the document. '
+        + 'Call record_cpr with the results.';
+      const model = process.env.AI_MODEL || 'claude-sonnet-4-6';
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: model, max_tokens: 8000, tools: [tool], tool_choice: { type: 'tool', name: 'record_cpr' },
+          messages: [{ role: 'user', content: [srcBlock, { type: 'text', text: instr }] }]
+        })
+      });
+      if (!r.ok) { const t = (await r.text().catch(() => '')).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'AI error ' + r.status, detail: t } }; }
+      const j = await r.json();
+      if (j.stop_reason === 'max_tokens') return { jsonBody: { ok: false, error: 'That file had too many rows to read in one pass — try splitting it, or upload fewer employees at a time.' } };
+      const tu = (j.content || []).find(c => c.type === 'tool_use');
+      if (!tu) return { jsonBody: { ok: false, error: 'Couldn’t read payroll data from that file — make sure it lists employees with their hours and pay.' } };
+      logAudit('cpr-extract', { user: auditUser(request), meta: { employees: ((tu.input || {}).employees || []).length } });
+      return { jsonBody: { ok: true, data: tu.input } };
+    } catch (e) { context.error('ai-extract-cpr', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+
+/**
  * POST /api/ai/scan-card  (multipart: file)
  * Reads a business-card photo with Claude vision and returns structured contact
  * fields (name, title, company, email, phone, website, address) to auto-fill a
