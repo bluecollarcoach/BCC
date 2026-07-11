@@ -538,6 +538,9 @@
   <div class="card" id="tab-close" style="display:none; margin-top:14px;">
     <div id="close-body"></div>
   </div>
+  <div class="card" id="tab-wip" style="display:none; margin-top:14px;">
+    <div id="wip-body"></div>
+  </div>
   <div class="card" id="tab-access" style="display:none; margin-top:14px;">
     <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Team &amp; access</h3>
     <div id="access-body"></div>
@@ -2408,6 +2411,7 @@
     { key: 'email',        label: 'Email',              ic: '✉️' },
     { key: 'payroll',      label: 'Certified payroll',  ic: '🧮' },
     { key: 'payapp',       label: 'Pay applications',   ic: '📄' },
+    { key: 'wip',          label: 'Job costing',        ic: '🏗️' },
     { key: 'info',         label: 'Client info',        ic: '🏢' },
     { key: 'access',       label: 'Team & access',      ic: '👥' }
   ];
@@ -2457,7 +2461,7 @@
   // ----- Section visibility -----
   function hideAllSections() {
     ['qboKpis', 'qboReports', 'qboWrite'].forEach(function (id) { var e = document.getElementById(id); if (e) e.style.display = 'none'; });
-    ['overview', 'activity', 'info', 'files', 'tasks', 'email', 'payroll', 'payapp', 'close', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
+    ['overview', 'activity', 'info', 'files', 'tasks', 'email', 'payroll', 'payapp', 'wip', 'close', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
   }
   function showSection(sec) {
     hideAllSections();
@@ -2499,6 +2503,7 @@
     else if (sec === 'payroll') renderPayroll();
     else if (sec === 'payapp') renderPayApp();
     else if (sec === 'close') renderClose();
+    else if (sec === 'wip') renderWip();
     else if (sec === 'access') renderAccess();
   }
 
@@ -4066,6 +4071,70 @@
     if (isNaN(stmt)) { cell.innerHTML = '<span style="color:var(--muted);">—</span>'; return; }
     var diff = Math.round((stmt - book) * 100) / 100;
     cell.innerHTML = diff === 0 ? '<strong style="color:#1f8a4c;">✓ ' + mrMoney(0) + '</strong>' : '<strong style="color:#c0392b;">' + mrMoney(diff) + '</strong>';
+  }
+
+  /* ---- Job costing / WIP (over-under billing) ---- */
+  var _wip = null;
+  function loadWipDoc() { var id = 'bcc-wip-' + currentRealm, d = null; try { d = JSON.parse(localStorage.getItem(id)); } catch (e) {} if (!d || !d.id) d = { id: id, tenantId: 'blue-collar-coach', docType: 'wip', realmId: currentRealm, jobs: {}, createdAt: nowIso() }; if (!d.jobs) d.jobs = {}; return d; }
+  function saveWip() { if (!_wip) return; _wip.updatedAt = nowIso(); _wip.updatedBy = myUpn(); localStorage.setItem(_wip.id, JSON.stringify(_wip)); }
+  function wipCalc(job, ov) {
+    var cost = job.cost || 0, billed = job.income || 0;
+    var contract = parseFloat(ov.contract) || 0, est = parseFloat(ov.estCost) || 0;
+    var pct = est > 0 ? Math.min(cost / est, 1.5) : (contract > 0 ? Math.min(billed / contract, 1.5) : 0);
+    var earned = contract * pct;
+    return { cost: cost, billed: billed, contract: contract, est: est, pct: pct, earned: earned, over: billed - earned };
+  }
+  function renderWip() {
+    var body = document.getElementById('wip-body'); if (!body) return;
+    if (!_wip || _wip.realmId !== currentRealm) _wip = loadWipDoc();
+    body.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px;">' +
+      '<h3 style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;margin:0;">Job costing / WIP <span style="color:var(--muted);font-weight:400;font-size:12px;">· ' + esc(companyName(currentRealm)) + '</span></h3></div>' +
+      '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Cost &amp; billed-to-date come from QuickBooks (by customer/job, year to date). Enter each job’s <strong>contract</strong> and <strong>estimated cost</strong> to get percent complete, earned revenue, and over/under billing.</div>' +
+      '<div id="wip_out" style="color:var(--muted);padding:10px 0;">Loading jobs from QuickBooks…</div>';
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/job-costs', { credentials: 'include' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { var out = document.getElementById('wip_out'); if (!out) return; if (!j || !j.ok) { out.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:10px;">' + esc(qboFriendly(j && j.error)) + '</div>'; return; } renderWipTable(j.jobs || []); })
+      .catch(function (e) { var out = document.getElementById('wip_out'); if (out) out.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:10px;">' + esc(e.message) + '</div>'; });
+  }
+  function renderWipTable(jobs) {
+    var out = document.getElementById('wip_out'); if (!out) return;
+    var m = mrMoney0;
+    if (!jobs.length) { out.innerHTML = '<div style="color:var(--muted);padding:12px 0;">No customer/job activity found in QuickBooks this year. (Job costing works best when income &amp; expenses are tagged to a Customer:Job.)</div>'; return; }
+    var rows = jobs.map(function (job, i) {
+      var ov = _wip.jobs[job.name] || {};
+      return '<tr data-wrow="' + i + '" data-job="' + esc(job.name) + '">' +
+        '<td style="padding:3px 5px;">' + esc(job.name) + '</td>' +
+        '<td style="padding:2px 4px;"><input data-wf="contract" inputmode="decimal" value="' + esc(ov.contract || '') + '" placeholder="—" style="width:90px;text-align:right;border:1px solid var(--chrome-mute);border-radius:6px;padding:4px 6px;" /></td>' +
+        '<td style="padding:2px 4px;"><input data-wf="estCost" inputmode="decimal" value="' + esc(ov.estCost || '') + '" placeholder="—" style="width:90px;text-align:right;border:1px solid var(--chrome-mute);border-radius:6px;padding:4px 6px;" /></td>' +
+        '<td class="num" style="text-align:right;padding:3px 5px;">' + m(job.cost || 0) + '</td>' +
+        '<td class="num wc-pct" style="text-align:right;padding:3px 5px;"></td>' +
+        '<td class="num wc-earned" style="text-align:right;padding:3px 5px;"></td>' +
+        '<td class="num" style="text-align:right;padding:3px 5px;">' + m(job.income || 0) + '</td>' +
+        '<td class="num wc-over" style="text-align:right;padding:3px 5px;"></td></tr>';
+    }).join('');
+    out.innerHTML = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:760px;"><thead><tr style="background:#f7f1e3;">' +
+      ['Job', 'Contract', 'Est. cost', 'Cost to date', '% comp', 'Earned', 'Billed', 'Over/(under)'].map(function (h, i) { return '<th style="text-align:' + (i === 0 ? 'left' : 'right') + ';padding:5px;font-size:10.5px;text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid #c5a55a;">' + h + '</th>'; }).join('') +
+      '</tr></thead><tbody>' + rows + '</tbody><tfoot id="wip_totals"></tfoot></table></div>' +
+      '<div style="font-size:11px;color:var(--muted);margin-top:8px;">% complete is cost-based (cost ÷ est. cost) when est. cost is entered, else billing-based. Earned = % × contract. Over/(under) = billed − earned: positive is <strong>overbilled</strong>, negative is <strong>underbilled</strong>.</div>';
+    function recalcAll() {
+      var tot = { contract: 0, est: 0, cost: 0, earned: 0, billed: 0, over: 0 };
+      out.querySelectorAll('[data-wrow]').forEach(function (row) {
+        var name = row.getAttribute('data-job');
+        var c = wipCalc(jobs[+row.getAttribute('data-wrow')], _wip.jobs[name] || {});
+        row.querySelector('.wc-pct').textContent = (Math.round(c.pct * 1000) / 10) + '%';
+        row.querySelector('.wc-earned').textContent = m(c.earned);
+        row.querySelector('.wc-over').innerHTML = c.over === 0 ? m(0) : '<span style="color:' + (c.over > 0 ? '#b7791f' : '#c0392b') + ';">' + m(c.over) + '</span>';
+        tot.contract += c.contract; tot.est += c.est; tot.cost += c.cost; tot.earned += c.earned; tot.billed += c.billed; tot.over += c.over;
+      });
+      var tf = document.getElementById('wip_totals');
+      if (tf) tf.innerHTML = '<tr style="font-weight:700;border-top:2px solid #c5a55a;"><td style="padding:5px;">Total</td><td class="num" style="text-align:right;padding:5px;">' + m(tot.contract) + '</td><td class="num" style="text-align:right;padding:5px;">' + m(tot.est) + '</td><td class="num" style="text-align:right;padding:5px;">' + m(tot.cost) + '</td><td></td><td class="num" style="text-align:right;padding:5px;">' + m(tot.earned) + '</td><td class="num" style="text-align:right;padding:5px;">' + m(tot.billed) + '</td><td class="num" style="text-align:right;padding:5px;color:' + (tot.over >= 0 ? '#b7791f' : '#c0392b') + ';">' + m(tot.over) + '</td></tr>';
+    }
+    out.querySelectorAll('[data-wrow]').forEach(function (row) {
+      row.querySelectorAll('[data-wf]').forEach(function (inp) {
+        inp.oninput = function () { var name = row.getAttribute('data-job'); _wip.jobs[name] = _wip.jobs[name] || {}; _wip.jobs[name][inp.getAttribute('data-wf')] = inp.value; saveWip(); recalcAll(); };
+      });
+    });
+    recalcAll();
   }
 
   /* Return to the main bookkeeping page (work queue root) from anywhere. */
