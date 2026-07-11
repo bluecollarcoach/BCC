@@ -1026,6 +1026,38 @@ function feedbackNotifyUpns() {
   return owners.length ? owners : ['lyle@bluecollarcoach.us'];
 }
 
+// TEMP (CRON_SECRET-gated): read + resolve/reply feedback headless. GET lists; POST
+// {id,status,note} sets status, stores the reply (resolutionNote), notifies on fresh resolve.
+app.http('cron-feedback', {
+  methods: ['GET', 'POST'], authLevel: 'anonymous', route: 'cron/feedback',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
+    try {
+      const c = container();
+      if (request.method === 'GET') {
+        const { resources } = await c.items.query({ query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC', parameters: [{ name: '@t', value: BCC_TENANT_ID }] }).fetchAll();
+        return { jsonBody: { ok: true, count: resources.length, feedback: resources } };
+      }
+      const body = await request.json().catch(() => ({}));
+      const id = String(body.id || '');
+      if (id.indexOf('bcc-feedback-') !== 0) return { status: 400, jsonBody: { ok: false, error: 'bad id' } };
+      const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      if (!doc) return { status: 404, jsonBody: { ok: false, error: 'not found' } };
+      const st = String(body.status || 'resolved').toLowerCase();
+      if (['new', 'reviewed', 'resolved'].indexOf(st) < 0) return { status: 400, jsonBody: { ok: false, error: 'bad status' } };
+      const wasResolved = doc.status === 'resolved';
+      const note = String(body.note || '').trim().slice(0, 2000);
+      doc.status = st; doc.reviewedBy = 'lyle@bluecollarcoach.us'; doc.updatedAt = new Date().toISOString();
+      if (note) { doc.resolutionNote = note; doc.resolutionBy = 'Blue Collar Coach'; doc.resolutionAt = new Date().toISOString(); }
+      await c.items.upsert(doc);
+      let notified = false;
+      if (st === 'resolved' && !wasResolved && doc.userUpn) { await notifyUser(c, doc.userUpn, { title: '✅ Your feedback was addressed', body: note || String(doc.message || '').slice(0, 90), url: doc.page || '/', tag: 'fbdone-' + doc.id }); notified = true; }
+      return { jsonBody: { ok: true, id: doc.id, status: doc.status, notified } };
+    } catch (e) { context.error('cron-feedback', e); return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } }; }
+  }
+});
+
 /**
  * User feedback.
  *   POST /api/feedback            — any signed-in user submits feedback.
@@ -3730,7 +3762,7 @@ app.http('qbo-write', {
       const b = await request.json().catch(() => ({}));
       const entity = String(b.entity || '').toLowerCase();
       const f = b.fields || {};
-      const cap = { invoice: 'Invoice', bill: 'Bill', purchase: 'Purchase', payment: 'Payment', customer: 'Customer', vendor: 'Vendor', item: 'Item', account: 'Account', journalentry: 'JournalEntry' }[entity];
+      const cap = { invoice: 'Invoice', bill: 'Bill', purchase: 'Purchase', payment: 'Payment', customer: 'Customer', vendor: 'Vendor', item: 'Item', account: 'Account', journalentry: 'JournalEntry', project: 'Customer' }[entity];
       if (!cap) return badRequest('unsupported entity: ' + entity);
       let payload;
       if (entity === 'invoice') {
@@ -3778,6 +3810,10 @@ app.http('qbo-write', {
         if (!f.name || !f.accountType) return badRequest('name and accountType required');
         payload = { Name: String(f.name), AccountType: String(f.accountType) };
         if (f.acctSubType) payload.AccountSubType = String(f.acctSubType);
+      } else if (entity === 'project') {
+        // A "project / job" in QuickBooks is a sub-customer of a parent customer.
+        if (!f.displayName || !f.parentId) return badRequest('project name and parent customer required');
+        payload = { DisplayName: String(f.displayName), Job: true, BillWithParent: true, ParentRef: { value: String(f.parentId) } };
       } else if (entity === 'item') {
         if (!f.name || !f.itemType) return badRequest('name and itemType required');
         payload = { Name: String(f.name), Type: String(f.itemType) };
@@ -3812,7 +3848,7 @@ app.http('qbo-write', {
         // client confirm dialog shows the resulting total before posting.
         payload.Id = String(b.id); payload.SyncToken = String(b.syncToken); payload.sparse = true;
       }
-      const res = await ctx.apiPost('/' + entity, payload);
+      const res = await ctx.apiPost('/' + (entity === 'project' ? 'customer' : entity), payload);
       const created = res[cap] || {};
       // Authoritative server-side audit at the moment it posted to live books.
       logAudit('qbo-write', { user: auditUser(request), path: '/api/integrations/qbo/companies/' + request.params.realmId + '/write', meta: { realmId: request.params.realmId, entity, op: b.op === 'update' ? 'update' : 'create', id: created.Id, docNumber: created.DocNumber, total: created.TotalAmt } });

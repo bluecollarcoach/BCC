@@ -43,6 +43,7 @@
 
     { "route": "/api/cron/reminders", "allowedRoles": ["anonymous", "authenticated"] },
     { "route": "/api/cron/qbo-sync", "allowedRoles": ["anonymous", "authenticated"] },
+    { "route": "/api/cron/feedback", "allowedRoles": ["anonymous", "authenticated"] },
 
     { "route": "/api/*",  "allowedRoles": ["authenticated"] },
     { "route": "/*.html", "allowedRoles": ["authenticated"] },

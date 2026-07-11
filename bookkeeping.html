@@ -444,6 +444,7 @@
           </optgroup>
           <optgroup label="Records">
             <option value="add:customer">Customer</option>
+            <option value="add:project">Project / job (under a customer)</option>
             <option value="add:vendor">Vendor</option>
             <option value="add:item">Item / service</option>
             <option value="add:account">Account</option>
@@ -2269,6 +2270,10 @@
           '<label>Type<select id="en_itemType"><option value="Service">Service</option><option value="NonInventory">Non-inventory</option></select></label>' +
           '<label>Unit price<input id="en_unitPrice" /></label>' +
           '<label class="full">Income account<select id="en_incomeAccountId">' + txOpt(income.length ? income : refs.accounts, '') + '</select></label>';
+      } else if (entity === 'project') {
+        html += '<label class="full">Project / job name<input id="en_displayName" placeholder="e.g. Job #26-08 Main St Elementary" /></label>' +
+          '<label class="full">Under customer<select id="en_parentId">' + txOpt(refs.customers, '') + '</select></label>' +
+          '<div class="full" style="font-size:11px;color:var(--muted);">Creates a sub-customer (job) in QuickBooks — tag its invoices &amp; expenses to it, and it shows up in <strong>Job costing / WIP</strong>.</div>';
       }
       html += '</div><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;"><button class="btn btn-ghost" id="en_cancel" type="button">Cancel</button><button class="btn btn-primary" id="en_save" type="button">Create in QuickBooks</button></div></div>';
       host.innerHTML = html;
@@ -2295,6 +2300,11 @@
       fields.incomeAccountId = document.getElementById('en_incomeAccountId').value || '';
       if (!fields.name) { (window.bccNotify || alert)('Item name required.', 'warn'); return; }
       if (!fields.incomeAccountId) { (window.bccNotify || alert)('Pick an income account.', 'warn'); return; }
+    } else if (entity === 'project') {
+      fields.displayName = (document.getElementById('en_displayName').value || '').trim();
+      fields.parentId = document.getElementById('en_parentId').value || '';
+      if (!fields.displayName) { (window.bccNotify || alert)('Project / job name required.', 'warn'); return; }
+      if (!fields.parentId) { (window.bccNotify || alert)('Pick the parent customer.', 'warn'); return; }
     }
     var btn = document.getElementById('en_save'); var ot = btn.textContent; btn.disabled = true; btn.textContent = 'Creating…';
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/write', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ entity: entity, op: 'create', fields: fields }) })
