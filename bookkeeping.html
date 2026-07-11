@@ -814,7 +814,12 @@
       var rest = k.slice(9), dash = rest.indexOf('-'); if (dash < 0) continue;
       var realm = rest.slice(0, dash);
       var t; try { t = JSON.parse(localStorage.getItem(k)); } catch (e) { continue; }
-      if (t && t.status !== 'done') { var info = map[realm] || (map[realm] = { count: 0, overdue: false }); info.count++; if (t.dueDate && t.dueDate < today) info.overdue = true; }
+      if (t && t.status !== 'done') {
+        // A rolled-forward recurring task whose next occurrence is in the FUTURE isn't
+        // "ready" yet — don't count it (avoids the Planner "next one already assigned" problem).
+        var notYetDue = t.recurrence && t.recurrence !== 'none' && t.dueDate && t.dueDate > today;
+        if (!notYetDue) { var info = map[realm] || (map[realm] = { count: 0, overdue: false }); info.count++; if (t.dueDate && t.dueDate < today) info.overdue = true; }
+      }
     }
     return map;
   }
@@ -2722,26 +2727,48 @@
   /* ---- Tasks ---- */
   function taskPrefix() { return 'bcc-task-' + currentRealm + '-'; }
   function allTasks() { var out = []; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (!k || k.indexOf(taskPrefix()) !== 0) continue; try { var t = JSON.parse(localStorage.getItem(k)); if (t && t.id) out.push(t); } catch (e) {} } return out; }
+  var RECUR_LABEL = { weekly: '🔁 Weekly', monthly: '🔁 Monthly', quarterly: '🔁 Quarterly', yearly: '🔁 Yearly' };
+  // Next due date for a recurring task, advanced past today so a completed one doesn't
+  // immediately reappear as "ready". Preserves day-of-month (clamped to the month length).
+  function taskNextDue(dateStr, rec) {
+    var d = new Date((dateStr || new Date().toISOString().slice(0, 10)) + 'T00:00:00'); if (isNaN(d)) d = new Date();
+    var today = new Date(); today.setHours(0, 0, 0, 0);
+    var dom = d.getDate(), guard = 0;
+    do {
+      if (rec === 'weekly') d.setDate(d.getDate() + 7);
+      else { var n = rec === 'quarterly' ? 3 : rec === 'yearly' ? 12 : 1; d.setDate(1); d.setMonth(d.getMonth() + n); var last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate(); d.setDate(Math.min(dom, last)); }
+    } while (d <= today && ++guard < 120);
+    return d.toISOString().slice(0, 10);
+  }
   function renderTasks() {
     var body = document.getElementById('tasks-body'); if (!body) return;
     var people = (window.bccPeopleFull || []);
     var opts = '<option value="">— Unassigned —</option>' + people.map(function (p) { var u = p.upn || p.mail || ''; return '<option value="' + esc(u) + '">' + esc(p.displayName || u) + '</option>'; }).join('');
     var today = new Date().toISOString().slice(0, 10);
-    var tasks = allTasks().sort(function (a, b) { return ((a.status === 'done') - (b.status === 'done')) || (a.dueDate || '9999').localeCompare(b.dueDate || '9999') || (b.createdAt || '').localeCompare(a.createdAt || ''); });
+    var all = allTasks();
+    // A recurring task with a future due date is "upcoming" — scheduled, not yet active.
+    var isUpcoming = function (t) { return t.status !== 'done' && t.recurrence && t.recurrence !== 'none' && t.dueDate && t.dueDate > today; };
+    var active = all.filter(function (t) { return !isUpcoming(t); }).sort(function (a, b) { return ((a.status === 'done') - (b.status === 'done')) || (a.dueDate || '9999').localeCompare(b.dueDate || '9999') || (b.createdAt || '').localeCompare(a.createdAt || ''); });
+    var upcoming = all.filter(isUpcoming).sort(function (a, b) { return (a.dueDate || '').localeCompare(b.dueDate || ''); });
     var add = '<div class="ws-form" style="margin-bottom:14px;">' +
       '<label class="full">New task<input id="tk_title" placeholder="What needs doing for this client?" /></label>' +
       '<label>Due<input type="date" id="tk_due" /></label>' +
+      '<label>Repeat<select id="tk_recur"><option value="none">One-time</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option><option value="yearly">Yearly</option></select></label>' +
       '<label>Assignee<select id="tk_assignee">' + opts + '</select></label>' +
       '<div class="full"><button class="btn btn-primary" id="tk_add" type="button">+ Add task</button></div></div>';
-    var list = tasks.length ? tasks.map(function (t) {
+    var taskRow = function (t, upc) {
       var who = t.assigneeUpn ? ((window.bccDisplayName && window.bccDisplayName(t.assigneeUpn)) || t.assigneeUpn) : '';
-      var overdue = t.status !== 'done' && t.dueDate && t.dueDate < today;
-      var meta = [who, t.dueDate ? ('Due ' + t.dueDate) : ''].filter(Boolean).join(' · ');
-      return '<div class="ws-row"><input type="checkbox" data-tdone="' + esc(t.id) + '" ' + (t.status === 'done' ? 'checked' : '') + ' style="width:18px;height:18px;flex-shrink:0;" />' +
+      var overdue = !upc && t.status !== 'done' && t.dueDate && t.dueDate < today;
+      var rec = (t.recurrence && t.recurrence !== 'none') ? RECUR_LABEL[t.recurrence] : '';
+      var dueTxt = t.dueDate ? ((upc ? 'Next ' : 'Due ') + t.dueDate) : '';
+      var meta = [who, dueTxt, rec].filter(Boolean).join(' · ');
+      return '<div class="ws-row"' + (upc ? ' style="opacity:.6;"' : '') + '><input type="checkbox" data-tdone="' + esc(t.id) + '" ' + (t.status === 'done' ? 'checked' : '') + (upc ? ' title="Not due yet"' : '') + ' style="width:18px;height:18px;flex-shrink:0;" />' +
         '<div style="flex:1;min-width:0;"><div class="' + (t.status === 'done' ? 'task-done' : '') + '" style="font-weight:600;font-size:14px;">' + esc(t.title) + '</div>' +
         (meta ? '<div style="font-size:12px;color:' + (overdue ? 'var(--burgundy)' : 'var(--muted)') + ';">' + esc(meta) + '</div>' : '') + '</div>' +
         '<button class="btn btn-ghost" data-tdel="' + esc(t.id) + '" type="button" style="font-size:11px;min-height:30px;">Delete</button></div>';
-    }).join('') : '<div style="color:var(--muted);padding:10px 0;">No tasks yet for ' + esc(companyName(currentRealm)) + '.</div>';
+    };
+    var list = active.length ? active.map(function (t) { return taskRow(t, false); }).join('') : '<div style="color:var(--muted);padding:10px 0;">No active tasks for ' + esc(companyName(currentRealm)) + '.</div>';
+    if (upcoming.length) list += '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 6px;">Upcoming (recurring)</div>' + upcoming.map(function (t) { return taskRow(t, true); }).join('');
     body.innerHTML = add + list;
     document.getElementById('tk_add').onclick = addTask;
     body.querySelectorAll('[data-tdone]').forEach(function (cb) { cb.onchange = function () { toggleTask(cb.getAttribute('data-tdone'), cb.checked); }; });
@@ -2749,13 +2776,28 @@
   }
   function addTask() {
     var title = document.getElementById('tk_title').value.trim(); if (!title) { (window.bccNotify || alert)('Task title required.', 'warn'); return; }
+    var recur = (document.getElementById('tk_recur') || {}).value || 'none';
+    var due = document.getElementById('tk_due').value || '';
+    if (recur !== 'none' && !due) { (window.bccNotify || alert)('A repeating task needs a due date to schedule the next occurrence.', 'warn'); return; }
     var id = taskPrefix() + uid2();
-    var t = { id: id, tenantId: 'blue-collar-coach', docType: 'client-task', realmId: currentRealm, title: title, status: 'open', assigneeUpn: document.getElementById('tk_assignee').value || '', dueDate: document.getElementById('tk_due').value || '', createdAt: nowIso(), updatedAt: nowIso(), createdBy: myUpn() };
+    var t = { id: id, tenantId: 'blue-collar-coach', docType: 'client-task', realmId: currentRealm, title: title, status: 'open', assigneeUpn: document.getElementById('tk_assignee').value || '', dueDate: due, recurrence: recur, createdAt: nowIso(), updatedAt: nowIso(), createdBy: myUpn() };
     localStorage.setItem(id, JSON.stringify(t));
     if (window.bccAudit) window.bccAudit('client-task-create', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } });
     renderTasks();
   }
-  function toggleTask(id, done) { var t; try { t = JSON.parse(localStorage.getItem(id)); } catch (e) {} if (!t) return; t.status = done ? 'done' : 'open'; t.doneAt = done ? nowIso() : null; t.updatedAt = nowIso(); localStorage.setItem(id, JSON.stringify(t)); renderTasks(); }
+  function toggleTask(id, done) {
+    var t; try { t = JSON.parse(localStorage.getItem(id)); } catch (e) {} if (!t) return;
+    // Completing a RECURRING task rolls it forward to its next due date and reopens it —
+    // it stays "upcoming" (not counted/flagged) until that date, instead of reappearing ready.
+    if (done && t.recurrence && t.recurrence !== 'none' && t.dueDate) {
+      t.dueDate = taskNextDue(t.dueDate, t.recurrence); t.status = 'open';
+      t.lastDoneAt = nowIso(); t.timesDone = (t.timesDone || 0) + 1;
+    } else {
+      t.status = done ? 'done' : 'open'; t.doneAt = done ? nowIso() : null;
+    }
+    t.updatedAt = nowIso(); localStorage.setItem(id, JSON.stringify(t));
+    renderTasks(); if (typeof updateDrawer === 'function') updateDrawer();
+  }
   function delTask(id) { if (!confirm('Delete this task?')) return; localStorage.removeItem(id); if (window.bccAudit) window.bccAudit('client-task-delete', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } }); renderTasks(); }
 
   /* ---- Time tracking is now fully AUTOMATIC (no manual tab / punch clock).
