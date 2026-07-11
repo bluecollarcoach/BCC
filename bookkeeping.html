@@ -486,6 +486,7 @@
         </optgroup>
         <optgroup label="Bookkeeping">
           <option value="for-review">🔎 For review (uncategorized)</option>
+          <option value="vendors-1099">🧾 1099 vendor tracking</option>
         </optgroup>
         <optgroup label="Transactions">
           <option value="transactions">All transactions</option>
@@ -1504,6 +1505,7 @@
       .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
       .then(function (resp) {
         if (resp && resp.data && resp.data.kind === 'for-review') { out.innerHTML = renderForReview(resp.data); wireForReview(out); }
+        else if (resp && resp.data && resp.data.kind === 'vendors-1099') { out.innerHTML = renderVendors1099(resp.data); }
         else { out.innerHTML = renderReport(resp); wireTxEdit(out, resp.data); }
       })
       .catch(function (e) { out.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:10px;font-size:13px;">' + esc(qboFriendly(e && e.message)) + '</div>'; });
@@ -1534,6 +1536,28 @@
     out.querySelectorAll('[data-cat-id]').forEach(function (b) {
       b.onclick = function () { editTxn(b.getAttribute('data-cat-entity'), b.getAttribute('data-cat-id')); };
     });
+  }
+  // ===== 1099 vendor tracking (year-end 1099-NEC prep) =====
+  function renderVendors1099(d) {
+    var vs = d.vendors || [], m = mrMoney0, TH = 600;
+    var flagged = vs.filter(function (v) { return v.ytdPaid >= TH; }).length;
+    var head = '<div style="margin-bottom:10px;"><div style="font-weight:700;font-size:15px;">🧾 1099 vendor tracking — ' + esc(d.year) + '</div>' +
+      '<div style="font-size:12px;color:var(--muted);">Cash paid per vendor this year (checks, cash &amp; bill payments) — <strong>credit-card payments are excluded</strong> (the card issuer reports those on 1099-K). ' + flagged + ' vendor' + (flagged === 1 ? '' : 's') + ' at/over $' + TH + '.</div></div>';
+    if (d.capped) head += '<div style="font-size:11px;color:#8a6d2f;background:#fdf6e3;border-radius:6px;padding:5px 8px;margin-bottom:8px;">Large transaction history — totals cover the most recent activity.</div>';
+    if (!vs.length) return head + '<div style="color:var(--muted);padding:12px 0;">No vendor payments found for ' + esc(d.year) + '.</div>';
+    var rows = vs.map(function (v) {
+      var over = v.ytdPaid >= TH;
+      var status, color;
+      if (over && v.is1099) { status = v.hasTaxId ? '✅ 1099-NEC' : '⚠ need W-9 (no tax ID)'; color = v.hasTaxId ? '#1f8a4c' : '#c0392b'; }
+      else if (over && !v.is1099) { status = '⚠ over $' + TH + ' — mark 1099-eligible?'; color = '#b7791f'; }
+      else { status = v.is1099 ? 'under $' + TH : '—'; color = 'var(--muted)'; }
+      return '<tr><td>' + esc(v.name) + '</td><td class="num">' + m(v.ytdPaid) + '</td>' +
+        '<td style="text-align:center;">' + (v.is1099 ? '✓' : '') + '</td>' +
+        '<td style="text-align:center;">' + (v.hasTaxId ? '✓' : '<span style="color:#c0392b;">✗</span>') + '</td>' +
+        '<td style="color:' + color + ';font-weight:' + (over ? '600' : '400') + ';">' + status + '</td></tr>';
+    }).join('');
+    return head + '<table><thead><tr><th>Vendor</th><th class="num">Paid ' + esc(d.year) + '</th><th style="text-align:center;">1099?</th><th style="text-align:center;">Tax&nbsp;ID / W-9</th><th>Status</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '<div style="font-size:11px;color:var(--muted);margin-top:8px;">Mark a vendor as 1099-eligible and enter their tax ID from the W-9 in QuickBooks (Vendor → Edit → “Track payments for 1099”). This is a prep worklist, not an official filing — confirm amounts against QuickBooks’ 1099 report before filing.</div>';
   }
 
   /* ===== Branded monthly financial report (one-click) ===== */

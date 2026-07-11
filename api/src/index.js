@@ -3403,6 +3403,34 @@ function linesByGroupRx(flat, rx, limit) {
 }
 
 
+// TEMP (CRON_SECRET-gated): verify 1099 vendor-payment sums vs live QBO. Remove after.
+app.http('cron-vendors1099', {
+  methods: ['GET'], authLevel: 'anonymous', route: 'cron/vendors1099',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
+    try {
+      const realmId = String(new URL(request.url).searchParams.get('realmId') || '');
+      const year = String(new URL(request.url).searchParams.get('year') || new Date().getFullYear());
+      const comp = await container().item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      if (!comp) return { status: 404, jsonBody: { ok: false, error: 'no company' } };
+      const fields = await getIntegrationFields('qbo');
+      const { accessToken, base } = await qboAccessForCompany(comp, fields);
+      const apiGet = async (path) => { const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70'; const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } }); if (!r.ok) throw new Error('QBO ' + r.status); return r.json(); };
+      const queryAll = async (sql) => { const j = await apiGet('/query?query=' + encodeURIComponent(sql + ' MAXRESULTS 1000')); const qr = j.QueryResponse || {}; const k = Object.keys(qr).find(x => Array.isArray(qr[x])); return k ? qr[k] : []; };
+      const from = year + '-01-01', to = year + '-12-31';
+      const vendors = await queryAll('SELECT Id, DisplayName, Vendor1099, TaxIdentifier FROM Vendor WHERE Active = true');
+      const vmap = {}; vendors.forEach(v => { vmap[v.Id] = v.DisplayName; });
+      const paid = {};
+      const pageScan = async (name, sumFn) => { let start = 1; for (let p = 0; p < 8; p++) { const j = await apiGet('/query?query=' + encodeURIComponent("SELECT * FROM " + name + " WHERE TxnDate >= '" + from + "' AND TxnDate <= '" + to + "' STARTPOSITION " + start + ' MAXRESULTS 1000')); const arr = (j.QueryResponse && j.QueryResponse[name]) || []; arr.forEach(sumFn); if (arr.length < 1000) return arr.length; start += 1000; } return 1000; };
+      const pc = await pageScan('Purchase', r => { if (String(r.PaymentType) === 'CreditCard') return; const e = r.EntityRef; if (e && e.type === 'Vendor' && e.value) paid[e.value] = (paid[e.value] || 0) + (Number(r.TotalAmt) || 0); });
+      const bc = await pageScan('BillPayment', r => { if (String(r.PayType) === 'CreditCard') return; const v = r.VendorRef && r.VendorRef.value; if (v) paid[v] = (paid[v] || 0) + (Number(r.TotalAmt) || 0); });
+      const list = vendors.map(v => ({ name: v.DisplayName, is1099: !!v.Vendor1099, hasTaxId: !!v.TaxIdentifier, ytdPaid: Math.round((paid[v.Id] || 0) * 100) / 100 })).filter(v => v.ytdPaid > 0 || v.is1099).sort((a, b) => b.ytdPaid - a.ytdPaid);
+      return { jsonBody: { ok: true, company: comp.companyName, year, vendorCount: vendors.length, lastPurchasePage: pc, lastBillPmtPage: bc, over600: list.filter(v => v.ytdPaid >= 600).length, top: list.slice(0, 15) } };
+    } catch (e) { context.error('cron-vendors1099', e); return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } }; }
+  }
+});
+
 /**
  * GET /api/integrations/qbo/companies/{realmId}/job-costs?from=&to=
  * Cost-to-date and revenue (billed/recognized) per customer/job — from the P&L
@@ -3595,6 +3623,31 @@ app.http('qbo-report', {
           }
           items.sort((x, y) => String(y.date).localeCompare(String(x.date)));
           data = { kind: 'for-review', accounts: uncatNames, items, capped: scanCapped }; break;
+        }
+        case 'vendors-1099': {
+          // 1099-NEC prep: cash paid per vendor this year (checks/cash/bill-payments;
+          // EXCLUDES credit-card payments — those are reported by the card issuer on 1099-K),
+          // plus each vendor's 1099-eligible flag and whether a tax ID (W-9) is on file.
+          const year = url.searchParams.get('year') || String(new Date().getFullYear());
+          const from = year + '-01-01', to = year + '-12-31';
+          const vendors = await queryAll('SELECT Id, DisplayName, Vendor1099, TaxIdentifier FROM Vendor WHERE Active = true');
+          const paid = {}; let vCapped = false;
+          const pageScan = async (name, sumFn) => {
+            let start = 1;
+            for (let p = 0; p < 8; p++) {
+              const j = await apiGet('/query?query=' + encodeURIComponent("SELECT * FROM " + name + " WHERE TxnDate >= '" + from + "' AND TxnDate <= '" + to + "' STARTPOSITION " + start + ' MAXRESULTS 1000'));
+              const arr = (j.QueryResponse && j.QueryResponse[name]) || [];
+              arr.forEach(sumFn);
+              if (arr.length < 1000) return;
+              start += 1000;
+            }
+            vCapped = true;
+          };
+          await pageScan('Purchase', r => { if (String(r.PaymentType) === 'CreditCard') return; const e = r.EntityRef; if (e && e.type === 'Vendor' && e.value) paid[e.value] = (paid[e.value] || 0) + (Number(r.TotalAmt) || 0); });
+          await pageScan('BillPayment', r => { if (String(r.PayType) === 'CreditCard') return; const v = r.VendorRef && r.VendorRef.value; if (v) paid[v] = (paid[v] || 0) + (Number(r.TotalAmt) || 0); });
+          const list = vendors.map(v => ({ id: v.Id, name: v.DisplayName, is1099: !!v.Vendor1099, hasTaxId: !!v.TaxIdentifier, ytdPaid: Math.round((paid[v.Id] || 0) * 100) / 100 }))
+            .filter(v => v.ytdPaid > 0 || v.is1099).sort((a, b) => b.ytdPaid - a.ytdPaid);
+          data = { kind: 'vendors-1099', year, vendors: list, capped: vCapped }; break;
         }
         case 'payments': {
           const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
