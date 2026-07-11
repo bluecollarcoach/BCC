@@ -535,6 +535,9 @@
   <div class="card" id="tab-payapp" style="display:none; margin-top:14px;">
     <div id="payapp-body"></div>
   </div>
+  <div class="card" id="tab-close" style="display:none; margin-top:14px;">
+    <div id="close-body"></div>
+  </div>
   <div class="card" id="tab-access" style="display:none; margin-top:14px;">
     <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Team &amp; access</h3>
     <div id="access-body"></div>
@@ -2399,6 +2402,7 @@
     { key: 'activity',     label: 'Activity',           ic: '🕑' },
     { key: 'transactions', label: 'New & transactions', ic: '🧾' },
     { key: 'reports',      label: 'Reports & KPIs',     ic: '📊' },
+    { key: 'close',        label: 'Month-end close',    ic: '✅' },
     { key: 'tasks',        label: 'Tasks',              ic: '☑️' },
     { key: 'files',        label: 'Files',              ic: '📎' },
     { key: 'email',        label: 'Email',              ic: '✉️' },
@@ -2453,7 +2457,7 @@
   // ----- Section visibility -----
   function hideAllSections() {
     ['qboKpis', 'qboReports', 'qboWrite'].forEach(function (id) { var e = document.getElementById(id); if (e) e.style.display = 'none'; });
-    ['overview', 'activity', 'info', 'files', 'tasks', 'email', 'payroll', 'payapp', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
+    ['overview', 'activity', 'info', 'files', 'tasks', 'email', 'payroll', 'payapp', 'close', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
   }
   function showSection(sec) {
     hideAllSections();
@@ -2494,6 +2498,7 @@
     else if (sec === 'email') renderEmail();
     else if (sec === 'payroll') renderPayroll();
     else if (sec === 'payapp') renderPayApp();
+    else if (sec === 'close') renderClose();
     else if (sec === 'access') renderAccess();
   }
 
@@ -3957,6 +3962,110 @@
     if (!w) { (window.bccNotify || alert)('Allow pop-ups to print the pay application.', 'warn'); return; }
     w.document.open(); w.document.write(payappDocHtml(r)); w.document.close();
     if (window.bccAudit) window.bccAudit('payapp-print', { key: r.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, appNo: r.appNo } });
+  }
+
+  /* ---- Month-end close checklist + reconciliation helper ---- */
+  var CLOSE_STEPS = [
+    { key: 'categorize', label: 'Categorize uncategorized transactions', help: 'cat' },
+    { key: 'reconcile-bank', label: 'Reconcile bank accounts', help: 'recon-bank' },
+    { key: 'reconcile-cc', label: 'Reconcile credit cards', help: 'recon-cc' },
+    { key: 'review-ar', label: 'Review A/R aging', help: 'ar' },
+    { key: 'review-ap', label: 'Review A/P aging', help: 'ap' },
+    { key: 'adjusting', label: 'Post adjusting journal entries' },
+    { key: 'review-pl', label: 'Review the P&L for the month' },
+    { key: 'lock', label: 'Confirm the books are closed / locked for the period' }
+  ];
+  var _close = null;
+  function closeId(period) { return 'bcc-close-' + currentRealm + '-' + period; }
+  function loadCloseDoc(period) {
+    var id = closeId(period), doc = null;
+    try { doc = JSON.parse(localStorage.getItem(id)); } catch (e) {}
+    if (!doc || !doc.id) doc = { id: id, tenantId: 'blue-collar-coach', docType: 'close', realmId: currentRealm, period: period, steps: {}, recon: {}, createdAt: nowIso() };
+    if (!doc.steps) doc.steps = {}; if (!doc.recon) doc.recon = {};
+    return doc;
+  }
+  function saveClose() { if (!_close) return; _close.updatedAt = nowIso(); _close.updatedBy = myUpn(); localStorage.setItem(_close.id, JSON.stringify(_close)); }
+  function periodEndDate(period) { var d = new Date(+period.slice(0, 4), +period.slice(5, 7), 0); return d.toISOString().slice(0, 10); }
+  function renderClose() {
+    var body = document.getElementById('close-body'); if (!body) return;
+    if (!_close || _close.realmId !== currentRealm) _close = loadCloseDoc(mrDefaultPeriod());
+    var period = _close.period;
+    var done = CLOSE_STEPS.filter(function (s) { return _close.steps[s.key] && _close.steps[s.key].done; }).length;
+    var pct = Math.round(done / CLOSE_STEPS.length * 100);
+    var head = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;">' +
+      '<h3 style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;margin:0;">Month-end close <span style="color:var(--muted);font-weight:400;font-size:12px;">· ' + esc(companyName(currentRealm)) + '</span></h3>' +
+      '<label style="font-size:12px;font-weight:700;color:var(--muted);display:flex;flex-direction:column;gap:4px;">Month<select id="close_period" style="min-height:40px;border:1px solid var(--chrome-mute);border-radius:8px;padding:8px;font:inherit;">' + mrPeriodOptions(period) + '</select></label></div>';
+    var bar = '<div style="margin-bottom:14px;"><div style="height:8px;background:var(--chrome-mute);border-radius:99px;overflow:hidden;"><div style="height:100%;width:' + pct + '%;background:' + (pct === 100 ? '#1f8a4c' : '#c5a55a') + ';transition:width .2s;"></div></div>' +
+      '<div style="font-size:12px;color:var(--muted);margin-top:4px;">' + done + ' of ' + CLOSE_STEPS.length + ' done' + (pct === 100 ? ' — 🎉 closed!' : '') + '</div></div>';
+    var steps = CLOSE_STEPS.map(function (s) {
+      var st = _close.steps[s.key] || {};
+      return '<div style="border:1px solid var(--chrome-mute);border-radius:10px;padding:10px 12px;margin-bottom:8px;">' +
+        '<label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:14px;"><input type="checkbox" data-cstep="' + s.key + '"' + (st.done ? ' checked' : '') + ' style="width:18px;height:18px;flex:none;" /><span' + (st.done ? ' style="text-decoration:line-through;color:var(--muted);"' : '') + '>' + esc(s.label) + '</span></label>' +
+        (s.help ? '<div class="close-help" data-help="' + s.help + '" style="margin:8px 0 0 28px;font-size:12px;color:var(--muted);"></div>' : '') +
+        '<input data-cnote="' + s.key + '" value="' + esc(st.note || '') + '" placeholder="note (optional)" style="margin:8px 0 0 28px;width:calc(100% - 28px);border:1px solid var(--chrome-mute);border-radius:6px;padding:5px 7px;font:inherit;font-size:12px;box-sizing:border-box;" />' +
+      '</div>';
+    }).join('');
+    body.innerHTML = head + bar + steps;
+    document.getElementById('close_period').onchange = function () { saveClose(); _close = loadCloseDoc(this.value); renderClose(); };
+    body.querySelectorAll('[data-cstep]').forEach(function (c) { c.onchange = function () { var k = c.getAttribute('data-cstep'); _close.steps[k] = _close.steps[k] || {}; _close.steps[k].done = c.checked; saveClose(); renderClose(); }; });
+    body.querySelectorAll('[data-cnote]').forEach(function (inp) { inp.oninput = function () { var k = inp.getAttribute('data-cnote'); _close.steps[k] = _close.steps[k] || {}; _close.steps[k].note = inp.value; saveClose(); }; });
+    closeLoadHelpers(period);
+  }
+  function closeGoReport(t) { setSection('reports'); setTimeout(function () { loadQboReport(t); }, 60); }
+  function closeLoadHelpers(period) {
+    var catEl = document.querySelector('.close-help[data-help="cat"]');
+    if (catEl) {
+      catEl.textContent = 'Checking uncategorized…';
+      fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/report?type=for-review', { credentials: 'include' })
+        .then(function (r) { return r.json(); }).then(function (j) {
+          var n = ((j && j.data && j.data.items) || []).length;
+          catEl.innerHTML = n ? ('<strong style="color:#c0392b;">' + n + ' transaction' + (n === 1 ? '' : 's') + '</strong> to categorize — open <a href="#" data-goreview="1">🔎 For review</a>.') : '✓ nothing sitting in an uncategorized account.';
+          var g = catEl.querySelector('[data-goreview]'); if (g) g.onclick = function (e) { e.preventDefault(); closeGoReport('for-review'); };
+        }).catch(function () { catEl.textContent = ''; });
+    }
+    var ar = document.querySelector('.close-help[data-help="ar"]'); if (ar) ar.innerHTML = 'Open the <a href="#" data-gorpt="ar-aging">A/R Aging</a> report.';
+    var ap = document.querySelector('.close-help[data-help="ap"]'); if (ap) ap.innerHTML = 'Open the <a href="#" data-gorpt="ap-aging">A/P Aging</a> report.';
+    document.querySelectorAll('.close-help [data-gorpt]').forEach(function (a) { a.onclick = function (e) { e.preventDefault(); closeGoReport(a.getAttribute('data-gorpt')); }; });
+    var bankEl = document.querySelector('.close-help[data-help="recon-bank"]');
+    var ccEl = document.querySelector('.close-help[data-help="recon-cc"]');
+    if (bankEl) bankEl.textContent = 'Loading balances…'; if (ccEl) ccEl.textContent = 'Loading balances…';
+    if (bankEl || ccEl) {
+      fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/reconcile-accounts?asOf=' + periodEndDate(period), { credentials: 'include' })
+        .then(function (r) { return r.json(); }).then(function (j) {
+          if (!j || !j.ok) { if (bankEl) bankEl.textContent = ''; if (ccEl) ccEl.textContent = ''; return; }
+          var banks = j.accounts.filter(function (a) { return a.type === 'Bank'; });
+          var ccs = j.accounts.filter(function (a) { return a.type === 'Credit Card'; });
+          if (bankEl) { bankEl.innerHTML = reconPanel(banks, period); wireRecon(bankEl); }
+          if (ccEl) { ccEl.innerHTML = reconPanel(ccs, period); wireRecon(ccEl); }
+        }).catch(function () { if (bankEl) bankEl.textContent = ''; if (ccEl) ccEl.textContent = ''; });
+    }
+  }
+  function reconPanel(accts) {
+    if (!accts.length) return '<span style="color:var(--muted);">no accounts of this type.</span>';
+    return '<div style="font-size:11px;color:var(--muted);margin-bottom:3px;">Book balance is as of month-end — enter each statement’s ending balance to confirm it ties out.</div>' +
+      '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;min-width:420px;"><thead><tr style="color:var(--muted);"><th style="text-align:left;padding:2px 4px;">Account</th><th style="text-align:right;padding:2px 4px;">Book</th><th style="text-align:right;padding:2px 4px;">Statement</th><th style="text-align:right;padding:2px 4px;">Diff</th></tr></thead><tbody>' +
+      accts.map(function (a) {
+        var stmt = (_close.recon[a.id] || {}).statementBalance || '';
+        return '<tr data-recon="' + esc(a.id) + '" data-book="' + a.bookBalance + '"><td style="padding:3px 4px;">' + esc(a.name) + '</td><td style="text-align:right;padding:3px 4px;font-variant-numeric:tabular-nums;">' + mrMoney(a.bookBalance) + '</td>' +
+          '<td style="text-align:right;padding:3px 4px;"><input data-stmt="' + esc(a.id) + '" inputmode="decimal" value="' + esc(stmt) + '" placeholder="0.00" style="width:96px;text-align:right;border:1px solid var(--chrome-mute);border-radius:6px;padding:4px 6px;" /></td>' +
+          '<td class="recon-diff" style="text-align:right;padding:3px 4px;font-variant-numeric:tabular-nums;"></td></tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+  function wireRecon(host) {
+    if (!host) return;
+    host.querySelectorAll('[data-recon]').forEach(function (row) { updateReconRow(row); });
+    host.querySelectorAll('[data-stmt]').forEach(function (inp) {
+      inp.oninput = function () { var id = inp.getAttribute('data-stmt'); _close.recon[id] = _close.recon[id] || {}; _close.recon[id].statementBalance = inp.value; saveClose(); var row = host.querySelector('[data-recon="' + id + '"]'); if (row) updateReconRow(row); };
+    });
+  }
+  function updateReconRow(row) {
+    var book = parseFloat(row.getAttribute('data-book')) || 0;
+    var id = row.getAttribute('data-recon');
+    var stmt = parseFloat((_close.recon[id] || {}).statementBalance);
+    var cell = row.querySelector('.recon-diff'); if (!cell) return;
+    if (isNaN(stmt)) { cell.innerHTML = '<span style="color:var(--muted);">—</span>'; return; }
+    var diff = Math.round((stmt - book) * 100) / 100;
+    cell.innerHTML = diff === 0 ? '<strong style="color:#1f8a4c;">✓ ' + mrMoney(0) + '</strong>' : '<strong style="color:#c0392b;">' + mrMoney(diff) + '</strong>';
   }
 
   /* Return to the main bookkeeping page (work queue root) from anywhere. */

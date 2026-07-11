@@ -3403,6 +3403,67 @@ function linesByGroupRx(flat, rx, limit) {
 }
 
 
+// TEMP (CRON_SECRET-gated): verify reconcile balance mapping vs live QBO. Remove after.
+app.http('cron-recon', {
+  methods: ['GET'], authLevel: 'anonymous', route: 'cron/recon',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
+    try {
+      const realmId = String(new URL(request.url).searchParams.get('realmId') || '');
+      const asOf = String(new URL(request.url).searchParams.get('asOf') || new Date().toISOString().slice(0, 10));
+      const comp = await container().item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      if (!comp) return { status: 404, jsonBody: { ok: false, error: 'no company' } };
+      const fields = await getIntegrationFields('qbo');
+      const { accessToken, base } = await qboAccessForCompany(comp, fields);
+      const apiGet = async (path) => { const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70'; const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } }); if (!r.ok) throw new Error('QBO ' + r.status); return r.json(); };
+      const queryAll = async (sql) => { const j = await apiGet('/query?query=' + encodeURIComponent(sql + ' MAXRESULTS 1000')); const qr = j.QueryResponse || {}; const k = Object.keys(qr).find(x => Array.isArray(qr[x])); return k ? qr[k] : []; };
+      const accts = await queryAll("SELECT Id, Name, AccountType, CurrentBalance FROM Account WHERE Active = true AND AccountType IN ('Bank','Credit Card')");
+      const idset = {}; accts.forEach(a => { idset[String(a.Id)] = { id: String(a.Id), name: a.Name, type: a.AccountType, currentBalance: a.CurrentBalance }; });
+      const bs = flattenQboReport(await apiGet(bsReportQuery(asOf, 'Accrual')));
+      const out = [];
+      (bs.rows || []).forEach(row => {
+        if (row.acctId && idset[String(row.acctId)] && !out.find(o => o.id === String(row.acctId))) {
+          const cells = row.cells || []; const last = String(cells[cells.length - 1] || '');
+          const bal = parseFloat(last.replace(/[$,]/g, '').replace(/^\((.*)\)$/, '-$1')) || 0;
+          out.push(Object.assign({ bookBalanceAsOf: bal }, idset[String(row.acctId)]));
+        }
+      });
+      accts.forEach(a => { if (!out.find(o => o.id === String(a.Id))) out.push(Object.assign({ bookBalanceAsOf: 0, notInBS: true }, idset[String(a.Id)])); });
+      return { jsonBody: { ok: true, company: comp.companyName, asOf, accounts: out } };
+    } catch (e) { context.error('cron-recon', e); return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } }; }
+  }
+});
+
+/**
+ * GET /api/integrations/qbo/companies/{realmId}/reconcile-accounts?asOf=YYYY-MM-DD
+ * Bank + credit-card accounts with their QBO BOOK balance as of a date, for the
+ * month-end reconciliation helper (compare to the statement ending balance).
+ */
+app.http('qbo-reconcile-accounts', {
+  methods: ['GET'], authLevel: 'anonymous', route: 'integrations/qbo/companies/{realmId}/reconcile-accounts',
+  handler: withAccessLog(async (request, context) => {
+    try {
+      const ctx = await qboResolveAccess(request, request.params.realmId);
+      if (ctx.err) return ctx.err;
+      const asOf = new URL(request.url).searchParams.get('asOf') || new Date().toISOString().slice(0, 10);
+      const accts = await ctx.queryAll("SELECT Id, Name, AccountType FROM Account WHERE Active = true AND AccountType IN ('Bank','Credit Card')");
+      const idset = {}; accts.forEach(a => { idset[String(a.Id)] = { id: String(a.Id), name: a.Name, type: a.AccountType }; });
+      const bs = flattenQboReport(await ctx.apiGet(bsReportQuery(asOf, 'Accrual')));
+      const out = [];
+      (bs.rows || []).forEach(row => {
+        if (row.acctId && idset[String(row.acctId)] && !out.find(o => o.id === String(row.acctId))) {
+          const cells = row.cells || []; const last = String(cells[cells.length - 1] || '');
+          const bal = parseFloat(last.replace(/[$,]/g, '').replace(/^\((.*)\)$/, '-$1')) || 0;
+          out.push(Object.assign({ bookBalance: bal }, idset[String(row.acctId)]));
+        }
+      });
+      accts.forEach(a => { if (!out.find(o => o.id === String(a.Id))) out.push({ id: String(a.Id), name: a.Name, type: a.AccountType, bookBalance: 0 }); });
+      return { jsonBody: { ok: true, asOf, accounts: out } };
+    } catch (e) { context.error('qbo-reconcile-accounts', e); return { status: 502, jsonBody: { ok: false, error: String(e.message || e) } }; }
+  })
+});
+
 app.http('qbo-report', {
   methods: ['GET'],
   authLevel: 'anonymous',
