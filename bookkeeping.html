@@ -121,6 +121,16 @@
     /* Every other dynamic table stays a real table and pans horizontally. */
     #qboReportOut, #files-body, #payroll-body, #payapp-body, #email-body { overflow-x:auto; -webkit-overflow-scrolling:touch; }
     #qboReportOut table, #files-body table { min-width:540px; }
+    /* New & transactions — categorized action buttons (not a buried dropdown) */
+    .qbo-new-groups { display:flex; flex-wrap:wrap; gap:20px; margin-top:14px; }
+    .qbo-new-group { flex:1 1 300px; min-width:280px; }
+    .qbo-new-label { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin-bottom:9px; }
+    .qbo-new-btns { display:grid; grid-template-columns:repeat(auto-fill, minmax(168px, 1fr)); gap:9px; }
+    .qbo-new-btns button { display:flex; align-items:center; gap:10px; padding:11px 12px; border:1px solid var(--chrome-mute); border-radius:11px; background:var(--chrome); font:inherit; text-align:left; cursor:pointer; min-height:52px; transition:border-color .12s, background .12s, box-shadow .12s; }
+    .qbo-new-btns button:hover, .qbo-new-btns button:focus-visible { border-color:#c5a55a; background:var(--gold-tint,#f7f1e3); box-shadow:0 1px 4px rgba(0,0,0,.06); outline:none; }
+    .qbo-new-btns .ic { font-size:19px; line-height:1; flex:none; }
+    .qbo-new-btns .t { display:block; font-size:13.5px; font-weight:700; color:var(--ink,#23262b); }
+    .qbo-new-btns .d { display:block; font-size:11px; font-weight:400; color:var(--muted); margin-top:1px; }
     /* No iOS zoom-on-focus; comfortable touch targets. */
     input, select, textarea { font-size:16px; }
     .btn { min-height:44px; }
@@ -431,29 +441,32 @@
   <div class="card" id="qboWrite" style="display:none; margin-top:14px;">
     <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
       <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0;">New &amp; transactions <span style="color:var(--muted);font-weight:400;font-size:12px;">· posts to QuickBooks</span></h3>
-      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-        <label class="btn btn-primary" for="scanInput" style="cursor:pointer;display:inline-flex;align-items:center;">📷 Scan receipt (AI)</label>
-        <select id="qboNewSel" aria-label="Create a new record" style="background:var(--chrome); border:1px solid var(--chrome-mute); border-radius:8px; padding:9px 11px; font:inherit; font-size:14px; min-height:42px; font-weight:700;">
-          <option value="">+ New…</option>
-          <optgroup label="Transactions">
-            <option value="tx:invoice">Invoice</option>
-            <option value="tx:purchase">Expense / purchase (already paid — cash or card)</option>
-            <option value="tx:bill">Bill (unpaid — you owe it, A/P)</option>
-            <option value="tx:payment">Receive payment</option>
-            <option value="tx:journalentry">Journal entry (adjusting / reclass)</option>
-          </optgroup>
-          <optgroup label="Records">
-            <option value="add:customer">Customer</option>
-            <option value="add:project">Project / job (under a customer)</option>
-            <option value="add:vendor">Vendor</option>
-            <option value="add:item">Item / service</option>
-            <option value="add:account">Account</option>
-          </optgroup>
-        </select>
+      <label class="btn btn-primary" for="scanInput" style="cursor:pointer;display:inline-flex;align-items:center;">📷 Scan receipt (AI)</label>
+    </div>
+    <div class="qbo-new-groups">
+      <div class="qbo-new-group">
+        <div class="qbo-new-label">Add a transaction</div>
+        <div class="qbo-new-btns">
+          <button type="button" data-new="tx:invoice"><span class="ic">🧾</span><span><span class="t">Invoice</span><span class="d">bill a customer</span></span></button>
+          <button type="button" data-new="tx:purchase"><span class="ic">💳</span><span><span class="t">Expense / purchase</span><span class="d">already paid — cash or card</span></span></button>
+          <button type="button" data-new="tx:bill"><span class="ic">📄</span><span><span class="t">Bill</span><span class="d">unpaid — you owe it (A/P)</span></span></button>
+          <button type="button" data-new="tx:payment"><span class="ic">💵</span><span><span class="t">Receive payment</span><span class="d">customer paid you</span></span></button>
+          <button type="button" data-new="tx:journalentry"><span class="ic">📓</span><span><span class="t">Journal entry</span><span class="d">adjusting / reclass</span></span></button>
+        </div>
+      </div>
+      <div class="qbo-new-group">
+        <div class="qbo-new-label">Add a record</div>
+        <div class="qbo-new-btns">
+          <button type="button" data-new="add:customer"><span class="ic">👤</span><span><span class="t">Customer</span><span class="d">who you bill</span></span></button>
+          <button type="button" data-new="add:project"><span class="ic">🏗️</span><span><span class="t">Project / job</span><span class="d">under a customer</span></span></button>
+          <button type="button" data-new="add:vendor"><span class="ic">🚚</span><span><span class="t">Vendor</span><span class="d">who you pay</span></span></button>
+          <button type="button" data-new="add:item"><span class="ic">📦</span><span><span class="t">Item / service</span><span class="d">what you sell</span></span></button>
+          <button type="button" data-new="add:account"><span class="ic">🏦</span><span><span class="t">Account</span><span class="d">chart of accounts</span></span></button>
+        </div>
       </div>
     </div>
     <input type="file" id="scanInput" accept="image/*,application/pdf" style="display:none;" />
-    <div id="qboWriteForm" style="margin-top:12px;"></div>
+    <div id="qboWriteForm" style="margin-top:14px;"></div>
   </div>
 
   <!-- QuickBooks live reports (shown when a single company is selected) -->
@@ -658,14 +671,15 @@
   function renderStatus() {
     var bar = document.getElementById('statusBar');
     var n = companies.length;
-    bar.classList.remove('connected','disconnected','error');
-    bar.classList.add(n > 0 ? 'connected' : 'disconnected');
-    document.getElementById('statusText').textContent = n > 0
-      ? (n + ' compan' + (n === 1 ? 'y' : 'ies') + ' connected — click "Connect a company" to add more')
-      : 'No companies connected — click "Connect a company" to link a client’s QuickBooks';
-    var cfg = document.getElementById('configLink');
-    if (cfg) { cfg.textContent = 'Manage in Admin →'; }
-    document.getElementById('syncBtn').disabled = (n === 0);
+    var sb = document.getElementById('syncBtn'); if (sb) sb.disabled = (n === 0);
+    if (!bar) return;
+    // When QuickBooks is connected (the normal state) the connector bar is just noise —
+    // hide it. Only surface a compact prompt when nothing is connected yet.
+    if (n > 0) { bar.style.display = 'none'; return; }
+    bar.style.display = '';
+    bar.classList.remove('connected', 'error'); bar.classList.add('disconnected');
+    document.getElementById('statusText').textContent = 'No QuickBooks companies connected yet.';
+    var cfg = document.getElementById('configLink'); if (cfg) cfg.textContent = canManage() ? 'Connect in Admin →' : 'Ask an admin to connect';
   }
 
   function allPeriods() {
@@ -4324,7 +4338,7 @@
     if (mb) { mb.style.display = (atRoot && canManage()) ? '' : 'none'; mb.textContent = managementMode ? '← Working view' : 'Management dashboard →'; }
     var sub = document.getElementById('subline'); if (sub) sub.textContent = currentRealm ? '' : (mgmt ? 'Firm-wide snapshot across all companies.' : 'Your client work queue — open a company to do the books.');
   }
-  function renderAll() { fillCompanyFilter(); renderStatus(); renderKpis(); renderTable(); toggleQboReports(); renderWorkspace(); applyChrome(); }
+  function renderAll() { try { localStorage.setItem('bcc-last-realm', currentRealm || ''); } catch (e) {} fillCompanyFilter(); renderStatus(); renderKpis(); renderTable(); toggleQboReports(); renderWorkspace(); applyChrome(); }
   function init() {
     yearFilter = document.getElementById('yearFilter');
     rowsEl = document.getElementById('rows');
@@ -4333,12 +4347,12 @@
     if (rptSel) rptSel.addEventListener('change', function () { if (rptSel.value) loadQboReport(rptSel.value, null); });
     var mrBtn = document.getElementById('mrOpenBtn');
     if (mrBtn) mrBtn.addEventListener('click', openMonthlyReport);
-    var newSel = document.getElementById('qboNewSel');
-    if (newSel) newSel.addEventListener('change', function () {
-      var v = newSel.value; newSel.value = ''; if (!v) return;
-      var parts = v.split(':');
-      if (parts[0] === 'tx') { if (parts[1] === 'journalentry') openJournalEntryForm(); else openTxnForm(parts[1]); }
-      else if (parts[0] === 'add') openEntityForm(parts[1]);
+    document.querySelectorAll('#qboWrite [data-new]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var parts = (b.getAttribute('data-new') || '').split(':');
+        if (parts[0] === 'tx') { if (parts[1] === 'journalentry') openJournalEntryForm(); else openTxnForm(parts[1]); }
+        else if (parts[0] === 'add') openEntityForm(parts[1]);
+      });
     });
     var scanInput = document.getElementById('scanInput');
     if (scanInput) {
@@ -4364,6 +4378,11 @@
       var dq, dr, rid;
       try { dq = new URLSearchParams(location.search); dr = dq.get('drive'); rid = dr ? dq.get('realmId') : ''; } catch (_) {}
       if (rid) currentRealm = rid;             // open the just-connected client BEFORE the first paint (don't flash/stick on home)
+      else {
+        // Restore the client the user was last in, so a refresh / next open lands there.
+        var saved = ''; try { saved = localStorage.getItem('bcc-last-realm') || ''; } catch (_) {}
+        if (saved && companies.some(function (c) { return String(c.realmId) === String(saved); })) currentRealm = saved;
+      }
       renderAll();
       if (rid) { try { setSection('files'); } catch (_) {} }
       if (dr === 'connected' && window.bccNotifySaved) window.bccNotifySaved('Shared drive connected.');
