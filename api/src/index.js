@@ -3402,6 +3402,46 @@ function linesByGroupRx(flat, rx, limit) {
   return out;
 }
 
+// TEMP (CRON_SECRET-gated): verify the for-review parse against live QBO. Remove after.
+app.http('cron-forreview', {
+  methods: ['GET'], authLevel: 'anonymous', route: 'cron/forreview',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
+    try {
+      const realmId = String(new URL(request.url).searchParams.get('realmId') || '');
+      const comp = await container().item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      if (!comp) return { status: 404, jsonBody: { ok: false, error: 'no company' } };
+      const fields = await getIntegrationFields('qbo');
+      const { accessToken, base } = await qboAccessForCompany(comp, fields);
+      const apiGet = async (path) => { const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70'; const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } }); if (!r.ok) throw new Error('QBO ' + r.status + ':' + (await r.text().catch(() => '')).slice(0, 120)); return r.json(); };
+      const queryAll = async (sql) => { const j = await apiGet('/query?query=' + encodeURIComponent(sql + ' MAXRESULTS 1000')); const qr = j.QueryResponse || {}; const k = Object.keys(qr).find(x => Array.isArray(qr[x])); return k ? qr[k] : []; };
+      const today = new Date().toISOString().slice(0, 10);
+      const accts = await queryAll('SELECT Id, Name, AccountType FROM Account WHERE Active = true');
+      const uncat = accts.filter(a => /uncategor|ask my accountant/i.test(a.Name || ''));
+      const items = []; const seen = {}; const fyStart = today.slice(0, 4) + '-01-01'; const colDump = {};
+      for (const a of uncat) {
+        let rep;
+        try { rep = flattenQboReport(await apiGet('/reports/ProfitAndLossDetail?start_date=' + fyStart + '&end_date=' + today + '&accounting_method=Accrual&account=' + encodeURIComponent(a.Id))); }
+        catch (e) { colDump[a.Name] = 'ERR ' + String(e.message || e).slice(0, 80); continue; }
+        colDump[a.Name] = rep.columns;
+        const cols = (rep.columns || []).map(c => String(c || '').toLowerCase());
+        const idxOf = (rx) => cols.findIndex(c => rx.test(c));
+        const iType = idxOf(/transaction type|^type/), iNum = idxOf(/num/), iName = idxOf(/name/), iMemo = idxOf(/memo|description/), iAmt = idxOf(/amount/);
+        const cellAt = (row, i) => (i <= 0 ? row.label : (row.cells[i - 1] != null ? row.cells[i - 1] : ''));
+        for (const row of (rep.rows || [])) {
+          if (row.type !== 'data' || !row.acctId || seen[row.acctId]) continue;
+          seen[row.acctId] = 1;
+          const amtRaw = String(cellAt(row, iAmt) || '').trim();
+          const amt = (parseFloat(amtRaw.replace(/[$,()]/g, '')) || 0) * (/^\(/.test(amtRaw) ? -1 : 1);
+          items.push({ id: row.acctId, txnType: String(cellAt(row, iType) || '').trim(), date: row.label, name: String(cellAt(row, iName) || ''), memo: String(cellAt(row, iMemo) || ''), amount: amt, account: a.Name });
+        }
+      }
+      return { jsonBody: { ok: true, company: comp.companyName, uncatAccounts: uncat.map(a => a.Name + ' [' + a.AccountType + ']'), columnsSeen: colDump, itemCount: items.length, items: items.slice(0, 25) } };
+    } catch (e) { context.error('cron-forreview', e); return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } }; }
+  }
+});
+
 app.http('qbo-report', {
   methods: ['GET'],
   authLevel: 'anonymous',
@@ -3495,6 +3535,33 @@ app.http('qbo-report', {
             : flattenQboReport(await apiGet('/reports/TransactionList?start_date=' + from + '&end_date=' + to));
           data.range = { from, to, account: acct || undefined }; data.kind = 'report'; break;
         }
+        case 'for-review': {
+          // Transactions sitting in Uncategorized / Ask-My-Accountant accounts that a
+          // bookkeeper still needs to categorize. ProfitAndLossDetail honors the account
+          // filter (TransactionList ignores it) and returns each posting with its txn id.
+          const accts = await queryAll('SELECT Id, Name, AccountType FROM Account WHERE Active = true');
+          const uncat = accts.filter(a => /uncategor|ask my accountant/i.test(a.Name || ''));
+          const items = []; const seen = {};
+          const fyStart = today.slice(0, 4) + '-01-01';
+          for (const a of uncat) {
+            let rep;
+            try { rep = flattenQboReport(await apiGet('/reports/ProfitAndLossDetail?start_date=' + fyStart + '&end_date=' + today + '&accounting_method=' + method + '&account=' + encodeURIComponent(a.Id))); }
+            catch (e) { continue; }
+            const cols = (rep.columns || []).map(c => String(c || '').toLowerCase());
+            const idxOf = (rx) => cols.findIndex(c => rx.test(c));
+            const iType = idxOf(/transaction type|^type/), iNum = idxOf(/num/), iName = idxOf(/name/), iMemo = idxOf(/memo|description/), iAmt = idxOf(/amount/);
+            const cellAt = (row, i) => (i <= 0 ? row.label : (row.cells[i - 1] != null ? row.cells[i - 1] : ''));
+            for (const row of (rep.rows || [])) {
+              if (row.type !== 'data' || !row.acctId || seen[row.acctId]) continue;
+              seen[row.acctId] = 1;
+              const amtRaw = String(cellAt(row, iAmt) || '').trim();
+              const amt = (parseFloat(amtRaw.replace(/[$,()]/g, '')) || 0) * (/^\(/.test(amtRaw) ? -1 : 1);
+              items.push({ id: row.acctId, txnType: String(cellAt(row, iType) || '').trim(), date: row.label, num: String(cellAt(row, iNum) || ''), name: String(cellAt(row, iName) || ''), memo: String(cellAt(row, iMemo) || ''), amount: amt, account: a.Name });
+            }
+          }
+          items.sort((x, y) => String(y.date).localeCompare(String(x.date)));
+          data = { kind: 'for-review', accounts: uncat.map(a => a.Name), items }; break;
+        }
         case 'payments': {
           const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
           data = { kind: 'list', items: (await queryAll("SELECT Id, TxnDate, TotalAmt, PaymentRefNum, CustomerRef FROM Payment WHERE TxnDate >= '" + from + "' AND TxnDate <= '" + to + "' ORDERBY TxnDate DESC")).map(x => ({ date: x.TxnDate, ref: x.PaymentRefNum, name: x.CustomerRef && x.CustomerRef.name, total: x.TotalAmt })) }; break;
@@ -3586,8 +3653,8 @@ app.http('qbo-entity', {
       const u = new URL(request.url);
       const type = (u.searchParams.get('type') || '').toLowerCase();
       const id = u.searchParams.get('id');
-      const cap = { invoice: 'Invoice', bill: 'Bill', payment: 'Payment' }[type];
-      if (!cap || !id) return badRequest('type (invoice|bill|payment) and id required');
+      const cap = { invoice: 'Invoice', bill: 'Bill', payment: 'Payment', purchase: 'Purchase' }[type];
+      if (!cap || !id) return badRequest('type (invoice|bill|payment|purchase) and id required');
       const j = await ctx.apiGet('/' + type + '/' + encodeURIComponent(id));
       return { jsonBody: { ok: true, entity: j[cap] || null } };
     } catch (e) { context.error('qbo-entity', e); return { status: 502, jsonBody: { ok: false, error: String(e.message || e) } }; }
