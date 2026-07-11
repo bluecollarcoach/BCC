@@ -3416,30 +3416,20 @@ app.http('cron-forreview', {
       const { accessToken, base } = await qboAccessForCompany(comp, fields);
       const apiGet = async (path) => { const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70'; const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } }); if (!r.ok) throw new Error('QBO ' + r.status + ':' + (await r.text().catch(() => '')).slice(0, 120)); return r.json(); };
       const queryAll = async (sql) => { const j = await apiGet('/query?query=' + encodeURIComponent(sql + ' MAXRESULTS 1000')); const qr = j.QueryResponse || {}; const k = Object.keys(qr).find(x => Array.isArray(qr[x])); return k ? qr[k] : []; };
-      const today = new Date().toISOString().slice(0, 10);
-      const accts = await queryAll('SELECT Id, Name, AccountType FROM Account WHERE Active = true');
-      const uncat = accts.filter(a => /uncategor|ask my accountant/i.test(a.Name || ''));
-      const items = []; const seen = {}; const fyStart = String(new URL(request.url).searchParams.get('from') || (today.slice(0, 4) + '-01-01')); const colDump = {}; const rowDiag = {};
-      for (const a of uncat) {
-        let rep;
-        try { rep = flattenQboReport(await apiGet('/reports/ProfitAndLossDetail?start_date=' + fyStart + '&end_date=' + today + '&accounting_method=Accrual&account=' + encodeURIComponent(a.Id))); }
-        catch (e) { colDump[a.Name] = 'ERR ' + String(e.message || e).slice(0, 80); continue; }
-        colDump[a.Name] = rep.columns;
-        const dr = (rep.rows || []).filter(r => r.type === 'data');
-        rowDiag[a.Name] = { totalRows: (rep.rows || []).length, dataRows: dr.length, withId: dr.filter(r => r.acctId).length, sample: dr.slice(0, 2).map(r => ({ label: r.label, cells: r.cells, acctId: r.acctId })) };
-        const cols = (rep.columns || []).map(c => String(c || '').toLowerCase());
-        const idxOf = (rx) => cols.findIndex(c => rx.test(c));
-        const iType = idxOf(/transaction type|^type/), iNum = idxOf(/num/), iName = idxOf(/name/), iMemo = idxOf(/memo|description/), iAmt = idxOf(/amount/);
-        const cellAt = (row, i) => (i <= 0 ? row.label : (row.cells[i - 1] != null ? row.cells[i - 1] : ''));
-        for (const row of (rep.rows || [])) {
-          if (row.type !== 'data' || !row.acctId || seen[row.acctId]) continue;
-          seen[row.acctId] = 1;
-          const amtRaw = String(cellAt(row, iAmt) || '').trim();
-          const amt = (parseFloat(amtRaw.replace(/[$,()]/g, '')) || 0) * (/^\(/.test(amtRaw) ? -1 : 1);
-          items.push({ id: row.acctId, txnType: String(cellAt(row, iType) || '').trim(), date: row.label, name: String(cellAt(row, iName) || ''), memo: String(cellAt(row, iMemo) || ''), amount: amt, account: a.Name });
-        }
-      }
-      return { jsonBody: { ok: true, company: comp.companyName, from: fyStart, uncatAccounts: uncat.map(a => a.Name + ' [' + a.AccountType + ']'), rowDiag, itemCount: items.length, items: items.slice(0, 25) } };
+      const accts = await queryAll('SELECT Id, Name FROM Account WHERE Active = true');
+      const uncatIds = {}; const uncatNames = [];
+      accts.forEach(a => { if (/uncategor|ask my accountant/i.test(a.Name || '')) { uncatIds[String(a.Id)] = a.Name; uncatNames.push(a.Name); } });
+      const items = [];
+      const from = String(new URL(request.url).searchParams.get('from') || (() => { const d = new Date(); d.setMonth(d.getMonth() - 24); return d.toISOString().slice(0, 10); })());
+      const matchAcct = (lines, path) => { for (const l of (lines || [])) { const d = l[path]; const v = d && d.AccountRef && String(d.AccountRef.value); if (v && uncatIds[v]) return uncatIds[v]; } return null; };
+      const purchases = await queryAll("SELECT * FROM Purchase WHERE TxnDate >= '" + from + "' ORDERBY TxnDate DESC");
+      purchases.forEach(r => { const acc = matchAcct(r.Line, 'AccountBasedExpenseLineDetail'); if (acc) items.push({ id: r.Id, entity: 'purchase', txnType: (r.PaymentType ? r.PaymentType + ' ' : '') + 'expense', date: r.TxnDate, name: (r.EntityRef && r.EntityRef.name) || '', amount: Number(r.TotalAmt) || 0, account: acc }); });
+      const bills = await queryAll("SELECT * FROM Bill WHERE TxnDate >= '" + from + "' ORDERBY TxnDate DESC");
+      bills.forEach(r => { const acc = matchAcct(r.Line, 'AccountBasedExpenseLineDetail'); if (acc) items.push({ id: r.Id, entity: 'bill', txnType: 'Bill', date: r.TxnDate, name: (r.VendorRef && r.VendorRef.name) || '', amount: Number(r.TotalAmt) || 0, account: acc }); });
+      const deposits = await queryAll("SELECT * FROM Deposit WHERE TxnDate >= '" + from + "' ORDERBY TxnDate DESC").catch(() => []);
+      deposits.forEach(r => { const acc = matchAcct(r.Line, 'DepositLineDetail'); if (acc) items.push({ id: r.Id, entity: '', txnType: 'Deposit', date: r.TxnDate, amount: Number(r.TotalAmt) || 0, account: acc }); });
+      items.sort((x, y) => String(y.date).localeCompare(String(x.date)));
+      return { jsonBody: { ok: true, company: comp.companyName, from, uncatAccounts: uncatNames, counts: { purchases: purchases.length, bills: bills.length, deposits: deposits.length }, itemCount: items.length, items: items.slice(0, 25) } };
     } catch (e) { context.error('cron-forreview', e); return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } }; }
   }
 });
@@ -3538,31 +3528,25 @@ app.http('qbo-report', {
           data.range = { from, to, account: acct || undefined }; data.kind = 'report'; break;
         }
         case 'for-review': {
-          // Transactions sitting in Uncategorized / Ask-My-Accountant accounts that a
-          // bookkeeper still needs to categorize. ProfitAndLossDetail honors the account
-          // filter (TransactionList ignores it) and returns each posting with its txn id.
-          const accts = await queryAll('SELECT Id, Name, AccountType FROM Account WHERE Active = true');
-          const uncat = accts.filter(a => /uncategor|ask my accountant/i.test(a.Name || ''));
-          const items = []; const seen = {};
-          const fyStart = today.slice(0, 4) + '-01-01';
-          for (const a of uncat) {
-            let rep;
-            try { rep = flattenQboReport(await apiGet('/reports/ProfitAndLossDetail?start_date=' + fyStart + '&end_date=' + today + '&accounting_method=' + method + '&account=' + encodeURIComponent(a.Id))); }
-            catch (e) { continue; }
-            const cols = (rep.columns || []).map(c => String(c || '').toLowerCase());
-            const idxOf = (rx) => cols.findIndex(c => rx.test(c));
-            const iType = idxOf(/transaction type|^type/), iNum = idxOf(/num/), iName = idxOf(/name/), iMemo = idxOf(/memo|description/), iAmt = idxOf(/amount/);
-            const cellAt = (row, i) => (i <= 0 ? row.label : (row.cells[i - 1] != null ? row.cells[i - 1] : ''));
-            for (const row of (rep.rows || [])) {
-              if (row.type !== 'data' || !row.acctId || seen[row.acctId]) continue;
-              seen[row.acctId] = 1;
-              const amtRaw = String(cellAt(row, iAmt) || '').trim();
-              const amt = (parseFloat(amtRaw.replace(/[$,()]/g, '')) || 0) * (/^\(/.test(amtRaw) ? -1 : 1);
-              items.push({ id: row.acctId, txnType: String(cellAt(row, iType) || '').trim(), date: row.label, num: String(cellAt(row, iNum) || ''), name: String(cellAt(row, iName) || ''), memo: String(cellAt(row, iMemo) || ''), amount: amt, account: a.Name });
-            }
+          // Transactions posted to Uncategorized / Ask-My-Accountant accounts that still
+          // need categorizing. Sourced by ENTITY query (not a report) so each row carries
+          // a real txn id + type the "Categorize" button can open for reclassification.
+          const accts = await queryAll('SELECT Id, Name FROM Account WHERE Active = true');
+          const uncatIds = {}; const uncatNames = [];
+          accts.forEach(a => { if (/uncategor|ask my accountant/i.test(a.Name || '')) { uncatIds[String(a.Id)] = a.Name; uncatNames.push(a.Name); } });
+          const items = [];
+          if (Object.keys(uncatIds).length) {
+            const lb = new Date(); lb.setMonth(lb.getMonth() - 24); const from = lb.toISOString().slice(0, 10);
+            const matchAcct = (lines, path) => { for (const l of (lines || [])) { const d = l[path]; const v = d && d.AccountRef && String(d.AccountRef.value); if (v && uncatIds[v]) return uncatIds[v]; } return null; };
+            const purchases = await queryAll("SELECT * FROM Purchase WHERE TxnDate >= '" + from + "' ORDERBY TxnDate DESC");
+            purchases.forEach(r => { const acc = matchAcct(r.Line, 'AccountBasedExpenseLineDetail'); if (acc) items.push({ id: r.Id, entity: 'purchase', txnType: (r.PaymentType ? r.PaymentType + ' ' : '') + 'expense', date: r.TxnDate, name: (r.EntityRef && r.EntityRef.name) || '', memo: r.PrivateNote || '', amount: Number(r.TotalAmt) || 0, account: acc }); });
+            const bills = await queryAll("SELECT * FROM Bill WHERE TxnDate >= '" + from + "' ORDERBY TxnDate DESC");
+            bills.forEach(r => { const acc = matchAcct(r.Line, 'AccountBasedExpenseLineDetail'); if (acc) items.push({ id: r.Id, entity: 'bill', txnType: 'Bill', date: r.TxnDate, name: (r.VendorRef && r.VendorRef.name) || '', memo: r.PrivateNote || '', amount: Number(r.TotalAmt) || 0, account: acc }); });
+            const deposits = await queryAll("SELECT * FROM Deposit WHERE TxnDate >= '" + from + "' ORDERBY TxnDate DESC").catch(() => []);
+            deposits.forEach(r => { const acc = matchAcct(r.Line, 'DepositLineDetail'); if (acc) items.push({ id: r.Id, entity: '', txnType: 'Deposit', date: r.TxnDate, name: '', memo: r.PrivateNote || '', amount: Number(r.TotalAmt) || 0, account: acc }); });
           }
           items.sort((x, y) => String(y.date).localeCompare(String(x.date)));
-          data = { kind: 'for-review', accounts: uncat.map(a => a.Name), items }; break;
+          data = { kind: 'for-review', accounts: uncatNames, items }; break;
         }
         case 'payments': {
           const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;

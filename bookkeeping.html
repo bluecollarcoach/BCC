@@ -1515,7 +1515,7 @@
       '<div style="font-size:12px;color:var(--muted);">' + (accts ? ('In: ' + esc(accts)) : 'No “Uncategorized” or “Ask My Accountant” accounts found in this company.') + ' · this year to date. Click <strong>Categorize</strong> to reclassify a transaction to the right account.</div></div>';
     if (!items.length) return head + '<div style="color:var(--muted);padding:12px 0;">Nothing to review — no transactions are sitting in an uncategorized account. 🎉</div>';
     var rows = items.map(function (it) {
-      var ent = forReviewEntity(it.txnType);
+      var ent = it.entity || forReviewEntity(it.txnType);
       var act = ent
         ? '<button class="btn btn-primary" data-cat-id="' + esc(it.id) + '" data-cat-entity="' + ent + '" type="button" style="font-size:11px;min-height:28px;">Categorize →</button>'
         : '<span style="font-size:11px;color:var(--muted);">in QuickBooks</span>';
