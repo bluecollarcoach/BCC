@@ -119,12 +119,12 @@
     .list tbody td:not([data-label]):before { content:none; }
     .list tbody td.num { text-align:left; }
     /* Every other dynamic table stays a real table and pans horizontally. */
-    #qboReportOut, #files-body, #time-body, #payroll-body, #payapp-body, #email-body { overflow-x:auto; -webkit-overflow-scrolling:touch; }
-    #qboReportOut table, #time-body table, #files-body table { min-width:540px; }
+    #qboReportOut, #files-body, #payroll-body, #payapp-body, #email-body { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+    #qboReportOut table, #files-body table { min-width:540px; }
     /* No iOS zoom-on-focus; comfortable touch targets. */
     input, select, textarea { font-size:16px; }
     .btn { min-height:44px; }
-    .ws-row .btn, .list .btn, #qboReportOut .btn, #files-body .btn, #time-body .btn, #email-body .btn, #payroll-body .btn { min-height:38px !important; padding:0 12px; }
+    .ws-row .btn, .list .btn, #qboReportOut .btn, #files-body .btn, #email-body .btn, #payroll-body .btn { min-height:38px !important; padding:0 12px; }
     input[type=checkbox] { width:24px; height:24px; }
     .ws-row { padding:12px 0; gap:12px; }
   }
@@ -520,10 +520,6 @@
   <div class="card" id="tab-tasks" style="display:none; margin-top:14px;">
     <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Tasks</h3>
     <div id="tasks-body"></div>
-  </div>
-  <div class="card" id="tab-time" style="display:none; margin-top:14px;">
-    <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Time tracking</h3>
-    <div id="time-body"></div>
   </div>
   <div class="card" id="tab-email" style="display:none; margin-top:14px;">
     <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Email <span style="color:var(--muted);font-weight:400;font-size:12px;">· send &amp; log per client</span></h3>
@@ -2272,7 +2268,6 @@
     { key: 'transactions', label: 'New & transactions', ic: '🧾' },
     { key: 'reports',      label: 'Reports & KPIs',     ic: '📊' },
     { key: 'tasks',        label: 'Tasks',              ic: '☑️' },
-    { key: 'time',         label: 'Time',               ic: '⏱️' },
     { key: 'files',        label: 'Files',              ic: '📎' },
     { key: 'email',        label: 'Email',              ic: '✉️' },
     { key: 'payroll',      label: 'Certified payroll',  ic: '🧮' },
@@ -2326,7 +2321,7 @@
   // ----- Section visibility -----
   function hideAllSections() {
     ['qboKpis', 'qboReports', 'qboWrite'].forEach(function (id) { var e = document.getElementById(id); if (e) e.style.display = 'none'; });
-    ['overview', 'activity', 'info', 'files', 'tasks', 'time', 'email', 'payroll', 'payapp', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
+    ['overview', 'activity', 'info', 'files', 'tasks', 'email', 'payroll', 'payapp', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
   }
   function showSection(sec) {
     hideAllSections();
@@ -2364,7 +2359,6 @@
     else if (sec === 'info') renderInfo();
     else if (sec === 'files') renderFiles();
     else if (sec === 'tasks') renderTasks();
-    else if (sec === 'time') renderTime();
     else if (sec === 'email') renderEmail();
     else if (sec === 'payroll') renderPayroll();
     else if (sec === 'payapp') renderPayApp();
@@ -2588,111 +2582,10 @@
   function toggleTask(id, done) { var t; try { t = JSON.parse(localStorage.getItem(id)); } catch (e) {} if (!t) return; t.status = done ? 'done' : 'open'; t.doneAt = done ? nowIso() : null; t.updatedAt = nowIso(); localStorage.setItem(id, JSON.stringify(t)); renderTasks(); }
   function delTask(id) { if (!confirm('Delete this task?')) return; localStorage.removeItem(id); if (window.bccAudit) window.bccAudit('client-task-delete', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } }); renderTasks(); }
 
-  /* ---- Time tracking (manual entries + punch clock are SERVER-persisted, so they
-     roll up into Admin → Bookkeeping time and follow the bookkeeper across devices.
-     Only the running-clock "started at" marker stays local — it's ephemeral). ---- */
-  var _timeInt = null;
-  var _bkEntries = [];          // server-loaded entries for the current client
-  var _bkEntriesRealm = null;   // which realm _bkEntries was loaded for
-  function clockId() { return 'bcc-timeclock-' + sani(myUpn()) + '-' + currentRealm; }
-  function fmtDur(min) { min = Math.round(min || 0); var h = Math.floor(min / 60), m = min % 60; return (h ? h + 'h ' : '') + m + 'm'; }
-
-  // One-time migration: push any legacy localStorage-only entries (from before this
-  // was server-backed) to the server so no logged time is lost, then drop the local
-  // copy. Idempotent — an entry is only removed locally after it POSTs successfully.
-  function migrateLocalEntries() {
-    var realm = currentRealm, keys = [];
-    for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (k && k.indexOf('bcc-timeentry-' + realm + '-') === 0) keys.push(k); }
-    return Promise.all(keys.map(function (k) {
-      var e; try { e = JSON.parse(localStorage.getItem(k)); } catch (x) { localStorage.removeItem(k); return null; }
-      if (!e || (e.userUpn || '').toLowerCase() !== myUpn() || !(e.minutes > 0)) { localStorage.removeItem(k); return null; }
-      return fetch('/api/bookkeeping/entry', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ realmId: realm, companyName: companyName(realm), minutes: e.minutes, day: e.day || (e.start || '').slice(0, 10), note: e.note || '', source: e.end ? 'punch' : 'manual', start: e.start, end: e.end }) })
-        .then(function (r) { return r.json(); }).then(function (j) { if (j && j.ok) localStorage.removeItem(k); }).catch(function () {});
-    }));
-  }
-
-  function loadEntries() {
-    var realm = currentRealm;
-    if (!realm) { _bkEntries = []; _bkEntriesRealm = null; return Promise.resolve(); }
-    return migrateLocalEntries()
-      .then(function () { return fetch('/api/bookkeeping/entry?realmId=' + encodeURIComponent(realm), { credentials: 'include' }); })
-      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
-      .then(function (j) { if (realm !== currentRealm) return; _bkEntries = (j && j.ok && j.entries) ? j.entries : []; _bkEntriesRealm = realm; renderTime(); })
-      .catch(function () { if (realm === currentRealm) { _bkEntries = []; _bkEntriesRealm = realm; renderTime(); } });
-  }
-  function renderTime() {
-    if (_timeInt) { clearInterval(_timeInt); _timeInt = null; }
-    var body = document.getElementById('time-body'); if (!body) return;
-    if (_bkEntriesRealm !== currentRealm) { body.innerHTML = '<div style="color:var(--muted);padding:10px 0;">Loading…</div>'; loadEntries(); return; }
-    var clock = null; try { clock = JSON.parse(localStorage.getItem(clockId())); } catch (e) {}
-    var running = !!(clock && clock.startedAt);
-    var entries = _bkEntries.slice().sort(function (a, b) { return (b.start || b.day || '').localeCompare(a.start || a.day || ''); });
-    var weekStart = new Date(); weekStart.setHours(0,0,0,0); weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
-    var myMin = 0, weekMin = 0, allMin = 0;
-    entries.forEach(function (e) { allMin += e.minutes || 0; if ((e.userUpn || '').toLowerCase() === myUpn()) { myMin += e.minutes || 0; var when = e.start || (e.day ? e.day + 'T12:00:00Z' : null); if (when && new Date(when) >= weekStart) weekMin += e.minutes || 0; } });
-    var punch = '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;">' +
-      '<button class="btn ' + (running ? 'btn-ghost' : 'btn-primary') + '" id="tm_punch" type="button">' + (running ? '■ Punch out' : '▶ Punch in') + '</button>' +
-      '<span id="tm_timer" style="font-size:18px;font-weight:700;font-variant-numeric:tabular-nums;color:' + (running ? 'var(--gold-deep)' : 'var(--muted)') + ';">' + (running ? '' : 'Off the clock') + '</span>' +
-      '<span style="flex:1;"></span>' +
-      '<span style="font-size:12px;color:var(--muted);">This week: <strong>' + fmtDur(weekMin) + '</strong> · You: <strong>' + fmtDur(myMin) + '</strong> · Client total: <strong>' + fmtDur(allMin) + '</strong></span></div>';
-    var manual = '<div class="ws-form" style="margin-bottom:12px;"><label>Date<input type="date" id="tm_date" /></label><label>Hours<input type="number" id="tm_hours" min="0" step="0.25" placeholder="e.g. 1.5" /></label><label class="full">Note<input id="tm_note" placeholder="What did you work on?" /></label><div class="full"><button class="btn btn-ghost" id="tm_manual" type="button">+ Add manual entry</button></div></div>';
-    var list = entries.length ? ('<table><thead><tr><th>When</th><th>Who</th><th class="num">Time</th><th>Note</th><th></th></tr></thead><tbody>' + entries.map(function (e) {
-      var when = e.start ? new Date(e.start).toLocaleDateString([], { month:'short', day:'numeric' }) : (e.day || '');
-      var who = (window.bccDisplayName && window.bccDisplayName(e.userUpn)) || e.userName || e.userUpn || '';
-      var canDel = isAdmin || (e.userUpn || '').toLowerCase() === myUpn();
-      return '<tr><td>' + esc(when) + '</td><td>' + esc(who) + '</td><td class="num">' + esc(fmtDur(e.minutes)) + '</td><td>' + esc(e.note || '') + '</td><td style="text-align:right;">' + (canDel ? '<button class="btn btn-ghost" data-edel="' + esc(e.id) + '" type="button" style="font-size:11px;min-height:28px;">Delete</button>' : '') + '</td></tr>';
-    }).join('') + '</tbody></table>') : '<div style="color:var(--muted);padding:10px 0;">No time logged yet.</div>';
-    body.innerHTML = punch + manual + list;
-    document.getElementById('tm_punch').onclick = function () { togglePunch(running); };
-    document.getElementById('tm_manual').onclick = addManualTime;
-    body.querySelectorAll('[data-edel]').forEach(function (b) { b.onclick = function () { delEntry(b.getAttribute('data-edel')); }; });
-    if (running) { var st = new Date(clock.startedAt).getTime(); var upd = function () { var ms = Date.now() - st; var h = Math.floor(ms / 3600000), m = Math.floor(ms % 3600000 / 60000), s = Math.floor(ms % 60000 / 1000); var el = document.getElementById('tm_timer'); if (el) el.textContent = (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s; }; upd(); _timeInt = setInterval(upd, 1000); }
-  }
-  function postEntry(payload) {
-    payload.realmId = currentRealm; payload.companyName = companyName(currentRealm);
-    return fetch('/api/bookkeeping/entry', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
-      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
-      .then(function (j) {
-        if (!j || !j.ok) { (window.bccNotify || alert)((j && j.error) || 'Could not save time.', 'error'); return; }
-        if (_bkEntriesRealm === currentRealm) _bkEntries.push(j.entry);
-        var hEl = document.getElementById('tm_hours'); if (hEl) hEl.value = '';
-        var nEl = document.getElementById('tm_note'); if (nEl) nEl.value = '';
-        renderTime();
-        if (window.bccNotify) window.bccNotify('Time saved.', 'success');
-      }).catch(function () { (window.bccNotify || alert)('Could not save time.', 'error'); });
-  }
-  function togglePunch(running) {
-    var clock = null; try { clock = JSON.parse(localStorage.getItem(clockId())); } catch (e) {}
-    if (running && clock) {
-      var start = clock.startedAt, end = nowIso();
-      var min = Math.max(1, Math.round((new Date(end) - new Date(start)) / 60000));
-      localStorage.removeItem(clockId());
-      if (window.bccAudit) window.bccAudit('time-punch-out', { path: '/bookkeeping.html', meta: { realmId: currentRealm, minutes: min } });
-      postEntry({ minutes: min, day: (start || '').slice(0, 10), note: '', source: 'punch', start: start, end: end });
-    } else {
-      localStorage.setItem(clockId(), JSON.stringify({ startedAt: nowIso(), realmId: currentRealm, userUpn: myUpn() }));
-      if (window.bccAudit) window.bccAudit('time-punch-in', { key: clockId(), path: '/bookkeeping.html', meta: { realmId: currentRealm } });
-      renderTime();
-    }
-  }
-  function addManualTime() {
-    var hrs = parseFloat(document.getElementById('tm_hours').value || '0'); if (!hrs || hrs <= 0) { (window.bccNotify || alert)('Enter hours.', 'warn'); return; }
-    var date = document.getElementById('tm_date').value || new Date().toISOString().slice(0, 10);
-    if (window.bccAudit) window.bccAudit('time-entry-add', { path: '/bookkeeping.html', meta: { realmId: currentRealm, minutes: Math.round(hrs * 60) } });
-    postEntry({ minutes: Math.round(hrs * 60), day: date, note: document.getElementById('tm_note').value || '', source: 'manual', start: date + 'T12:00:00.000Z', end: null });
-  }
-  function delEntry(id) {
-    if (!confirm('Delete this time entry?')) return;
-    fetch('/api/bookkeeping/entry/' + encodeURIComponent(id), { method: 'DELETE', credentials: 'include' })
-      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
-      .then(function (j) {
-        if (!j || !j.ok) { (window.bccNotify || alert)((j && j.error) || 'Could not delete.', 'error'); return; }
-        _bkEntries = _bkEntries.filter(function (e) { return e.id !== id; });
-        if (window.bccAudit) window.bccAudit('time-entry-delete', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } });
-        renderTime();
-      }).catch(function () { (window.bccNotify || alert)('Could not delete.', 'error'); });
-  }
+  /* ---- Time tracking is now fully AUTOMATIC (no manual tab / punch clock).
+     Active time on the open client is accrued and flushed to /api/bookkeeping/time
+     by the auto-tracker below (bkTick/bkFlush); the server records it only for
+     app-admins and surfaces it in Admin → Bookkeeping time. ---- */
 
   /* ---- Files (reuses the Documents Blob store, folder = /clients/<realmId>) ---- */
   /* ---- In-app file preview (no download needed) ---- */
@@ -3960,29 +3853,22 @@
     });
   })();
 
-  /* ===== Auto time tracking (bookkeepers only) =====
-   * Records ACTIVE time on the open client for users whose default landing page
-   * is Bookkeeping. Counts only while the client workspace is the focused, non-
-   * idle foreground tab; pauses on blur/hide/idle; flushes accrued seconds to
-   * /api/bookkeeping/time. Per-client totals show in Admin → Bookkeeping time. */
+  /* ===== Automatic time tracking (admins only) =====
+   * Records ACTIVE time on the open client automatically — no manual tab / punch.
+   * Counts only while a client workspace is the focused, non-idle foreground tab;
+   * pauses on blur/hide/idle; flushes accrued seconds to /api/bookkeeping/time.
+   * The client gate is `isAdmin` (a live flag, so it can't silently fail like the
+   * old localStorage-config check); the SERVER independently records only for
+   * app-admins, so it's authoritative. Totals show in Admin → Bookkeeping time. */
   var _bkAccrued = {};            // realmId -> unsynced seconds
   var _bkCompany = {};            // realmId -> companyName
   var _bkLastActivity = Date.now();
   var _bkTickCount = 0, _bkStarted = false;
   var BK_IDLE_MS = 5 * 60 * 1000; // pause after 5 min of no input
   var BK_TICK_MS = 5000;          // count in 5s ticks
-  var BK_FLUSH_EVERY = 12;        // flush ~every 60s
+  var BK_FLUSH_EVERY = 6;         // flush ~every 30s (unload/visibility also flush)
 
-  function isBookkeeper() {
-    try {
-      var who = myUpn(); if (!who) return false;
-      var cfg = JSON.parse(localStorage.getItem('bcc-admin-config-v1') || 'null');
-      if (!cfg || !Array.isArray(cfg.users)) return false;
-      var rec = cfg.users.find(function (u) { return (u.upn || '').toLowerCase() === who || (u.email || '').toLowerCase() === who; });
-      return !!(rec && rec.landingPage === 'bookkeeping.html');
-    } catch (e) { return false; }
-  }
-  function bkActive() { return isBookkeeper() && currentRealm && !document.hidden && document.hasFocus() && (Date.now() - _bkLastActivity < BK_IDLE_MS); }
+  function bkActive() { return isAdmin && currentRealm && !document.hidden && document.hasFocus() && (Date.now() - _bkLastActivity < BK_IDLE_MS); }
   function bkTick() {
     if (bkActive()) {
       _bkAccrued[currentRealm] = (_bkAccrued[currentRealm] || 0) + (BK_TICK_MS / 1000);
@@ -4078,7 +3964,7 @@
       // Refresh periods from the cloud (nightly-synced) after companies load.
       loadPeriodsFromCloud().then(function () { renderKpis(); renderTable(); });
     });
-    bkStart(); // auto time-tracking for bookkeepers
+    bkStart(); // automatic time-tracking (admins only; server-authoritative)
   }
   // localStorage→Cosmos sync can land after init; re-render the data views (not the company list).
   window.addEventListener('bcc-data-ready', function () { renderKpis(); renderTable(); });

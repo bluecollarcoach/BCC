@@ -1282,10 +1282,11 @@ app.http('cron-reminders', {
 });
 
 /* ============ Bookkeeping auto time tracking ============
- * Bookkeepers (users whose admin-config landingPage is bookkeeping.html) have
- * their active time-on-client recorded automatically by bookkeeping.html, which
- * POSTs accrued seconds here. Stored per user/client/day (bcc-bktime-*), and
- * surfaced to admins via the report endpoint (Admin → Bookkeeping time).
+ * App ADMINS have their active time-on-client recorded automatically by
+ * bookkeeping.html, which POSTs accrued seconds here. The admin check below is
+ * authoritative (the client also gates, but the server is the source of truth).
+ * Stored per user/client/day (bcc-bktime-*), surfaced via the report endpoint
+ * (Admin → Bookkeeping time). The manual Time tab / punch clock was removed.
  */
 app.http('bookkeeping-time', {
   methods: ['POST'],
@@ -1297,11 +1298,8 @@ app.http('bookkeeping-time', {
     if (!domainAllowed(p)) return domainBlocked();
     try {
       const who = String(p.userDetails || p.userId || '').toLowerCase();
-      // Enforce the "bookkeeper = default landing is Bookkeeping" rule server-side.
-      const cfg = await getAdminCfg();
-      const rec = (cfg && Array.isArray(cfg.users) ? cfg.users : []).find(u =>
-        (u.upn || '').toLowerCase() === who || (u.email || '').toLowerCase() === who);
-      if (!rec || rec.landingPage !== 'bookkeeping.html') return { jsonBody: { ok: true, recorded: 0, skipped: 'not a bookkeeper' } };
+      // Auto time-tracking is admin-only: silently skip anyone who isn't an app admin.
+      if (!(await isAppAdmin(p))) return { jsonBody: { ok: true, recorded: 0, skipped: 'not an admin' } };
 
       const b = await request.json().catch(() => ({}));
       const entries = Array.isArray(b.entries) ? b.entries : [];
