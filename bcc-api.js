@@ -313,6 +313,10 @@
       return true;
     });
     window.bccPeople = activeOnly.map(function (u) { return u.displayName; });
+    // Full active-user objects (upn/mail/displayName) for "pick a user" dropdowns —
+    // excludes anyone marked inactive/hidden. bccPeopleFull stays the UNFILTERED list
+    // (admin management + resolving the name of an already-assigned inactive user).
+    window.bccActivePeople = activeOnly;
 
     // If bcc-field-who points at a UPN/email or an inactive name, re-point it
     // to a current active display name (best-effort).
@@ -327,6 +331,32 @@
   window.bccRecomputePeople = function () {
     recomputePcPeople();
     window.dispatchEvent(new Event('bcc-users-ready'));
+  };
+
+  /* Reusable "active users only" filter for ANY list of user objects
+   * ({upn|userUpn, mail|email, displayName|name}). Drops anyone marked
+   * inactive/hidden in bcc-admin-config-v1, so an inactive user disappears from
+   * every assignment / owner / member / access dropdown across the app. Reads the
+   * admin config directly so it works regardless of people-list load timing. */
+  window.bccFilterActive = function (list) {
+    var keys = new Set();
+    try {
+      var cfg = JSON.parse(localStorage.getItem('bcc-admin-config-v1') || 'null');
+      if (cfg && Array.isArray(cfg.users)) cfg.users.forEach(function (u) {
+        if (u && (u.status === 'inactive' || u.status === 'hidden')) {
+          if (u.upn) keys.add(String(u.upn).toLowerCase());
+          if (u.email) keys.add(String(u.email).toLowerCase());
+          if (u.name) keys.add(String(u.name).toLowerCase());
+        }
+      });
+    } catch (e) {}
+    if (!keys.size) return (list || []).slice();
+    return (list || []).filter(function (u) {
+      if (!u) return false;
+      return !keys.has(String(u.upn || u.userUpn || '').toLowerCase()) &&
+             !keys.has(String(u.mail || u.email || '').toLowerCase()) &&
+             !keys.has(String(u.displayName || u.name || '').toLowerCase());
+    });
   };
 
   /* ---------- Identity-to-display-name helpers ----------

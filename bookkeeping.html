@@ -929,8 +929,9 @@
         if (isAdmin && accessEditRealm === c.realmId) {
           var allow = (c.allowedUserUpns || []).map(function (u) { return u.toLowerCase(); });
           var mode = isAdminOnly(allow) ? 'admin' : (allow.length ? 'specific' : 'all');
-          var checks = usersDir.length
-            ? usersDir.map(function (u) {
+          var accessDir = (window.bccFilterActive ? window.bccFilterActive(usersDir) : usersDir);
+          var checks = accessDir.length
+            ? accessDir.map(function (u) {
                 return '<label style="display:inline-flex;align-items:center;gap:6px;margin:0 14px 8px 0;font-size:13px;"><input type="checkbox" data-upn="' + esc(u.upn) + '" ' + (allow.indexOf(u.upn) >= 0 ? 'checked' : '') + ' /> ' + esc(u.displayName || u.upn) + '</label>';
               }).join('')
             : '<span class="muted">No users in the directory yet (add team members in Admin → Users).</span>';
@@ -2774,7 +2775,7 @@
   }
   function renderTasks() {
     var body = document.getElementById('tasks-body'); if (!body) return;
-    var people = (window.bccPeopleFull || []);
+    var people = (window.bccFilterActive ? window.bccFilterActive(window.bccPeopleFull) : (window.bccPeopleFull || []));
     var opts = '<option value="">— Unassigned —</option>' + people.map(function (p) { var u = p.upn || p.mail || ''; return '<option value="' + esc(u) + '">' + esc(p.displayName || u) + '</option>'; }).join('');
     var today = new Date().toISOString().slice(0, 10);
     var all = allTasks();
@@ -3168,7 +3169,7 @@
   function emSigKey() { return 'bcc-emailsig-' + (myUpn().replace(/[^a-z0-9]+/g, '-') || 'x'); }
   function getSig() { try { var d = JSON.parse(localStorage.getItem(emSigKey()) || 'null'); return (d && d.sig) || ''; } catch (e) { return ''; } }
   function setSig(sig) { try { localStorage.setItem(emSigKey(), JSON.stringify({ sig: sig, upn: myUpn(), updatedAt: nowIso() })); } catch (e) {} }
-  function emPeople() { return (window.bccPeopleFull || []).map(function (p) { return { upn: (p.upn || p.mail || '').toLowerCase(), name: p.displayName || p.upn || p.mail }; }).filter(function (p) { return p.upn; }); }
+  function emPeople() { return (window.bccFilterActive ? window.bccFilterActive(window.bccPeopleFull) : (window.bccPeopleFull || [])).map(function (p) { return { upn: (p.upn || p.mail || '').toLowerCase(), name: p.displayName || p.upn || p.mail }; }).filter(function (p) { return p.upn; }); }
   function emName(upn) { return (window.bccDisplayName && window.bccDisplayName(upn)) || upn || ''; }
   function emInitials(upn) { var n = emName(upn) || upn || ''; var parts = n.replace(/@.*/, '').split(/[.\s_-]+/).filter(Boolean); return ((parts[0] || '').charAt(0) + (parts[1] || '').charAt(0)).toUpperCase() || (upn || '?').charAt(0).toUpperCase(); }
   function metaFor(id) { return _emMeta[id] || { tags: [], assignedTo: '', archived: false, readBy: {}, repliedBy: [] }; }

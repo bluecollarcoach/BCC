@@ -354,7 +354,7 @@
   }
   function populateOwnerDropdown(selected) {
     var sel = document.getElementById('m-owner');
-    var people = (window.bccPeopleFull || []);
+    var people = (window.bccFilterActive ? window.bccFilterActive(window.bccPeopleFull) : (window.bccPeopleFull || []));
     var me = (window.bccUser && window.bccUser.userDetails) || '';
     var meLabel = (window.bccDisplayName && me) ? (window.bccDisplayName(me) || me) : (me || 'signed-in user');
     sel.innerHTML = '<option value="">— Me (' + esc(meLabel) + ') —</option>' +

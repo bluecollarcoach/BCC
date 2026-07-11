@@ -490,7 +490,7 @@ function openMembersModal(chId) {
   const c = chans.find(x => x.id === chId);
   if (!c || !canManageChan(c)) return;
   const meUpn = whoUpn();
-  const people = (window.bccPeopleFull || []).filter(p => p && p.upn)
+  const people = (window.bccFilterActive ? window.bccFilterActive(window.bccPeopleFull) : (window.bccPeopleFull || [])).filter(p => p && p.upn)
     .slice().sort((a,b) => (a.displayName||'').localeCompare(b.displayName||''));
   const isOpen = !Array.isArray(c.members);
   const memberSet = new Set((Array.isArray(c.members) ? c.members : []).map(s => String(s).toLowerCase()));
