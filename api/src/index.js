@@ -1026,6 +1026,48 @@ function feedbackNotifyUpns() {
   return owners.length ? owners : ['lyle@bluecollarcoach.us'];
 }
 
+// TEMP (CRON_SECRET-gated): read + resolve feedback headless (the assistant has no admin
+// cookie). GET lists; POST {id,status,note} updates status and, on newly-resolved, notifies
+// the submitter with `note` as the message. Remove after use.
+app.http('cron-feedback', {
+  methods: ['GET', 'POST'], authLevel: 'anonymous', route: 'cron/feedback',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
+    try {
+      const c = container();
+      if (request.method === 'GET') {
+        const { resources } = await c.items.query({
+          query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+        }).fetchAll();
+        return { jsonBody: { ok: true, count: resources.length, feedback: resources } };
+      }
+      const body = await request.json().catch(() => ({}));
+      const id = String(body.id || '');
+      if (id.indexOf('bcc-feedback-') !== 0) return { status: 400, jsonBody: { ok: false, error: 'bad id' } };
+      const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      if (!doc) return { status: 404, jsonBody: { ok: false, error: 'not found' } };
+      const st = String(body.status || 'resolved').toLowerCase();
+      if (['new', 'reviewed', 'resolved'].indexOf(st) < 0) return { status: 400, jsonBody: { ok: false, error: 'bad status' } };
+      const wasResolved = doc.status === 'resolved';
+      doc.status = st; doc.reviewedBy = 'lyle@bluecollarcoach.us'; doc.updatedAt = new Date().toISOString();
+      await c.items.upsert(doc);
+      let notified = false;
+      if (st === 'resolved' && !wasResolved && doc.userUpn) {
+        const note = String(body.note || '').trim();
+        await notifyUser(c, doc.userUpn, {
+          title: '✅ Your feedback was addressed',
+          body: note || String(doc.message || '').slice(0, 90),
+          url: doc.page || '/', tag: 'fbdone-' + doc.id
+        });
+        notified = true;
+      }
+      return { jsonBody: { ok: true, id: doc.id, status: doc.status, notified } };
+    } catch (e) { context.error('cron-feedback', e); return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } }; }
+  }
+});
+
 /**
  * User feedback.
  *   POST /api/feedback            — any signed-in user submits feedback.
