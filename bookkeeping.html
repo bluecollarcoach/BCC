@@ -119,7 +119,7 @@
     .list tbody td:not([data-label]):before { content:none; }
     .list tbody td.num { text-align:left; }
     /* Every other dynamic table stays a real table and pans horizontally. */
-    #qboReportOut, #files-body, #time-body, #payroll-body, #email-body { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+    #qboReportOut, #files-body, #time-body, #payroll-body, #payapp-body, #email-body { overflow-x:auto; -webkit-overflow-scrolling:touch; }
     #qboReportOut table, #time-body table, #files-body table { min-width:540px; }
     /* No iOS zoom-on-focus; comfortable touch targets. */
     input, select, textarea { font-size:16px; }
@@ -531,6 +531,9 @@
   </div>
   <div class="card" id="tab-payroll" style="display:none; margin-top:14px;">
     <div id="payroll-body"></div>
+  </div>
+  <div class="card" id="tab-payapp" style="display:none; margin-top:14px;">
+    <div id="payapp-body"></div>
   </div>
   <div class="card" id="tab-access" style="display:none; margin-top:14px;">
     <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Team &amp; access</h3>
@@ -2273,6 +2276,7 @@
     { key: 'files',        label: 'Files',              ic: '📎' },
     { key: 'email',        label: 'Email',              ic: '✉️' },
     { key: 'payroll',      label: 'Certified payroll',  ic: '🧮' },
+    { key: 'payapp',       label: 'Pay applications',   ic: '📄' },
     { key: 'info',         label: 'Client info',        ic: '🏢' },
     { key: 'access',       label: 'Team & access',      ic: '👥' }
   ];
@@ -2322,7 +2326,7 @@
   // ----- Section visibility -----
   function hideAllSections() {
     ['qboKpis', 'qboReports', 'qboWrite'].forEach(function (id) { var e = document.getElementById(id); if (e) e.style.display = 'none'; });
-    ['overview', 'activity', 'info', 'files', 'tasks', 'time', 'email', 'payroll', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
+    ['overview', 'activity', 'info', 'files', 'tasks', 'time', 'email', 'payroll', 'payapp', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
   }
   function showSection(sec) {
     hideAllSections();
@@ -2363,6 +2367,7 @@
     else if (sec === 'time') renderTime();
     else if (sec === 'email') renderEmail();
     else if (sec === 'payroll') renderPayroll();
+    else if (sec === 'payapp') renderPayApp();
     else if (sec === 'access') renderAccess();
   }
 
@@ -3637,6 +3642,296 @@
     if (!w) { (window.bccNotify || alert)('Allow pop-ups to print the payroll form.', 'warn'); return; }
     w.document.open(); w.document.write(cprDocHtml(r, true)); w.document.close();
     if (window.bccAudit) window.bccAudit('cpr-print', { key: r.id, path:'/bookkeeping.html', meta:{ realmId: currentRealm, payrollNo: r.payrollNo } });
+  }
+
+  /* ---- Pay applications (Application & Certificate for Payment — AIA G702/G703 style) ---- */
+  var payappEditingId = null, payappDraft = null;
+  function payappPrefix() { return 'bcc-payapp-' + currentRealm + '-'; }
+  function allPayapp() { var out = []; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (!k || k.indexOf(payappPrefix()) !== 0) continue; try { var r = JSON.parse(localStorage.getItem(k)); if (r && r.id) out.push(r); } catch (e) {} } return out; }
+  function blankPayLine() { return { item: '', desc: '', scheduled: '', previous: '', thisPeriod: '', stored: '' }; }
+  function computePayLine(l, retW, retS) {
+    var c = cnum(l.scheduled), d = cnum(l.previous), e = cnum(l.thisPeriod), f = cnum(l.stored);
+    var g = d + e + f;
+    return { scheduled: c, prev: d, period: e, stored: f, total: g, pct: c ? (g / c * 100) : 0, balance: c - g, retain: retW / 100 * (d + e) + retS / 100 * f };
+  }
+  // Full G702/G703 rollup from the schedule of values + change orders + retainage %.
+  function computePayapp(r) {
+    var retW = cnum(r.retPctWork), retS = cnum(r.retPctStored);
+    var lines = (r.lines || []).map(function (l) { return computePayLine(l, retW, retS); });
+    var sum = function (key) { return lines.reduce(function (s, x) { return s + x[key]; }, 0); };
+    var coAdd = (r.changeOrderRows || []).reduce(function (s, x) { return s + cnum(x.additions); }, 0);
+    var coDed = (r.changeOrderRows || []).reduce(function (s, x) { return s + cnum(x.deductions); }, 0);
+    var netCO = coAdd - coDed;
+    var line1 = cnum(r.contractSum);
+    var line3 = line1 + netCO;
+    var line4 = sum('total');
+    var ret5a = retW / 100 * (sum('prev') + sum('period'));
+    var ret5b = retS / 100 * sum('stored');
+    var line5 = ret5a + ret5b;
+    var line6 = line4 - line5;
+    var line7 = cnum(r.lessPrevious);
+    var line8 = line6 - line7;
+    var line9 = line3 - line6;
+    return {
+      lines: lines,
+      totals: { scheduled: sum('scheduled'), prev: sum('prev'), period: sum('period'), stored: sum('stored'), total: sum('total'), balance: sum('balance'), retain: sum('retain'), pct: sum('scheduled') ? (sum('total') / sum('scheduled') * 100) : 0 },
+      coAdd: coAdd, coDed: coDed, netCO: netCO, line1: line1, line3: line3, line4: line4, ret5a: ret5a, ret5b: ret5b, line5: line5, line6: line6, line7: line7, line8: line8, line9: line9
+    };
+  }
+  function payappNew(carryFromId) {
+    var info = {}; try { info = JSON.parse(localStorage.getItem('bcc-client-info-' + currentRealm)) || {}; } catch (e) {}
+    var prior = null;
+    if (carryFromId) { try { prior = JSON.parse(localStorage.getItem(carryFromId)); } catch (e) {} }
+    var reports = allPayapp(); var maxNo = 0; reports.forEach(function (r) { maxNo = Math.max(maxNo, cnum(r.appNo)); });
+    var d = {
+      id: payappPrefix() + uid2(), tenantId: 'blue-collar-coach', docType: 'payapp', realmId: currentRealm,
+      contractorName: info.legalName || companyName(currentRealm) || '', contractorAddress: info.address || '',
+      ownerName: '', ownerAddress: '', architectName: '', architectAddress: '',
+      projectName: '', projectAddress: '', contractFor: '',
+      appNo: String(maxNo + 1), periodTo: '', appDate: new Date().toISOString().slice(0, 10), projectNo: '', contractDate: '',
+      contractSum: '', retPctWork: '5', retPctStored: '0', lessPrevious: '',
+      changeOrderRows: [], lines: [blankPayLine()],
+      socName: '', socTitle: '', socDate: new Date().toISOString().slice(0, 10), isFinal: false,
+      createdAt: nowIso(), updatedAt: nowIso()
+    };
+    if (prior) {
+      // Continuation: keep the schedule of values; roll each line's work-to-date into "previous".
+      var pc = computePayapp(prior);
+      d.contractorName = prior.contractorName; d.contractorAddress = prior.contractorAddress;
+      d.ownerName = prior.ownerName; d.ownerAddress = prior.ownerAddress;
+      d.architectName = prior.architectName; d.architectAddress = prior.architectAddress;
+      d.projectName = prior.projectName; d.projectAddress = prior.projectAddress; d.contractFor = prior.contractFor;
+      d.projectNo = prior.projectNo; d.contractDate = prior.contractDate;
+      d.contractSum = prior.contractSum; d.retPctWork = prior.retPctWork; d.retPctStored = prior.retPctStored;
+      d.changeOrderRows = (prior.changeOrderRows || []).map(function (x) { return { desc: x.desc, additions: x.additions, deductions: x.deductions }; });
+      d.lines = (prior.lines || []).map(function (l, i) { return { item: l.item, desc: l.desc, scheduled: l.scheduled, previous: (pc.lines[i] ? (Math.round(pc.lines[i].total * 100) / 100) : '') || '', thisPeriod: '', stored: '' }; });
+      d.lessPrevious = Math.round(pc.line6 * 100) / 100; // this app's "previous certificates" = prior total earned less retainage
+    }
+    payappDraft = d; payappEditingId = d.id; renderPayApp();
+  }
+  function renderPayApp() {
+    var body = document.getElementById('payapp-body'); if (!body) return;
+    if (payappEditingId !== null) { renderPayappEditor(body); return; }
+    var reports = allPayapp().sort(function (a, b) { return (cnum(b.appNo) - cnum(a.appNo)) || (b.updatedAt || '').localeCompare(a.updatedAt || ''); });
+    var head = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;">' +
+      '<h3 style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;margin:0;">Pay applications <span style="color:var(--muted);font-weight:400;font-size:12px;">· Application &amp; Certificate for Payment (G702/G703 style)</span></h3>' +
+      '<button class="btn btn-primary" id="payapp_new" type="button">+ New pay application</button></div>';
+    var list = reports.length ? ('<table><thead><tr><th>App #</th><th>Period to</th><th>Project</th><th class="num">Payment due</th><th>Updated</th><th></th></tr></thead><tbody>' + reports.map(function (r) {
+      var pc = computePayapp(r);
+      var when = r.updatedAt ? new Date(r.updatedAt).toLocaleDateString([], { month: 'short', day: 'numeric' }) : '';
+      return '<tr><td><strong>' + esc(r.appNo || '—') + '</strong>' + (r.isFinal ? ' <span style="font-size:10px;color:var(--gold-deep);font-weight:700;">FINAL</span>' : '') + '</td>' +
+        '<td>' + esc(r.periodTo || '—') + '</td><td>' + esc(r.projectName || '—') + '</td>' +
+        '<td class="num">$' + money(pc.line8) + '</td><td style="color:var(--muted);font-size:12.5px;">' + esc(when) + '</td>' +
+        '<td style="text-align:right;white-space:nowrap;"><button class="btn btn-ghost" data-pa-open="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;">Open</button> ' +
+        '<button class="btn btn-ghost" data-pa-next="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;" title="Start the next application, carrying this schedule of values forward">Next app →</button> ' +
+        '<button class="btn btn-ghost" data-pa-print="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;">Print</button> ' +
+        '<button class="btn btn-ghost" data-pa-del="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;">Delete</button></td></tr>';
+    }).join('') + '</tbody></table>') : '<div style="color:var(--muted);padding:10px 0;">No pay applications yet. Click <strong>+ New pay application</strong> to create one.</div>';
+    body.innerHTML = head + list;
+    document.getElementById('payapp_new').onclick = function () { payappNew(null); };
+    body.querySelectorAll('[data-pa-open]').forEach(function (b) { b.onclick = function () { payappEditingId = b.getAttribute('data-pa-open'); try { payappDraft = JSON.parse(localStorage.getItem(payappEditingId)); } catch (e) { payappDraft = null; } if (!payappDraft) { payappEditingId = null; return; } if (!payappDraft.lines) payappDraft.lines = [blankPayLine()]; if (!payappDraft.changeOrderRows) payappDraft.changeOrderRows = []; renderPayApp(); }; });
+    body.querySelectorAll('[data-pa-next]').forEach(function (b) { b.onclick = function () { payappNew(b.getAttribute('data-pa-next')); }; });
+    body.querySelectorAll('[data-pa-print]').forEach(function (b) { b.onclick = function () { var r; try { r = JSON.parse(localStorage.getItem(b.getAttribute('data-pa-print'))); } catch (e) {} if (r) printPayapp(r); }; });
+    body.querySelectorAll('[data-pa-del]').forEach(function (b) { b.onclick = function () { if (!confirm('Delete this pay application?')) return; localStorage.removeItem(b.getAttribute('data-pa-del')); if (window.bccAudit) window.bccAudit('payapp-delete', { key: b.getAttribute('data-pa-del'), path: '/bookkeeping.html', meta: { realmId: currentRealm } }); renderPayApp(); }; });
+  }
+  function ptxt(label, field, ph, wide, type) { return '<label' + (wide ? ' class="full"' : '') + '>' + esc(label) + '<input data-pf="' + field + '"' + (type ? ' type="' + type + '"' : '') + ' value="' + esc(payappDraft[field] || '') + '"' + (ph ? ' placeholder="' + esc(ph) + '"' : '') + ' /></label>'; }
+  function renderPayappEditor(body) {
+    var r = payappDraft;
+    var header = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;">' +
+      '<h3 style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;margin:0;">Pay application #' + esc(r.appNo || '') + ' — ' + esc(companyName(currentRealm)) + '</h3>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-ghost" id="pa_back" type="button">← Back</button>' +
+      '<button class="btn btn-ghost" id="pa_print" type="button">Print G702 / G703</button>' +
+      '<button class="btn btn-primary" id="pa_save" type="button">Save</button></div></div>';
+    var hdr = '<div class="ws-form" style="margin-bottom:14px;">' +
+      ptxt('From (contractor) name', 'contractorName') + ptxt('Contractor address', 'contractorAddress') +
+      ptxt('To (owner) name', 'ownerName') + ptxt('Owner address', 'ownerAddress') +
+      ptxt('Via (architect/engineer)', 'architectName') + ptxt('Architect address', 'architectAddress') +
+      ptxt('Project name', 'projectName') + ptxt('Project location', 'projectAddress') +
+      ptxt('Contract for', 'contractFor', 'e.g. Masonry') +
+      ptxt('Application no.', 'appNo') +
+      '<label>Period to<input data-pf="periodTo" type="date" value="' + esc(r.periodTo || '') + '" /></label>' +
+      '<label>Application date<input data-pf="appDate" type="date" value="' + esc(r.appDate || '') + '" /></label>' +
+      ptxt('Project no.', 'projectNo') +
+      '<label>Contract date<input data-pf="contractDate" type="date" value="' + esc(r.contractDate || '') + '" /></label>' +
+      '<label style="flex-direction:row;align-items:center;gap:8px;text-transform:none;font-size:13px;"><input type="checkbox" data-pf="isFinal" ' + (r.isFinal ? 'checked' : '') + ' /> Mark as FINAL application</label>' +
+      '</div>';
+    // Change orders
+    var coRows = (r.changeOrderRows || []).map(function (co, i) {
+      return '<tr><td><input data-co="' + i + '" data-cof="desc" value="' + esc(co.desc || '') + '" placeholder="Change order description" style="width:100%;" /></td>' +
+        '<td><input data-co="' + i + '" data-cof="additions" value="' + esc(co.additions || '') + '" style="width:110px;text-align:right;" /></td>' +
+        '<td><input data-co="' + i + '" data-cof="deductions" value="' + esc(co.deductions || '') + '" style="width:110px;text-align:right;" /></td>' +
+        '<td style="text-align:right;"><button class="btn btn-ghost" data-codel="' + i + '" type="button" style="font-size:11px;min-height:26px;">×</button></td></tr>';
+    }).join('');
+    var coBlock = '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:6px 0 6px;">Change orders</div>' +
+      '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;"><thead><tr><th style="text-align:left;">Description</th><th style="text-align:right;">Additions</th><th style="text-align:right;">Deductions</th><th></th></tr></thead><tbody>' +
+      (coRows || '') + '</tbody></table></div><button class="btn btn-ghost" id="pa_addco" type="button" style="font-size:12px;min-height:28px;margin:4px 0 12px;">+ Add change order</button>';
+    // Financial inputs
+    var fin = '<div class="ws-form" style="margin-bottom:12px;">' +
+      ptxt('Original contract sum ($)', 'contractSum') +
+      ptxt('Retainage % on completed work', 'retPctWork') +
+      ptxt('Retainage % on stored materials', 'retPctStored') +
+      ptxt('Less previous certificates ($)', 'lessPrevious', 'from the prior application') +
+      '</div>';
+    // Schedule of values (G703)
+    var lineRows = (r.lines || []).map(function (l, i) { return payappLineRow(l, i); }).join('');
+    var sov = '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:8px 0 6px;">Schedule of values (continuation sheet)</div>' +
+      '<div style="overflow-x:auto;"><table id="pa_sov" style="width:100%;border-collapse:collapse;font-size:12px;min-width:900px;">' +
+      '<thead><tr style="background:#f7f1e3;">' +
+        ['#', 'Description of work', 'Scheduled value', 'From previous', 'This period', 'Materials stored', 'Total to date', '%', 'Balance to finish', 'Retainage', ''].map(function (h, ci) { return '<th style="padding:4px 5px;border-bottom:1px solid #c5a55a;font-size:10px;text-align:' + (ci >= 2 && ci <= 9 ? 'right' : 'left') + ';">' + h + '</th>'; }).join('') +
+      '</tr></thead><tbody>' + lineRows + '</tbody>' +
+      '<tfoot><tr style="font-weight:700;border-top:2px solid #c5a55a;"><td colspan="2" style="padding:5px;">Totals</td>' +
+        '<td style="text-align:right;padding:5px;" data-lct="scheduled"></td><td style="text-align:right;" data-lct="prev"></td><td style="text-align:right;" data-lct="period"></td><td style="text-align:right;" data-lct="stored"></td><td style="text-align:right;" data-lct="total"></td><td style="text-align:right;" data-lct="pct"></td><td style="text-align:right;" data-lct="balance"></td><td style="text-align:right;" data-lct="retain"></td><td></td></tr></tfoot>' +
+      '</table></div><button class="btn btn-ghost" id="pa_addline" type="button" style="font-size:12px;min-height:28px;margin:4px 0 12px;">+ Add line item</button>';
+    // Summary (G702 lines 1-9)
+    var summary = '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:8px 0 6px;">Application summary</div>' +
+      '<div id="pa_summary" style="border:1.5px solid #c5a55a;border-radius:10px;padding:10px 14px;background:var(--gold-tint,#f7f1e3);max-width:520px;font-size:13px;"></div>';
+    // Certification
+    var cert = '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:16px 0 6px;">Contractor certification</div>' +
+      '<div class="ws-form" style="margin-bottom:10px;">' + ptxt('Signer name', 'socName') + ptxt('Signer title', 'socTitle') +
+      '<label>Date<input data-pf="socDate" type="date" value="' + esc(r.socDate || '') + '" /></label></div>';
+    body.innerHTML = header + hdr + coBlock + fin + sov + summary + cert +
+      '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px;"><button class="btn btn-ghost" id="pa_back2" type="button">← Back</button><button class="btn btn-primary" id="pa_save2" type="button">Save</button></div>';
+    // wiring
+    body.querySelectorAll('[data-pf]').forEach(function (el) {
+      var ev = (el.type === 'checkbox') ? 'change' : 'input';
+      el.addEventListener(ev, function () { r[el.getAttribute('data-pf')] = (el.type === 'checkbox') ? el.checked : el.value; payappRecalc(); });
+    });
+    body.querySelectorAll('[data-co]').forEach(function (el) { el.addEventListener('input', function () { var i = +el.getAttribute('data-co'); r.changeOrderRows[i][el.getAttribute('data-cof')] = el.value; payappRecalc(); }); });
+    body.querySelectorAll('[data-l]').forEach(function (el) { el.addEventListener('input', function () { var i = +el.getAttribute('data-l'); r.lines[i][el.getAttribute('data-lf')] = el.value; payappRecalc(); }); });
+    body.querySelectorAll('[data-codel]').forEach(function (b) { b.onclick = function () { r.changeOrderRows.splice(+b.getAttribute('data-codel'), 1); renderPayApp(); }; });
+    body.querySelectorAll('[data-ldel]').forEach(function (b) { b.onclick = function () { if ((r.lines || []).length <= 1) { (window.bccNotify || alert)('At least one line item is required.', 'warn'); return; } r.lines.splice(+b.getAttribute('data-ldel'), 1); renderPayApp(); }; });
+    document.getElementById('pa_addco').onclick = function () { r.changeOrderRows.push({ desc: '', additions: '', deductions: '' }); renderPayApp(); };
+    document.getElementById('pa_addline').onclick = function () { r.lines.push(blankPayLine()); renderPayApp(); };
+    document.getElementById('pa_back').onclick = document.getElementById('pa_back2').onclick = function () { payappEditingId = null; payappDraft = null; renderPayApp(); };
+    document.getElementById('pa_save').onclick = document.getElementById('pa_save2').onclick = payappSave;
+    document.getElementById('pa_print').onclick = function () { payappSave(true); printPayapp(payappDraft); };
+    payappRecalc();
+  }
+  function payappLineRow(l, i) {
+    var inp = function (f, w) { return '<input data-l="' + i + '" data-lf="' + f + '" value="' + esc(l[f] || '') + '" style="width:' + w + ';text-align:' + (f === 'item' || f === 'desc' ? 'left' : 'right') + ';box-sizing:border-box;" />'; };
+    return '<tr>' +
+      '<td style="padding:2px 4px;">' + inp('item', '46px') + '</td>' +
+      '<td style="padding:2px 4px;">' + inp('desc', '100%') + '</td>' +
+      '<td style="padding:2px 4px;">' + inp('scheduled', '92px') + '</td>' +
+      '<td style="padding:2px 4px;">' + inp('previous', '92px') + '</td>' +
+      '<td style="padding:2px 4px;">' + inp('thisPeriod', '92px') + '</td>' +
+      '<td style="padding:2px 4px;">' + inp('stored', '92px') + '</td>' +
+      '<td style="text-align:right;padding:2px 5px;" data-lc="total-' + i + '"></td>' +
+      '<td style="text-align:right;padding:2px 5px;" data-lc="pct-' + i + '"></td>' +
+      '<td style="text-align:right;padding:2px 5px;" data-lc="balance-' + i + '"></td>' +
+      '<td style="text-align:right;padding:2px 5px;" data-lc="retain-' + i + '"></td>' +
+      '<td style="text-align:right;"><button class="btn btn-ghost" data-ldel="' + i + '" type="button" style="font-size:11px;min-height:26px;">×</button></td></tr>';
+  }
+  function payappRecalc() {
+    if (!payappDraft) return;
+    var pc = computePayapp(payappDraft);
+    pc.lines.forEach(function (lc, i) {
+      var set = function (k, v) { var el = document.querySelector('[data-lc="' + k + '-' + i + '"]'); if (el) el.textContent = v; };
+      set('total', money(lc.total)); set('pct', (Math.round(lc.pct * 10) / 10) + '%'); set('balance', money(lc.balance)); set('retain', money(lc.retain));
+    });
+    var t = pc.totals, setT = function (k, v) { var el = document.querySelector('[data-lct="' + k + '"]'); if (el) el.textContent = v; };
+    setT('scheduled', money(t.scheduled)); setT('prev', money(t.prev)); setT('period', money(t.period)); setT('stored', money(t.stored));
+    setT('total', money(t.total)); setT('pct', (Math.round(t.pct * 10) / 10) + '%'); setT('balance', money(t.balance)); setT('retain', money(t.retain));
+    var sm = document.getElementById('pa_summary');
+    if (sm) {
+      var row = function (lbl, val, strong) { return '<div style="display:flex;justify-content:space-between;gap:12px;padding:3px 0;' + (strong ? 'font-weight:700;border-top:1px solid #cfcabb;' : '') + '"><span>' + lbl + '</span><span style="font-variant-numeric:tabular-nums;">$' + money(val) + '</span></div>'; };
+      sm.innerHTML =
+        row('1. Original contract sum', pc.line1) +
+        row('2. Net change by change orders', pc.netCO) +
+        row('3. Contract sum to date', pc.line3, true) +
+        row('4. Total completed &amp; stored to date', pc.line4) +
+        row('5. Retainage (' + (cnum(payappDraft.retPctWork) || 0) + '% work + ' + (cnum(payappDraft.retPctStored) || 0) + '% stored)', pc.line5) +
+        row('6. Total earned less retainage', pc.line6, true) +
+        row('7. Less previous certificates', pc.line7) +
+        '<div style="display:flex;justify-content:space-between;gap:12px;padding:5px 0;font-weight:700;border-top:2px solid #c5a55a;color:#1f6f43;"><span>8. CURRENT PAYMENT DUE</span><span style="font-variant-numeric:tabular-nums;">$' + money(pc.line8) + '</span></div>' +
+        row('9. Balance to finish, incl. retainage', pc.line9);
+    }
+  }
+  function payappSave(silent) {
+    if (!payappDraft) return;
+    payappDraft.updatedAt = nowIso(); payappDraft.updatedBy = myUpn();
+    localStorage.setItem(payappDraft.id, JSON.stringify(payappDraft));
+    if (window.bccAudit) window.bccAudit('payapp-save', { key: payappDraft.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, appNo: payappDraft.appNo } });
+    payappSaveToFiles(payappDraft, silent);
+  }
+  function payappSaveToFiles(r, silent) {
+    var realm = currentRealm; if (!realm) return;
+    var html, fname;
+    try { html = payappDocHtml(r); fname = 'Pay Application' + (r.appNo ? ' #' + r.appNo : '') + (r.periodTo ? ' (to ' + r.periodTo + ')' : '') + '.html'; }
+    catch (e) { if (!silent) (window.bccNotify || alert)('Saved locally (couldn’t build the file).', 'warn'); return; }
+    function upload() {
+      var fd = new FormData();
+      fd.append('file', new Blob([html], { type: 'text/html' }), fname);
+      fd.append('folder', (typeof clientFolder === 'function' ? clientFolder() : ('/clients/' + realm)));
+      fd.append('tags', 'Pay Application, billing');
+      fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
+        .then(function (rr) { return rr.json().then(function (j) { return rr.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + rr.status))); }); })
+        .then(function (j) {
+          if (j && j.id) { r.docId = j.id; localStorage.setItem(r.id, JSON.stringify(r)); }
+          if (window.bccAudit) window.bccAudit('client-file-upload', { key: j && j.id, path: '/bookkeeping.html', meta: { realmId: realm, name: fname, source: 'pay-application' } });
+          if (!silent && window.bccNotifySaved) window.bccNotifySaved('Pay application saved & filed to the client (tag: Pay Application).');
+          if (typeof loadFiles === 'function') loadFiles();
+        })
+        .catch(function (e) { (window.bccNotify || alert)('Saved locally, but couldn’t file it to the client: ' + e.message, 'warn', 8000); });
+    }
+    if (r.docId) fetch('/api/documents/' + encodeURIComponent(r.docId), { method: 'DELETE', credentials: 'include' }).then(upload, upload);
+    else upload();
+  }
+  function payappDocHtml(r) {
+    var pc = computePayapp(r);
+    var m = function (v) { return '$' + money(v); };
+    var kv = function (k, v) { return '<td class="k">' + k + '</td><td>' + esc(v || '') + '</td>'; };
+    var sumRow = function (n, lbl, val, strong) { return '<tr' + (strong ? ' class="s"' : '') + '><td class="l">' + n + '</td><td class="l">' + lbl + '</td><td class="n">' + m(val) + '</td></tr>'; };
+    var lineRows = (r.lines || []).map(function (l, i) {
+      var c = pc.lines[i];
+      return '<tr><td class="c">' + esc(l.item || '') + '</td><td class="l">' + esc(l.desc || '') + '</td>' +
+        '<td class="n">' + m(c.scheduled) + '</td><td class="n">' + m(c.prev) + '</td><td class="n">' + m(c.period) + '</td><td class="n">' + m(c.stored) + '</td>' +
+        '<td class="n">' + m(c.total) + '</td><td class="n">' + (Math.round(c.pct * 10) / 10) + '%</td><td class="n">' + m(c.balance) + '</td><td class="n">' + m(c.retain) + '</td></tr>';
+    }).join('');
+    var t = pc.totals;
+    var totRow = '<tr class="tot"><td></td><td class="l">GRAND TOTAL</td><td class="n">' + m(t.scheduled) + '</td><td class="n">' + m(t.prev) + '</td><td class="n">' + m(t.period) + '</td><td class="n">' + m(t.stored) + '</td><td class="n">' + m(t.total) + '</td><td class="n">' + (Math.round(t.pct * 10) / 10) + '%</td><td class="n">' + m(t.balance) + '</td><td class="n">' + m(t.retain) + '</td></tr>';
+    var css = '@page{size:letter;margin:.5in;} *{box-sizing:border-box;} body{font-family:Arial,Helvetica,sans-serif;color:#000;background:#fff;font-size:11px;margin:0;padding:6px;}' +
+      'h1{font-size:15px;text-align:center;margin:0 0 2px;} .sub{text-align:center;font-size:10px;color:#333;margin:0 0 10px;}' +
+      'table.hd{width:100%;border-collapse:collapse;margin-bottom:10px;} table.hd td{border:1px solid #000;padding:3px 6px;vertical-align:top;font-size:10.5px;} table.hd td.k{font-weight:bold;background:#f0f0f0;white-space:nowrap;width:130px;}' +
+      'table.sum{width:60%;border-collapse:collapse;margin-bottom:12px;} table.sum td{border:1px solid #000;padding:3px 6px;} table.sum td.l{text-align:left;} table.sum td.n{text-align:right;font-variant-numeric:tabular-nums;} table.sum tr.s td{font-weight:bold;background:#f7f7f7;} table.sum td:first-child{width:26px;text-align:center;color:#444;}' +
+      'table.g703{width:100%;border-collapse:collapse;font-size:9px;} table.g703 th,table.g703 td{border:1px solid #000;padding:2px 3px;} table.g703 th{background:#f0f0f0;font-size:8.5px;text-align:center;} table.g703 td.l{text-align:left;} table.g703 td.n{text-align:right;font-variant-numeric:tabular-nums;} table.g703 td.c{text-align:center;} table.g703 tr.tot td{font-weight:bold;background:#f7f7f7;}' +
+      '.cert{margin-top:16px;font-size:10.5px;line-height:1.5;} .sig{margin-top:34px;} .fld{border-bottom:1px solid #000;padding:0 30px;} .foot{margin-top:14px;font-size:8.5px;color:#555;text-align:center;} .g703wrap{page-break-before:always;} h2{font-size:13px;margin:0 0 6px;text-align:center;}';
+    var certText = 'The undersigned Contractor certifies that to the best of the Contractor’s knowledge, information and belief the Work covered by this Application for Payment has been completed in accordance with the Contract Documents, that all amounts have been paid by the Contractor for Work for which previous Certificates for Payment were issued and payments received from the Owner, and that current payment shown herein is now due.';
+    return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Pay Application #' + esc(r.appNo || '') + '</title><style>' + css + '</style></head><body>' +
+      '<h1>Application and Certificate for Payment</h1><div class="sub">Progress billing — prepared in the format of AIA® Document G702™/G703™</div>' +
+      '<table class="hd"><tr>' + kv('To (Owner)', r.ownerName) + kv('From (Contractor)', r.contractorName) + '</tr>' +
+      '<tr>' + kv('Project', r.projectName) + kv('Via (Architect)', r.architectName) + '</tr>' +
+      '<tr>' + kv('Project location', r.projectAddress) + kv('Contract for', r.contractFor) + '</tr>' +
+      '<tr>' + kv('Application no.', r.appNo) + kv('Period to', r.periodTo) + '</tr>' +
+      '<tr>' + kv('Application date', r.appDate) + kv('Project no.', r.projectNo) + '</tr>' +
+      '<tr>' + kv('Contract date', r.contractDate) + kv('', r.isFinal ? 'FINAL APPLICATION' : '') + '</tr></table>' +
+      '<h2>Contractor’s Application for Payment</h2>' +
+      '<table class="sum">' +
+      sumRow('1', 'Original contract sum', pc.line1) +
+      sumRow('2', 'Net change by change orders (' + m(pc.coAdd) + ' add − ' + m(pc.coDed) + ' ded)', pc.netCO) +
+      sumRow('3', 'Contract sum to date (1 ± 2)', pc.line3, true) +
+      sumRow('4', 'Total completed &amp; stored to date', pc.line4) +
+      sumRow('5', 'Retainage: ' + (cnum(r.retPctWork) || 0) + '% work (' + m(pc.ret5a) + ') + ' + (cnum(r.retPctStored) || 0) + '% stored (' + m(pc.ret5b) + ')', pc.line5) +
+      sumRow('6', 'Total earned less retainage (4 − 5)', pc.line6, true) +
+      sumRow('7', 'Less previous certificates for payment', pc.line7) +
+      sumRow('8', 'CURRENT PAYMENT DUE (6 − 7)', pc.line8, true) +
+      sumRow('9', 'Balance to finish, including retainage (3 − 6)', pc.line9) +
+      '</table>' +
+      '<div class="cert">' + certText +
+      '<div class="sig">Contractor: <span class="fld">' + esc(r.contractorName || '') + '</span> &nbsp; By: <span class="fld">' + esc(r.socName || '') + '</span>, ' + esc(r.socTitle || '') + ' &nbsp; Date: <span class="fld">' + esc(r.socDate || '') + '</span></div>' +
+      '<div class="sig">Architect’s Certificate for Payment — Amount Certified: <span class="fld">' + m(pc.line8) + '</span> &nbsp; By: <span class="fld">&nbsp;</span> &nbsp; Date: <span class="fld">&nbsp;</span></div>' +
+      '</div>' +
+      '<div class="g703wrap"><h1>Continuation Sheet</h1><div class="sub">Application no. ' + esc(r.appNo || '') + ' · Period to ' + esc(r.periodTo || '') + ' — G703™ style</div>' +
+      '<table class="g703"><thead><tr><th>Item</th><th>Description of work</th><th>Scheduled value</th><th>From previous</th><th>This period</th><th>Materials stored</th><th>Total completed &amp; stored</th><th>%</th><th>Balance to finish</th><th>Retainage</th></tr></thead><tbody>' +
+      lineRows + totRow + '</tbody></table></div>' +
+      '<div class="foot">Prepared with Blue Collar Coach — formatted in the style of AIA® G702™/G703™; not an official AIA form. Verify all figures before submitting.</div>' +
+      '</body></html>';
+  }
+  function printPayapp(r) {
+    var w = window.open('', '_blank');
+    if (!w) { (window.bccNotify || alert)('Allow pop-ups to print the pay application.', 'warn'); return; }
+    w.document.open(); w.document.write(payappDocHtml(r)); w.document.close();
+    if (window.bccAudit) window.bccAudit('payapp-print', { key: r.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, appNo: r.appNo } });
   }
 
   /* Return to the main bookkeeping page (work queue root) from anywhere. */
