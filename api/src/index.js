@@ -3403,35 +3403,6 @@ function linesByGroupRx(flat, rx, limit) {
 }
 
 
-// TEMP (CRON_SECRET-gated): verify job-costs (P&L by customer) parse vs live QBO. Remove after.
-app.http('cron-jobcosts', {
-  methods: ['GET'], authLevel: 'anonymous', route: 'cron/jobcosts',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
-    try {
-      const realmId = String(new URL(request.url).searchParams.get('realmId') || '');
-      const comp = await container().item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-      if (!comp) return { status: 404, jsonBody: { ok: false, error: 'no company' } };
-      const fields = await getIntegrationFields('qbo');
-      const { accessToken, base } = await qboAccessForCompany(comp, fields);
-      const apiGet = async (path) => { const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70'; const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } }); if (!r.ok) throw new Error('QBO ' + r.status); return r.json(); };
-      const to = new Date().toISOString().slice(0, 10), from = to.slice(0, 4) + '-01-01';
-      const rep = flattenQboReport(await apiGet('/reports/ProfitAndLoss?summarize_column_by=Customers&start_date=' + from + '&end_date=' + to + '&accounting_method=Accrual'));
-      const cols = rep.columns || [];
-      const custCols = cols.map((c, i) => ({ name: c, i })).filter(x => x.i > 0 && !/^total$/i.test(String(x.name || '').trim()) && String(x.name || '').trim());
-      const num = s => parseFloat(String(s == null ? '' : s).replace(/[$,]/g, '').replace(/^\((.*)\)$/, '-$1')) || 0;
-      const rowByLabel = (rx) => (rep.rows || []).find(r => rx.test(String(r.label || '')));
-      const incRow = rowByLabel(/^total income$/i) || rowByLabel(/total income/i);
-      const cogsRow = rowByLabel(/^total cost of goods sold$/i) || rowByLabel(/total cogs|cost of goods/i);
-      const expRow = rowByLabel(/^total expenses$/i) || rowByLabel(/total expenses/i);
-      const cellFor = (row, colIdx) => row ? num((row.cells || [])[colIdx - 1]) : 0;
-      const jobs = custCols.map(c => ({ name: c.name, income: cellFor(incRow, c.i), cost: cellFor(cogsRow, c.i) + cellFor(expRow, c.i) })).filter(j => j.income || j.cost);
-      return { jsonBody: { ok: true, company: comp.companyName, columns: cols, foundRows: { income: !!incRow, cogs: !!cogsRow, expenses: !!expRow }, jobCount: jobs.length, jobs: jobs.slice(0, 20) } };
-    } catch (e) { context.error('cron-jobcosts', e); return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } }; }
-  }
-});
-
 /**
  * GET /api/integrations/qbo/companies/{realmId}/job-costs?from=&to=
  * Cost-to-date and revenue (billed/recognized) per customer/job — from the P&L
@@ -3449,8 +3420,10 @@ app.http('qbo-job-costs', {
       const method = (u.searchParams.get('method') || 'accrual').toLowerCase() === 'cash' ? 'Cash' : 'Accrual';
       const rep = flattenQboReport(await ctx.apiGet('/reports/ProfitAndLoss?summarize_column_by=Customers&start_date=' + from + '&end_date=' + to + '&accounting_method=' + method));
       const cols = rep.columns || [];
-      // columns = [ '' (account label), Customer1, Customer2, ..., 'Total' ]
-      const custCols = cols.map((c, i) => ({ name: c, i })).filter(x => x.i > 0 && !/^total$/i.test(String(x.name || '').trim()) && String(x.name || '').trim());
+      // columns = [ '' (account label), Customer1, Job1, Job2, 'Total Customer1', ..., 'TOTAL' ].
+      // Drop the grand total AND the per-parent "Total <customer>" subtotal columns (they'd
+      // double-count the sub-jobs); keep parent-direct + each sub-job column.
+      const custCols = cols.map((c, i) => ({ name: c, i })).filter(x => x.i > 0 && String(x.name || '').trim() && !/^total\b/i.test(String(x.name || '').trim()));
       const num = s => parseFloat(String(s == null ? '' : s).replace(/[$,]/g, '').replace(/^\((.*)\)$/, '-$1')) || 0;
       const rowByLabel = (rx) => (rep.rows || []).find(r => rx.test(String(r.label || '')));
       const incRow = rowByLabel(/^total income$/i) || rowByLabel(/total income/i);
