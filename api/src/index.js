@@ -1026,11 +1026,54 @@ function feedbackNotifyUpns() {
   return owners.length ? owners : ['lyle@bluecollarcoach.us'];
 }
 
+// TEMP (CRON_SECRET-gated): read + resolve/reply feedback headless. GET lists; POST
+// {id,status,note} sets status, STORES the reply (resolutionNote) on the doc, and notifies
+// the submitter on a fresh resolve. Remove after use.
+app.http('cron-feedback', {
+  methods: ['GET', 'POST'], authLevel: 'anonymous', route: 'cron/feedback',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
+    try {
+      const c = container();
+      if (request.method === 'GET') {
+        const { resources } = await c.items.query({
+          query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+        }).fetchAll();
+        return { jsonBody: { ok: true, count: resources.length, feedback: resources } };
+      }
+      const body = await request.json().catch(() => ({}));
+      const id = String(body.id || '');
+      if (id.indexOf('bcc-feedback-') !== 0) return { status: 400, jsonBody: { ok: false, error: 'bad id' } };
+      const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      if (!doc) return { status: 404, jsonBody: { ok: false, error: 'not found' } };
+      const st = String(body.status || 'resolved').toLowerCase();
+      if (['new', 'reviewed', 'resolved'].indexOf(st) < 0) return { status: 400, jsonBody: { ok: false, error: 'bad status' } };
+      const wasResolved = doc.status === 'resolved';
+      const note = String(body.note || '').trim().slice(0, 2000);
+      doc.status = st; doc.reviewedBy = 'lyle@bluecollarcoach.us'; doc.updatedAt = new Date().toISOString();
+      if (note) { doc.resolutionNote = note; doc.resolutionBy = 'Blue Collar Coach'; doc.resolutionAt = new Date().toISOString(); }
+      await c.items.upsert(doc);
+      let notified = false;
+      if (st === 'resolved' && !wasResolved && doc.userUpn) {
+        await notifyUser(c, doc.userUpn, {
+          title: '✅ Your feedback was addressed',
+          body: note || String(doc.message || '').slice(0, 90),
+          url: doc.page || '/', tag: 'fbdone-' + doc.id
+        });
+        notified = true;
+      }
+      return { jsonBody: { ok: true, id: doc.id, status: doc.status, resolutionNote: doc.resolutionNote || '', notified } };
+    } catch (e) { context.error('cron-feedback', e); return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } }; }
+  }
+});
+
 /**
  * User feedback.
  *   POST /api/feedback            — any signed-in user submits feedback.
  *   GET  /api/feedback            — admin: list all submissions (newest first).
- *   POST /api/feedback/{id}       — admin: update status (new|reviewed|resolved).
+ *   POST /api/feedback/{id}       — admin: update status (new|reviewed|resolved) + reply note.
  */
 app.http('feedback', {
   methods: ['POST', 'GET'],
@@ -1062,18 +1105,22 @@ app.http('feedback', {
         const st = String(body.status || '').toLowerCase();
         if (['new', 'reviewed', 'resolved'].indexOf(st) < 0) return badRequest('bad status');
         const wasResolved = doc.status === 'resolved';
+        const note = String(body.note || '').trim().slice(0, 2000);
         doc.status = st; doc.reviewedBy = who; doc.updatedAt = new Date().toISOString();
+        // Persist the admin's reply ON the record so it's visible in the app afterward.
+        if (note) { doc.resolutionNote = note; doc.resolutionBy = who; doc.resolutionAt = new Date().toISOString(); }
         await c.items.upsert(doc);
-        // When newly resolved, notify the person who submitted it.
-        if (st === 'resolved' && !wasResolved && doc.userUpn) {
+        // Notify the submitter with the reply on a fresh resolve, or when explicitly re-sending a reply.
+        const isNewResolve = st === 'resolved' && !wasResolved;
+        if (doc.userUpn && (isNewResolve || (note && body.notify))) {
           const msg = String(doc.message || '');
+          const bodyText = note || (msg.length > 90 ? msg.slice(0, 90) + '…' : msg);
           await notifyUser(c, doc.userUpn, {
-            title: '✅ Your feedback was addressed',
-            body: (msg.length > 90 ? msg.slice(0, 90) + '…' : msg),
-            url: doc.page || '/', tag: 'fbdone-' + doc.id
+            title: isNewResolve ? '✅ Your feedback was addressed' : '💬 Reply to your feedback',
+            body: bodyText, url: doc.page || '/', tag: 'fbdone-' + doc.id
           });
         }
-        return { jsonBody: { ok: true, id: doc.id, status: doc.status } };
+        return { jsonBody: { ok: true, id: doc.id, status: doc.status, resolutionNote: doc.resolutionNote || '', resolutionBy: doc.resolutionBy || '', resolutionAt: doc.resolutionAt || '' } };
       }
       // new submission
       const message = String(body.message || '').trim();

@@ -576,6 +576,9 @@
       var stars = f.rating ? ' · <span style="color:#e0a92e;">' + '★'.repeat(f.rating) + '</span><span style="color:var(--chrome-mute);">' + '★'.repeat(5 - f.rating) + '</span>' : '';
       var badge = f.status === 'resolved' ? 'background:#e6f4ea;color:#1a7a3d;' : (f.status === 'reviewed' ? 'background:#fdf2d6;color:#8a6d2f;' : 'background:#eef2ff;color:#3538cd;');
       var t = (f.type || 'other');
+      var replyShown = f.resolutionNote ? ('<div style="background:#e6f4ea;border:1px solid #bfe3c9;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:13px;">' +
+          '<strong style="color:#1a7a3d;">✅ Reply sent</strong>' + ((f.resolutionBy || f.resolutionAt) ? '<span style="color:var(--muted);font-size:11.5px;font-weight:400;"> · ' + fbEsc(f.resolutionBy || '') + (f.resolutionAt ? ' · ' + fbEsc(fbWhen(f.resolutionAt)) : '') + '</span>' : '') +
+          '<div style="white-space:pre-wrap;margin-top:4px;">' + fbEsc(f.resolutionNote) + '</div></div>') : '';
       return '<div style="border:1px solid var(--chrome-mute);border-radius:10px;padding:12px 14px;margin-bottom:10px;">' +
         '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:6px;">' +
           '<div style="font-weight:700;">' + (icon[t] || '💬') + ' ' + fbEsc(t.charAt(0).toUpperCase() + t.slice(1)) + stars + '</div>' +
@@ -583,20 +586,37 @@
         '</div>' +
         '<div style="white-space:pre-wrap;font-size:14px;color:var(--ink);margin-bottom:8px;">' + fbEsc(f.message) + '</div>' +
         '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">' + fbEsc(f.userName || f.userUpn || '') + ' · ' + fbEsc(fbWhen(f.createdAt)) + (f.page ? (' · ' + fbEsc(f.page)) : '') + '</div>' +
+        replyShown +
+        '<textarea data-fbreply="' + fbEsc(f.id) + '" rows="2" placeholder="Reply to the submitter (sent when you resolve, or click Send reply)…" style="width:100%;box-sizing:border-box;border:1px solid var(--chrome-mute);border-radius:8px;padding:7px 9px;font:inherit;font-size:13px;margin-bottom:8px;">' + fbEsc(f.resolutionNote || '') + '</textarea>' +
         '<div style="display:flex;gap:6px;flex-wrap:wrap;">' +
-          (f.status !== 'reviewed' ? '<button class="btn btn-ghost" data-fbstat="reviewed" data-fbid="' + fbEsc(f.id) + '" type="button" style="font-size:12px;min-height:30px;">Mark reviewed</button>' : '') +
-          (f.status !== 'resolved' ? '<button class="btn btn-ghost" data-fbstat="resolved" data-fbid="' + fbEsc(f.id) + '" type="button" style="font-size:12px;min-height:30px;">Mark resolved</button>' : '') +
-          (f.status !== 'new' ? '<button class="btn btn-ghost" data-fbstat="new" data-fbid="' + fbEsc(f.id) + '" type="button" style="font-size:12px;min-height:30px;">Reopen</button>' : '') +
+          (f.status !== 'reviewed' ? '<button class="btn btn-ghost" data-fbaction="reviewed" data-fbid="' + fbEsc(f.id) + '" type="button" style="font-size:12px;min-height:30px;">Mark reviewed</button>' : '') +
+          (f.status !== 'resolved' ? '<button class="btn btn-primary" data-fbaction="resolved" data-fbid="' + fbEsc(f.id) + '" type="button" style="font-size:12px;min-height:30px;">Resolve &amp; reply</button>' : '') +
+          '<button class="btn btn-ghost" data-fbaction="reply" data-fbid="' + fbEsc(f.id) + '" type="button" style="font-size:12px;min-height:30px;">Send reply</button>' +
+          (f.status !== 'new' ? '<button class="btn btn-ghost" data-fbaction="new" data-fbid="' + fbEsc(f.id) + '" type="button" style="font-size:12px;min-height:30px;">Reopen</button>' : '') +
         '</div>' +
       '</div>';
     }).join('');
-    out.querySelectorAll('[data-fbstat]').forEach(function (b) {
+    out.querySelectorAll('[data-fbaction]').forEach(function (b) {
       b.onclick = function () {
-        var idv = b.getAttribute('data-fbid'), st = b.getAttribute('data-fbstat');
+        var idv = b.getAttribute('data-fbid'), act = b.getAttribute('data-fbaction');
+        var ta = out.querySelector('[data-fbreply="' + idv + '"]');
+        var note = ta ? ta.value.trim() : '';
+        var it = (window._fbItems || []).filter(function (x) { return x.id === idv; })[0] || {};
+        var payload;
+        if (act === 'reply') {
+          if (!note) { (window.bccNotify || alert)('Type a reply first.', 'warn'); return; }
+          payload = { status: it.status || 'new', note: note, notify: true };
+        } else {
+          payload = { status: act, note: (act === 'resolved' ? note : '') };
+        }
         b.disabled = true;
-        fetch('/api/feedback/' + encodeURIComponent(idv), { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: st }) })
+        fetch('/api/feedback/' + encodeURIComponent(idv), { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
           .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
-          .then(function () { var it = (window._fbItems || []).filter(function (x) { return x.id === idv; })[0]; if (it) it.status = st; setFbBadge(newCount()); renderFbList(); })
+          .then(function (j) {
+            if (it) { it.status = payload.status; if (j && j.resolutionNote) { it.resolutionNote = j.resolutionNote; it.resolutionBy = j.resolutionBy; it.resolutionAt = j.resolutionAt; } }
+            setFbBadge(newCount()); renderFbList();
+            if (window.bccNotify) window.bccNotify(act === 'reply' ? 'Reply sent to the submitter.' : ('Marked ' + payload.status + (payload.note ? ' — reply sent.' : '.')), 'success');
+          })
           .catch(function () { b.disabled = false; (window.bccNotify || alert)('Update failed.', 'warn'); });
       };
     });
