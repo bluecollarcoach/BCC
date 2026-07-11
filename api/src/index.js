@@ -3419,12 +3419,14 @@ app.http('cron-forreview', {
       const today = new Date().toISOString().slice(0, 10);
       const accts = await queryAll('SELECT Id, Name, AccountType FROM Account WHERE Active = true');
       const uncat = accts.filter(a => /uncategor|ask my accountant/i.test(a.Name || ''));
-      const items = []; const seen = {}; const fyStart = today.slice(0, 4) + '-01-01'; const colDump = {};
+      const items = []; const seen = {}; const fyStart = String(new URL(request.url).searchParams.get('from') || (today.slice(0, 4) + '-01-01')); const colDump = {}; const rowDiag = {};
       for (const a of uncat) {
         let rep;
         try { rep = flattenQboReport(await apiGet('/reports/ProfitAndLossDetail?start_date=' + fyStart + '&end_date=' + today + '&accounting_method=Accrual&account=' + encodeURIComponent(a.Id))); }
         catch (e) { colDump[a.Name] = 'ERR ' + String(e.message || e).slice(0, 80); continue; }
         colDump[a.Name] = rep.columns;
+        const dr = (rep.rows || []).filter(r => r.type === 'data');
+        rowDiag[a.Name] = { totalRows: (rep.rows || []).length, dataRows: dr.length, withId: dr.filter(r => r.acctId).length, sample: dr.slice(0, 2).map(r => ({ label: r.label, cells: r.cells, acctId: r.acctId })) };
         const cols = (rep.columns || []).map(c => String(c || '').toLowerCase());
         const idxOf = (rx) => cols.findIndex(c => rx.test(c));
         const iType = idxOf(/transaction type|^type/), iNum = idxOf(/num/), iName = idxOf(/name/), iMemo = idxOf(/memo|description/), iAmt = idxOf(/amount/);
@@ -3437,7 +3439,7 @@ app.http('cron-forreview', {
           items.push({ id: row.acctId, txnType: String(cellAt(row, iType) || '').trim(), date: row.label, name: String(cellAt(row, iName) || ''), memo: String(cellAt(row, iMemo) || ''), amount: amt, account: a.Name });
         }
       }
-      return { jsonBody: { ok: true, company: comp.companyName, uncatAccounts: uncat.map(a => a.Name + ' [' + a.AccountType + ']'), columnsSeen: colDump, itemCount: items.length, items: items.slice(0, 25) } };
+      return { jsonBody: { ok: true, company: comp.companyName, from: fyStart, uncatAccounts: uncat.map(a => a.Name + ' [' + a.AccountType + ']'), rowDiag, itemCount: items.length, items: items.slice(0, 25) } };
     } catch (e) { context.error('cron-forreview', e); return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } }; }
   }
 });
