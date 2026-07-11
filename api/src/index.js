@@ -1026,38 +1026,6 @@ function feedbackNotifyUpns() {
   return owners.length ? owners : ['lyle@bluecollarcoach.us'];
 }
 
-// TEMP (CRON_SECRET-gated): read + resolve/reply feedback headless. GET lists; POST
-// {id,status,note} sets status, stores the reply (resolutionNote), notifies on fresh resolve.
-app.http('cron-feedback', {
-  methods: ['GET', 'POST'], authLevel: 'anonymous', route: 'cron/feedback',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
-    try {
-      const c = container();
-      if (request.method === 'GET') {
-        const { resources } = await c.items.query({ query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC', parameters: [{ name: '@t', value: BCC_TENANT_ID }] }).fetchAll();
-        return { jsonBody: { ok: true, count: resources.length, feedback: resources } };
-      }
-      const body = await request.json().catch(() => ({}));
-      const id = String(body.id || '');
-      if (id.indexOf('bcc-feedback-') !== 0) return { status: 400, jsonBody: { ok: false, error: 'bad id' } };
-      const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-      if (!doc) return { status: 404, jsonBody: { ok: false, error: 'not found' } };
-      const st = String(body.status || 'resolved').toLowerCase();
-      if (['new', 'reviewed', 'resolved'].indexOf(st) < 0) return { status: 400, jsonBody: { ok: false, error: 'bad status' } };
-      const wasResolved = doc.status === 'resolved';
-      const note = String(body.note || '').trim().slice(0, 2000);
-      doc.status = st; doc.reviewedBy = 'lyle@bluecollarcoach.us'; doc.updatedAt = new Date().toISOString();
-      if (note) { doc.resolutionNote = note; doc.resolutionBy = 'Blue Collar Coach'; doc.resolutionAt = new Date().toISOString(); }
-      await c.items.upsert(doc);
-      let notified = false;
-      if (st === 'resolved' && !wasResolved && doc.userUpn) { await notifyUser(c, doc.userUpn, { title: '✅ Your feedback was addressed', body: note || String(doc.message || '').slice(0, 90), url: doc.page || '/', tag: 'fbdone-' + doc.id }); notified = true; }
-      return { jsonBody: { ok: true, id: doc.id, status: doc.status, notified } };
-    } catch (e) { context.error('cron-feedback', e); return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } }; }
-  }
-});
-
 /**
  * User feedback.
  *   POST /api/feedback            — any signed-in user submits feedback.
@@ -3453,9 +3421,16 @@ app.http('qbo-job-costs', {
       const rep = flattenQboReport(await ctx.apiGet('/reports/ProfitAndLoss?summarize_column_by=Customers&start_date=' + from + '&end_date=' + to + '&accounting_method=' + method));
       const cols = rep.columns || [];
       // columns = [ '' (account label), Customer1, Job1, Job2, 'Total Customer1', ..., 'TOTAL' ].
-      // Drop the grand total AND the per-parent "Total <customer>" subtotal columns (they'd
-      // double-count the sub-jobs); keep parent-direct + each sub-job column.
-      const custCols = cols.map((c, i) => ({ name: c, i })).filter(x => x.i > 0 && String(x.name || '').trim() && !/^total\b/i.test(String(x.name || '').trim()));
+      // Drop the grand total + the per-parent "Total <customer>" subtotal columns (they'd
+      // double-count sub-jobs) — but keep a REAL customer named e.g. "Total Comfort HVAC".
+      // A "Total X" column is a subtotal only when X is itself a customer column.
+      const realNames = new Set(cols.map((c, i) => ({ n: String(c || '').trim(), i })).filter(x => x.i > 0 && x.n && !/^total\b/i.test(x.n)).map(x => x.n));
+      const custCols = cols.map((c, i) => ({ name: String(c || '').trim(), i })).filter(x => {
+        if (x.i <= 0 || !x.name) return false;
+        if (/^total$/i.test(x.name)) return false; // grand-total column ("TOTAL")
+        if (/^total\s+/i.test(x.name) && realNames.has(x.name.replace(/^total\s+/i, ''))) return false; // per-parent subtotal
+        return true;
+      });
       const num = s => parseFloat(String(s == null ? '' : s).replace(/[$,]/g, '').replace(/^\((.*)\)$/, '-$1')) || 0;
       const rowByLabel = (rx) => (rep.rows || []).find(r => rx.test(String(r.label || '')));
       const incRow = rowByLabel(/^total income$/i) || rowByLabel(/total income/i);
@@ -3634,7 +3609,7 @@ app.http('qbo-report', {
           // plus each vendor's 1099-eligible flag and whether a tax ID (W-9) is on file.
           const year = url.searchParams.get('year') || String(new Date().getFullYear());
           const from = year + '-01-01', to = year + '-12-31';
-          const vendors = await queryAll('SELECT Id, DisplayName, Vendor1099, TaxIdentifier FROM Vendor WHERE Active = true');
+          let vendors = []; { let vs = 1; for (let vp = 0; vp < 8; vp++) { const jv = await apiGet('/query?query=' + encodeURIComponent('SELECT Id, DisplayName, Vendor1099, TaxIdentifier FROM Vendor WHERE Active = true STARTPOSITION ' + vs + ' MAXRESULTS 1000')); const va = (jv.QueryResponse && jv.QueryResponse.Vendor) || []; vendors = vendors.concat(va); if (va.length < 1000) break; vs += 1000; } }
           const paid = {}; let vCapped = false;
           const pageScan = async (name, sumFn) => {
             let start = 1;
@@ -3838,6 +3813,11 @@ app.http('qbo-write', {
         if (f.txnDate) payload.TxnDate = f.txnDate;
         if (f.docNumber) payload.DocNumber = String(f.docNumber);
         if (f.memo) payload.PrivateNote = String(f.memo);
+      }
+      // On edit, a sparse update with Line REPLACES all lines — re-append any existing line
+      // types the editor didn't render (item-based lines, discounts) verbatim so nothing is lost.
+      if (b.op === 'update' && payload && Array.isArray(payload.Line) && Array.isArray(f.keepLines) && f.keepLines.length) {
+        payload.Line = payload.Line.concat(f.keepLines);
       }
       if (b.op === 'update') {
         if (!b.id || !b.syncToken) return badRequest('id and syncToken required for update');

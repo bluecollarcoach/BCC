@@ -1496,12 +1496,15 @@
     }).join('');
     return '<table><thead>' + head2 + '</thead><tbody>' + body + '</tbody></table>';
   }
+  // Default the 1099 year to the PRIOR calendar year during Jan–Mar (filing season), else current.
+  var _report1099Year = (function () { var d = new Date(); return String(d.getMonth() <= 2 ? d.getFullYear() - 1 : d.getFullYear()); })();
   function loadQboReport(type, btn) {
     if (!currentRealm) return;
     qboActiveReport = type;
     var sel = document.getElementById('qboReportSel'); if (sel && sel.value !== type) sel.value = type; // keep the dropdown in sync (e.g. on programmatic refresh)
     var rg = qboRange();
     var q = 'type=' + encodeURIComponent(type) + '&method=' + rg.method;
+    if (type === 'vendors-1099') q += '&year=' + encodeURIComponent(_report1099Year);
     var RANGE_TYPES = { pl:1, transactions:1, payments:1, expenses:1, 'all-invoices':1, 'all-bills':1, 'trial-balance':1, 'general-ledger':1, 'cash-flow':1, 'sales-by-customer':1, 'sales-by-item':1 };
     if (RANGE_TYPES[type]) q += '&from=' + rg.from + '&to=' + rg.to;
     else if (type === 'balancesheet') q += '&asOf=' + rg.to;
@@ -1511,7 +1514,7 @@
       .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
       .then(function (resp) {
         if (resp && resp.data && resp.data.kind === 'for-review') { out.innerHTML = renderForReview(resp.data); wireForReview(out); }
-        else if (resp && resp.data && resp.data.kind === 'vendors-1099') { out.innerHTML = renderVendors1099(resp.data); }
+        else if (resp && resp.data && resp.data.kind === 'vendors-1099') { out.innerHTML = renderVendors1099(resp.data); var ys = out.querySelector('#v1099_year'); if (ys) ys.onchange = function () { _report1099Year = ys.value; loadQboReport('vendors-1099'); }; }
         else { out.innerHTML = renderReport(resp); wireTxEdit(out, resp.data); }
       })
       .catch(function (e) { out.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:10px;font-size:13px;">' + esc(qboFriendly(e && e.message)) + '</div>'; });
@@ -1547,8 +1550,11 @@
   function renderVendors1099(d) {
     var vs = d.vendors || [], m = mrMoney0, TH = 600;
     var flagged = vs.filter(function (v) { return v.ytdPaid >= TH; }).length;
-    var head = '<div style="margin-bottom:10px;"><div style="font-weight:700;font-size:15px;">🧾 1099 vendor tracking — ' + esc(d.year) + '</div>' +
-      '<div style="font-size:12px;color:var(--muted);">Cash paid per vendor this year (checks, cash &amp; bill payments) — <strong>credit-card payments are excluded</strong> (the card issuer reports those on 1099-K). ' + flagged + ' vendor' + (flagged === 1 ? '' : 's') + ' at/over $' + TH + '.</div></div>';
+    var cy = new Date().getFullYear(); var yrOpts = '';
+    for (var y = cy; y >= cy - 5; y--) yrOpts += '<option value="' + y + '"' + (String(y) === String(d.year) ? ' selected' : '') + '>' + y + '</option>';
+    var head = '<div style="margin-bottom:10px;"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;"><div style="font-weight:700;font-size:15px;">🧾 1099 vendor tracking</div>' +
+      '<label style="font-size:12px;color:var(--muted);">Tax year <select id="v1099_year" style="min-height:32px;border:1px solid var(--chrome-mute);border-radius:6px;padding:4px 6px;font:inherit;">' + yrOpts + '</select></label></div>' +
+      '<div style="font-size:12px;color:var(--muted);margin-top:4px;">Cash paid per vendor in ' + esc(d.year) + ' (checks, cash &amp; bill payments) — <strong>credit-card payments are excluded</strong> (the card issuer reports those on 1099-K). ' + flagged + ' vendor' + (flagged === 1 ? '' : 's') + ' at/over $' + TH + '.</div></div>';
     if (d.capped) head += '<div style="font-size:11px;color:#8a6d2f;background:#fdf6e3;border-radius:6px;padding:5px 8px;margin-bottom:8px;">Large transaction history — totals cover the most recent activity.</div>';
     if (!vs.length) return head + '<div style="color:var(--muted);padding:12px 0;">No vendor payments found for ' + esc(d.year) + '.</div>';
     var rows = vs.map(function (v) {
@@ -2108,8 +2114,13 @@
           if (entity === 'purchase') {
             var pa = document.getElementById('tx_payacct'); g.paymentAccountId = pa ? pa.value : '';
             var acct = (refs.accounts || []).find(function (a) { return String(a.id) === String(g.paymentAccountId); });
-            g.paymentType = (acct && /credit card/i.test(acct.type || '')) ? 'CreditCard' : 'Cash';
+            // On EDIT, keep the transaction's original payment type (e.g. Check) — don't silently
+            // downgrade a Check to Cash just because the paid-from account isn't a credit card.
+            g.paymentType = (edit && pre.PaymentType) ? pre.PaymentType : ((acct && /credit card/i.test(acct.type || '')) ? 'CreditCard' : 'Cash');
           } else { g.due = document.getElementById('tx_due').value; }
+          // On EDIT, a sparse update REPLACES all lines — carry through any line types the editor
+          // doesn't render (item-based lines, discounts, etc.) verbatim so they aren't dropped.
+          if (edit) { var editable = (entity === 'invoice' ? 'SalesItemLineDetail' : 'AccountBasedExpenseLineDetail'); g.keepLines = (pre.Line || []).filter(function (l) { return l.DetailType && l.DetailType !== editable; }); }
           submitTxn(entity, g);
         };
       } else {
@@ -2124,6 +2135,7 @@
     else if (entity === 'bill') { if (!g.party) { (window.bccNotify || alert)('Pick a vendor.', 'warn'); return; } fields = { vendorId: g.party, txnDate: g.date, dueDate: g.due, lines: g.lines.map(function (l) { return { accountId: l.accountId, desc: l.desc, amount: l.amount }; }) }; }
     else if (entity === 'purchase') { if (!g.paymentAccountId) { (window.bccNotify || alert)('Pick the bank / credit-card account it was paid from.', 'warn'); return; } if (!(g.lines || []).some(function (l) { return (parseFloat(l.amount) || 0) > 0 && l.accountId; })) { (window.bccNotify || alert)('Add at least one expense line (amount + account).', 'warn'); return; } fields = { vendorId: g.party || '', paymentAccountId: g.paymentAccountId, paymentType: g.paymentType || 'Cash', txnDate: g.date, lines: g.lines.map(function (l) { return { accountId: l.accountId, desc: l.desc, amount: l.amount }; }) }; }
     else { if (!g.party || !g.amount) { (window.bccNotify || alert)('Customer and amount required.', 'warn'); return; } fields = { customerId: g.party, totalAmt: g.amount, txnDate: g.date, depositAccountId: g.deposit, invoiceId: g.invoiceId }; }
+    if (g.keepLines && g.keepLines.length) fields.keepLines = g.keepLines; // preserve non-editable line types on edit
     var verb = _txnEdit ? 'update' : 'create';
     var total = entity === 'payment' ? g.amount : (g.lines || []).reduce(function (s, l) { return s + (parseFloat(l.amount) || 0); }, 0);
     if (!confirm('Post this ' + entity + ' to ' + companyName(currentRealm) + '’s live QuickBooks?\n\nTotal: $' + (Number(total) || 0).toLocaleString())) return;
@@ -2189,7 +2201,9 @@
       }
       function recalc() {
         var dr = 0, cr = 0;
-        draft.forEach(function (l) { if (l.postingType === 'Debit') dr += parseFloat(l.amount) || 0; else if (l.postingType === 'Credit') cr += parseFloat(l.amount) || 0; });
+        // Only tally lines that will actually POST (have an account) — otherwise the panel
+        // could show "✓ Balanced" for amounts on account-less lines that get dropped on save.
+        draft.forEach(function (l) { if (!l.accountId) return; if (l.postingType === 'Debit') dr += parseFloat(l.amount) || 0; else if (l.postingType === 'Credit') cr += parseFloat(l.amount) || 0; });
         var diff = Math.round((dr - cr) * 100) / 100;
         var el = document.getElementById('je_balance'); if (!el) return;
         el.innerHTML = 'Debits <strong style="font-variant-numeric:tabular-nums;">$' + jeMoney(dr) + '</strong> &nbsp; Credits <strong style="font-variant-numeric:tabular-nums;">$' + jeMoney(cr) + '</strong> &nbsp; ' + (diff === 0 && dr > 0 ? '<strong style="color:#1f8a4c;">✓ Balanced</strong>' : (dr === 0 && cr === 0 ? '<span style="color:var(--muted);">enter debits &amp; credits</span>' : '<strong style="color:#c0392b;">off by $' + jeMoney(Math.abs(diff)) + '</strong>'));
@@ -4066,7 +4080,7 @@
     return doc;
   }
   function saveClose() { if (!_close) return; _close.updatedAt = nowIso(); _close.updatedBy = myUpn(); localStorage.setItem(_close.id, JSON.stringify(_close)); }
-  function periodEndDate(period) { var d = new Date(+period.slice(0, 4), +period.slice(5, 7), 0); return d.toISOString().slice(0, 10); }
+  function periodEndDate(period) { var d = new Date(+period.slice(0, 4), +period.slice(5, 7), 0); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
   function renderClose() {
     var body = document.getElementById('close-body'); if (!body) return;
     if (!_close || _close.realmId !== currentRealm) _close = loadCloseDoc(mrDefaultPeriod());
@@ -4142,7 +4156,8 @@
   function updateReconRow(row) {
     var book = parseFloat(row.getAttribute('data-book')) || 0;
     var id = row.getAttribute('data-recon');
-    var stmt = parseFloat((_close.recon[id] || {}).statementBalance);
+    // Strip $ , and spaces first — parseFloat("12,450.00") would otherwise read 12.
+    var stmt = parseFloat(String((_close.recon[id] || {}).statementBalance || '').replace(/[^0-9.\-]/g, ''));
     var cell = row.querySelector('.recon-diff'); if (!cell) return;
     if (isNaN(stmt)) { cell.innerHTML = '<span style="color:var(--muted);">—</span>'; return; }
     var diff = Math.round((stmt - book) * 100) / 100;
@@ -4154,11 +4169,16 @@
   function loadWipDoc() { var id = 'bcc-wip-' + currentRealm, d = null; try { d = JSON.parse(localStorage.getItem(id)); } catch (e) {} if (!d || !d.id) d = { id: id, tenantId: 'blue-collar-coach', docType: 'wip', realmId: currentRealm, jobs: {}, createdAt: nowIso() }; if (!d.jobs) d.jobs = {}; return d; }
   function saveWip() { if (!_wip) return; _wip.updatedAt = nowIso(); _wip.updatedBy = myUpn(); localStorage.setItem(_wip.id, JSON.stringify(_wip)); }
   function wipCalc(job, ov) {
+    var num = function (v) { return parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')) || 0; };
     var cost = job.cost || 0, billed = job.income || 0;
-    var contract = parseFloat(ov.contract) || 0, est = parseFloat(ov.estCost) || 0;
-    var pct = est > 0 ? Math.min(cost / est, 1.5) : (contract > 0 ? Math.min(billed / contract, 1.5) : 0);
-    var earned = contract * pct;
-    return { cost: cost, billed: billed, contract: contract, est: est, pct: pct, earned: earned, over: billed - earned };
+    var contract = num(ov.contract), est = num(ov.estCost);
+    // %-complete is cost-based (cost ÷ est). Earned & over/(under) billing are only meaningful
+    // with BOTH est cost and contract — otherwise they'd tautologically read $0 (or "over" the
+    // whole billed amount), so we show "—" until the job is set up.
+    var pct = est > 0 ? Math.min(cost / est, 1.5) : null;
+    var earned = (est > 0 && contract > 0) ? contract * pct : null;
+    var over = (earned == null) ? null : billed - earned;
+    return { cost: cost, billed: billed, contract: contract, est: est, pct: pct, earned: earned, over: over };
   }
   function renderWip() {
     var body = document.getElementById('wip-body'); if (!body) return;
@@ -4197,10 +4217,11 @@
       out.querySelectorAll('[data-wrow]').forEach(function (row) {
         var name = row.getAttribute('data-job');
         var c = wipCalc(jobs[+row.getAttribute('data-wrow')], _wip.jobs[name] || {});
-        row.querySelector('.wc-pct').textContent = (Math.round(c.pct * 1000) / 10) + '%';
-        row.querySelector('.wc-earned').textContent = m(c.earned);
-        row.querySelector('.wc-over').innerHTML = c.over === 0 ? m(0) : '<span style="color:' + (c.over > 0 ? '#b7791f' : '#c0392b') + ';">' + m(c.over) + '</span>';
-        tot.contract += c.contract; tot.est += c.est; tot.cost += c.cost; tot.earned += c.earned; tot.billed += c.billed; tot.over += c.over;
+        row.querySelector('.wc-pct').textContent = (c.pct == null) ? '—' : ((Math.round(c.pct * 1000) / 10) + '%');
+        row.querySelector('.wc-earned').textContent = (c.earned == null) ? '—' : m(c.earned);
+        row.querySelector('.wc-over').innerHTML = (c.over == null) ? '—' : (c.over === 0 ? m(0) : '<span style="color:' + (c.over > 0 ? '#b7791f' : '#c0392b') + ';">' + m(c.over) + '</span>');
+        tot.contract += c.contract; tot.est += c.est; tot.cost += c.cost; tot.billed += c.billed;
+        if (c.earned != null) tot.earned += c.earned; if (c.over != null) tot.over += c.over;
       });
       var tf = document.getElementById('wip_totals');
       if (tf) tf.innerHTML = '<tr style="font-weight:700;border-top:2px solid #c5a55a;"><td style="padding:5px;">Total</td><td class="num" style="text-align:right;padding:5px;">' + m(tot.contract) + '</td><td class="num" style="text-align:right;padding:5px;">' + m(tot.est) + '</td><td class="num" style="text-align:right;padding:5px;">' + m(tot.cost) + '</td><td></td><td class="num" style="text-align:right;padding:5px;">' + m(tot.earned) + '</td><td class="num" style="text-align:right;padding:5px;">' + m(tot.billed) + '</td><td class="num" style="text-align:right;padding:5px;color:' + (tot.over >= 0 ? '#b7791f' : '#c0392b') + ';">' + m(tot.over) + '</td></tr>';
