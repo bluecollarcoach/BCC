@@ -3402,37 +3402,6 @@ function linesByGroupRx(flat, rx, limit) {
   return out;
 }
 
-// TEMP (CRON_SECRET-gated): verify the for-review parse against live QBO. Remove after.
-app.http('cron-forreview', {
-  methods: ['GET'], authLevel: 'anonymous', route: 'cron/forreview',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false } };
-    try {
-      const realmId = String(new URL(request.url).searchParams.get('realmId') || '');
-      const comp = await container().item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-      if (!comp) return { status: 404, jsonBody: { ok: false, error: 'no company' } };
-      const fields = await getIntegrationFields('qbo');
-      const { accessToken, base } = await qboAccessForCompany(comp, fields);
-      const apiGet = async (path) => { const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70'; const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } }); if (!r.ok) throw new Error('QBO ' + r.status + ':' + (await r.text().catch(() => '')).slice(0, 120)); return r.json(); };
-      const queryAll = async (sql) => { const j = await apiGet('/query?query=' + encodeURIComponent(sql + ' MAXRESULTS 1000')); const qr = j.QueryResponse || {}; const k = Object.keys(qr).find(x => Array.isArray(qr[x])); return k ? qr[k] : []; };
-      const accts = await queryAll('SELECT Id, Name FROM Account WHERE Active = true');
-      const uncatIds = {}; const uncatNames = [];
-      accts.forEach(a => { if (/uncategor|ask my accountant/i.test(a.Name || '')) { uncatIds[String(a.Id)] = a.Name; uncatNames.push(a.Name); } });
-      const items = [];
-      const from = String(new URL(request.url).searchParams.get('from') || (() => { const d = new Date(); d.setMonth(d.getMonth() - 24); return d.toISOString().slice(0, 10); })());
-      const matchAcct = (lines, path) => { for (const l of (lines || [])) { const d = l[path]; const v = d && d.AccountRef && String(d.AccountRef.value); if (v && uncatIds[v]) return uncatIds[v]; } return null; };
-      const purchases = await queryAll("SELECT * FROM Purchase WHERE TxnDate >= '" + from + "' ORDERBY TxnDate DESC");
-      purchases.forEach(r => { const acc = matchAcct(r.Line, 'AccountBasedExpenseLineDetail'); if (acc) items.push({ id: r.Id, entity: 'purchase', txnType: (r.PaymentType ? r.PaymentType + ' ' : '') + 'expense', date: r.TxnDate, name: (r.EntityRef && r.EntityRef.name) || '', amount: Number(r.TotalAmt) || 0, account: acc }); });
-      const bills = await queryAll("SELECT * FROM Bill WHERE TxnDate >= '" + from + "' ORDERBY TxnDate DESC");
-      bills.forEach(r => { const acc = matchAcct(r.Line, 'AccountBasedExpenseLineDetail'); if (acc) items.push({ id: r.Id, entity: 'bill', txnType: 'Bill', date: r.TxnDate, name: (r.VendorRef && r.VendorRef.name) || '', amount: Number(r.TotalAmt) || 0, account: acc }); });
-      const deposits = await queryAll("SELECT * FROM Deposit WHERE TxnDate >= '" + from + "' ORDERBY TxnDate DESC").catch(() => []);
-      deposits.forEach(r => { const acc = matchAcct(r.Line, 'DepositLineDetail'); if (acc) items.push({ id: r.Id, entity: '', txnType: 'Deposit', date: r.TxnDate, amount: Number(r.TotalAmt) || 0, account: acc }); });
-      items.sort((x, y) => String(y.date).localeCompare(String(x.date)));
-      return { jsonBody: { ok: true, company: comp.companyName, from, uncatAccounts: uncatNames, counts: { purchases: purchases.length, bills: bills.length, deposits: deposits.length }, itemCount: items.length, items: items.slice(0, 25) } };
-    } catch (e) { context.error('cron-forreview', e); return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } }; }
-  }
-});
 
 app.http('qbo-report', {
   methods: ['GET'],
@@ -3534,19 +3503,32 @@ app.http('qbo-report', {
           const accts = await queryAll('SELECT Id, Name FROM Account WHERE Active = true');
           const uncatIds = {}; const uncatNames = [];
           accts.forEach(a => { if (/uncategor|ask my accountant/i.test(a.Name || '')) { uncatIds[String(a.Id)] = a.Name; uncatNames.push(a.Name); } });
-          const items = [];
+          let items = []; let scanCapped = false;
           if (Object.keys(uncatIds).length) {
             const lb = new Date(); lb.setMonth(lb.getMonth() - 24); const from = lb.toISOString().slice(0, 10);
             const matchAcct = (lines, path) => { for (const l of (lines || [])) { const d = l[path]; const v = d && d.AccountRef && String(d.AccountRef.value); if (v && uncatIds[v]) return uncatIds[v]; } return null; };
-            const purchases = await queryAll("SELECT * FROM Purchase WHERE TxnDate >= '" + from + "' ORDERBY TxnDate DESC");
-            purchases.forEach(r => { const acc = matchAcct(r.Line, 'AccountBasedExpenseLineDetail'); if (acc) items.push({ id: r.Id, entity: 'purchase', txnType: (r.PaymentType ? r.PaymentType + ' ' : '') + 'expense', date: r.TxnDate, name: (r.EntityRef && r.EntityRef.name) || '', memo: r.PrivateNote || '', amount: Number(r.TotalAmt) || 0, account: acc }); });
-            const bills = await queryAll("SELECT * FROM Bill WHERE TxnDate >= '" + from + "' ORDERBY TxnDate DESC");
-            bills.forEach(r => { const acc = matchAcct(r.Line, 'AccountBasedExpenseLineDetail'); if (acc) items.push({ id: r.Id, entity: 'bill', txnType: 'Bill', date: r.TxnDate, name: (r.VendorRef && r.VendorRef.name) || '', memo: r.PrivateNote || '', amount: Number(r.TotalAmt) || 0, account: acc }); });
-            const deposits = await queryAll("SELECT * FROM Deposit WHERE TxnDate >= '" + from + "' ORDERBY TxnDate DESC").catch(() => []);
-            deposits.forEach(r => { const acc = matchAcct(r.Line, 'DepositLineDetail'); if (acc) items.push({ id: r.Id, entity: '', txnType: 'Deposit', date: r.TxnDate, name: '', memo: r.PrivateNote || '', amount: Number(r.TotalAmt) || 0, account: acc }); });
+            // Page through each entity (can't filter by nested line-account in QBO SQL, so scan+filter).
+            // Bounded to 6 pages (6k txns / 24mo) to stay under the gateway timeout; flag if capped.
+            const pageScan = async (name, path, mk) => {
+              const out = []; let start = 1;
+              for (let page = 0; page < 6; page++) {
+                const j = await apiGet('/query?query=' + encodeURIComponent("SELECT * FROM " + name + " WHERE TxnDate >= '" + from + "' ORDERBY TxnDate DESC STARTPOSITION " + start + ' MAXRESULTS 1000'));
+                const arr = (j.QueryResponse && j.QueryResponse[name]) || [];
+                arr.forEach(r => { const acc = matchAcct(r.Line, path); if (acc) out.push(mk(r, acc)); });
+                if (arr.length < 1000) return out;
+                start += 1000;
+              }
+              scanCapped = true; return out;
+            };
+            const [pItems, bItems, dItems] = await Promise.all([
+              pageScan('Purchase', 'AccountBasedExpenseLineDetail', (r, acc) => ({ id: r.Id, entity: 'purchase', txnType: (r.PaymentType ? r.PaymentType + ' ' : '') + 'expense', date: r.TxnDate, name: (r.EntityRef && r.EntityRef.name) || '', memo: r.PrivateNote || '', amount: Number(r.TotalAmt) || 0, account: acc })),
+              pageScan('Bill', 'AccountBasedExpenseLineDetail', (r, acc) => ({ id: r.Id, entity: 'bill', txnType: 'Bill', date: r.TxnDate, name: (r.VendorRef && r.VendorRef.name) || '', memo: r.PrivateNote || '', amount: Number(r.TotalAmt) || 0, account: acc })),
+              pageScan('Deposit', 'DepositLineDetail', (r, acc) => ({ id: r.Id, entity: '', txnType: 'Deposit', date: r.TxnDate, name: '', memo: r.PrivateNote || '', amount: Number(r.TotalAmt) || 0, account: acc })).catch(() => [])
+            ]);
+            items = pItems.concat(bItems, dItems);
           }
           items.sort((x, y) => String(y.date).localeCompare(String(x.date)));
-          data = { kind: 'for-review', accounts: uncatNames, items }; break;
+          data = { kind: 'for-review', accounts: uncatNames, items, capped: scanCapped }; break;
         }
         case 'payments': {
           const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;

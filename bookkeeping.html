@@ -1513,6 +1513,7 @@
     var items = d.items || [], accts = (d.accounts || []).join(', ');
     var head = '<div style="margin-bottom:10px;"><div style="font-weight:700;font-size:15px;">🔎 For review — ' + items.length + ' uncategorized transaction' + (items.length === 1 ? '' : 's') + '</div>' +
       '<div style="font-size:12px;color:var(--muted);">' + (accts ? ('In: ' + esc(accts)) : 'No “Uncategorized” or “Ask My Accountant” accounts found in this company.') + ' · this year to date. Click <strong>Categorize</strong> to reclassify a transaction to the right account.</div></div>';
+    if (d.capped) head += '<div style="font-size:11px;color:#8a6d2f;background:#fdf6e3;border-radius:6px;padding:5px 8px;margin-bottom:8px;">Showing the most recent transactions (large history — some older items may be beyond this view).</div>';
     if (!items.length) return head + '<div style="color:var(--muted);padding:12px 0;">Nothing to review — no transactions are sitting in an uncategorized account. 🎉</div>';
     var rows = items.map(function (it) {
       var ent = it.entity || forReviewEntity(it.txnType);
