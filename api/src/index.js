@@ -4964,14 +4964,17 @@ app.http('planner-parse', {
       } else {
         const wb = new ExcelJS.Workbook();
         await wb.xlsx.load(buf);
-        const ws = wb.worksheets[0];
-        if (!ws) return badRequest('no worksheet found in the file');
-        ws.eachRow({ includeEmpty: false }, (row) => {
-          const vals = [];
-          const n = row.cellCount || 0;
-          for (let ci = 1; ci <= n; ci++) vals.push(plannerCellText(row.getCell(ci).value));
-          grid.push(vals);
-        });
+        if (!wb.worksheets.length) return badRequest('no worksheet found in the file');
+        // Planner's newer export leads with a "Plan" summary sheet + separate "Tasks" /
+        // "Consolidated Data" sheets — so worksheets[0] is NOT the tasks. Read EVERY sheet
+        // and pick the one with a Task-name / Title header, preferring the readable
+        // "Consolidated Data" sheet (the "Tasks" sheet stores bucket/user IDs, not names).
+        const sheetGrid = (ws) => { const g = []; ws.eachRow({ includeEmpty: false }, (row) => { const vals = []; const n = row.cellCount || 0; for (let ci = 1; ci <= n; ci++) vals.push(plannerCellText(row.getCell(ci).value)); g.push(vals); }); return g; };
+        const hasTitle = (g) => { for (let i = 0; i < Math.min(g.length, 15); i++) { if ((g[i] || []).some(c => /^(task ?name|title|name)$/i.test(String(c || '').trim()))) return true; } return false; };
+        const rank = (nm) => { nm = String(nm || '').toLowerCase(); return nm === 'consolidated data' ? 0 : nm === 'tasks' ? 1 : /task/.test(nm) ? 2 : 5; };
+        let best = null, bestRank = 99;
+        wb.worksheets.forEach(ws => { const g = sheetGrid(ws); if (hasTitle(g)) { const r = rank(ws.name); if (r < bestRank) { bestRank = r; best = g; } } });
+        grid = best || sheetGrid(wb.worksheets[0]);
       }
       if (!grid.length) return badRequest('the file appears to be empty');
 
