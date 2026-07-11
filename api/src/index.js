@@ -3604,7 +3604,7 @@ app.http('qbo-write', {
       const b = await request.json().catch(() => ({}));
       const entity = String(b.entity || '').toLowerCase();
       const f = b.fields || {};
-      const cap = { invoice: 'Invoice', bill: 'Bill', purchase: 'Purchase', payment: 'Payment', customer: 'Customer', vendor: 'Vendor', item: 'Item', account: 'Account' }[entity];
+      const cap = { invoice: 'Invoice', bill: 'Bill', purchase: 'Purchase', payment: 'Payment', customer: 'Customer', vendor: 'Vendor', item: 'Item', account: 'Account', journalentry: 'JournalEntry' }[entity];
       if (!cap) return badRequest('unsupported entity: ' + entity);
       let payload;
       if (entity === 'invoice') {
@@ -3658,6 +3658,24 @@ app.http('qbo-write', {
         if (f.incomeAccountId) payload.IncomeAccountRef = { value: String(f.incomeAccountId) };
         if (f.expenseAccountId) payload.ExpenseAccountRef = { value: String(f.expenseAccountId) };
         if (f.unitPrice) payload.UnitPrice = Number(f.unitPrice);
+      } else if (entity === 'journalentry') {
+        // Adjusting/reclass entries. Each line is a Debit or Credit to an account;
+        // QBO requires total debits == total credits (we validate before posting).
+        const lines = (f.lines || [])
+          .filter(l => l && l.accountId && (Number(l.amount) || 0) > 0 && (l.postingType === 'Debit' || l.postingType === 'Credit'))
+          .map(l => {
+            const d = { PostingType: l.postingType === 'Credit' ? 'Credit' : 'Debit', AccountRef: { value: String(l.accountId) } };
+            if (l.entityId && (l.entityType === 'Customer' || l.entityType === 'Vendor')) d.Entity = { Type: l.entityType, EntityRef: { value: String(l.entityId) } };
+            return { DetailType: 'JournalEntryLineDetail', Amount: Math.abs(Number(l.amount) || 0), Description: l.desc || undefined, JournalEntryLineDetail: d };
+          });
+        if (lines.length < 2) return badRequest('a journal entry needs at least two lines (one debit and one credit)');
+        const dr = lines.filter(l => l.JournalEntryLineDetail.PostingType === 'Debit').reduce((s, l) => s + l.Amount, 0);
+        const cr = lines.filter(l => l.JournalEntryLineDetail.PostingType === 'Credit').reduce((s, l) => s + l.Amount, 0);
+        if (Math.round((dr - cr) * 100) !== 0) return badRequest('debits ($' + dr.toFixed(2) + ') must equal credits ($' + cr.toFixed(2) + ')');
+        payload = { Line: lines };
+        if (f.txnDate) payload.TxnDate = f.txnDate;
+        if (f.docNumber) payload.DocNumber = String(f.docNumber);
+        if (f.memo) payload.PrivateNote = String(f.memo);
       }
       if (b.op === 'update') {
         if (!b.id || !b.syncToken) return badRequest('id and syncToken required for update');

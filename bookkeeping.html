@@ -440,6 +440,7 @@
             <option value="tx:purchase">Expense / purchase (already paid — cash or card)</option>
             <option value="tx:bill">Bill (unpaid — you owe it, A/P)</option>
             <option value="tx:payment">Receive payment</option>
+            <option value="tx:journalentry">Journal entry (adjusting / reclass)</option>
           </optgroup>
           <optgroup label="Records">
             <option value="add:customer">Customer</option>
@@ -2074,6 +2075,104 @@
         if (qboActiveReport) loadQboReport(qboActiveReport, null);
       })
       .catch(function (e) { btn.disabled = false; btn.textContent = ot; (window.bccNotify || alert)('QuickBooks rejected it: ' + e.message, 'error', 7000); });
+  }
+  // ===== Journal entries (adjusting / reclass) — debit/credit lines, must balance =====
+  function jeMoney(n) { return (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function openJournalEntryForm(edit) {
+    gotoTransactions();
+    _txnEdit = edit || null; _txnFile = null; _txnFormRealm = currentRealm;
+    var host = document.getElementById('qboWriteForm'); if (!host) return;
+    host.innerHTML = '<div style="color:var(--muted);">Loading QuickBooks lists…</div>';
+    loadQboRefs(function (refs) {
+      if (currentRealm !== _txnFormRealm) return;
+      var pre = (edit && edit.entity) || {};
+      var today = new Date().toISOString().slice(0, 10);
+      var accts = refs.accounts || [];
+      var acctOpt = function (sel) { return '<option value="">— account —</option>' + accts.map(function (a) { return '<option value="' + esc(a.id) + '"' + (String(a.id) === String(sel) ? ' selected' : '') + '>' + esc(a.name) + '</option>'; }).join(''); };
+      var draft = [];
+      if (pre.Line && pre.Line.length) pre.Line.forEach(function (l) {
+        if (l.DetailType === 'JournalEntryLineDetail' && l.JournalEntryLineDetail) { var d = l.JournalEntryLineDetail; draft.push({ accountId: (d.AccountRef && d.AccountRef.value) || '', postingType: d.PostingType || 'Debit', amount: l.Amount || '', desc: l.Description || '' }); }
+      });
+      while (draft.length < 2) draft.push({ postingType: draft.length === 0 ? 'Debit' : 'Credit' });
+      host.innerHTML =
+        '<div style="border:1px solid var(--chrome-mute);border-radius:10px;padding:14px;">' +
+        '<div style="font-weight:700;margin-bottom:4px;">' + (edit ? 'Edit journal entry' + (edit.docNumber ? ' #' + esc(edit.docNumber) : '') : 'New journal entry') + '</div>' +
+        '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Adjusting / reclass entries (accruals, depreciation, owner draws). Total debits must equal total credits.</div>' +
+        '<div class="ws-form" style="margin-bottom:10px;">' +
+          '<label>Date<input type="date" id="je_date" value="' + esc(pre.TxnDate || today) + '" /></label>' +
+          '<label>Journal no. (optional)<input id="je_docnum" value="' + esc(pre.DocNumber || '') + '" /></label>' +
+          '<label class="full">Memo (optional)<input id="je_memo" value="' + esc(pre.PrivateNote || '') + '" placeholder="e.g. June depreciation" /></label>' +
+        '</div>' +
+        '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:560px;"><thead><tr style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.03em;">' +
+          '<th style="text-align:left;padding:2px 5px;">Account</th><th style="text-align:left;padding:2px 5px;">Description</th><th style="text-align:right;padding:2px 5px;">Debit</th><th style="text-align:right;padding:2px 5px;">Credit</th><th></th></tr></thead><tbody id="je_lines"></tbody></table></div>' +
+        '<button class="btn btn-ghost" id="je_addline" type="button" style="margin-top:6px;font-size:12px;">+ Add line</button>' +
+        '<div id="je_balance" style="margin-top:10px;font-size:13px;"></div>' +
+        '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;"><button class="btn btn-ghost" id="je_cancel" type="button">Cancel</button><button class="btn btn-primary" id="je_save" type="button">' + (edit ? 'Save changes' : 'Create') + '</button></div></div>';
+      var linesEl = document.getElementById('je_lines');
+      var inpCss = 'border:1px solid var(--chrome-mute);border-radius:6px;padding:6px;box-sizing:border-box;';
+      function jeRow(ln, i) {
+        return '<tr data-jrow="' + i + '">' +
+          '<td style="padding:2px 5px;"><select data-j="accountId" style="width:100%;min-width:130px;' + inpCss + '">' + acctOpt(ln.accountId) + '</select></td>' +
+          '<td style="padding:2px 5px;"><input data-j="desc" value="' + esc(ln.desc || '') + '" style="width:100%;min-width:110px;' + inpCss + '" /></td>' +
+          '<td style="padding:2px 5px;"><input data-j="debit" inputmode="decimal" value="' + esc(ln.postingType === 'Debit' ? (ln.amount || '') : '') + '" style="width:92px;text-align:right;' + inpCss + '" /></td>' +
+          '<td style="padding:2px 5px;"><input data-j="credit" inputmode="decimal" value="' + esc(ln.postingType === 'Credit' ? (ln.amount || '') : '') + '" style="width:92px;text-align:right;' + inpCss + '" /></td>' +
+          '<td style="text-align:right;"><button class="btn btn-ghost" data-jremove="' + i + '" type="button" style="font-size:11px;min-height:28px;">×</button></td></tr>';
+      }
+      function recalc() {
+        var dr = 0, cr = 0;
+        draft.forEach(function (l) { if (l.postingType === 'Debit') dr += parseFloat(l.amount) || 0; else if (l.postingType === 'Credit') cr += parseFloat(l.amount) || 0; });
+        var diff = Math.round((dr - cr) * 100) / 100;
+        var el = document.getElementById('je_balance'); if (!el) return;
+        el.innerHTML = 'Debits <strong style="font-variant-numeric:tabular-nums;">$' + jeMoney(dr) + '</strong> &nbsp; Credits <strong style="font-variant-numeric:tabular-nums;">$' + jeMoney(cr) + '</strong> &nbsp; ' + (diff === 0 && dr > 0 ? '<strong style="color:#1f8a4c;">✓ Balanced</strong>' : (dr === 0 && cr === 0 ? '<span style="color:var(--muted);">enter debits &amp; credits</span>' : '<strong style="color:#c0392b;">off by $' + jeMoney(Math.abs(diff)) + '</strong>'));
+      }
+      function paint() {
+        linesEl.innerHTML = draft.map(jeRow).join('');
+        linesEl.querySelectorAll('[data-jremove]').forEach(function (b) { b.onclick = function () { var i = +b.getAttribute('data-jremove'); if (draft.length > 2) { draft.splice(i, 1); paint(); } }; });
+        linesEl.querySelectorAll('[data-jrow]').forEach(function (row) {
+          var i = +row.getAttribute('data-jrow');
+          row.querySelectorAll('[data-j]').forEach(function (inp) {
+            inp.addEventListener('input', function () {
+              var key = inp.getAttribute('data-j');
+              if (key === 'debit') { if (inp.value) { draft[i].postingType = 'Debit'; draft[i].amount = inp.value; var cEl = row.querySelector('[data-j=credit]'); if (cEl) cEl.value = ''; } else if (draft[i].postingType === 'Debit') { draft[i].amount = ''; } }
+              else if (key === 'credit') { if (inp.value) { draft[i].postingType = 'Credit'; draft[i].amount = inp.value; var dEl = row.querySelector('[data-j=debit]'); if (dEl) dEl.value = ''; } else if (draft[i].postingType === 'Credit') { draft[i].amount = ''; } }
+              else draft[i][key] = inp.value;
+              recalc();
+            });
+          });
+        });
+        recalc();
+      }
+      paint();
+      document.getElementById('je_addline').onclick = function () { draft.push({}); paint(); };
+      document.getElementById('je_cancel').onclick = function () { host.innerHTML = ''; _txnEdit = null; _txnFormRealm = null; };
+      document.getElementById('je_save').onclick = function () {
+        var lines = draft.filter(function (l) { return l.accountId && (parseFloat(l.amount) || 0) > 0 && (l.postingType === 'Debit' || l.postingType === 'Credit'); })
+          .map(function (l) { return { accountId: l.accountId, postingType: l.postingType, amount: l.amount, desc: l.desc }; });
+        if (lines.length < 2) { (window.bccNotify || alert)('Add at least two lines — one debit and one credit.', 'warn'); return; }
+        var dr = lines.filter(function (l) { return l.postingType === 'Debit'; }).reduce(function (s, l) { return s + (parseFloat(l.amount) || 0); }, 0);
+        var cr = lines.filter(function (l) { return l.postingType === 'Credit'; }).reduce(function (s, l) { return s + (parseFloat(l.amount) || 0); }, 0);
+        if (Math.round((dr - cr) * 100) !== 0) { (window.bccNotify || alert)('Debits must equal credits (off by $' + jeMoney(Math.abs(Math.round((dr - cr) * 100) / 100)) + ').', 'warn'); return; }
+        submitJournalEntry({ txnDate: document.getElementById('je_date').value, docNumber: document.getElementById('je_docnum').value, memo: document.getElementById('je_memo').value, lines: lines }, dr);
+      };
+    });
+  }
+  function submitJournalEntry(fields, total) {
+    if (!confirm('Post this journal entry to ' + companyName(currentRealm) + '’s live QuickBooks?\n\nDebits = Credits = $' + jeMoney(total))) return;
+    var verb = _txnEdit ? 'update' : 'create';
+    var btn = document.getElementById('je_save'); var ot = btn ? btn.textContent : ''; if (btn) { btn.disabled = true; btn.textContent = 'Posting…'; }
+    var body = { entity: 'journalentry', op: verb, fields: fields };
+    if (_txnEdit) { body.id = _txnEdit.id; body.syncToken = _txnEdit.syncToken; }
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/write', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error(resp.error || 'write failed');
+        if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: currentRealm, entity: 'journalentry', op: verb, id: resp.id } });
+        if (window.bccNotifySaved) window.bccNotifySaved('Journal entry ' + (verb === 'update' ? 'updated' : 'created') + (resp.docNumber ? (' #' + resp.docNumber) : '') + ' in QuickBooks.');
+        document.getElementById('qboWriteForm').innerHTML = ''; _txnEdit = null; _txnFormRealm = null;
+        loadQboKpis();
+        if (qboActiveReport) loadQboReport(qboActiveReport, null);
+      })
+      .catch(function (e) { if (btn) { btn.disabled = false; btn.textContent = ot; } (window.bccNotify || alert)('QuickBooks rejected it: ' + e.message, 'error', 7000); });
   }
   function editTxn(entity, id) {
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/entity?type=' + encodeURIComponent(entity) + '&id=' + encodeURIComponent(id), { credentials: 'include' })
@@ -3930,7 +4029,7 @@
     if (newSel) newSel.addEventListener('change', function () {
       var v = newSel.value; newSel.value = ''; if (!v) return;
       var parts = v.split(':');
-      if (parts[0] === 'tx') openTxnForm(parts[1]);
+      if (parts[0] === 'tx') { if (parts[1] === 'journalentry') openJournalEntryForm(); else openTxnForm(parts[1]); }
       else if (parts[0] === 'add') openEntityForm(parts[1]);
     });
     var scanInput = document.getElementById('scanInput');
