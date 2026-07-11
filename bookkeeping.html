@@ -107,7 +107,21 @@
   }
   .panel .actions { display:flex; gap:8px; justify-content:flex-end; margin-top:12px; }
 
+  /* New & transactions — categorized action buttons (not a buried dropdown) */
+  .qbo-new-groups { display:flex; flex-wrap:wrap; gap:20px; margin-top:14px; }
+  .qbo-new-group { flex:1 1 300px; min-width:260px; }
+  .qbo-new-label { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin-bottom:9px; }
+  .qbo-new-btns { display:grid; grid-template-columns:repeat(auto-fill, minmax(170px, 1fr)); gap:9px; }
+  .qbo-new-btns button { display:flex; align-items:center; gap:10px; padding:11px 12px; border:1px solid var(--chrome-mute); border-radius:11px; background:var(--chrome); font:inherit; text-align:left; cursor:pointer; min-height:52px; transition:border-color .12s, background .12s, box-shadow .12s; }
+  .qbo-new-btns button:hover, .qbo-new-btns button:focus-visible { border-color:#c5a55a; background:var(--gold-tint,#f7f1e3); box-shadow:0 1px 4px rgba(0,0,0,.06); outline:none; }
+  .qbo-new-btns .ic { font-size:19px; line-height:1; flex:none; }
+  .qbo-new-btns .t { display:block; font-size:13.5px; font-weight:700; color:var(--ink,#23262b); }
+  .qbo-new-btns .d { display:block; font-size:11px; font-weight:400; color:var(--muted); margin-top:1px; }
+
   @media (max-width:700px) {
+    .qbo-new-groups { gap:14px; }
+    .qbo-new-btns { grid-template-columns:1fr; }
+    .qbo-new-btns .t, .qbo-new-btns .d { display:block; }
     .page { padding:14px 14px 60px; }
     .page-head h1 { font-size:22px; }
     /* Card-ify ONLY the period/work-queue/management table (its cells carry data-label). */
@@ -121,16 +135,6 @@
     /* Every other dynamic table stays a real table and pans horizontally. */
     #qboReportOut, #files-body, #payroll-body, #payapp-body, #email-body { overflow-x:auto; -webkit-overflow-scrolling:touch; }
     #qboReportOut table, #files-body table { min-width:540px; }
-    /* New & transactions — categorized action buttons (not a buried dropdown) */
-    .qbo-new-groups { display:flex; flex-wrap:wrap; gap:20px; margin-top:14px; }
-    .qbo-new-group { flex:1 1 300px; min-width:280px; }
-    .qbo-new-label { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin-bottom:9px; }
-    .qbo-new-btns { display:grid; grid-template-columns:repeat(auto-fill, minmax(168px, 1fr)); gap:9px; }
-    .qbo-new-btns button { display:flex; align-items:center; gap:10px; padding:11px 12px; border:1px solid var(--chrome-mute); border-radius:11px; background:var(--chrome); font:inherit; text-align:left; cursor:pointer; min-height:52px; transition:border-color .12s, background .12s, box-shadow .12s; }
-    .qbo-new-btns button:hover, .qbo-new-btns button:focus-visible { border-color:#c5a55a; background:var(--gold-tint,#f7f1e3); box-shadow:0 1px 4px rgba(0,0,0,.06); outline:none; }
-    .qbo-new-btns .ic { font-size:19px; line-height:1; flex:none; }
-    .qbo-new-btns .t { display:block; font-size:13.5px; font-weight:700; color:var(--ink,#23262b); }
-    .qbo-new-btns .d { display:block; font-size:11px; font-weight:400; color:var(--muted); margin-top:1px; }
     /* No iOS zoom-on-focus; comfortable touch targets. */
     input, select, textarea { font-size:16px; }
     .btn { min-height:44px; }
