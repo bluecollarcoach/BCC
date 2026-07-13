@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Sign &middot; Blue Collar Coach</title>
+<style>
+  /* Public, standalone page — the signer has no app login. Shows ONLY a
+     signature pad; no payroll or company data beyond the company name. */
+  * { box-sizing:border-box; }
+  :root { --ink:#1a1a1a; --muted:#6b7077; --gold:#a8884a; --line:#e6e5e1; --bg:#faf9f7; --burgundy:#7a1f2b; }
+  body { font-family:'Inter', system-ui, -apple-system, 'Segoe UI', Arial, sans-serif; color:var(--ink); background:var(--bg); margin:0; line-height:1.55; }
+  .wrap { max-width:560px; margin:0 auto; padding:28px 18px 60px; }
+  .brand { display:flex; align-items:center; gap:12px; padding:6px 0 18px; border-bottom:1px solid var(--line); margin-bottom:22px; }
+  .brand img { height:36px; }
+  .brand .name { font-weight:800; letter-spacing:.5px; font-size:14px; }
+  .brand .name span { color:var(--gold); font-weight:600; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:14px; margin:0 0 20px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:14px; padding:18px; }
+  label { display:block; font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.8px; margin:14px 0 4px; }
+  input[type=text] { width:100%; min-height:44px; border:1px solid var(--line); border-radius:9px; padding:10px 12px; font:inherit; font-size:15px; }
+  .tabs { display:flex; gap:8px; margin:16px 0 10px; }
+  .tab { flex:1; min-height:42px; border:1px solid var(--line); background:#fff; border-radius:9px; font:inherit; font-size:14px; font-weight:600; cursor:pointer; }
+  .tab.on { border-color:var(--gold); background:#faf5ea; color:#6b5424; }
+  canvas.pad { width:100%; height:190px; border:1px dashed #c9c5bc; border-radius:10px; background:#fff; touch-action:none; cursor:crosshair; display:block; }
+  .typed { width:100%; min-height:74px; border:1px solid var(--line); border-radius:10px; font-family:'Segoe Script','Bradley Hand','Brush Script MT',cursive; font-size:34px; text-align:center; padding:12px; }
+  .row { display:flex; gap:10px; margin-top:16px; }
+  button.primary { flex:1; min-height:48px; border:0; border-radius:10px; background:var(--gold); color:#fff; font:inherit; font-size:15.5px; font-weight:700; cursor:pointer; }
+  button.primary:disabled { opacity:.5; }
+  button.ghost { min-height:48px; padding:0 16px; border:1px solid var(--line); border-radius:10px; background:#fff; font:inherit; font-size:14px; cursor:pointer; }
+  .err { background:#f6e3e3; color:var(--burgundy); border-radius:9px; padding:12px 14px; font-size:14px; margin-top:14px; display:none; }
+  .done { text-align:center; padding:36px 10px; }
+  .done .big { font-size:44px; }
+  .done h2 { font-size:20px; margin:10px 0 6px; }
+  .done p { color:var(--muted); font-size:14.5px; }
+  .foot { color:var(--muted); font-size:12px; margin-top:22px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><img src="/bcc-logo.png" alt="Blue Collar Coach" onerror="this.style.display='none'" /><div class="name">BLUE COLLAR <span>COACH</span></div></div>
+  <div id="app">
+    <h1>Signature requested</h1>
+    <p class="sub" id="sub">Checking your link…</p>
+    <div class="card" id="card" style="display:none;">
+      <label for="sg_name">Your name</label>
+      <input type="text" id="sg_name" autocomplete="name" placeholder="e.g. Tyson Smith" />
+      <label for="sg_title">Your title</label>
+      <input type="text" id="sg_title" autocomplete="organization-title" placeholder="e.g. Owner" />
+      <label>Signature</label>
+      <div class="tabs">
+        <button class="tab on" id="tab_draw" type="button">✏️ Draw</button>
+        <button class="tab" id="tab_type" type="button">⌨️ Type</button>
+      </div>
+      <div id="p_draw"><canvas class="pad" id="pad"></canvas><div style="font-size:12px;color:var(--muted);margin-top:6px;">Sign above with your finger or mouse.</div></div>
+      <div id="p_type" style="display:none;"><input class="typed" id="typed" placeholder="Type your name" /></div>
+      <div class="row">
+        <button class="ghost" id="clear" type="button">Clear</button>
+        <button class="primary" id="submit" type="button">Send signature</button>
+      </div>
+      <div class="err" id="err"></div>
+    </div>
+    <div class="card done" id="done" style="display:none;">
+      <div class="big">✅</div>
+      <h2>Signature sent</h2>
+      <p>Thanks! Your signature was delivered securely to Blue Collar Coach and will be placed on the certified payroll report&rsquo;s Statement of Compliance.</p>
+    </div>
+  </div>
+  <div class="foot">This page collects only your name, title, and signature. Nothing else is shared.<br>Blue Collar Coach &middot; bluecollarcoach.us</div>
+</div>
+<script>
+(function () {
+  'use strict';
+  var token = new URLSearchParams(location.search).get('t') || '';
+  var sub = document.getElementById('sub'), card = document.getElementById('card'), err = document.getElementById('err');
+  function fail(msg) { sub.textContent = msg; sub.style.color = 'var(--burgundy)'; card.style.display = 'none'; }
+  function showErr(msg) { err.textContent = msg; err.style.display = 'block'; }
+  if (!token) { fail('This signing link is missing its code. Ask for a new link.'); return; }
+
+  // validate the link + get the company name (the only data this page ever sees)
+  fetch('/api/cpr/sign?t=' + encodeURIComponent(token))
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (!d || !d.ok) { fail((d && d.error) || 'This signing link is invalid or has expired. Ask for a new one.'); return; }
+      sub.innerHTML = 'Please sign the certified payroll <strong>Statement of Compliance</strong> for <strong></strong>.';
+      sub.querySelector('strong + strong').textContent = d.company;
+      card.style.display = '';
+      sizePad();
+    })
+    .catch(function () { fail('Could not check this link — please try again in a moment.'); });
+
+  /* ---- pad ---- */
+  var mode = 'draw', hasInk = false, drawing = false, last = null;
+  var pad = document.getElementById('pad');
+  function sizePad() {
+    var r = pad.getBoundingClientRect();
+    pad.width = Math.max(300, Math.round(r.width)); pad.height = Math.max(140, Math.round(r.height));
+    hasInk = false;
+    var ctx = pad.getContext('2d'); ctx.lineWidth = 2.4; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#0a2a5e';
+  }
+  function pt(e) { var r = pad.getBoundingClientRect(); var t = e.touches && e.touches[0]; return { x: (t ? t.clientX : e.clientX) - r.left, y: (t ? t.clientY : e.clientY) - r.top }; }
+  function start(e) { drawing = true; last = pt(e); e.preventDefault(); }
+  function move(e) { if (!drawing) return; var p = pt(e); var ctx = pad.getContext('2d'); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; hasInk = true; e.preventDefault(); }
+  function end() { drawing = false; }
+  pad.addEventListener('mousedown', start); pad.addEventListener('mousemove', move); window.addEventListener('mouseup', end);
+  pad.addEventListener('touchstart', start, { passive: false }); pad.addEventListener('touchmove', move, { passive: false }); window.addEventListener('touchend', end);
+
+  document.getElementById('tab_draw').onclick = function () { setMode('draw'); };
+  document.getElementById('tab_type').onclick = function () { setMode('type'); };
+  function setMode(m) {
+    mode = m;
+    document.getElementById('tab_draw').className = 'tab' + (m === 'draw' ? ' on' : '');
+    document.getElementById('tab_type').className = 'tab' + (m === 'type' ? ' on' : '');
+    document.getElementById('p_draw').style.display = m === 'draw' ? '' : 'none';
+    document.getElementById('p_type').style.display = m === 'type' ? '' : 'none';
+    if (m === 'draw') sizePad(); else document.getElementById('typed').focus();
+  }
+  document.getElementById('clear').onclick = function () {
+    if (mode === 'draw') { pad.getContext('2d').clearRect(0, 0, pad.width, pad.height); hasInk = false; }
+    else document.getElementById('typed').value = '';
+    err.style.display = 'none';
+  };
+
+  function trimmed() {
+    var ctx = pad.getContext('2d'), W = pad.width, H = pad.height;
+    var data; try { data = ctx.getImageData(0, 0, W, H).data; } catch (e) { return pad.toDataURL('image/png'); }
+    var minX = W, minY = H, maxX = 0, maxY = 0, found = false;
+    for (var y = 0; y < H; y++) for (var x = 0; x < W; x++) if (data[(y * W + x) * 4 + 3] > 8) { found = true; if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
+    if (!found) return pad.toDataURL('image/png');
+    var p = 6; minX = Math.max(0, minX - p); minY = Math.max(0, minY - p); maxX = Math.min(W - 1, maxX + p); maxY = Math.min(H - 1, maxY + p);
+    var w = maxX - minX + 1, h = maxY - minY + 1;
+    var out = document.createElement('canvas'); out.width = w; out.height = h;
+    out.getContext('2d').drawImage(pad, minX, minY, w, h, 0, 0, w, h);
+    return out.toDataURL('image/png');
+  }
+  function typedPng(name) {
+    var padX = 20, fs = 64;
+    var meas = document.createElement('canvas').getContext('2d');
+    var font = 'italic ' + fs + 'px "Segoe Script","Bradley Hand","Brush Script MT",cursive';
+    meas.font = font;
+    var w = Math.ceil(meas.measureText(name).width) + padX * 2, h = Math.ceil(fs * 1.5);
+    var c = document.createElement('canvas'); c.width = w; c.height = h;
+    var ctx = c.getContext('2d'); ctx.font = font; ctx.fillStyle = '#0a2a5e'; ctx.textBaseline = 'middle';
+    ctx.fillText(name, padX, h / 2);
+    return c.toDataURL('image/png');
+  }
+
+  document.getElementById('submit').onclick = function () {
+    err.style.display = 'none';
+    var name = (document.getElementById('sg_name').value || '').trim();
+    var title = (document.getElementById('sg_title').value || '').trim();
+    if (!name) { showErr('Please enter your name.'); return; }
+    var src;
+    if (mode === 'draw') { if (!hasInk) { showErr('Please draw your signature first.'); return; } src = trimmed(); }
+    else { var tv = (document.getElementById('typed').value || '').trim(); if (!tv) { showErr('Please type your name in the signature box.'); return; } src = typedPng(tv); }
+    var btn = this; btn.disabled = true; btn.textContent = 'Sending…';
+    fetch('/api/cpr/sign', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ t: token, src: src, name: name, title: title }) })
+      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+      .then(function (d) {
+        if (!d.ok) throw new Error(d.error || 'Could not send the signature.');
+        document.getElementById('app').querySelector('h1').style.display = 'none';
+        sub.style.display = 'none'; card.style.display = 'none';
+        document.getElementById('done').style.display = '';
+      })
+      .catch(function (e) { btn.disabled = false; btn.textContent = 'Send signature'; showErr(e.message || 'Could not send the signature — please try again.'); });
+  };
+})();
+</script>
+</body>
+</html>

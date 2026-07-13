@@ -1106,6 +1106,106 @@ app.http('feedback', {
 });
 
 /**
+ * Remote signature capture for certified payroll.
+ * The signer (a client company's owner) is OUTSIDE the firm's domain and has no
+ * app login, so the flow is a tokenized public link that exposes ONLY a signature
+ * pad — no payroll or company data beyond the company display name.
+ *
+ *   POST /api/cpr/sign-request  — authed + client-access-gated: mint a 7-day
+ *                                 signing link for {realmId}.
+ *   GET  /api/cpr/sign-info?t=  — anonymous: validate token, return company name.
+ *   POST /api/cpr/sign          — anonymous: {t, src, name, title} store the
+ *                                 signature as the company's saved signature
+ *                                 (bcc-cprsig-<realm>, same doc the app writes).
+ */
+const CPR_SIGN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+function cprSignToken(realmId, uid) {
+  const payload = 'cprsig.' + String(realmId) + '.' + Buffer.from(String(uid || '')).toString('base64url') + '.' + Date.now();
+  const sig = crypto.createHmac('sha256', driveStateSecret()).update(payload).digest('base64url').slice(0, 24);
+  return Buffer.from(payload + '.' + sig).toString('base64url');
+}
+function cprVerifySignToken(token) {
+  try {
+    const parts = Buffer.from(String(token || ''), 'base64url').toString().split('.');
+    if (parts.length < 5 || parts[0] !== 'cprsig') return null;
+    const sig = parts.pop();
+    const payload = parts.join('.');
+    const expect = crypto.createHmac('sha256', driveStateSecret()).update(payload).digest('base64url').slice(0, 24);
+    if (!sig || sig.length !== expect.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expect))) return null;
+    const realmId = parts[1];
+    const uid = Buffer.from(parts[2], 'base64url').toString();
+    const ts = Number(parts[3]);
+    if (!realmId || !ts || (Date.now() - ts) > CPR_SIGN_TTL_MS) return null;
+    return { realmId, uid };
+  } catch (e) { return null; }
+}
+async function cprSignCompanyName(c, realmId) {
+  try {
+    const { resource } = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read();
+    const d = resource && resource.data ? (typeof resource.data === 'string' ? JSON.parse(resource.data) : resource.data) : null;
+    return (d && (d.companyName || d.name)) || (resource && (resource.companyName || resource.name)) || '';
+  } catch (e) { return ''; }
+}
+app.http('cpr-sign-request', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'cpr/sign-request',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    try {
+      const body = await request.json().catch(() => ({}));
+      const realmId = String(body.realmId || '').replace(/[^0-9a-zA-Z\-]/g, '');
+      if (!realmId) return badRequest('realmId required');
+      const acc = await driveClientAccess(p, realmId);
+      if (acc.err) return { status: 403, jsonBody: { ok: false, error: 'no access to this client' } };
+      const uid = String(p.userDetails || p.userId || '').toLowerCase();
+      const url = publicOrigin(request) + '/sign.html?t=' + encodeURIComponent(cprSignToken(realmId, uid));
+      return { jsonBody: { ok: true, url, expiresDays: 7 } };
+    } catch (e) { context.error('cpr sign-request error', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+app.http('cpr-sign', {
+  methods: ['GET', 'POST'],
+  authLevel: 'anonymous',
+  route: 'cpr/sign',
+  handler: withAccessLog(async (request, context) => {
+    const c = container();
+    try {
+      if (request.method === 'GET') {
+        // token info for the public page: company display name only
+        const tok = cprVerifySignToken(new URL(request.url).searchParams.get('t'));
+        if (!tok) return { status: 400, jsonBody: { ok: false, error: 'This signing link is invalid or has expired. Ask for a new one.' } };
+        const company = await cprSignCompanyName(c, tok.realmId);
+        return { jsonBody: { ok: true, company: company || 'your company' } };
+      }
+      const body = await request.json().catch(() => ({}));
+      const tok = cprVerifySignToken(body.t);
+      if (!tok) return { status: 400, jsonBody: { ok: false, error: 'This signing link is invalid or has expired. Ask for a new one.' } };
+      const src = String(body.src || '');
+      if (!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(src)) return badRequest('expected a PNG signature');
+      if (src.length > 300 * 1024) return badRequest('signature image too large');
+      const name = String(body.name || '').trim().slice(0, 120);
+      const title = String(body.title || '').trim().slice(0, 120);
+      if (!name) return badRequest('name required');
+      const now = new Date().toISOString();
+      const key = 'bcc-cprsig-' + tok.realmId;
+      // Same flat /api/data doc shape the app writes, so it syncs down normally.
+      const sigDoc = { id: key, tenantId: BCC_TENANT_ID, docType: 'cpr-signature', realmId: tok.realmId, src, name, title, updatedAt: now, updatedBy: 'remote:' + name, via: 'remote-link' };
+      await c.items.upsert({ id: key, tenantId: BCC_TENANT_ID, data: JSON.stringify(sigDoc), updatedAt: now, updatedBy: 'remote-sign' });
+      logAudit('cpr-remote-sign', { user: 'remote:' + name, key, path: '/sign.html', meta: { realmId: tok.realmId, requestedBy: tok.uid } });
+      // Tell the requester their signature arrived.
+      if (tok.uid) {
+        const company = await cprSignCompanyName(c, tok.realmId);
+        await notifyUser(c, tok.uid, { title: '✍️ Signature received', body: name + (title ? ' (' + title + ')' : '') + ' signed for ' + (company || 'a client') + ' — use “Insert saved signature” on the payroll report.', url: '/bookkeeping.html', tag: 'cprsig-' + tok.realmId });
+      }
+      return { jsonBody: { ok: true } };
+    } catch (e) { context.error('cpr sign error', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+
+/**
  * In-app notifications (bell), per-user.
  *   GET  /api/notifications   — the caller's unread notifications.
  *   POST /api/notifications   — { ids:[...] } mark the caller's own as read.

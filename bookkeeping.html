@@ -3583,13 +3583,24 @@
     return out;
   }
 
+  var _cprSearch = '';
   function renderPayroll() {
     var body = document.getElementById('payroll-body'); if (!body) return;
     if (cprEditingId !== null) { renderCprEditor(body); return; }
-    var reports = allCpr().sort(function (a, b) { return (cnum(b.payrollNo) - cnum(a.payrollNo)) || (b.updatedAt || '').localeCompare(a.updatedAt || ''); });
+    var all = allCpr().sort(function (a, b) { return (cnum(b.payrollNo) - cnum(a.payrollNo)) || (b.updatedAt || '').localeCompare(a.updatedAt || ''); });
+    // Search by job/project (plus payroll #, contract, week, employee names) —
+    // "search the job and have CPRs specific to that job show up".
+    var q = _cprSearch.trim().toLowerCase();
+    var reports = !q ? all : all.filter(function (r) {
+      var hay = [r.projectName, r.payrollNo, r.contractName, r.contractNumber, r.weekStart, r.payPeriodEnd]
+        .concat((r.employees || []).map(function (e) { return e.name; }))
+        .join(' ').toLowerCase();
+      return hay.indexOf(q) >= 0;
+    });
     var head = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;">' +
       '<h3 style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;margin:0;">Certified payroll <span style="color:var(--muted);font-weight:400;font-size:12px;">· Minnesota DLI format</span></h3>' +
-      '<button class="btn btn-primary" id="cpr_new" type="button">+ New payroll report</button></div>';
+      '<button class="btn btn-primary" id="cpr_new" type="button">+ New payroll report</button></div>' +
+      (all.length ? '<input id="cpr_search" type="search" placeholder="🔍 Search by job / project, payroll #, or employee…" value="' + esc(_cprSearch) + '" style="width:100%;box-sizing:border-box;min-height:38px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;padding:8px 10px;font:inherit;font-size:13px;margin-bottom:10px;" />' : '');
     var list = reports.length ? ('<table><thead><tr><th>Payroll #</th><th>Pay period end</th><th>Project</th><th class="num">Employees</th><th>Updated</th><th></th></tr></thead><tbody>' + reports.map(function (r) {
       var when = r.updatedAt ? new Date(r.updatedAt).toLocaleDateString([], { month:'short', day:'numeric' }) : '';
       return '<tr><td><strong>' + esc(r.payrollNo || '—') + '</strong>' + (r.isFinal ? ' <span style="font-size:10px;color:var(--gold-deep);font-weight:700;">FINAL</span>' : '') + '</td>' +
@@ -3598,9 +3609,25 @@
         '<td style="text-align:right;white-space:nowrap;"><button class="btn btn-ghost" data-cpr-open="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;">Open</button> ' +
         '<button class="btn btn-ghost" data-cpr-print="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;">Print</button> ' +
         '<button class="btn btn-ghost" data-cpr-del="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;">Delete</button></td></tr>';
-    }).join('') + '</tbody></table>') : '<div style="color:var(--muted);padding:10px 0;">No payroll reports yet. Click <strong>+ New payroll report</strong> to create one.</div>';
+    }).join('') + '</tbody></table>') : (q
+      ? '<div style="color:var(--muted);padding:10px 0;">No payroll reports match &ldquo;' + esc(_cprSearch) + '&rdquo;.</div>'
+      : '<div style="color:var(--muted);padding:10px 0;">No payroll reports yet. Click <strong>+ New payroll report</strong> to create one.</div>');
     body.innerHTML = head + list;
     document.getElementById('cpr_new').onclick = cprNew;
+    var cs = document.getElementById('cpr_search');
+    if (cs) {
+      var csT = null;
+      cs.addEventListener('input', function () {
+        clearTimeout(csT);
+        csT = setTimeout(function () {
+          if (cs.value === _cprSearch) return;
+          _cprSearch = cs.value;
+          renderPayroll();
+          var el = document.getElementById('cpr_search');
+          if (el) { el.focus(); var n = el.value.length; try { el.setSelectionRange(n, n); } catch (e) {} }
+        }, 250);
+      });
+    }
     body.querySelectorAll('[data-cpr-open]').forEach(function (b) { b.onclick = function () { cprEditingId = b.getAttribute('data-cpr-open'); try { cprDraft = JSON.parse(localStorage.getItem(cprEditingId)); } catch (e) { cprDraft = null; } if (!cprDraft) { cprEditingId = null; return; } if (!cprDraft.employees) cprDraft.employees = []; renderPayroll(); }; });
     body.querySelectorAll('[data-cpr-print]').forEach(function (b) { b.onclick = function () { var r; try { r = JSON.parse(localStorage.getItem(b.getAttribute('data-cpr-print'))); } catch (e) {} if (r) printCpr(r); }; });
     body.querySelectorAll('[data-cpr-del]').forEach(function (b) { b.onclick = function () { if (!confirm('Delete this payroll report?')) return; localStorage.removeItem(b.getAttribute('data-cpr-del')); if (window.bccAudit) window.bccAudit('cpr-delete', { key: b.getAttribute('data-cpr-del'), path:'/bookkeeping.html', meta: { realmId: currentRealm } }); renderPayroll(); }; });
@@ -3663,7 +3690,9 @@
       '<label class="full">Fringe benefits<select data-cf="fringe"><option value="">— select —</option><option value="plans"' + (cprDraft.fringe==='plans'?' selected':'') + '>(a) Paid into approved plans/funds/programs</option><option value="cash"' + (cprDraft.fringe==='cash'?' selected':'') + '>(b) Paid in cash to employees</option></select></label>' +
       '<label class="full">Fringe exceptions (employees not receiving fringe)<textarea data-cf="fringeExceptions" rows="2">' + esc(cprDraft.fringeExceptions || '') + '</textarea></label>' +
       '<label class="full">Benefit program details (plan, $/hr, administrator)<textarea data-cf="fringePrograms" rows="2">' + esc(cprDraft.fringePrograms || '') + '</textarea></label>' +
-      '</div>';
+      '</div>' +
+      '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:18px 0 8px;">Signature</div>' +
+      '<div id="cpr_sigwrap" style="margin-bottom:14px;"></div>';
 
     body.innerHTML = header + hdr + empsHtml + soc +
       '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px;"><button class="btn btn-ghost" id="cpr_back2" type="button">← Back</button><button class="btn btn-primary" id="cpr_save2" type="button">Save</button></div>';
@@ -3678,9 +3707,98 @@
     document.getElementById('cpr_back').onclick = document.getElementById('cpr_back2').onclick = function () { cprEditingId = null; cprDraft = null; renderPayroll(); };
     document.getElementById('cpr_save').onclick = document.getElementById('cpr_save2').onclick = cprSave;
     document.getElementById('cpr_print').onclick = function () { cprSave(true); printCpr(cprDraft); };
+    cprRenderSig();
     var afb = document.getElementById('cpr_autofill'); if (afb) afb.onclick = function () { var fi = document.getElementById('cpr_file'); if (fi) fi.click(); };
     var afi = document.getElementById('cpr_file'); if (afi) afi.onchange = cprAutofill;
   }
+  // ===== CPR signature (Jenna's feedback: owner signs the Statement of Compliance) =====
+  // Per-company saved signature so the owner (e.g. Tyson) signs once and it can be
+  // inserted on every report for that company. Synced like other bcc-* docs.
+  function cprSigKey() { return 'bcc-cprsig-' + currentRealm; }
+  function cprGetCompanySig() { try { var s = JSON.parse(localStorage.getItem(cprSigKey()) || 'null'); return (s && s.src) ? s : null; } catch (e) { return null; } }
+  function cprRenderSig() {
+    var wrap = document.getElementById('cpr_sigwrap'); if (!wrap || !cprDraft) return;
+    var saved = cprGetCompanySig();
+    var h = '';
+    if (cprDraft.signatureSrc) {
+      h += '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px;">' +
+        '<img src="' + esc(cprDraft.signatureSrc) + '" alt="signature" style="height:52px;max-width:280px;object-fit:contain;border-bottom:1.5px solid var(--ink);" />' +
+        '<div style="font-size:12.5px;color:var(--muted);">' + esc(cprDraft.socName || '') + (cprDraft.socTitle ? ', ' + esc(cprDraft.socTitle) : '') + (cprDraft.signedAt ? '<br>signed ' + new Date(cprDraft.signedAt).toLocaleDateString() : '') + '</div>' +
+        '<button class="btn btn-ghost" id="cpr_sigremove" type="button" style="font-size:11px;min-height:28px;">Remove</button></div>';
+    } else {
+      h += '<div style="font-size:12.5px;color:var(--muted);margin-bottom:8px;">No signature on this report yet — it prints on the signature line of the Statement of Compliance.</div>';
+    }
+    h += '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+      '<button class="btn btn-ghost" id="cpr_signnow" type="button" title="Sign on this device — hand it to the signer or sign on their behalf">✍️ Sign now (draw or type)</button>' +
+      (saved ? '<button class="btn btn-ghost" id="cpr_siginsert" type="button">📌 Insert saved signature' + (saved.name ? ' — ' + esc(saved.name) : '') + '</button>' : '') +
+      '<button class="btn btn-ghost" id="cpr_siglink" type="button" title="The signer doesn&rsquo;t need app access — send them a private link where they just sign (they see no payroll data). Their signature saves as this company&rsquo;s signature.">📨 Send a signing link</button>' +
+      (cprDraft.signatureSrc ? '<button class="btn btn-ghost" id="cpr_sigsave" type="button" title="Reuse this signature on future reports for this company">💾 Save as this company&rsquo;s signature</button>' : '') +
+      '</div>' +
+      '<div id="cpr_siglinkout" style="margin-top:8px;"></div>';
+    wrap.innerHTML = h;
+    var b;
+    b = document.getElementById('cpr_signnow'); if (b) b.onclick = function () {
+      if (!(window.bccPdfEditor && window.bccPdfEditor.signaturePad)) { (window.bccNotify || alert)('The signature pad is still loading — try again in a moment.', 'warn'); return; }
+      window.bccPdfEditor.signaturePad(function (res) {
+        if (!res || !res.dataUrl) return;
+        cprDraft.signatureSrc = res.dataUrl; cprDraft.signedAt = nowIso(); cprDraft.signedBy = myUpn();
+        cprRenderSig();
+      });
+    };
+    b = document.getElementById('cpr_siginsert'); if (b) b.onclick = function () {
+      var s = cprGetCompanySig(); if (!s) { cprRenderSig(); return; }
+      cprDraft.signatureSrc = s.src; cprDraft.signedAt = nowIso(); cprDraft.signedBy = myUpn();
+      // Prefill signer name/title from the saved signature if the form is blank.
+      if (!String(cprDraft.socName || '').trim() && s.name) { cprDraft.socName = s.name; var el = document.querySelector('[data-cf="socName"]'); if (el) el.value = s.name; }
+      if (!String(cprDraft.socTitle || '').trim() && s.title) { cprDraft.socTitle = s.title; var el2 = document.querySelector('[data-cf="socTitle"]'); if (el2) el2.value = s.title; }
+      cprRenderSig();
+    };
+    b = document.getElementById('cpr_sigsave'); if (b) b.onclick = function () {
+      if (!cprDraft.signatureSrc) return;
+      localStorage.setItem(cprSigKey(), JSON.stringify({
+        id: cprSigKey(), tenantId: 'blue-collar-coach', docType: 'cpr-signature', realmId: currentRealm,
+        src: cprDraft.signatureSrc, name: cprDraft.socName || '', title: cprDraft.socTitle || '',
+        updatedAt: nowIso(), updatedBy: myUpn()
+      }));
+      if (window.bccAudit) window.bccAudit('cpr-save', { key: cprSigKey(), path: '/bookkeeping.html', meta: { realmId: currentRealm, what: 'company-signature' } });
+      if (window.bccNotifySaved) window.bccNotifySaved('Signature saved for ' + companyName(currentRealm) + ' — use “Insert saved signature” on future reports.');
+      cprRenderSig();
+    };
+    b = document.getElementById('cpr_sigremove'); if (b) b.onclick = function () {
+      cprDraft.signatureSrc = ''; cprDraft.signedAt = ''; cprDraft.signedBy = '';
+      cprRenderSig();
+    };
+    b = document.getElementById('cpr_siglink'); if (b) b.onclick = function () {
+      var out = document.getElementById('cpr_siglinkout');
+      if (out) out.innerHTML = '<span style="font-size:12.5px;color:var(--muted);">Creating link…</span>';
+      fetch('/api/cpr/sign-request', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ realmId: currentRealm }) })
+        .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+        .then(function (d) {
+          if (!d.ok || !d.url) throw new Error(d.error || 'could not create the link');
+          if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(d.url).catch(function () {});
+          if (out) out.innerHTML =
+            '<div style="background:var(--gold-fade);border:1px solid var(--chrome-mute);border-radius:8px;padding:10px 12px;font-size:12.5px;">' +
+            '<strong>Link copied</strong> — text or email it to the signer. They&rsquo;ll see only a signature pad (no payroll data); once they sign, it saves as this company&rsquo;s signature and you&rsquo;ll get a notification. Expires in ' + (d.expiresDays || 7) + ' days.<br>' +
+            '<input readonly value="' + esc(d.url) + '" onclick="this.select()" style="width:100%;box-sizing:border-box;margin-top:6px;border:1px solid var(--chrome-mute);border-radius:6px;padding:6px 8px;font-size:12px;font-family:ui-monospace,monospace;" /></div>';
+        })
+        .catch(function (e) { if (out) out.innerHTML = '<span style="font-size:12.5px;color:var(--burgundy);">Could not create the link: ' + esc(e.message) + '</span>'; });
+    };
+    // A remotely-signed signature lands server-side first — refresh our copy so
+    // "Insert saved signature" appears without a full reload.
+    (function refreshSavedSig() {
+      var key = cprSigKey(), realmAt = currentRealm;
+      fetch('/api/data/' + encodeURIComponent(key), { credentials: 'include' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (!d || !d.data || currentRealm !== realmAt) return;
+          if (d.data === localStorage.getItem(key)) return; // unchanged
+          localStorage.setItem(key, d.data);
+          if (document.getElementById('cpr_sigwrap')) cprRenderSig();
+        })
+        .catch(function () {});
+    })();
+  }
+
   // ===== CPR auto-fill: upload a payroll register/timesheet → AI pre-fills the form for review =====
   function cprEmpFromExtract(x) {
     x = x || {};
@@ -3816,7 +3934,9 @@
     var html, fname;
     try {
       html = cprDocHtml(r, false);
-      fname = 'Certified Payroll' + (r.payrollNo ? ' #' + r.payrollNo : '') + (r.weekStart ? ' (week of ' + r.weekStart + ')' : '') + '.html';
+      // Include the job/project in the file name so the Files search finds CPRs by job.
+      var job = String(r.projectName || '').replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+      fname = 'Certified Payroll' + (r.payrollNo ? ' #' + r.payrollNo : '') + (job ? ' — ' + job : '') + (r.weekStart ? ' (week of ' + r.weekStart + ')' : '') + '.html';
     } catch (e) { if (!silent) (window.bccNotify || alert)('Saved locally (couldn’t build the file).', 'warn'); return; }
     function upload() {
       var fd = new FormData();
@@ -3890,7 +4010,11 @@
         '<p>(4) Fringe benefits: ' + fringeLine + '</p>' +
         (r.fringeExceptions ? '<p>Exceptions: ' + esc(r.fringeExceptions) + '</p>' : '') +
         (r.fringePrograms ? '<p>Benefit program details: ' + esc(r.fringePrograms) + '</p>' : '') +
-        '<div class="sig">Signature: ____________________________________ &nbsp;&nbsp;&nbsp; Date: <span class="fld">' + esc(r.socDate || '') + '</span><br><br>' +
+        '<div class="sig">Signature: ' +
+        (r.signatureSrc
+          ? '<img src="' + esc(r.signatureSrc) + '" alt="signature" style="height:44px;max-width:280px;object-fit:contain;vertical-align:bottom;border-bottom:1px solid #000;padding:0 14px 1px;" />'
+          : '____________________________________') +
+        ' &nbsp;&nbsp;&nbsp; Date: <span class="fld">' + esc(r.socDate || '') + '</span><br><br>' +
         'Name & title: <span class="fld">' + esc(r.socName || '') + (r.socTitle ? ', ' + esc(r.socTitle) : '') + '</span></div>' +
         '<p style="font-size:8px;color:#444;margin-top:18px;">Pursuant to the Minnesota Government Data Practices Act, data on this form is public. Do not provide Social Security numbers. Willful falsification may subject the contractor to civil or criminal prosecution.</p>' +
       '</div>' +

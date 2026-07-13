@@ -962,5 +962,11 @@
     setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1500);
   }
 
-  window.bccPdfEditor = { open: open, canEdit: canEdit };
+  window.bccPdfEditor = {
+    open: open,
+    canEdit: canEdit,
+    // Standalone signature pad (draw or type) — used by e.g. certified payroll.
+    // cb receives { dataUrl, w, h } or null on cancel.
+    signaturePad: function (cb) { injectStyles(); openSignaturePad(cb); }
+  };
 })();
