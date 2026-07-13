@@ -314,6 +314,7 @@
   @media (max-width:680px) { .em-modal-body { padding:10px; } .em-body-frame { height:360px; } }
 </style>
 <script src="bcc-api.js" defer></script>
+<script src="bcc-pdf.js" defer></script>
 </head>
 <body>
 <header class="topbar">
@@ -2773,10 +2774,22 @@
     } while (d <= today && ++guard < 120);
     return d.toISOString().slice(0, 10);
   }
+  var _taskEdit = null; // id of the task currently being edited inline
+  // Assignee <option>s from the ACTIVE directory; if the task is already assigned to
+  // someone now-inactive, keep that person listed (marked) so editing doesn't drop them.
+  function assigneeOpts(sel) {
+    var people = (window.bccFilterActive ? window.bccFilterActive(window.bccPeopleFull) : (window.bccPeopleFull || []));
+    var selLc = (sel || '').toLowerCase(), has = false;
+    var o = people.map(function (p) {
+      var u = p.upn || p.mail || ''; var isSel = selLc && u.toLowerCase() === selLc; if (isSel) has = true;
+      return '<option value="' + esc(u) + '"' + (isSel ? ' selected' : '') + '>' + esc(p.displayName || u) + '</option>';
+    }).join('');
+    if (selLc && !has) o += '<option value="' + esc(sel) + '" selected>' + esc((window.bccDisplayName && window.bccDisplayName(sel)) || sel) + ' (inactive)</option>';
+    return '<option value="">— Unassigned —</option>' + o;
+  }
   function renderTasks() {
     var body = document.getElementById('tasks-body'); if (!body) return;
-    var people = (window.bccFilterActive ? window.bccFilterActive(window.bccPeopleFull) : (window.bccPeopleFull || []));
-    var opts = '<option value="">— Unassigned —</option>' + people.map(function (p) { var u = p.upn || p.mail || ''; return '<option value="' + esc(u) + '">' + esc(p.displayName || u) + '</option>'; }).join('');
+    var opts = assigneeOpts('');
     var today = new Date().toISOString().slice(0, 10);
     var all = allTasks();
     // A recurring task with a future due date is "upcoming" — scheduled, not yet active.
@@ -2789,7 +2802,24 @@
       '<label>Repeat<select id="tk_recur"><option value="none">One-time</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option><option value="yearly">Yearly</option></select></label>' +
       '<label>Assignee<select id="tk_assignee">' + opts + '</select></label>' +
       '<div class="full"><button class="btn btn-primary" id="tk_add" type="button">+ Add task</button></div></div>';
+    var recurSel = function (id, cur) {
+      return '<select id="' + id + '">' + ['none', 'weekly', 'monthly', 'quarterly', 'yearly'].map(function (v) {
+        var lbl = v === 'none' ? 'One-time' : v.charAt(0).toUpperCase() + v.slice(1);
+        return '<option value="' + v + '"' + ((cur || 'none') === v ? ' selected' : '') + '>' + lbl + '</option>';
+      }).join('') + '</select>';
+    };
     var taskRow = function (t, upc) {
+      if (t.id === _taskEdit) {
+        // Inline edit form in place of the row.
+        return '<div class="ws-row" style="background:var(--gold-fade);border:1px solid var(--chrome-mute);border-radius:10px;padding:12px;">' +
+          '<div class="ws-form" style="flex:1;min-width:0;">' +
+          '<label class="full">Task<input id="te_title" value="' + esc(t.title) + '" /></label>' +
+          '<label>Due<input type="date" id="te_due" value="' + esc(t.dueDate || '') + '" /></label>' +
+          '<label>Repeat' + recurSel('te_recur', t.recurrence) + '</label>' +
+          '<label>Assignee<select id="te_assignee">' + assigneeOpts(t.assigneeUpn) + '</select></label>' +
+          '<div class="full"><button class="btn btn-primary" id="te_save" type="button">Save changes</button> <button class="btn btn-ghost" id="te_cancel" type="button">Cancel</button></div>' +
+          '</div></div>';
+      }
       var who = t.assigneeUpn ? ((window.bccDisplayName && window.bccDisplayName(t.assigneeUpn)) || t.assigneeUpn) : '';
       var overdue = !upc && t.status !== 'done' && t.dueDate && t.dueDate < today;
       var rec = (t.recurrence && t.recurrence !== 'none') ? RECUR_LABEL[t.recurrence] : '';
@@ -2798,6 +2828,7 @@
       return '<div class="ws-row"' + (upc ? ' style="opacity:.6;"' : '') + '><input type="checkbox" data-tdone="' + esc(t.id) + '" ' + (t.status === 'done' ? 'checked' : '') + (upc ? ' title="Not due yet"' : '') + ' style="width:18px;height:18px;flex-shrink:0;" />' +
         '<div style="flex:1;min-width:0;"><div class="' + (t.status === 'done' ? 'task-done' : '') + '" style="font-weight:600;font-size:14px;">' + esc(t.title) + '</div>' +
         (meta ? '<div style="font-size:12px;color:' + (overdue ? 'var(--burgundy)' : 'var(--muted)') + ';">' + esc(meta) + '</div>' : '') + '</div>' +
+        '<button class="btn btn-ghost" data-tedit="' + esc(t.id) + '" type="button" style="font-size:11px;min-height:30px;">✏️ Edit</button>' +
         '<button class="btn btn-ghost" data-tdel="' + esc(t.id) + '" type="button" style="font-size:11px;min-height:30px;">Delete</button></div>';
     };
     var list = active.length ? active.map(function (t) { return taskRow(t, false); }).join('') : '<div style="color:var(--muted);padding:10px 0;">No active tasks for ' + esc(companyName(currentRealm)) + '.</div>';
@@ -2806,6 +2837,26 @@
     document.getElementById('tk_add').onclick = addTask;
     body.querySelectorAll('[data-tdone]').forEach(function (cb) { cb.onchange = function () { toggleTask(cb.getAttribute('data-tdone'), cb.checked); }; });
     body.querySelectorAll('[data-tdel]').forEach(function (b) { b.onclick = function () { delTask(b.getAttribute('data-tdel')); }; });
+    body.querySelectorAll('[data-tedit]').forEach(function (b) { b.onclick = function () { _taskEdit = b.getAttribute('data-tedit'); renderTasks(); var ti = document.getElementById('te_title'); if (ti) ti.focus(); }; });
+    var teSave = document.getElementById('te_save'); if (teSave) teSave.onclick = function () { saveTaskEdit(_taskEdit); };
+    var teCancel = document.getElementById('te_cancel'); if (teCancel) teCancel.onclick = function () { _taskEdit = null; renderTasks(); };
+    var teTitle = document.getElementById('te_title'); if (teTitle) teTitle.addEventListener('keydown', function (e) { if (e.key === 'Enter') saveTaskEdit(_taskEdit); if (e.key === 'Escape') { _taskEdit = null; renderTasks(); } });
+  }
+  function saveTaskEdit(id) {
+    var t; try { t = JSON.parse(localStorage.getItem(id)); } catch (e) {}
+    if (!t) { _taskEdit = null; renderTasks(); return; }
+    var title = (document.getElementById('te_title') || {}).value || ''; title = title.trim();
+    if (!title) { (window.bccNotify || alert)('Task title required.', 'warn'); return; }
+    var recur = (document.getElementById('te_recur') || {}).value || 'none';
+    var due = (document.getElementById('te_due') || {}).value || '';
+    if (recur !== 'none' && !due) { (window.bccNotify || alert)('A repeating task needs a due date to schedule the next occurrence.', 'warn'); return; }
+    t.title = title; t.dueDate = due; t.recurrence = recur;
+    t.assigneeUpn = (document.getElementById('te_assignee') || {}).value || '';
+    t.updatedAt = nowIso(); t.updatedBy = myUpn();
+    localStorage.setItem(id, JSON.stringify(t));
+    if (window.bccAudit) window.bccAudit('client-task-update', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } });
+    _taskEdit = null; renderTasks(); if (typeof updateDrawer === 'function') updateDrawer();
+    if (window.bccNotifySaved) window.bccNotifySaved('Task updated.');
   }
   function addTask() {
     var title = document.getElementById('tk_title').value.trim(); if (!title) { (window.bccNotify || alert)('Task title required.', 'warn'); return; }
@@ -2841,6 +2892,58 @@
   /* ---- Files (reuses the Documents Blob store, folder = /clients/<realmId>) ---- */
   /* ---- In-app file preview (no download needed) ---- */
   function fileExt(name) { var m = /\.([a-z0-9]+)$/i.exec(name || ''); return m ? m[1].toLowerCase() : ''; }
+
+  /* ---- PDF tools (split / organize / merge / sign) — see bcc-pdf.js ---- */
+  // Save destinations offered inside the editor: always Internal files; the shared
+  // client drive too when one is connected for this client.
+  function pdfSaveTargets() {
+    var targets = [];
+    targets.push({ label: 'Save to internal files', icon: '🔒', handler: function (blob, filename) {
+      var fd = new FormData(); fd.append('file', blob, filename); fd.append('folder', clientFolder()); fd.append('tags', 'pdf-edit');
+      return fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
+        .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })
+        .then(function () { if (window.bccAudit) window.bccAudit('client-file-upload', { path: '/bookkeeping.html', meta: { realmId: currentRealm, name: filename, via: 'pdf-tools' } }); if (typeof loadFiles === 'function') loadFiles(); });
+    } });
+    if (typeof _driveProvider !== 'undefined' && _driveProvider) {
+      targets.push({ label: 'Save to shared drive', icon: '☁️', handler: function (blob, filename) {
+        var fd = new FormData(); fd.append('file', blob, filename); if (_driveFolder) fd.append('folderId', _driveFolder);
+        return fetch('/api/integrations/drive/' + encodeURIComponent(currentRealm) + '/upload', { method: 'POST', credentials: 'include', body: fd })
+          .then(function (r) { return r.json().then(function (j) { if (!r.ok || j.ok === false) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })
+          .then(function () { if (typeof loadDriveFiles === 'function') loadDriveFiles(); });
+      } });
+    }
+    return targets;
+  }
+  function openPdfTools(bytes, name) {
+    if (!window.bccPdfEditor) { (window.bccNotify || alert)('PDF tools are still loading — try again in a moment.', 'warn'); return; }
+    window.bccPdfEditor.open({ bytes: bytes, name: name || 'document.pdf', saveTargets: pdfSaveTargets() });
+  }
+  var PDF_EDIT_MAX = 40 * 1024 * 1024; // same cap as the file picker
+  function openPdfFromUrl(url, name) {
+    if (window.bccNotify) window.bccNotify('Opening in PDF tools…', 'info', 2500);
+    fetch(url, { credentials: 'include' })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        var len = +(r.headers.get('content-length') || 0);
+        if (len > PDF_EDIT_MAX) throw new Error('that PDF is too large for in-browser editing (max 40 MB)');
+        return r.arrayBuffer();
+      })
+      .then(function (buf) {
+        if (buf.byteLength > PDF_EDIT_MAX) throw new Error('that PDF is too large for in-browser editing (max 40 MB)');
+        openPdfTools(buf, name);
+      })
+      .catch(function (e) { (window.bccNotify || alert)('Could not open the file: ' + e.message, 'error', 6000); });
+  }
+  function pickPdfForTools() {
+    var inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'application/pdf,.pdf';
+    inp.onchange = function () {
+      var f = inp.files && inp.files[0]; if (!f) return;
+      if (f.size > 40 * 1024 * 1024) { (window.bccNotify || alert)('That PDF is large (max 40 MB for in-browser editing).', 'warn'); return; }
+      var r = new FileReader(); r.onload = function () { openPdfTools(r.result, f.name); }; r.onerror = function () { (window.bccNotify || alert)('Could not read that file.', 'error'); }; r.readAsArrayBuffer(f);
+    };
+    inp.click();
+  }
+
   function openFilePreview(name, viewUrl, downloadUrl, mime) {
     var ext = fileExt(name); var ct = (mime || '').toLowerCase();
     var isImg = /^(png|jpe?g|gif|webp|bmp|svg)$/.test(ext) || /^image\//.test(ct);
@@ -2855,13 +2958,25 @@
     else if (isPdf || isTxt) inner = '<iframe class="fp-frame" src="' + esc(viewUrl) + '"></iframe>';
     else inner = '<div style="padding:34px 20px;text-align:center;color:var(--muted);font-size:13.5px;">This file type can&rsquo;t be shown inline. Use <strong>Download</strong> to open it.</div>';
     var ov = document.createElement('div'); ov.id = 'fp_modal'; ov.className = 'em-modal-ov';
+    // Edit/Sign only for REAL .pdf files: drivePreviewMime() reports 'application/pdf'
+    // for OneDrive Office files too (the preview proxy converts them), but the download
+    // endpoint returns the ORIGINAL bytes — which the editor can't parse.
+    var canPdfEdit = ext === 'pdf';
     ov.innerHTML = '<div class="em-modal" style="max-width:920px;"><div class="em-modal-head">' +
       '<div class="em-modal-subj" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(name) + '</div>' +
+      (canPdfEdit ? '<button class="btn btn-primary" id="fp_edit" type="button" style="font-size:12px;">✏️ Edit / Sign</button>' : '') +
       '<a class="btn btn-ghost" href="' + esc(downloadUrl) + '" style="font-size:12px;text-decoration:none;">⬇ Download</a>' +
       '<a class="btn btn-ghost" href="' + esc(viewUrl) + '" target="_blank" rel="noopener" style="font-size:12px;text-decoration:none;">↗ New tab</a>' +
       '<button class="btn btn-ghost" id="fp_close" type="button" style="font-size:18px;min-height:34px;width:38px;">×</button></div>' +
       '<div class="em-modal-body">' + inner + '</div></div>';
     document.body.appendChild(ov);
+    if (canPdfEdit) {
+      var fpe = document.getElementById('fp_edit');
+      // ?bytes=1: the internal download endpoint 302s to a cross-origin blob SAS that a
+      // fetch() can't follow (no CORS grant); bytes=1 streams same-origin instead. The
+      // drive download endpoint already streams and ignores the param.
+      if (fpe) fpe.onclick = function () { fpClose(); openPdfFromUrl(downloadUrl + (downloadUrl.indexOf('?') < 0 ? '?' : '&') + 'bytes=1', name); };
+    }
     function fpClose() { var m = document.getElementById('fp_modal'); if (m) m.remove(); document.removeEventListener('keydown', fpKey); }
     function fpKey(e) { if (e.key === 'Escape') fpClose(); }
     document.getElementById('fp_close').onclick = fpClose;
@@ -2892,7 +3007,7 @@
           '<span class="fs-pill fs-pill-priv">🔒 Private to BCC</span>' +
         '</div>' +
         '<div class="fs-body">' +
-          '<div class="ws-form" style="margin-bottom:14px;"><label class="full">Upload a private file<input type="file" id="fl_file" /></label><label class="full">Categories / tags (comma-separated)<input id="fl_tags" list="fl_taglist" placeholder="e.g. w-9, contract, bank-statement" /><datalist id="fl_taglist"></datalist></label><div class="full"><button class="btn btn-primary" id="fl_up" type="button">Upload to internal</button> <span id="fl_status" style="font-size:12px;color:var(--muted);"></span></div></div>' +
+          '<div class="ws-form" style="margin-bottom:14px;"><label class="full">Upload a private file<input type="file" id="fl_file" /></label><label class="full">Categories / tags (comma-separated)<input id="fl_tags" list="fl_taglist" placeholder="e.g. w-9, contract, bank-statement" /><datalist id="fl_taglist"></datalist></label><div class="full" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;"><button class="btn btn-primary" id="fl_up" type="button">Upload to internal</button><button class="btn btn-ghost" id="fl_pdftools" type="button" title="Split, reorder, rotate, merge and sign PDFs — or click any PDF below and choose Edit / Sign.">✂️ PDF tools — edit &amp; sign</button><span id="fl_status" style="font-size:12px;color:var(--muted);"></span></div></div>' +
           '<div id="fl_toolbar" class="fl-toolbar" style="display:none;">' +
             '<input id="fl_search" type="search" placeholder="🔍 Search files & tags…" />' +
             '<select id="fl_tagfilter"><option value="">All categories</option></select>' +
@@ -2903,6 +3018,7 @@
         '</div>' +
       '</div>';
     document.getElementById('fl_up').onclick = uploadFile;
+    var pdfToolsBtn = document.getElementById('fl_pdftools'); if (pdfToolsBtn) pdfToolsBtn.onclick = pickPdfForTools;
     ['fl_search', 'fl_tagfilter', 'fl_sort'].forEach(function (id) {
       var el = document.getElementById(id); if (el) el.addEventListener(id === 'fl_search' ? 'input' : 'change', renderIntFiles);
     });

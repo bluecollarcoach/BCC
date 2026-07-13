@@ -5758,6 +5758,23 @@ app.http('document-download', {
       const now = new Date();
       const expiry = new Date(now.getTime() + 15 * 60 * 1000); // 15 minute window
       const filename = String(meta.name || 'file').replace(/[\r\n"]/g, '');
+      // ?bytes=1 → stream the file through this function (same-origin) instead of a
+      // 302 to the blob SAS. A fetch() can't follow that redirect: the SAS host sends
+      // no CORS headers, so a credentialed cross-origin hop is blocked. Used by the
+      // in-app PDF editor, which needs the raw bytes. Uploads are capped at 25 MB,
+      // so buffering here is safe.
+      if (new URL(request.url).searchParams.get('bytes') === '1') {
+        const buf = await cont.getBlockBlobClient(meta.storageKey).downloadToBuffer();
+        return {
+          status: 200,
+          headers: {
+            'content-type': meta.mimeType || 'application/octet-stream',
+            'content-disposition': 'attachment; filename="' + filename + '"',
+            'cache-control': 'private, no-store'
+          },
+          body: buf
+        };
+      }
       // ?inline=1 → render in-app (image/pdf/text only); blob SAS is on a separate
       // *.blob.core.windows.net origin, so even an inline page can't touch our app.
       const wantInline = new URL(request.url).searchParams.get('inline') === '1' && inlineOk(meta.mimeType);
