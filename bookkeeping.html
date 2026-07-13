@@ -2775,6 +2775,7 @@
     return d.toISOString().slice(0, 10);
   }
   var _taskEdit = null; // id of the task currently being edited inline
+  var _taskOpen = null; // id of the task whose details/notes panel is expanded
   // Assignee <option>s from the ACTIVE directory; if the task is already assigned to
   // someone now-inactive, keep that person listed (marked) so editing doesn't drop them.
   function assigneeOpts(sel) {
@@ -2801,6 +2802,7 @@
       '<label>Due<input type="date" id="tk_due" /></label>' +
       '<label>Repeat<select id="tk_recur"><option value="none">One-time</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option><option value="yearly">Yearly</option></select></label>' +
       '<label>Assignee<select id="tk_assignee">' + opts + '</select></label>' +
+      '<label class="full">Notes / details (optional)<textarea id="tk_note" rows="2" placeholder="Anything useful: steps, links, context from the client…"></textarea></label>' +
       '<div class="full"><button class="btn btn-primary" id="tk_add" type="button">+ Add task</button></div></div>';
     var recurSel = function (id, cur) {
       return '<select id="' + id + '">' + ['none', 'weekly', 'monthly', 'quarterly', 'yearly'].map(function (v) {
@@ -2817,6 +2819,7 @@
           '<label>Due<input type="date" id="te_due" value="' + esc(t.dueDate || '') + '" /></label>' +
           '<label>Repeat' + recurSel('te_recur', t.recurrence) + '</label>' +
           '<label>Assignee<select id="te_assignee">' + assigneeOpts(t.assigneeUpn) + '</select></label>' +
+          '<label class="full">Notes / details<textarea id="te_note" rows="4" placeholder="Anything useful: steps, links, context from the client…">' + esc(t.note || '') + '</textarea></label>' +
           '<div class="full"><button class="btn btn-primary" id="te_save" type="button">Save changes</button> <button class="btn btn-ghost" id="te_cancel" type="button">Cancel</button></div>' +
           '</div></div>';
       }
@@ -2825,9 +2828,27 @@
       var rec = (t.recurrence && t.recurrence !== 'none') ? RECUR_LABEL[t.recurrence] : '';
       var dueTxt = t.dueDate ? ((upc ? 'Next ' : 'Due ') + t.dueDate) : '';
       var meta = [who, dueTxt, rec].filter(Boolean).join(' · ');
+      var isOpen = _taskOpen === t.id;
+      var hasNote = !!String(t.note || '').trim();
+      // Click the title to expand details/notes (Planner-imported notes live here too).
+      var detail = '';
+      if (isOpen) {
+        var facts = [];
+        if (t.createdBy) facts.push('Created by ' + ((window.bccDisplayName && window.bccDisplayName(t.createdBy)) || t.createdBy) + (t.createdAt ? ' · ' + new Date(t.createdAt).toLocaleDateString() : ''));
+        else if (t.createdAt) facts.push('Created ' + new Date(t.createdAt).toLocaleDateString());
+        if (t.source === 'planner') facts.push('Imported from Planner');
+        if (t.timesDone) facts.push('Completed ' + t.timesDone + '×');
+        detail = '<div style="margin-top:8px;padding:10px 12px;background:var(--gold-fade);border:1px solid var(--chrome-mute);border-radius:8px;font-size:13px;">' +
+          (hasNote ? '<div style="white-space:pre-wrap;word-break:break-word;">' + esc(t.note) + '</div>'
+                   : '<div style="color:var(--muted);">No notes yet — click <strong>✏️ Edit</strong> to add details.</div>') +
+          (facts.length ? '<div style="font-size:11.5px;color:var(--muted);margin-top:8px;">' + esc(facts.join(' · ')) + '</div>' : '') +
+          '</div>';
+      }
       return '<div class="ws-row"' + (upc ? ' style="opacity:.6;"' : '') + '><input type="checkbox" data-tdone="' + esc(t.id) + '" ' + (t.status === 'done' ? 'checked' : '') + (upc ? ' title="Not due yet"' : '') + ' style="width:18px;height:18px;flex-shrink:0;" />' +
-        '<div style="flex:1;min-width:0;"><div class="' + (t.status === 'done' ? 'task-done' : '') + '" style="font-weight:600;font-size:14px;">' + esc(t.title) + '</div>' +
-        (meta ? '<div style="font-size:12px;color:' + (overdue ? 'var(--burgundy)' : 'var(--muted)') + ';">' + esc(meta) + '</div>' : '') + '</div>' +
+        '<div style="flex:1;min-width:0;"><div class="' + (t.status === 'done' ? 'task-done' : '') + '" data-topen="' + esc(t.id) + '" role="button" tabindex="0" title="Click for details &amp; notes" style="font-weight:600;font-size:14px;cursor:pointer;">' +
+        '<span style="display:inline-block;width:12px;color:var(--muted);font-size:11px;">' + (isOpen ? '▾' : '▸') + '</span>' + esc(t.title) + (hasNote ? ' <span title="Has notes" style="font-size:11.5px;">📝</span>' : '') + '</div>' +
+        (meta ? '<div style="font-size:12px;color:' + (overdue ? 'var(--burgundy)' : 'var(--muted)') + ';padding-left:12px;">' + esc(meta) + '</div>' : '') +
+        detail + '</div>' +
         '<button class="btn btn-ghost" data-tedit="' + esc(t.id) + '" type="button" style="font-size:11px;min-height:30px;">✏️ Edit</button>' +
         '<button class="btn btn-ghost" data-tdel="' + esc(t.id) + '" type="button" style="font-size:11px;min-height:30px;">Delete</button></div>';
     };
@@ -2838,6 +2859,11 @@
     body.querySelectorAll('[data-tdone]').forEach(function (cb) { cb.onchange = function () { toggleTask(cb.getAttribute('data-tdone'), cb.checked); }; });
     body.querySelectorAll('[data-tdel]').forEach(function (b) { b.onclick = function () { delTask(b.getAttribute('data-tdel')); }; });
     body.querySelectorAll('[data-tedit]').forEach(function (b) { b.onclick = function () { _taskEdit = b.getAttribute('data-tedit'); renderTasks(); var ti = document.getElementById('te_title'); if (ti) ti.focus(); }; });
+    body.querySelectorAll('[data-topen]').forEach(function (el) {
+      var toggle = function () { var id = el.getAttribute('data-topen'); _taskOpen = (_taskOpen === id) ? null : id; renderTasks(); };
+      el.onclick = toggle;
+      el.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+    });
     var teSave = document.getElementById('te_save'); if (teSave) teSave.onclick = function () { saveTaskEdit(_taskEdit); };
     var teCancel = document.getElementById('te_cancel'); if (teCancel) teCancel.onclick = function () { _taskEdit = null; renderTasks(); };
     var teTitle = document.getElementById('te_title'); if (teTitle) teTitle.addEventListener('keydown', function (e) { if (e.key === 'Enter') saveTaskEdit(_taskEdit); if (e.key === 'Escape') { _taskEdit = null; renderTasks(); } });
@@ -2852,6 +2878,7 @@
     if (recur !== 'none' && !due) { (window.bccNotify || alert)('A repeating task needs a due date to schedule the next occurrence.', 'warn'); return; }
     t.title = title; t.dueDate = due; t.recurrence = recur;
     t.assigneeUpn = (document.getElementById('te_assignee') || {}).value || '';
+    t.note = ((document.getElementById('te_note') || {}).value || '').slice(0, 4000);
     t.updatedAt = nowIso(); t.updatedBy = myUpn();
     localStorage.setItem(id, JSON.stringify(t));
     if (window.bccAudit) window.bccAudit('client-task-update', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } });
@@ -2864,7 +2891,7 @@
     var due = document.getElementById('tk_due').value || '';
     if (recur !== 'none' && !due) { (window.bccNotify || alert)('A repeating task needs a due date to schedule the next occurrence.', 'warn'); return; }
     var id = taskPrefix() + uid2();
-    var t = { id: id, tenantId: 'blue-collar-coach', docType: 'client-task', realmId: currentRealm, title: title, status: 'open', assigneeUpn: document.getElementById('tk_assignee').value || '', dueDate: due, recurrence: recur, createdAt: nowIso(), updatedAt: nowIso(), createdBy: myUpn() };
+    var t = { id: id, tenantId: 'blue-collar-coach', docType: 'client-task', realmId: currentRealm, title: title, status: 'open', assigneeUpn: document.getElementById('tk_assignee').value || '', dueDate: due, recurrence: recur, note: ((document.getElementById('tk_note') || {}).value || '').slice(0, 4000), createdAt: nowIso(), updatedAt: nowIso(), createdBy: myUpn() };
     localStorage.setItem(id, JSON.stringify(t));
     if (window.bccAudit) window.bccAudit('client-task-create', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } });
     renderTasks();
