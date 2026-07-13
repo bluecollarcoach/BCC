@@ -2594,9 +2594,11 @@
       var who = t.assigneeUpn ? ((window.bccDisplayName && window.bccDisplayName(t.assigneeUpn)) || t.assigneeUpn) : '';
       var overdue = t.dueDate && t.dueDate < today;
       var meta = [who, t.dueDate ? ('Due ' + t.dueDate) : ''].filter(Boolean).join(' · ');
+      var isOpen = _taskOpen === t.id;
       return '<div class="ws-row"><input type="checkbox" data-ovdone="' + esc(t.id) + '" aria-label="Mark done" style="width:20px;height:20px;flex-shrink:0;" />' +
-        '<div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:14px;">' + esc(t.title) + '</div>' +
-        (meta ? '<div style="font-size:12px;color:' + (overdue ? 'var(--burgundy)' : 'var(--muted)') + ';">' + esc(meta) + '</div>' : '') + '</div></div>';
+        '<div style="flex:1;min-width:0;">' + taskTitleHtml(t, isOpen, '') +
+        (meta ? '<div style="font-size:12px;color:' + (overdue ? 'var(--burgundy)' : 'var(--muted)') + ';padding-left:12px;">' + esc(meta) + '</div>' : '') +
+        (isOpen ? taskDetailHtml(t, true) : '') + '</div></div>';
     }).join('') : '<div style="color:var(--muted);padding:12px 0;">No open to-dos for this client. 🎉</div>';
     body.innerHTML = actions +
       '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:4px 0 6px;"><div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;">Open to-dos' + (open.length ? ' (' + open.length + ')' : '') + '</div><button class="btn btn-ghost" data-ov="tasks" type="button" style="font-size:12px;">Manage tasks →</button></div>' +
@@ -2605,6 +2607,8 @@
       '<div id="ov-activity"><div style="color:var(--muted);font-size:13px;padding:6px 0;">Loading…</div></div>';
     body.querySelectorAll('[data-ov]').forEach(function (b) { b.addEventListener('click', function () { setSection(b.getAttribute('data-ov')); }); });
     body.querySelectorAll('[data-ovdone]').forEach(function (cb) { cb.addEventListener('change', function () { toggleTask(cb.getAttribute('data-ovdone'), true); renderOverview(); updateDrawer(); }); });
+    wireTaskExpand(body, renderOverview);
+    body.querySelectorAll('[data-ovedit]').forEach(function (b) { b.onclick = function () { _taskEdit = b.getAttribute('data-ovedit'); setSection('tasks'); }; });
     loadOverviewActivity();
   }
   function relTime(d) { var s = Math.floor((Date.now() - d.getTime()) / 1000); if (s < 60) return 'just now'; if (s < 3600) return Math.floor(s / 60) + 'm ago'; if (s < 86400) return Math.floor(s / 3600) + 'h ago'; return Math.floor(s / 86400) + 'd ago'; }
@@ -2775,7 +2779,36 @@
     return d.toISOString().slice(0, 10);
   }
   var _taskEdit = null; // id of the task currently being edited inline
-  var _taskOpen = null; // id of the task whose details/notes panel is expanded
+  var _taskOpen = null; // id of the task whose details/notes panel is expanded (shared by Tasks tab + Overview)
+  // Expanded details/notes panel for a task — used by BOTH the Tasks tab and the
+  // Overview "Open to-dos" list so they behave identically.
+  function taskDetailHtml(t, withEditJump) {
+    var hasNote = !!String(t.note || '').trim();
+    var facts = [];
+    if (t.createdBy) facts.push('Created by ' + ((window.bccDisplayName && window.bccDisplayName(t.createdBy)) || t.createdBy) + (t.createdAt ? ' · ' + new Date(t.createdAt).toLocaleDateString() : ''));
+    else if (t.createdAt) facts.push('Created ' + new Date(t.createdAt).toLocaleDateString());
+    if (t.source === 'planner') facts.push('Imported from Planner');
+    if (t.timesDone) facts.push('Completed ' + t.timesDone + '×');
+    return '<div style="margin-top:8px;padding:10px 12px;background:var(--gold-fade);border:1px solid var(--chrome-mute);border-radius:8px;font-size:13px;">' +
+      (hasNote ? '<div style="white-space:pre-wrap;word-break:break-word;">' + esc(t.note) + '</div>'
+               : '<div style="color:var(--muted);">No notes yet — click <strong>✏️ Edit</strong> to add details.</div>') +
+      (facts.length ? '<div style="font-size:11.5px;color:var(--muted);margin-top:8px;">' + esc(facts.join(' · ')) + '</div>' : '') +
+      (withEditJump ? '<div style="margin-top:8px;"><button class="btn btn-ghost" data-ovedit="' + esc(t.id) + '" type="button" style="font-size:11px;min-height:28px;">✏️ Edit in Tasks →</button></div>' : '') +
+      '</div>';
+  }
+  // Clickable expand/collapse title for a task row (chevron + 📝 note badge).
+  function taskTitleHtml(t, isOpen, extraClass) {
+    var hasNote = !!String(t.note || '').trim();
+    return '<div class="' + (extraClass || '') + '" data-topen="' + esc(t.id) + '" role="button" tabindex="0" title="Click for details &amp; notes" style="font-weight:600;font-size:14px;cursor:pointer;">' +
+      '<span style="display:inline-block;width:12px;color:var(--muted);font-size:11px;">' + (isOpen ? '▾' : '▸') + '</span>' + esc(t.title) + (hasNote ? ' <span title="Has notes" style="font-size:11.5px;">📝</span>' : '') + '</div>';
+  }
+  function wireTaskExpand(container, rerender) {
+    container.querySelectorAll('[data-topen]').forEach(function (el) {
+      var toggle = function () { var id = el.getAttribute('data-topen'); _taskOpen = (_taskOpen === id) ? null : id; rerender(); };
+      el.onclick = toggle;
+      el.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+    });
+  }
   // Assignee <option>s from the ACTIVE directory; if the task is already assigned to
   // someone now-inactive, keep that person listed (marked) so editing doesn't drop them.
   function assigneeOpts(sel) {
@@ -2829,26 +2862,10 @@
       var dueTxt = t.dueDate ? ((upc ? 'Next ' : 'Due ') + t.dueDate) : '';
       var meta = [who, dueTxt, rec].filter(Boolean).join(' · ');
       var isOpen = _taskOpen === t.id;
-      var hasNote = !!String(t.note || '').trim();
-      // Click the title to expand details/notes (Planner-imported notes live here too).
-      var detail = '';
-      if (isOpen) {
-        var facts = [];
-        if (t.createdBy) facts.push('Created by ' + ((window.bccDisplayName && window.bccDisplayName(t.createdBy)) || t.createdBy) + (t.createdAt ? ' · ' + new Date(t.createdAt).toLocaleDateString() : ''));
-        else if (t.createdAt) facts.push('Created ' + new Date(t.createdAt).toLocaleDateString());
-        if (t.source === 'planner') facts.push('Imported from Planner');
-        if (t.timesDone) facts.push('Completed ' + t.timesDone + '×');
-        detail = '<div style="margin-top:8px;padding:10px 12px;background:var(--gold-fade);border:1px solid var(--chrome-mute);border-radius:8px;font-size:13px;">' +
-          (hasNote ? '<div style="white-space:pre-wrap;word-break:break-word;">' + esc(t.note) + '</div>'
-                   : '<div style="color:var(--muted);">No notes yet — click <strong>✏️ Edit</strong> to add details.</div>') +
-          (facts.length ? '<div style="font-size:11.5px;color:var(--muted);margin-top:8px;">' + esc(facts.join(' · ')) + '</div>' : '') +
-          '</div>';
-      }
       return '<div class="ws-row"' + (upc ? ' style="opacity:.6;"' : '') + '><input type="checkbox" data-tdone="' + esc(t.id) + '" ' + (t.status === 'done' ? 'checked' : '') + (upc ? ' title="Not due yet"' : '') + ' style="width:18px;height:18px;flex-shrink:0;" />' +
-        '<div style="flex:1;min-width:0;"><div class="' + (t.status === 'done' ? 'task-done' : '') + '" data-topen="' + esc(t.id) + '" role="button" tabindex="0" title="Click for details &amp; notes" style="font-weight:600;font-size:14px;cursor:pointer;">' +
-        '<span style="display:inline-block;width:12px;color:var(--muted);font-size:11px;">' + (isOpen ? '▾' : '▸') + '</span>' + esc(t.title) + (hasNote ? ' <span title="Has notes" style="font-size:11.5px;">📝</span>' : '') + '</div>' +
+        '<div style="flex:1;min-width:0;">' + taskTitleHtml(t, isOpen, t.status === 'done' ? 'task-done' : '') +
         (meta ? '<div style="font-size:12px;color:' + (overdue ? 'var(--burgundy)' : 'var(--muted)') + ';padding-left:12px;">' + esc(meta) + '</div>' : '') +
-        detail + '</div>' +
+        (isOpen ? taskDetailHtml(t, false) : '') + '</div>' +
         '<button class="btn btn-ghost" data-tedit="' + esc(t.id) + '" type="button" style="font-size:11px;min-height:30px;">✏️ Edit</button>' +
         '<button class="btn btn-ghost" data-tdel="' + esc(t.id) + '" type="button" style="font-size:11px;min-height:30px;">Delete</button></div>';
     };
@@ -2859,11 +2876,7 @@
     body.querySelectorAll('[data-tdone]').forEach(function (cb) { cb.onchange = function () { toggleTask(cb.getAttribute('data-tdone'), cb.checked); }; });
     body.querySelectorAll('[data-tdel]').forEach(function (b) { b.onclick = function () { delTask(b.getAttribute('data-tdel')); }; });
     body.querySelectorAll('[data-tedit]').forEach(function (b) { b.onclick = function () { _taskEdit = b.getAttribute('data-tedit'); renderTasks(); var ti = document.getElementById('te_title'); if (ti) ti.focus(); }; });
-    body.querySelectorAll('[data-topen]').forEach(function (el) {
-      var toggle = function () { var id = el.getAttribute('data-topen'); _taskOpen = (_taskOpen === id) ? null : id; renderTasks(); };
-      el.onclick = toggle;
-      el.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
-    });
+    wireTaskExpand(body, renderTasks);
     var teSave = document.getElementById('te_save'); if (teSave) teSave.onclick = function () { saveTaskEdit(_taskEdit); };
     var teCancel = document.getElementById('te_cancel'); if (teCancel) teCancel.onclick = function () { _taskEdit = null; renderTasks(); };
     var teTitle = document.getElementById('te_title'); if (teTitle) teTitle.addEventListener('keydown', function (e) { if (e.key === 'Enter') saveTaskEdit(_taskEdit); if (e.key === 'Escape') { _taskEdit = null; renderTasks(); } });
