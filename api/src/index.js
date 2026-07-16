@@ -1719,7 +1719,13 @@ async function driveAccessToken(doc, creds) {
   const params = { client_id: creds.clientId, client_secret: creds.clientSecret, refresh_token: doc.refreshToken, grant_type: 'refresh_token' };
   if (creds.provider === 'onedrive') params.scope = MS_DRIVE_SCOPE;
   const r = await fetch(driveTokenUrl(creds), { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(params).toString() });
-  if (!r.ok) throw new Error('token refresh ' + r.status);
+  if (!r.ok) {
+    // 400 invalid_grant = the refresh token is expired or revoked (e.g. Google
+    // kills them after 7 days while the OAuth app is in "Testing" status).
+    const e = new Error('token refresh ' + r.status);
+    e.status = r.status;
+    throw e;
+  }
   const j = await r.json();
   if (j.refresh_token && j.refresh_token !== doc.refreshToken) { doc.refreshToken = j.refresh_token; try { await container().items.upsert(doc); } catch (_) {} }
   return j.access_token;
@@ -1838,13 +1844,35 @@ app.http('drive-set-root', {
   })
 });
 
+// Short-lived per-realm access-token cache: fewer refresh calls means fewer
+// token rotations (and rotation races) against the providers. Tokens live
+// ~60 min at both providers; cache well inside that.
+const _driveATCache = new Map(); // realmId -> { at, exp }
 async function driveDocAndToken(realmId) {
   const c = container();
   const doc = await c.item('bcc-clientdrive-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
   if (!doc) return { err: { status: 400, jsonBody: { ok: false, error: 'not connected' } } };
   const creds = await driveAppCreds(doc.provider);
   if (!creds.ok) return { err: { status: 400, jsonBody: { ok: false, error: 'app not configured' } } };
-  const at = await driveAccessToken(doc, creds);
+  const hit = _driveATCache.get(realmId);
+  if (hit && hit.exp > Date.now()) return { doc, at: hit.at };
+  let at;
+  try {
+    at = await driveAccessToken(doc, creds);
+  } catch (e) {
+    _driveATCache.delete(realmId);
+    if (e && (e.status === 400 || e.status === 401)) {
+      // Refresh token expired/revoked — tell the UI to offer Reconnect instead
+      // of surfacing a raw "token refresh 400".
+      const who = doc.account || 'the connected account';
+      return { err: { status: 200, jsonBody: {
+        ok: false, needsReconnect: true, provider: doc.provider, account: doc.account || '',
+        error: 'The ' + (doc.provider === 'google' ? 'Google Drive' : 'OneDrive') + ' connection for ' + who + ' has expired or been revoked. Click Reconnect and sign in as ' + who + ' to restore access.'
+      } } };
+    }
+    throw e;
+  }
+  _driveATCache.set(realmId, { at, exp: Date.now() + 40 * 60 * 1000 });
   return { doc, at };
 }
 
