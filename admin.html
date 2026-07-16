@@ -934,7 +934,10 @@
 
     var rowsHtml = APP_LIST.map(function (app) {
       var cur = existing[app.k] || defaultPermFor(role, app.k);
-      var sel = PERM_LEVELS.map(function (p) {
+      var levels = PERM_LEVELS.slice();
+      // Bookkeeping has an extra tier: tasks & notifications only — no financials.
+      if (app.k === 'bookkeeping') levels.splice(3, 0, { v: 'tasks', label: 'Tasks only' });
+      var sel = levels.map(function (p) {
         return '<option value="' + p.v + '"' + (p.v === cur ? ' selected' : '') + '>' + p.label + '</option>';
       }).join('');
       return '<tr data-app="' + esc(app.k) + '">' +

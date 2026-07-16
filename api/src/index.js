@@ -1227,6 +1227,11 @@ app.http('notify-user', {
       const url = String(body.url || '/').slice(0, 200);
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(toUpn)) return badRequest('toUpn must be an email address');
       if (!title) return badRequest('title required');
+      // Target must be an ACTIVE user of this app — no notifications to arbitrary
+      // outside addresses, no doc garbage for users that don't exist.
+      const cfgN = await getAdminCfg();
+      const recN = (cfgN && Array.isArray(cfgN.users) ? cfgN.users : []).find(u => String(u.upn || u.email || '').toLowerCase() === toUpn);
+      if (!recN || recN.status === 'inactive' || recN.status === 'hidden') return badRequest('recipient is not an active user');
       const c = container();
       const from = String(p.userDetails || p.userId || '').toLowerCase();
       await notifyUser(c, toUpn, { title, body: msg, url, tag: String(body.tag || '').slice(0, 60) });
@@ -3373,6 +3378,21 @@ app.http('qbo-companies', {
       }
       const admin = await isAppAdmin(p);
       const who = String(p.userDetails || p.userId || '').toLowerCase();
+      // Tasks-only tier (appPermissions.bookkeeping === 'tasks'): every enabled
+      // client, but ONLY id + name — no financials, sync info, or access lists.
+      // Decided here (server) so the client UI can't be talked into more.
+      if (!admin) {
+        try {
+          const cfgT = await getAdminCfg();
+          const rec = (cfgT && Array.isArray(cfgT.users) ? cfgT.users : []).find(u => String(u.upn || u.email || '').toLowerCase() === who);
+          const active = !rec || (rec.status !== 'inactive' && rec.status !== 'hidden');
+          if (active && rec && rec.appPermissions && rec.appPermissions.bookkeeping === 'tasks') {
+            const list = comps.filter(co => co.enabled !== false)
+              .map(co => ({ realmId: co.realmId, companyName: co.companyName, enabled: true }));
+            return { jsonBody: { isAdmin: false, taskOnly: true, companies: list } };
+          }
+        } catch (e) { /* fall through to the normal member path */ }
+      }
       let companies = comps.map(co => ({
         realmId: co.realmId, companyName: co.companyName, environment: co.environment,
         status: co.status, connectedAt: co.connectedAt, lastSyncAt: co.lastSyncAt,

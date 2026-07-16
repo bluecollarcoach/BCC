@@ -459,7 +459,10 @@
     'activity.html': 'admin',   // activity log is admin-tier
     'guide.html':    'home'     // help page available to anyone with home
   };
-  var LEVEL_RANK = { none: 0, view: 1, edit: 2, admin: 3 };
+  // 'tasks' is a bookkeeping-specific tier: the app is reachable (same rank as
+  // view) but shows ONLY per-client tasks — no financials. Enforced server-side
+  // by the companies endpoint and client-side by bookkeeping.html gating.
+  var LEVEL_RANK = { none: 0, tasks: 1, view: 1, edit: 2, admin: 3 };
   // Apps a non-admin (member) can use by default, with no per-app override.
   // Everything not listed here (CRM, Engagements, Marketing, Rate Sheet,
   // Admin) defaults to 'none' for members. 'home' is included so members can

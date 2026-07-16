@@ -580,6 +580,7 @@
   var usersDir = [];          // [{upn, displayName}] for the per-user access picker
   var accessEditRealm = null; // realm whose access editor is open (admin)
   var managementMode = false; // root view: false = bookkeeper work queue, true = firm-wide management dashboard (access-controlled)
+  var taskOnly = false;       // SERVER-decided (appPermissions.bookkeeping === 'tasks'): tasks & notifications only, no financials
 
   function nowIso() { return new Date().toISOString(); }
   // Date + time for sync/period stamps ("Jun 29, 2026, 2:14 PM"); short form drops the year.
@@ -620,8 +621,8 @@
   function loadCompanies() {
     return fetch('/api/integrations/qbo/companies', { credentials: 'include' })
       .then(function (r) { return r.ok ? r.json() : { companies: [] }; })
-      .then(function (d) { companies = (d && d.companies) || []; isAdmin = !!(d && d.isAdmin); usersDir = (d && d.users) || []; })
-      .catch(function () { companies = []; isAdmin = false; usersDir = []; });
+      .then(function (d) { companies = (d && d.companies) || []; isAdmin = !!(d && d.isAdmin); usersDir = (d && d.users) || []; taskOnly = !!(d && d.taskOnly); })
+      .catch(function () { companies = []; isAdmin = false; usersDir = []; taskOnly = false; });
   }
   // Pull the latest financial periods from Cosmos (kept fresh by the nightly QBO
   // sync), access-scoped, into localStorage — so the tables/KPIs reflect last
@@ -865,7 +866,7 @@
     });
     rowsEl.innerHTML = sorted.map(function (c) {
       var t = ti(c.realmId);
-      var ls = c.lastSyncAt ? fmtSyncTime(c.lastSyncAt, true) : 'never';
+      var ls = taskOnly ? '—' : (c.lastSyncAt ? fmtSyncTime(c.lastSyncAt, true) : 'never');
       var bell = t.count > 0
         ? '<span style="display:inline-flex;align-items:center;gap:5px;font-weight:700;font-size:12.5px;color:' + (t.overdue ? 'var(--burgundy)' : 'var(--gold-deep)') + ';">🔔 ' + t.count + ' to-do' + (t.count === 1 ? '' : 's') + (t.overdue ? ' · overdue' : '') + '</span>'
         : '<span style="color:var(--muted);font-size:12.5px;">—</span>';
@@ -2515,17 +2516,17 @@
     var tmap = buildTaskMap();
     var openTodos = (tmap[currentRealm] && tmap[currentRealm].count) || 0;
     var listEl = document.getElementById('wsDrawerList');
-    listEl.innerHTML = SECTIONS.map(function (s) {
+    listEl.innerHTML = SECTIONS.filter(function (s) { return !taskOnly || s.key === 'tasks'; }).map(function (s) {
       var badge = ((s.key === 'overview' || s.key === 'tasks') && openTodos) ? '<span class="badge">' + openTodos + '</span>' : '';
       return '<button class="ws-drawer-item' + (s.key === currentTab ? ' active' : '') + '" data-sec="' + s.key + '" type="button"><span class="ic" aria-hidden="true">' + s.ic + '</span>' + esc(s.label) + badge + '</button>';
     }).join('');
     listEl.querySelectorAll('[data-sec]').forEach(function (b) { b.addEventListener('click', function () { setSection(b.getAttribute('data-sec')); }); });
   }
-  function setSection(key) { currentTab = key; closeWsDrawer(); renderWorkspace(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+  function setSection(key) { if (taskOnly && key !== 'tasks') key = 'tasks'; currentTab = key; closeWsDrawer(); renderWorkspace(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
   // Reveal the Transactions section WITHOUT re-rendering (so an in-progress form
   // is preserved). Used when a scan / + New is triggered from elsewhere.
   function gotoTransactions() {
-    if (!currentRealm) return;
+    if (!currentRealm || taskOnly) return;
     currentTab = 'transactions';
     var sn = document.getElementById('wsSectionName'); if (sn) sn.textContent = sectionLabel('transactions');
     showSection('transactions'); updateDrawer();
@@ -2555,7 +2556,8 @@
   function renderWorkspace() {
     if (typeof emCloseModal === 'function') emCloseModal(); // never leave an email reader open across a realm/section change
     var tabbar = document.getElementById('wsTabs');
-    if (currentRealm !== _wsLastRealm) { currentTab = 'overview'; _wsLastRealm = currentRealm; }
+    if (currentRealm !== _wsLastRealm) { currentTab = taskOnly ? 'tasks' : 'overview'; _wsLastRealm = currentRealm; }
+    if (taskOnly && currentTab !== 'tasks') currentTab = 'tasks'; // tasks-only tier never renders another section
     if (tabbar) tabbar.style.display = currentRealm ? '' : 'none';
     if (!currentRealm) { hideAllSections(); return; }
     document.getElementById('wsClientName').textContent = companyName(currentRealm);
@@ -2889,14 +2891,31 @@
     var recur = (document.getElementById('te_recur') || {}).value || 'none';
     var due = (document.getElementById('te_due') || {}).value || '';
     if (recur !== 'none' && !due) { (window.bccNotify || alert)('A repeating task needs a due date to schedule the next occurrence.', 'warn'); return; }
+    var prevAssignee = String(t.assigneeUpn || '').toLowerCase();
     t.title = title; t.dueDate = due; t.recurrence = recur;
     t.assigneeUpn = (document.getElementById('te_assignee') || {}).value || '';
     t.note = ((document.getElementById('te_note') || {}).value || '').slice(0, 4000);
     t.updatedAt = nowIso(); t.updatedBy = myUpn();
     localStorage.setItem(id, JSON.stringify(t));
+    if (String(t.assigneeUpn || '').toLowerCase() !== prevAssignee) taskAssignNotify(t);
     if (window.bccAudit) window.bccAudit('client-task-update', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } });
     _taskEdit = null; renderTasks(); if (typeof updateDrawer === 'function') updateDrawer();
     if (window.bccNotifySaved) window.bccNotifySaved('Task updated.');
+  }
+  // Tell an assignee they have a task (in-app bell + web push). Fire-and-forget;
+  // skipped when you assign to yourself. Bulk paths (Planner import) don't call it.
+  function taskAssignNotify(t) {
+    var to = String(t.assigneeUpn || '').toLowerCase();
+    if (!to || to === String(myUpn() || '').toLowerCase()) return;
+    fetch('/api/notify', {
+      method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        toUpn: to,
+        title: '📋 Task for you — ' + companyName(t.realmId || currentRealm),
+        body: t.title + (t.dueDate ? ' · due ' + t.dueDate : ''),
+        url: '/bookkeeping.html', tag: 'task-' + t.id
+      })
+    }).catch(function () {});
   }
   function addTask() {
     var title = document.getElementById('tk_title').value.trim(); if (!title) { (window.bccNotify || alert)('Task title required.', 'warn'); return; }
@@ -2907,6 +2926,7 @@
     var t = { id: id, tenantId: 'blue-collar-coach', docType: 'client-task', realmId: currentRealm, title: title, status: 'open', assigneeUpn: document.getElementById('tk_assignee').value || '', dueDate: due, recurrence: recur, note: ((document.getElementById('tk_note') || {}).value || '').slice(0, 4000), createdAt: nowIso(), updatedAt: nowIso(), createdBy: myUpn() };
     localStorage.setItem(id, JSON.stringify(t));
     if (window.bccAudit) window.bccAudit('client-task-create', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } });
+    taskAssignNotify(t);
     renderTasks();
   }
   function toggleTask(id, done) {
