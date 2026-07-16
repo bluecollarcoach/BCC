@@ -280,6 +280,59 @@
     return flush();
   };
 
+  /* ---------- live sync (cross-device, near-real-time) ----------
+   * Every visible tab polls the delta endpoint (?since=<cursor>) on a short
+   * interval — an empty response is a few bytes, so idle cost is ~nothing.
+   * When another user/device changed something, the changed docs land in
+   * localStorage and ONE 'bcc-data-ready' event fires ({detail:{keys,live}}).
+   * Nearly every page already re-renders on that event, so a schedule change
+   * on one device appears on a co-worker's open screen within seconds.
+   * Local unsent writes always win (pending keys are skipped), and identical
+   * values are ignored, so your own pushes never echo back as "changes". */
+  var LIVE_POLL_MS = 8000;
+  var _livePollStarted = false, _liveBusy = false;
+  function livePoll() {
+    if (!signedIn || _liveBusy || document.hidden) return;
+    var since = ''; try { since = localStorage.getItem('bcc-sync-since-v1') || ''; } catch (e) {}
+    var ts = since ? new Date(since).getTime() : NaN;
+    if (isNaN(ts)) return; // bootstrap full pull hasn't stamped a cursor yet
+    _liveBusy = true;
+    fetch(API_BASE + '/data?since=' + encodeURIComponent(new Date(ts - 60 * 1000).toISOString()))
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        var items = (j && j.items) || [];
+        if (!items.length) return;
+        var changed = [], maxUpd = since;
+        items.forEach(function (it) {
+          if (!it || !it.key || it.data === undefined) return;
+          if (it.updatedAt && it.updatedAt > maxUpd) maxUpd = it.updatedAt;
+          if (pending.has(it.key)) return; // an unsent local write is newer
+          var val = typeof it.data === 'string' ? it.data : JSON.stringify(it.data);
+          if (localStorage.getItem(it.key) === val) return; // no real change
+          _origSetItem.call(localStorage, it.key, val);
+          changed.push(it.key);
+        });
+        try { if (maxUpd > since) _origSetItem.call(localStorage, 'bcc-sync-since-v1', maxUpd); } catch (e) {}
+        if (changed.length) {
+          if (changed.indexOf('bcc-admin-config-v1') >= 0) {
+            try { recomputePcPeople(); } catch (e) {}
+          }
+          window.dispatchEvent(new CustomEvent('bcc-data-ready', { detail: { keys: changed, live: true } }));
+        }
+      })
+      .catch(function () { /* offline / transient — next tick retries */ })
+      .finally(function () { _liveBusy = false; });
+  }
+  function liveStart() {
+    if (_livePollStarted || !signedIn) return;
+    _livePollStarted = true;
+    setInterval(livePoll, LIVE_POLL_MS);
+    // Catch up the moment a backgrounded tab comes back.
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) livePoll(); });
+    window.addEventListener('focus', livePoll);
+  }
+  window.addEventListener('bcc-auth-ready', liveStart);
+
   /* ---------- People filter ----------
    * Rebuilds window.bccPeople from bccPeopleFull, dropping anyone marked
    * 'inactive' or 'hidden' in bcc-admin-config-v1.users. Called once at

@@ -4940,7 +4940,22 @@
     bkStart(); // automatic time-tracking (admins only; server-authoritative)
   }
   // localStorage→Cosmos sync can land after init; re-render the data views (not the company list).
-  window.addEventListener('bcc-data-ready', function () { renderKpis(); renderTable(); });
+  window.addEventListener('bcc-data-ready', function (ev) {
+    renderKpis(); renderTable(); // root work queue (to-do counts) + period views
+    // Live cross-device changes: refresh what's on screen — but NEVER clobber
+    // something the user is in the middle of (an open editor or typed text).
+    if (!(ev && ev.detail && ev.detail.live) || !currentRealm) return;
+    if (typeof updateDrawer === 'function') updateDrawer();
+    var ae = document.activeElement;
+    var typing = !!(ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName));
+    if (currentTab === 'tasks') {
+      var draftTitle = document.getElementById('tk_title'), draftNote = document.getElementById('tk_note');
+      var hasDraft = (draftTitle && draftTitle.value.trim()) || (draftNote && draftNote.value.trim());
+      if (!_taskEdit && !hasDraft && !typing) renderTasks();
+    } else if (currentTab === 'overview' && !typing) {
+      renderOverview();
+    }
+  });
   window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
   setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
 })();
