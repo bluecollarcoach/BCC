@@ -2205,8 +2205,12 @@
           '<label>Journal no. (optional)<input id="je_docnum" value="' + esc(pre.DocNumber || '') + '" /></label>' +
           '<label class="full">Memo (optional)<input id="je_memo" value="' + esc(pre.PrivateNote || '') + '" placeholder="e.g. June depreciation" /></label>' +
         '</div>' +
-        '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:560px;"><thead><tr style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.03em;">' +
-          '<th style="text-align:left;padding:2px 5px;">Account</th><th style="text-align:left;padding:2px 5px;">Description</th><th style="text-align:right;padding:2px 5px;">Debit</th><th style="text-align:right;padding:2px 5px;">Credit</th><th></th></tr></thead><tbody id="je_lines"></tbody></table></div>' +
+        // table-layout:fixed + colgroup: the TH and its column's input share the exact
+        // same edges, so headers always line up with the fields under them.
+        '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:560px;table-layout:fixed;">' +
+          '<colgroup><col style="width:34%;" /><col /><col style="width:110px;" /><col style="width:110px;" /><col style="width:44px;" /></colgroup>' +
+          '<thead><tr style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.03em;">' +
+          '<th style="text-align:left;padding:2px 5px;">Account</th><th style="text-align:left;padding:2px 5px;">Description</th><th style="text-align:left;padding:2px 5px;">Debit</th><th style="text-align:left;padding:2px 5px;">Credit</th><th></th></tr></thead><tbody id="je_lines"></tbody></table></div>' +
         '<button class="btn btn-ghost" id="je_addline" type="button" style="margin-top:6px;font-size:12px;">+ Add line</button>' +
         '<div id="je_balance" style="margin-top:10px;font-size:13px;"></div>' +
         '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;"><button class="btn btn-ghost" id="je_cancel" type="button">Cancel</button><button class="btn btn-primary" id="je_save" type="button">' + (edit ? 'Save changes' : 'Create') + '</button></div></div>';
@@ -2216,8 +2220,8 @@
         return '<tr data-jrow="' + i + '">' +
           '<td style="padding:2px 5px;"><select data-j="accountId" style="width:100%;min-width:130px;' + inpCss + '">' + acctOpt(ln.accountId) + '</select></td>' +
           '<td style="padding:2px 5px;"><input data-j="desc" value="' + esc(ln.desc || '') + '" style="width:100%;min-width:110px;' + inpCss + '" /></td>' +
-          '<td style="padding:2px 5px;"><input data-j="debit" inputmode="decimal" value="' + esc(ln.postingType === 'Debit' ? (ln.amount || '') : '') + '" style="width:92px;text-align:right;' + inpCss + '" /></td>' +
-          '<td style="padding:2px 5px;"><input data-j="credit" inputmode="decimal" value="' + esc(ln.postingType === 'Credit' ? (ln.amount || '') : '') + '" style="width:92px;text-align:right;' + inpCss + '" /></td>' +
+          '<td style="padding:2px 5px;"><input data-j="debit" inputmode="decimal" value="' + esc(ln.postingType === 'Debit' ? (ln.amount || '') : '') + '" style="width:100%;text-align:right;' + inpCss + '" /></td>' +
+          '<td style="padding:2px 5px;"><input data-j="credit" inputmode="decimal" value="' + esc(ln.postingType === 'Credit' ? (ln.amount || '') : '') + '" style="width:100%;text-align:right;' + inpCss + '" /></td>' +
           '<td style="text-align:right;"><button class="btn btn-ghost" data-jremove="' + i + '" type="button" style="font-size:11px;min-height:28px;">×</button></td></tr>';
       }
       function recalc() {

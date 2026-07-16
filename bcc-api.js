@@ -621,7 +621,22 @@
     //    starting the other. Cuts the bootstrap blocking time in half on
     //    most page loads because /api/users (Graph) is the slow one.
     if (signedIn) {
-      var dataPromise = fetch(API_BASE + '/data').catch(function (e) {
+      // DELTA PULL: after the first full sync, only ask for docs that changed
+      // since the last visit (?since=). Cuts the biggest recurring page-load
+      // cost (the full firm-wide doc pull) to near-zero. A full pull still
+      // runs once a day to self-heal (legacy docs, clock skew, missed writes).
+      var SYNC_SINCE_KEY = 'bcc-sync-since-v1', SYNC_FULL_KEY = 'bcc-sync-fullpull-at';
+      var _since = '', _lastFull = 0;
+      try { _since = localStorage.getItem(SYNC_SINCE_KEY) || ''; _lastFull = +(localStorage.getItem(SYNC_FULL_KEY) || 0) || 0; } catch (e) {}
+      var useDelta = !!_since && (Date.now() - _lastFull) < 24 * 60 * 60 * 1000;
+      var dataUrl = API_BASE + '/data';
+      if (useDelta) {
+        // 5-minute overlap absorbs clock skew between writers.
+        var sinceTs = new Date(_since).getTime();
+        if (!isNaN(sinceTs)) dataUrl += '?since=' + encodeURIComponent(new Date(sinceTs - 5 * 60 * 1000).toISOString());
+        else useDelta = false;
+      }
+      var dataPromise = fetch(dataUrl).catch(function (e) {
         console.warn('[bcc-api] initial pull failed', e);
         return null;
       });
@@ -636,13 +651,19 @@
         var r = await dataPromise;
         if (r && r.ok) {
           var j = await r.json();
+          var maxUpd = _since || '';
           (j.items || []).forEach(function (it) {
             if (it && it.key && it.data !== undefined) {
+              if (it.updatedAt && it.updatedAt > maxUpd) maxUpd = it.updatedAt;
               if (pending.has(it.key)) return; // user has a newer local write queued
               var val = typeof it.data === 'string' ? it.data : JSON.stringify(it.data);
               _origSetItem.call(localStorage, it.key, val);
             }
           });
+          try {
+            if (maxUpd) _origSetItem.call(localStorage, SYNC_SINCE_KEY, maxUpd);
+            if (!useDelta) _origSetItem.call(localStorage, SYNC_FULL_KEY, String(Date.now()));
+          } catch (e) {}
         }
       } catch (e) {
         console.warn('[bcc-api] initial pull failed', e);
@@ -653,20 +674,35 @@
         _origSetItem.call(localStorage, 'bcc-field-who', user.userDetails);
       }
 
-      // 4) Pull active Entra users. The fetch was kicked off in parallel
-      //    with /api/data above; we just need to await its already-running
-      //    promise here. Two exports:
+      // 4) Active Entra users, STALE-WHILE-REVALIDATE: apply the cached
+      //    directory instantly (dropdowns ready with zero Graph wait), then
+      //    refresh from the network in the background and re-fire
+      //    bcc-users-ready if it changed. First-ever load still awaits.
       //   window.bccPeopleFull -> every active Entra user (admin uses this so it
       //     can show & manage all of them, including ones marked Inactive in app)
       //   window.bccPeople     -> display names, FILTERED to exclude users marked
       //     Inactive in bcc-admin-config-v1. This is what every dropdown uses.
+      var USERS_CACHE_KEY = 'bcc-users-cache-v1';
+      var applyUsers = function (live, persist) {
+        window.bccPeopleFull = live;
+        recomputePcPeople(); // fires bcc-users-ready
+        if (persist) { try { _origSetItem.call(localStorage, USERS_CACHE_KEY, JSON.stringify({ users: live, at: Date.now() })); } catch (e) {} }
+      };
+      var cachedUsers = null;
+      try { var cu = JSON.parse(localStorage.getItem(USERS_CACHE_KEY) || 'null'); if (cu && Array.isArray(cu.users) && cu.users.length) cachedUsers = cu.users; } catch (e) {}
+      var consumeUsers = function (ur) {
+        if (!ur || !ur.ok) return Promise.resolve(null);
+        return ur.json().then(function (uj) { return (uj.users || []).filter(function (u) { return u && u.displayName; }); });
+      };
       try {
-        var ur = await usersPromise;
-        if (ur && ur.ok) {
-          var uj = await ur.json();
-          var live = (uj.users || []).filter(function (u) { return u && u.displayName; });
-          window.bccPeopleFull = live;
-          recomputePcPeople();
+        if (cachedUsers) {
+          applyUsers(cachedUsers, false);
+          usersPromise.then(consumeUsers).then(function (live) {
+            if (live && live.length && JSON.stringify(live) !== JSON.stringify(cachedUsers)) applyUsers(live, true);
+          }).catch(function (e) { console.warn('[bcc-api] users refresh failed', e); });
+        } else {
+          var live0 = await usersPromise.then(consumeUsers);
+          if (live0 && live0.length) applyUsers(live0, true);
         }
       } catch (e) {
         console.warn('[bcc-api] users response parse failed', e);

@@ -346,14 +346,23 @@ app.http('data', {
             throw e;
           }
         }
+        // ?since=<ISO> — delta pull: only docs updated after that moment. The
+        // client sends it on repeat visits (with a small overlap window) so the
+        // recurring page-load payload is near-zero instead of the whole tenant.
+        // ISO-8601 UTC strings compare correctly as strings. Docs without
+        // updatedAt are only served by full pulls — the client does one daily.
+        const sinceD = (function () { try { return String(new URL(request.url).searchParams.get('since') || ''); } catch (_) { return ''; } })();
+        const sinceOk = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(sinceD);
         const q = {
           // Exclude server-only time docs so their ids (which encode who worked
           // which client on which day) aren't shipped to every signed-in user.
           // financial-period is excluded by ID PREFIX (not docType) — legacy docs
           // pushed via /api/data nest docType under .data, so a docType filter
           // would miss them and leak client books. Served only via qbo-periods.
-          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND NOT STARTSWITH(c.id, "bcc-bkentry-") AND NOT STARTSWITH(c.id, "bcc-report-") AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "bk-entry" AND c.docType != "monthly-report" AND c.docType != "client-drive"))',
-          parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND NOT STARTSWITH(c.id, "bcc-bkentry-") AND NOT STARTSWITH(c.id, "bcc-report-") AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "bk-entry" AND c.docType != "monthly-report" AND c.docType != "client-drive"))' + (sinceOk ? ' AND c.updatedAt > @since' : ''),
+          parameters: sinceOk
+            ? [{ name: '@t', value: BCC_TENANT_ID }, { name: '@since', value: sinceD }]
+            : [{ name: '@t', value: BCC_TENANT_ID }]
         };
         const { resources } = await c.items.query(q).fetchAll();
         // Integration docs hold secrets — redact credential fields for non-admins
