@@ -582,7 +582,7 @@ const ALLOWED_AUDIT_ACTIONS = new Set([
   'client-task-create', 'client-task-delete',
   'time-punch-in', 'time-punch-out', 'time-entry-add', 'time-entry-delete',
   'client-email-send', 'client-file-upload', 'client-file-delete',
-  'cpr-save', 'cpr-delete', 'cpr-print',
+  'cpr-save', 'cpr-delete', 'cpr-print', 'monthend-notify',
   'financial-period-save', 'financial-period-delete',
   // Other recently-added events that were also being rejected
   'chat-members-update', 'dashboard-update', 'permissions-update',
@@ -1202,6 +1202,37 @@ app.http('cpr-sign', {
       }
       return { jsonBody: { ok: true } };
     } catch (e) { context.error('cpr sign error', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+
+/**
+ * POST /api/notify — send an in-app notification (bell + web push) to another
+ * user in the firm. Used for workflow hand-offs (e.g. "month-end complete →
+ * notify the meeting scheduler"). Notifications carry no data access — the
+ * recipient sees only the message. Audit-logged with sender + recipient.
+ */
+app.http('notify-user', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'notify',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    try {
+      const body = await request.json().catch(() => ({}));
+      const toUpn = String(body.toUpn || '').trim().toLowerCase();
+      const title = String(body.title || '').trim().slice(0, 140);
+      const msg = String(body.body || '').trim().slice(0, 300);
+      const url = String(body.url || '/').slice(0, 200);
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(toUpn)) return badRequest('toUpn must be an email address');
+      if (!title) return badRequest('title required');
+      const c = container();
+      const from = String(p.userDetails || p.userId || '').toLowerCase();
+      await notifyUser(c, toUpn, { title, body: msg, url, tag: String(body.tag || '').slice(0, 60) });
+      logAudit('notify-user', { user: from, key: toUpn, path: url, meta: { title } });
+      return { jsonBody: { ok: true } };
+    } catch (e) { context.error('notify error', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
 

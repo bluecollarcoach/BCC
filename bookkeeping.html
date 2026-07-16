@@ -2920,6 +2920,15 @@
       t.status = done ? 'done' : 'open'; t.doneAt = done ? nowIso() : null;
     }
     t.updatedAt = nowIso(); localStorage.setItem(id, JSON.stringify(t));
+    // A task named "Month end complete" is a workflow hand-off: completing it
+    // notifies the meeting scheduler to book the month-end client meeting.
+    if (done && /month[\s-]*end\s*complete/i.test(t.title || '')) {
+      monthEndNotify('', function (err) {
+        if (err) { (window.bccNotify || alert)('Task done, but the month-end notification failed: ' + err.message, 'warn', 7000); return; }
+        if (window.bccAudit) window.bccAudit('monthend-notify', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm, via: 'task' } });
+        if (window.bccNotifySaved) window.bccNotifySaved(((window.bccDisplayName && window.bccDisplayName(monthEndContact())) || monthEndContact()) + ' was notified to schedule the month-end meeting.');
+      });
+    }
     renderTasks(); if (typeof updateDrawer === 'function') updateDrawer();
   }
   function delTask(id) { if (!confirm('Delete this task?')) return; localStorage.removeItem(id); if (window.bccAudit) window.bccAudit('client-task-delete', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } }); renderTasks(); }
@@ -3638,7 +3647,7 @@
       return hay.indexOf(q) >= 0;
     });
     var head = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;">' +
-      '<h3 style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;margin:0;">Certified payroll <span style="color:var(--muted);font-weight:400;font-size:12px;">· Minnesota DLI format</span></h3>' +
+      '<h3 style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;margin:0;">Certified payroll <span style="color:var(--muted);font-weight:400;font-size:12px;">· MN DLI &amp; MnDOT formats</span></h3>' +
       '<button class="btn btn-primary" id="cpr_new" type="button">+ New payroll report</button></div>' +
       (all.length ? '<input id="cpr_search" type="search" placeholder="🔍 Search by job / project, payroll #, or employee…" value="' + esc(_cprSearch) + '" style="width:100%;box-sizing:border-box;min-height:38px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;padding:8px 10px;font:inherit;font-size:13px;margin-bottom:10px;" />' : '');
     var list = reports.length ? ('<table><thead><tr><th>Payroll #</th><th>Pay period end</th><th>Project</th><th class="num">Employees</th><th>Updated</th><th></th></tr></thead><tbody>' + reports.map(function (r) {
@@ -3698,7 +3707,8 @@
       '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-ghost" id="cpr_back" type="button">← Back</button>' +
       '<button class="btn btn-ghost" id="cpr_autofill" type="button" title="Upload a payroll register or timesheet (PDF, photo, or Excel/CSV) and let AI pre-fill the employees and hours for you to review">✨ Auto-fill from a file</button>' +
       '<input type="file" id="cpr_file" accept=".pdf,.png,.jpg,.jpeg,.webp,.csv,.xlsx,.xls,image/*" style="display:none;" />' +
-      '<button class="btn btn-ghost" id="cpr_print" type="button">Print MN form</button>' +
+      '<button class="btn btn-ghost" id="cpr_print" type="button" title="Minnesota DLI certified payroll form (print)">🖨️ DLI form</button>' +
+      '<button class="btn btn-ghost" id="cpr_mndot" type="button" title="Official MnDOT Prevailing Wage Payroll Report + Statement of Compliance, filled as fillable PDFs">🛣️ MnDOT forms</button>' +
       '<button class="btn btn-primary" id="cpr_save" type="button">Save</button></div></div>';
 
     var hdr = '<div class="ws-form" style="margin-bottom:14px;">' +
@@ -3711,6 +3721,8 @@
       '<label>Pay period end date<input type="date" data-cf="payPeriodEnd" value="' + esc(cprDraft.payPeriodEnd || '') + '" /></label>' +
       '<label>Week starting (Sunday)<input type="date" data-cf="weekStart" value="' + esc(cprDraft.weekStart || '') + '" /></label>' +
       txt('Project name and location', 'projectName', '', true) +
+      txt('State project # (MnDOT)', 'mndotSp', 'e.g. SP 1234-56') +
+      txt('Federal project # (MnDOT)', 'mndotFed', 'if federally funded') +
       '<label>Payroll #<input data-cf="payrollNo" value="' + esc(cprDraft.payrollNo || '') + '" /></label>' +
       '<label style="flex-direction:row;align-items:center;gap:8px;text-transform:none;font-size:13px;"><input type="checkbox" data-cf="isFinal" ' + (cprDraft.isFinal ? 'checked' : '') + ' /> Mark as FINAL report</label>' +
       '</div>';
@@ -3747,6 +3759,7 @@
     document.getElementById('cpr_back').onclick = document.getElementById('cpr_back2').onclick = function () { cprEditingId = null; cprDraft = null; renderPayroll(); };
     document.getElementById('cpr_save').onclick = document.getElementById('cpr_save2').onclick = cprSave;
     document.getElementById('cpr_print').onclick = function () { cprSave(true); printCpr(cprDraft); };
+    document.getElementById('cpr_mndot').onclick = function () { cprSave(true); cprMndotDownload(cprDraft); };
     cprRenderSig();
     var afb = document.getElementById('cpr_autofill'); if (afb) afb.onclick = function () { var fi = document.getElementById('cpr_file'); if (fi) fi.click(); };
     var afi = document.getElementById('cpr_file'); if (afi) afi.onchange = cprAutofill;
@@ -4066,6 +4079,180 @@
     if (!w) { (window.bccNotify || alert)('Allow pop-ups to print the payroll form.', 'warn'); return; }
     w.document.open(); w.document.write(cprDocHtml(r, true)); w.document.close();
     if (window.bccAudit) window.bccAudit('cpr-print', { key: r.id, path:'/bookkeeping.html', meta:{ realmId: currentRealm, payrollNo: r.payrollNo } });
+  }
+
+  /* ---- MnDOT prevailing-wage forms (official fillable PDFs, filled with pdf-lib) ----
+     Two separate documents, as MnDOT expects: the Prevailing Wage Payroll Report
+     (landscape grid, 8 employees/page — we chunk into parts) and the Prime
+     Contractor–Subcontractor's Statement of Compliance. Named AcroForm fields are
+     filled directly so the output STAYS fillable; the per-day hour cells and the
+     deduction sub-columns are comb fields (1 char per column) that can't hold real
+     values, so those amounts are DRAWN into the field rectangles instead. */
+  function cprEnsurePdfLib() {
+    return window.PDFLib ? Promise.resolve(window.PDFLib) : new Promise(function (res, rej) {
+      var s = document.createElement('script'); s.src = '/lib/pdf-lib.min.js';
+      s.onload = function () { window.PDFLib ? res(window.PDFLib) : rej(new Error('PDF library did not initialize')); };
+      s.onerror = function () { rej(new Error('could not load the PDF library')); };
+      document.head.appendChild(s);
+    });
+  }
+  // Pure builder (testable): returns [{name, bytes}] — one or more payroll PDFs + the SOC.
+  async function cprMndotBuild(r, payrollBytes, socBytes, PDFLib) {
+    var fmtD = function (iso) { if (!iso) return ''; var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso); return m ? (+m[2]) + '/' + (+m[3]) + '/' + m[1] : iso; };
+    var MDOW = ['Su', 'M', 'T', 'W', 'R', 'F', 'S']; // MnDOT uses R for Thursday
+    var wd = weekDates(r.weekStart);
+    var emps = (r.employees || []).filter(function (e) { return e && ((e.name || '').trim() || !cprEmpIsBlank(e)); });
+    var files = [];
+    var payrollName = function (part, parts) {
+      return 'MnDOT Payroll' + (r.payrollNo ? ' #' + r.payrollNo : '') + (parts > 1 ? ' (part ' + part + ' of ' + parts + ')' : '') + (r.weekStart ? ' week of ' + r.weekStart : '') + '.pdf';
+    };
+    function setTf(form, name, val) {
+      if (val == null || String(val) === '') return;
+      try {
+        var tf = form.getTextField(name);
+        var v = String(val);
+        var ml = null; try { ml = tf.getMaxLength(); } catch (e) {}
+        if (ml && v.length > ml) v = v.slice(0, ml);
+        if (v.indexOf('\n') >= 0) { try { tf.enableMultiline(); } catch (e) {} }
+        tf.setText(v);
+      } catch (e) { /* unknown/typed-differently field — leave blank rather than fail */ }
+    }
+    function rectOf(form, name) {
+      try { var w = form.getTextField(name).acroField.getWidgets()[0]; return w.getRectangle(); } catch (e) { return null; }
+    }
+
+    var chunks = []; for (var c = 0; c < Math.max(1, Math.ceil(emps.length / 8)); c++) chunks.push(emps.slice(c * 8, c * 8 + 8));
+    for (var ci = 0; ci < chunks.length; ci++) {
+      var doc = await PDFLib.PDFDocument.load(payrollBytes, { ignoreEncryption: true });
+      var form = doc.getForm(), pg = doc.getPage(0);
+      var helv = await doc.embedFont(PDFLib.StandardFonts.Helvetica);
+      var ink = PDFLib.rgb(0.05, 0.09, 0.25);
+      var draw = function (rect, slots, idx, text, fs) {
+        if (!rect || !text) return;
+        var slotW = rect.width / slots;
+        var tw = helv.widthOfTextAtSize(text, fs);
+        pg.drawText(text, { x: rect.x + slotW * idx + (slotW - tw) / 2, y: rect.y + (rect.height - fs) / 2 + 1, size: fs, font: helv, color: ink });
+      };
+      setTf(form, 'Contractor Name', r.contractorName);
+      setTf(form, 'Address and Telephone', [r.contractorAddress, r.contractorPhone].filter(Boolean).join(' · '));
+      setTf(form, 'Prime Contractor Name', r.primeName);
+      setTf(form, 'Address  Telephone', r.primeAddress);
+      setTf(form, 'State Project  Contract Number', [r.mndotSp, r.contractNumber].filter(Boolean).join(' / '));
+      setTf(form, 'Pay Period End Date', fmtD(r.payPeriodEnd));
+      setTf(form, 'Project Location', r.projectName);
+      setTf(form, 'Payroll', String(r.payrollNo || '') + (r.isFinal ? ' FINAL' : ''));
+      var dayBase = '5 Day of Week M T W R F S Su  Date xxxxOT  ST';
+      for (var d = 0; d < 7; d++) {
+        setTf(form, dayBase + (d === 0 ? '' : '_' + (d + 1)), MDOW[d]);      // top row: day letters
+        setTf(form, dayBase + '_' + (d + 8), wd[d]);                          // bottom row: dates
+      }
+      var othLbl = { a: '', b: '' };
+      chunks[ci].forEach(function (e) { if (!othLbl.a && (e.dedOther1Label || '').trim()) othLbl.a = e.dedOther1Label.trim(); if (!othLbl.b && (e.dedOther2Label || '').trim()) othLbl.b = e.dedOther2Label.trim(); });
+      setTf(form, 'Other SpecifyState Tax', othLbl.a);
+      setTf(form, 'Other SpecifyState Tax_2', othLbl.b);
+      chunks[ci].forEach(function (e, idx) {
+        var i = idx + 1, sfx = (i === 1 ? '' : '_' + i), comp = computeEmp(e);
+        setTf(form, 'Employee Name Address and Last Four Digits of Social Security NumberRow' + i, [e.name, e.address, e.idNumber].filter(Boolean).join('\n'));
+        setTf(form, ' of Exemp tionsRow' + i, e.exemptions);
+        setTf(form, 'Classification TitleRow' + (2 * i - 1), (e.classification || '') + (e.apprentice ? ' (appr)' : ''));
+        setTf(form, 'Classification TitleRow' + (2 * i), e.laborCode ? 'Code ' + e.laborCode : '');
+        // daily hours: drawn per day column (the comb fields hold 1 char/day — useless for 8.5 etc.)
+        var otRect = rectOf(form, 'OT' + sfx), stRect = rectOf(form, 'ST' + sfx);
+        for (var d2 = 0; d2 < 7; d2++) {
+          draw(otRect, 7, d2, String((e.ot || [])[d2] || ''), 7.5);
+          draw(stRect, 7, d2, String((e.st || [])[d2] || ''), 7.5);
+        }
+        setTf(form, 'Total Hours This JobOT' + sfx, comp.otH ? comp.otH.toFixed(2) : '');
+        setTf(form, 'Hourly Rates of PayOT' + sfx, e.otRate ? money(e.otRate) : '');
+        setTf(form, 'Total Hours This JobST' + sfx, comp.stH ? comp.stH.toFixed(2) : '');
+        setTf(form, 'Hourly Rates of PayST' + sfx, e.stRate ? money(e.stRate) : '');
+        setTf(form, 'Gross Amount Earned This JobRow' + i, money(comp.grossJob));
+        setTf(form, 'Gross Amount Earned This Pay PeriodRow' + i, money(comp.grossPeriod));
+        // deductions: FICA/Fed/State share one comb (3 cols), the two Others share another (2 cols) — drawn
+        var d1 = rectOf(form, i === 1 ? 'undefined' : 'undefined_' + (2 * i - 1));
+        var d2r = rectOf(form, 'undefined_' + (2 * i));
+        if (e.dedFica) draw(d1, 3, 0, money(e.dedFica), 6.5);
+        if (e.dedFed) draw(d1, 3, 1, money(e.dedFed), 6.5);
+        if (e.dedState) draw(d1, 3, 2, money(e.dedState), 6.5);
+        if (e.dedOther1) draw(d2r, 2, 0, money(e.dedOther1), 6.5);
+        if (e.dedOther2) draw(d2r, 2, 1, money(e.dedOther2), 6.5);
+        setTf(form, 'Total DeductionsRow' + i, money(comp.ded));
+        setTf(form, 'Total Net Wages PaidRow' + i, money(comp.net));
+      });
+      files.push({ name: payrollName(ci + 1, chunks.length), bytes: await doc.save() });
+    }
+
+    // ---- Statement of Compliance ----
+    var soc = await PDFLib.PDFDocument.load(socBytes, { ignoreEncryption: true });
+    var sform = soc.getForm();
+    setTf(sform, 'REPORT NUMBER', r.payrollNo);
+    setTf(sform, 'STATE PROJECT NUMBERS', r.mndotSp);
+    setTf(sform, 'DATE', fmtD(r.socDate));
+    setTf(sform, 'PRIME CONTRACTORSUBCONTRACTOR', r.contractorName);
+    setTf(sform, 'PHONE NUMBER', r.contractorPhone);
+    setTf(sform, 'CONTRACT NUMBER', r.contractNumber);
+    setTf(sform, 'ADDRESS', r.contractorAddress);
+    setTf(sform, 'FEDERAL PROJECT NUMBER', r.mndotFed);
+    setTf(sform, 'TYPE OF WORK', r.typeOfWork);
+    setTf(sform, 'Name of signatory party', r.socName);
+    setTf(sform, 'Title', r.socTitle);
+    setTf(sform, 'Company Name', r.socBusiness || r.contractorName);
+    setTf(sform, 'Company Name - Prime or Subcontractor', r.contractorName);
+    setTf(sform, 'Date1_af_date', fmtD(r.socCommence));
+    setTf(sform, 'Date2_af_date', fmtD(r.socEnd));
+    setTf(sform, '# of workers', String(emps.length || ''));
+    // deductions actually used across employees → "describe legal deductions" lines
+    var dedParts = [];
+    if (emps.some(function (e) { return cnum(e.dedFica); })) dedParts.push('FICA');
+    if (emps.some(function (e) { return cnum(e.dedFed); })) dedParts.push('federal income tax withholding');
+    if (emps.some(function (e) { return cnum(e.dedState); })) dedParts.push('state income tax withholding');
+    emps.forEach(function (e) { [e.dedOther1Label, e.dedOther2Label].forEach(function (l) { l = (l || '').trim(); if (l && dedParts.indexOf(l) < 0) dedParts.push(l); }); });
+    setTf(sform, 'DESCRIBE LEGAL DEDUCTIONS 1', dedParts.join(', '));
+    try { if (r.fringe === 'plans') sform.getCheckBox('WHERE FRINGE BENEFITS ARE PAID TO ANY APPROVED PLANS, FUNDS, OR PROGRAMS').check(); } catch (e) {}
+    try { if (r.fringe === 'cash') sform.getCheckBox('WHERE FRINGE BENEFITS ARE PAID IN CASH TO ALL WORKERS').check(); } catch (e) {}
+    if ((r.fringeExceptions || '').trim()) setTf(sform, 'EXPLANATION', r.fringeExceptions.trim());
+    // benefit-program details (4e): one program per line of our free-text field
+    String(r.fringePrograms || '').split('\n').map(function (s) { return s.trim(); }).filter(Boolean).slice(0, 11).forEach(function (line, idx) {
+      setTf(sform, 'NAME AND ADDRESS OF FRINGE BENEFIT FUND PLAN OR PROGRAM ADMINISTRATORRow' + (idx + 1), line);
+    });
+    setTf(sform, 'NAME AND TITLE OF CONTRACTORS REPRESENTATIVE PRINT', [r.socName, r.socTitle].filter(Boolean).join(', '));
+    setTf(sform, 'DATE_2', fmtD(r.socDate));
+    // stamp the saved signature over the contractor-representative SIGNATURE line
+    if (r.signatureSrc) {
+      try {
+        var sigTf = sform.getTextField('SIGNATURE');
+        var w2 = sigTf.acroField.getWidgets()[0];
+        var rect = w2.getRectangle();
+        var pref = w2.P();
+        var pages = soc.getPages();
+        var sigPg = pages[1] || pages[0];
+        for (var pi = 0; pi < pages.length; pi++) { if (pages[pi].ref === pref) { sigPg = pages[pi]; break; } }
+        var png = await soc.embedPng(r.signatureSrc);
+        var h = rect.height + 8, wpx = png.width * (h / png.height);
+        if (wpx > rect.width) { wpx = rect.width; h = png.height * (wpx / png.width); }
+        sigPg.drawImage(png, { x: rect.x + 2, y: rect.y + 1, width: wpx, height: h });
+      } catch (e) { /* signature is optional — never fail the build */ }
+    }
+    files.push({ name: 'MnDOT Statement of Compliance' + (r.payrollNo ? ' #' + r.payrollNo : '') + '.pdf', bytes: await soc.save() });
+    return files;
+  }
+  function cprMndotDownload(r) {
+    if (window.bccNotify) window.bccNotify('Building the MnDOT forms…', 'info', 3000);
+    Promise.all([
+      cprEnsurePdfLib(),
+      fetch('/forms/mndot-prevailing-wage-payroll.pdf', { credentials: 'include' }).then(function (x) { if (!x.ok) throw new Error('payroll template HTTP ' + x.status); return x.arrayBuffer(); }),
+      fetch('/forms/mndot-statement-of-compliance.pdf', { credentials: 'include' }).then(function (x) { if (!x.ok) throw new Error('SOC template HTTP ' + x.status); return x.arrayBuffer(); })
+    ]).then(function (got) {
+      return cprMndotBuild(r, got[1], got[2], got[0]);
+    }).then(function (files) {
+      files.forEach(function (f, i) {
+        var url = URL.createObjectURL(new Blob([f.bytes], { type: 'application/pdf' }));
+        var a = document.createElement('a'); a.href = url; a.download = f.name; document.body.appendChild(a);
+        setTimeout(function () { a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(url); }, 30000); }, i * 400);
+      });
+      if (window.bccAudit) window.bccAudit('cpr-print', { key: r.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, payrollNo: r.payrollNo, format: 'mndot' } });
+      if (window.bccNotifySaved) window.bccNotifySaved(files.length + ' MnDOT PDFs downloaded — both stay fillable for any final touches.');
+    }).catch(function (e) { (window.bccNotify || alert)('Could not build the MnDOT forms: ' + e.message, 'error', 8000); });
   }
 
   /* ---- Pay applications (Application & Certificate for Payment — AIA G702/G703 style) ---- */
@@ -4399,11 +4586,62 @@
         '<input data-cnote="' + s.key + '" value="' + esc(st.note || '') + '" placeholder="note (optional)" style="margin:8px 0 0 28px;width:calc(100% - 28px);border:1px solid var(--chrome-mute);border-radius:6px;padding:5px 7px;font:inherit;font-size:12px;box-sizing:border-box;" />' +
       '</div>';
     }).join('');
-    body.innerHTML = head + bar + steps;
+    var notified = _close.meetingNotifiedAt;
+    var finish = '<div style="border:1px solid var(--chrome-mute);background:var(--gold-fade);border-radius:10px;padding:12px;margin-top:14px;">' +
+      '<div style="font-weight:700;font-size:14px;margin-bottom:6px;">🗓️ Month end complete</div>' +
+      '<div style="font-size:12.5px;color:var(--muted);margin-bottom:8px;">Notifies <strong id="close_mecname">' + esc((window.bccDisplayName && window.bccDisplayName(monthEndContact())) || monthEndContact()) + '</strong> to schedule the month-end meeting with the client.' +
+      (notified ? ' <span style="color:#1f8a4c;">Sent ' + new Date(notified).toLocaleDateString() + '.</span>' : '') + '</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">' +
+      '<button class="btn btn-primary" id="close_menotify" type="button">' + (notified ? 'Send again' : '✅ Month end complete — send notification') + '</button>' +
+      '<input id="close_mecontact" value="' + esc(monthEndContact()) + '" placeholder="who to notify (email)" style="min-height:38px;border:1px solid var(--chrome-mute);border-radius:8px;padding:6px 9px;font:inherit;font-size:12.5px;min-width:230px;" />' +
+      '<span id="close_mestatus" style="font-size:12px;color:var(--muted);"></span></div></div>';
+    body.innerHTML = head + bar + steps + finish;
     document.getElementById('close_period').onchange = function () { saveClose(); _close = loadCloseDoc(this.value); renderClose(); };
+    document.getElementById('close_mecontact').onchange = function () { setMonthEndContact(this.value); var nm = document.getElementById('close_mecname'); if (nm) nm.textContent = (window.bccDisplayName && window.bccDisplayName(monthEndContact())) || monthEndContact(); };
+    document.getElementById('close_menotify').onclick = function () {
+      var btn = this, st = document.getElementById('close_mestatus');
+      var pd = new Date(+period.slice(0, 4), +period.slice(5, 7) - 1, 1);
+      var label = pd.toLocaleDateString([], { month: 'long', year: 'numeric' });
+      btn.disabled = true; if (st) st.textContent = 'Sending…';
+      monthEndNotify(label, function (err) {
+        btn.disabled = false;
+        if (err) { if (st) st.textContent = ''; (window.bccNotify || alert)('Could not notify: ' + err.message, 'error', 7000); return; }
+        _close.meetingNotifiedAt = nowIso(); _close.meetingNotifiedTo = monthEndContact(); saveClose();
+        if (window.bccAudit) window.bccAudit('monthend-notify', { key: _close.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, period: period, to: monthEndContact() } });
+        renderClose();
+        if (window.bccNotifySaved) window.bccNotifySaved('Notification sent — ' + label + ' month-end meeting hand-off.');
+      });
+    };
     body.querySelectorAll('[data-cstep]').forEach(function (c) { c.onchange = function () { var k = c.getAttribute('data-cstep'); _close.steps[k] = _close.steps[k] || {}; _close.steps[k].done = c.checked; saveClose(); renderClose(); }; });
     body.querySelectorAll('[data-cnote]').forEach(function (inp) { inp.oninput = function () { var k = inp.getAttribute('data-cnote'); _close.steps[k] = _close.steps[k] || {}; _close.steps[k].note = inp.value; saveClose(); }; });
     closeLoadHelpers(period);
+  }
+  /* ---- Month-end complete → notify the meeting scheduler (Jessica's request).
+     The contact is configurable (stored firm-wide, seeded to Janice); the
+     notification itself grants no data access. Fired from the Close tab button
+     or by completing a task titled "Month end complete". ---- */
+  var MONTHEND_CONTACT_KEY = 'bcc-monthend-contact-v1';
+  function monthEndContact() {
+    try { var d = JSON.parse(localStorage.getItem(MONTHEND_CONTACT_KEY) || 'null'); if (d && d.upn) return String(d.upn); } catch (e) {}
+    return 'janice@bluecollarcoach.us';
+  }
+  function setMonthEndContact(upn) {
+    localStorage.setItem(MONTHEND_CONTACT_KEY, JSON.stringify({ id: MONTHEND_CONTACT_KEY, tenantId: 'blue-collar-coach', docType: 'setting', upn: String(upn || '').trim().toLowerCase(), updatedAt: nowIso(), updatedBy: myUpn() }));
+  }
+  function monthEndNotify(periodLabel, done) {
+    var to = monthEndContact();
+    if (!to) { done(new Error('no contact set')); return; }
+    fetch('/api/notify', {
+      method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        toUpn: to,
+        title: '🗓️ Month-end complete — ' + companyName(currentRealm),
+        body: (periodLabel ? periodLabel + ' is closed' : 'The month-end close is done') + ' for ' + companyName(currentRealm) + '. Please schedule the month-end meeting with the client.',
+        url: '/bookkeeping.html', tag: 'monthend-' + currentRealm + '-' + (periodLabel || '')
+      })
+    }).then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+      .then(function (j) { done(j.ok ? null : new Error(j.error || 'could not send')); })
+      .catch(done);
   }
   function closeGoReport(t) { setSection('reports'); setTimeout(function () { loadQboReport(t); }, 60); }
   function closeLoadHelpers(period) {
