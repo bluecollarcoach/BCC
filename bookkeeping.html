@@ -3424,8 +3424,13 @@
     var cm = _clientMailbox || {};
     // value = the SAVED mailbox only (never the suggestion) so there is no
     // pre-selected text to fight with as you type; the suggestion is a placeholder.
+    var preFilled = cm.mailbox && cm.enabled !== false;
     wrap.innerHTML = '<div style="font-weight:700;font-size:13.5px;margin-bottom:6px;">Client mailbox setup</div>' +
-      '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">Create a <strong>shared mailbox</strong> with this address in the Microsoft 365 admin center (free), then save it here.</div>' +
+      '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">' +
+        (preFilled
+          ? 'This address is set. If it isn’t created in Microsoft 365 yet, create it as a <strong>shared mailbox</strong> (free) in the M365 admin center — mail starts flowing automatically once it exists.'
+          : 'Create a <strong>shared mailbox</strong> with this address in the Microsoft 365 admin center (free), then save it here.') +
+      '</div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;"><input id="cm_addr" autocomplete="off" spellcheck="false" value="' + esc(cm.mailbox || '') + '" placeholder="' + esc(suggestMailbox() || 'mailbox@bluecollarcoach.us') + '" style="flex:1;min-width:220px;border:1px solid var(--chrome-mute);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;" />' +
       '<button class="btn btn-primary" id="cm_save" type="button">Save mailbox</button>' + (cm.mailbox ? '<button class="btn btn-ghost" id="cm_clear" type="button">Remove</button>' : '') + '</div>' +
       '<div id="cm_status" style="font-size:12px;color:var(--muted);margin-top:6px;"></div>';
@@ -3463,6 +3468,10 @@
       .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
       .then(function (resp) {
         if (currentRealm !== realmAt) return;
+        if (resp && resp.ok && resp.pendingMailbox) {
+          list.innerHTML = '<div style="background:var(--gold-fade);border:1px solid var(--chrome-mute);border-radius:8px;padding:12px 14px;font-size:13px;color:var(--ink);">📬 <strong>' + esc((_clientMailbox && _clientMailbox.mailbox) || 'This mailbox') + '</strong> is set up in the app but hasn’t been created in Microsoft 365 yet. An admin can create it as a <strong>shared mailbox</strong> in the M365 admin center — mail will appear here automatically once it exists.</div>';
+          _emMsgs = []; return;
+        }
         if (!resp || !resp.ok) { list.innerHTML = '<div style="color:var(--burgundy);">Mailbox unavailable: ' + esc((resp && resp.error) || 'error') + '</div>'; return; }
         _emMsgs = resp.messages || []; _emLoadedFor = currentRealm; renderEmailList();
       })

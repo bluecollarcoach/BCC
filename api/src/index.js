@@ -2889,6 +2889,7 @@ app.http('msgraph-send-mail', {
       });
       if (!r.ok && r.status !== 202) {
         const detail = (await r.text()).slice(0, 300);
+        if (body.realmId && graphMailboxMissing(r.status, detail)) return { status: 409, jsonBody: { ok: false, pendingMailbox: true, error: 'This client’s shared mailbox hasn’t been created in Microsoft 365 yet. Once an admin creates it, sending works automatically.' } };
         return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')', detail } };
       }
       logAudit('client-email-send', { user: auditUser(request), path: '/api/integrations/msgraph/send-mail', meta: { realmId: body.realmId ? String(body.realmId) : undefined, to: toList.filter(Boolean).slice(0, 5).map(e => String(e).slice(0, 120)), subject } });
@@ -2919,6 +2920,16 @@ app.http('msgraph-send-mail', {
  * shared mailboxes); here we just store the address per client and route the
  * client's send/inbox through it. Config doc: bcc-client-mailbox-<realmId>.
  */
+// True when Graph is telling us the target mailbox doesn't exist (or isn't a
+// mailbox yet) — i.e. the address is configured in the app but the shared
+// mailbox hasn't been created in the M365 admin center. That's a setup state,
+// not an app failure, so callers surface a friendly "not created yet" note
+// instead of a raw 502. Addresses can be pre-filled before the mailbox exists;
+// they start working automatically the moment it does.
+function graphMailboxMissing(status, detail) {
+  if (status !== 404 && status !== 400) return false;
+  return /Request_ResourceNotFound|ResourceNotFound|ErrorInvalidUser|MailboxNotEnabledForRESTAPI|ErrorNonExistentMailbox|ErrorInvalidMailbox|does not exist|user was not found/i.test(String(detail || ''));
+}
 async function resolveClientMailbox(p, realmId) {
   const c = container();
   const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
@@ -2999,7 +3010,12 @@ app.http('msgraph-messages', {
         gurl = 'https://graph.microsoft.com/v1.0/users/' + upn + '/messages?$top=' + top + '&$orderby=receivedDateTime%20desc&$select=' + select;
       }
       const r = await fetch(gurl, { headers: { Authorization: 'Bearer ' + access } });
-      if (!r.ok) { const detail = (await r.text()).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')', detail } }; }
+      if (!r.ok) {
+        const detail = (await r.text()).slice(0, 300);
+        // Address saved but the shared mailbox isn't created in M365 yet → not an error.
+        if (realmId && graphMailboxMissing(r.status, detail)) return { jsonBody: { ok: true, messages: [], pendingMailbox: true, note: 'mailbox not created yet' } };
+        return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')', detail } };
+      }
       const data = await r.json();
       const messages = (Array.isArray(data.value) ? data.value : []).map(m => ({
         id: m.id,
