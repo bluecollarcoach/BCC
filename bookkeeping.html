@@ -639,6 +639,9 @@
   <div class="card" id="tab-wip" style="display:none; margin-top:14px;">
     <div id="wip-body"></div>
   </div>
+  <div class="card" id="tab-notary" style="display:none; margin-top:14px;">
+    <div id="notary-body"></div>
+  </div>
   <div class="card" id="tab-access" style="display:none; margin-top:14px;">
     <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Team &amp; access</h3>
     <div id="access-body"></div>
@@ -2621,6 +2624,7 @@
     { key: 'payroll',      label: 'Certified payroll',  ic: '🧮' },
     { key: 'payapp',       label: 'Pay applications',   ic: '📄' },
     { key: 'wip',          label: 'Job costing',        ic: '🏗️' },
+    { key: 'notary',       label: 'Notary',             ic: '🖋️' },
     { key: 'info',         label: 'Client info',        ic: '🏢' },
     { key: 'access',       label: 'Team & access',      ic: '👥' }
   ];
@@ -2631,7 +2635,7 @@
     { title: '',              keys: ['overview'] },
     { title: 'Communication', keys: ['email', 'tasks', 'activity'] },
     { title: 'Bookkeeping',   keys: ['transactions', 'reports', 'close'] },
-    { title: 'Documents',     keys: ['files', 'payroll', 'payapp', 'wip'] },
+    { title: 'Documents',     keys: ['files', 'payroll', 'payapp', 'wip', 'notary'] },
     { title: 'Setup',         keys: ['info', 'access'] }
   ];
   function sectionLabel(k) { var s = SECTIONS.find(function (x) { return x.key === k; }); return s ? s.label : 'Overview'; }
@@ -2742,7 +2746,7 @@
   // ----- Section visibility -----
   function hideAllSections() {
     ['qboKpis', 'qboReports', 'qboWrite'].forEach(function (id) { var e = document.getElementById(id); if (e) e.style.display = 'none'; });
-    ['overview', 'activity', 'info', 'files', 'tasks', 'email', 'payroll', 'payapp', 'wip', 'close', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
+    ['overview', 'activity', 'info', 'files', 'tasks', 'email', 'payroll', 'payapp', 'wip', 'notary', 'close', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
   }
   function showSection(sec) {
     hideAllSections();
@@ -2794,6 +2798,7 @@
     else if (sec === 'payapp') renderPayApp();
     else if (sec === 'close') renderClose();
     else if (sec === 'wip') renderWip();
+    else if (sec === 'notary') renderNotary();
     else if (sec === 'access') renderAccess();
   }
 
@@ -3535,6 +3540,143 @@
     }).catch(function (e) { st.textContent = 'Upload failed: ' + e.message; });
   }
   function delFile(id) { if (!confirm('Delete this file?')) return; fetch('/api/documents/' + encodeURIComponent(id), { method: 'DELETE', credentials: 'include' }).then(function () { if (window.bccAudit) window.bccAudit('client-file-delete', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } }); loadFiles(); }).catch(function () { (window.bccNotify || alert)('Delete failed.', 'warn'); }); }
+
+  /* ---- Online notarization workflow ----
+     The app does NOT perform the notarial act — that is done by the commissioned
+     notary on the RON platform (ID proofing + recorded A/V session + seal). The
+     app owns the workflow AROUND it: request a document, assign the team notary,
+     email the signer the platform session link, track status, and file the
+     finished notarized PDF back into the client's Files. Docs: bcc-notary-<realm>-*. */
+  var _notaryNew = false;
+  function notaryPrefix() { return 'bcc-notary-' + currentRealm + '-'; }
+  function allNotary() { var out = []; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (!k || k.indexOf(notaryPrefix()) !== 0) continue; try { var r = JSON.parse(localStorage.getItem(k)); if (r && r.id) out.push(r); } catch (e) {} } return out; }
+  function loadNotaryReq(id) { try { return JSON.parse(localStorage.getItem(id)); } catch (e) { return null; } }
+  function saveNotaryReq(r) { r.updatedAt = nowIso(); r.updatedBy = myUpn(); localStorage.setItem(r.id, JSON.stringify(r)); if (window.bccAudit) window.bccAudit('client-file-upload', { key: r.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, source: 'notary' } }); }
+  var NOTARY_STATUS = { requested: ['🟡 Requested', '#8a6f3c'], scheduled: ['🔵 Scheduled', '#1d5fb0'], completed: ['🟢 Completed', '#1f8a4c'] };
+  function notaryForm() {
+    return '<div class="card" style="background:var(--gold-fade);border:1px solid var(--chrome-mute);margin-bottom:14px;">' +
+      '<div style="font-weight:700;font-size:14px;margin-bottom:8px;">New notarization request</div>' +
+      '<div class="ws-form">' +
+      '<label class="full">Document name<input id="nt_docname" placeholder="e.g. Loan agreement, Affidavit…" /></label>' +
+      '<label class="full">Upload the document (optional — stored in Files)<input type="file" id="nt_file" accept=".pdf,.doc,.docx,image/*" /></label>' +
+      '<label>Signer name<input id="nt_signer" placeholder="Who is signing" /></label>' +
+      '<label>Signer email<input id="nt_email" type="email" placeholder="signer@example.com" /></label>' +
+      '<label>Assign notary<select id="nt_notary">' + assigneeOpts('') + '</select></label>' +
+      '<label>RON platform (optional)<input id="nt_platform" placeholder="e.g. Proof, DocuSign Notary" /></label>' +
+      '<label class="full">Notes (optional)<textarea id="nt_notes" rows="2"></textarea></label>' +
+      '<div class="full" style="display:flex;gap:8px;align-items:center;"><button class="btn btn-primary" id="nt_create" type="button">Create request</button><button class="btn btn-ghost" id="nt_cancel" type="button">Cancel</button><span id="nt_cstatus" style="font-size:12px;color:var(--muted);"></span></div>' +
+      '</div></div>';
+  }
+  function notaryCard(r) {
+    var st = NOTARY_STATUS[r.status] || NOTARY_STATUS.requested;
+    var who = r.notaryUpn ? ((window.bccDisplayName && window.bccDisplayName(r.notaryUpn)) || r.notaryUpn) : '—';
+    var meta = [];
+    if (r.signerName) meta.push('Signer: ' + esc(r.signerName) + (r.signerEmail ? ' (' + esc(r.signerEmail) + ')' : ''));
+    meta.push('Notary: ' + esc(who));
+    if (r.platform) meta.push('Platform: ' + esc(r.platform));
+    meta.push('Requested ' + (r.requestedAt ? new Date(r.requestedAt).toLocaleDateString() : ''));
+    return '<div class="card" data-nt="' + esc(r.id) + '" style="margin-bottom:10px;">' +
+      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">' +
+        '<strong style="font-size:14.5px;flex:1;min-width:0;">' + esc(r.docName || 'Untitled document') + '</strong>' +
+        '<span style="font-size:12px;font-weight:800;color:' + st[1] + ';">' + st[0] + '</span></div>' +
+      '<div style="font-size:12.5px;color:var(--muted);margin-top:4px;">' + meta.join(' · ') + '</div>' +
+      (r.fileId ? '<div style="margin-top:6px;"><a class="fs-file" href="/api/documents/' + encodeURIComponent(r.fileId) + '/download?inline=1" target="_blank" rel="noopener" style="font-size:12.5px;color:var(--gold-deep);font-weight:600;">📄 Source document</a></div>' : '') +
+      (r.notarizedDocId ? '<div style="margin-top:4px;"><a class="fs-file" href="/api/documents/' + encodeURIComponent(r.notarizedDocId) + '/download?inline=1" target="_blank" rel="noopener" style="font-size:12.5px;color:#1f8a4c;font-weight:700;">✅ Notarized document</a></div>' : '') +
+      (r.notes ? '<div style="font-size:12.5px;color:var(--ink);margin-top:6px;white-space:pre-wrap;">' + esc(r.notes) + '</div>' : '') +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px;">' +
+        '<input data-nt-link="' + esc(r.id) + '" value="' + esc(r.sessionUrl || '') + '" placeholder="Paste the RON session link" style="flex:1;min-width:180px;border:1px solid var(--chrome-mute);border-radius:7px;padding:6px 9px;font:inherit;font-size:12.5px;" />' +
+        '<button class="btn btn-ghost" data-nt-savelink="' + esc(r.id) + '" type="button" style="font-size:12px;">Save link</button>' +
+        '<button class="btn btn-ghost" data-nt-email="' + esc(r.id) + '" type="button" style="font-size:12px;"' + (r.signerEmail ? '' : ' disabled title="Add a signer email first"') + '>✉️ Email signer the link</button>' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;">' +
+        (r.status !== 'scheduled' && r.status !== 'completed' ? '<button class="btn btn-ghost" data-nt-status="scheduled" data-id="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:30px;">Mark scheduled</button>' : '') +
+        (r.status !== 'completed' ? '<button class="btn btn-ghost" data-nt-status="completed" data-id="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:30px;">Mark completed</button>' : '<button class="btn btn-ghost" data-nt-status="requested" data-id="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:30px;">Reopen</button>') +
+        '<label class="btn btn-ghost" style="font-size:11px;min-height:30px;cursor:pointer;">⬆ Upload notarized PDF<input type="file" accept=".pdf" data-nt-final="' + esc(r.id) + '" style="display:none;" /></label>' +
+        '<button class="btn btn-ghost" data-nt-del="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:30px;color:var(--burgundy);">Delete</button>' +
+        '<span data-nt-msg="' + esc(r.id) + '" style="font-size:12px;color:var(--muted);"></span>' +
+      '</div></div>';
+  }
+  function renderNotary() {
+    var body = document.getElementById('notary-body'); if (!body) return;
+    var reqs = allNotary().sort(function (a, b) { return (b.requestedAt || '').localeCompare(a.requestedAt || ''); });
+    var head = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px;">' +
+      '<h3 style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;margin:0;">Online notarization</h3>' +
+      '<button class="btn btn-primary" id="nt_new" type="button">+ New notarization request</button></div>' +
+      '<div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">Request a document be notarized by your team notary on your online-notary platform. The app tracks the request, can email the signer the session link, and files the finished notarized PDF back into <strong>Files</strong>. <em>The notarial act itself is performed by your commissioned notary on the RON platform.</em></div>';
+    var list = reqs.length ? reqs.map(notaryCard).join('') : (_notaryNew ? '' : '<div style="color:var(--muted);padding:10px 0;">No notarization requests yet. Click <strong>+ New notarization request</strong> to start one.</div>');
+    body.innerHTML = head + (_notaryNew ? notaryForm() : '') + list;
+    wireNotary(body);
+  }
+  function wireNotary(body) {
+    var nb = document.getElementById('nt_new'); if (nb) nb.onclick = function () { _notaryNew = true; renderNotary(); };
+    var nc = document.getElementById('nt_cancel'); if (nc) nc.onclick = function () { _notaryNew = false; renderNotary(); };
+    var create = document.getElementById('nt_create'); if (create) create.onclick = notaryCreate;
+    body.querySelectorAll('[data-nt-savelink]').forEach(function (b) { b.onclick = function () {
+      var id = b.getAttribute('data-nt-savelink'); var inp = body.querySelector('[data-nt-link="' + id + '"]'); var r = loadNotaryReq(id); if (!r) return;
+      r.sessionUrl = (inp && inp.value || '').trim(); saveNotaryReq(r); notaryMsg(id, 'Link saved.');
+    }; });
+    body.querySelectorAll('[data-nt-email]').forEach(function (b) { b.onclick = function () { notaryEmailSigner(b.getAttribute('data-nt-email')); }; });
+    body.querySelectorAll('[data-nt-status]').forEach(function (b) { b.onclick = function () {
+      var id = b.getAttribute('data-id'), s = b.getAttribute('data-nt-status'); var r = loadNotaryReq(id); if (!r) return;
+      r.status = s; if (s === 'completed') r.completedAt = nowIso(); saveNotaryReq(r); renderNotary(); updateWsNav();
+    }; });
+    body.querySelectorAll('[data-nt-final]').forEach(function (inp) { inp.onchange = function () { notaryUploadFinal(inp.getAttribute('data-nt-final'), inp.files && inp.files[0]); }; });
+    body.querySelectorAll('[data-nt-del]').forEach(function (b) { b.onclick = function () {
+      if (!confirm('Delete this notarization request? (Files already uploaded stay in Files.)')) return;
+      localStorage.removeItem(b.getAttribute('data-nt-del')); renderNotary();
+    }; });
+  }
+  function notaryMsg(id, txt) { var el = document.querySelector('[data-nt-msg="' + id + '"]'); if (el) { el.textContent = txt; if (txt) setTimeout(function () { if (el.textContent === txt) el.textContent = ''; }, 4000); } }
+  function notaryCreate() {
+    var docName = (document.getElementById('nt_docname').value || '').trim();
+    if (!docName) { (window.bccNotify || alert)('Give the document a name.', 'warn'); return; }
+    var id = notaryPrefix() + uid2();
+    var r = {
+      id: id, tenantId: 'blue-collar-coach', docType: 'notary-request', realmId: currentRealm,
+      docName: docName, signerName: (document.getElementById('nt_signer').value || '').trim(),
+      signerEmail: (document.getElementById('nt_email').value || '').trim(),
+      notaryUpn: document.getElementById('nt_notary').value || '',
+      platform: (document.getElementById('nt_platform').value || '').trim(),
+      notes: (document.getElementById('nt_notes').value || '').trim(),
+      status: 'requested', requestedBy: myUpn(), requestedAt: nowIso()
+    };
+    var fileInput = document.getElementById('nt_file'), file = fileInput && fileInput.files && fileInput.files[0];
+    var finish = function () { saveNotaryReq(r); _notaryNew = false; renderNotary(); if (window.bccNotifySaved) window.bccNotifySaved('Notarization request created.'); };
+    if (file) {
+      var cs = document.getElementById('nt_cstatus'); if (cs) cs.textContent = 'Uploading document…';
+      var fd = new FormData(); fd.append('file', file, file.name);
+      fd.append('folder', (typeof clientFolder === 'function' ? clientFolder() : ('/clients/' + currentRealm)));
+      fd.append('tags', 'To notarize, notary');
+      fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
+        .then(function (rr) { return rr.json().then(function (j) { return rr.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + rr.status))); }); })
+        .then(function (j) { if (j && j.id) r.fileId = j.id; if (typeof loadFiles === 'function') loadFiles(); finish(); })
+        .catch(function (e) { if (cs) cs.textContent = ''; (window.bccNotify || alert)('Document upload failed: ' + e.message + ' — request not created.', 'error', 7000); });
+    } else finish();
+  }
+  function notaryUploadFinal(id, file) {
+    if (!file) return; var r = loadNotaryReq(id); if (!r) return;
+    notaryMsg(id, 'Uploading notarized PDF…');
+    var fd = new FormData(); fd.append('file', file, file.name);
+    fd.append('folder', (typeof clientFolder === 'function' ? clientFolder() : ('/clients/' + currentRealm)));
+    fd.append('tags', 'Notarized, notary');
+    fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
+      .then(function (rr) { return rr.json().then(function (j) { return rr.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + rr.status))); }); })
+      .then(function (j) { if (j && j.id) r.notarizedDocId = j.id; r.status = 'completed'; r.completedAt = nowIso(); saveNotaryReq(r); if (typeof loadFiles === 'function') loadFiles(); renderNotary(); updateWsNav(); if (window.bccNotifySaved) window.bccNotifySaved('Notarized document filed to the client.'); })
+      .catch(function (e) { notaryMsg(id, ''); (window.bccNotify || alert)('Upload failed: ' + e.message, 'error', 6000); });
+  }
+  function notaryEmailSigner(id) {
+    var r = loadNotaryReq(id); if (!r) return;
+    if (!r.signerEmail) { notaryMsg(id, 'Add a signer email first.'); return; }
+    if (!r.sessionUrl) { notaryMsg(id, 'Paste the RON session link first.'); return; }
+    notaryMsg(id, 'Sending…');
+    var body = 'Hello ' + esc(r.signerName || '') + ',<br><br>Your document <strong>' + esc(r.docName) + '</strong> is ready for online notarization with ' + esc(companyName(currentRealm)) + '.<br><br>Join your notary session here: <a href="' + esc(r.sessionUrl) + '">' + esc(r.sessionUrl) + '</a><br><br>You will verify your identity and meet the notary by live video. Please have a valid government photo ID ready.<br><br>Thank you.';
+    var payload = { to: [r.signerEmail], subject: 'Online notarization link — ' + r.docName, bodyHtml: body };
+    if (mailboxActive && mailboxActive()) payload.realmId = currentRealm;
+    fetch('/api/integrations/msgraph/send-mail', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+      .then(function (rr) { return rr.json().catch(function () { return { ok: rr.ok }; }); })
+      .then(function (resp) { if (resp && resp.ok === false) throw new Error(resp.error || 'send failed'); notaryMsg(id, '✓ Link emailed to ' + r.signerEmail); })
+      .catch(function (e) { notaryMsg(id, ''); (window.bccNotify || alert)('Could not email the signer: ' + e.message, 'error', 6000); });
+  }
 
   /* ---- Team & access (per-client permissions; admins edit, others read-only) ---- */
   function renderAccess() {
