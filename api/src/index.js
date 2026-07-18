@@ -120,7 +120,12 @@ async function getAdminCfg() {
   if (_adminCfgCache && Date.now() < _adminCfgCache.expires) return _adminCfgCache.data;
   try {
     const { resource } = await container().item('bcc-admin-config-v1', BCC_TENANT_ID).read();
-    const data = resource && resource.data;
+    let data = resource && resource.data;
+    // Defensive: /api/data stores .data as an OBJECT, but a direct DB write can
+    // leave it as a JSON string. getAdminCfg feeds EVERY server-side permission
+    // check (isAppAdmin, tasks-only tier, notify recipient gate…), and a string
+    // here makes cfg.users undefined — silently breaking all of them. Parse it.
+    if (typeof data === 'string') { try { data = JSON.parse(data); } catch (_) { data = null; } }
     _adminCfgCache = { data: data || null, expires: Date.now() + 15000 };
     return _adminCfgCache.data;
   } catch (e) {
