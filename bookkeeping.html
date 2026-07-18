@@ -212,6 +212,55 @@
   .ws-drawer-item.active { background:var(--gold-fade); color:var(--gold-deep); box-shadow:inset 4px 0 0 var(--gold-deep); }
   .ws-drawer-item .ic { width:22px; text-align:center; font-size:16px; flex-shrink:0; }
   .ws-drawer-item .badge { margin-left:auto; background:var(--burgundy); color:#fff; font-size:11px; font-weight:800; border-radius:999px; padding:1px 8px; }
+  .ws-drawer-item .badge.unread { background:#c0392b; }
+
+  /* Grouped section nav — shared by the persistent desktop rail AND the mobile drawer.
+     High-C/High-S: the whole map is visible + logically grouped + clearly labeled,
+     the current spot is highlighted, and counts show what needs attention. */
+  .ws-navgroup { padding:12px 18px 4px; font-size:10px; font-weight:800; letter-spacing:1.3px; text-transform:uppercase; color:var(--muted); }
+  .ws-navgroup:first-child { padding-top:6px; }
+  .ws-navitem { display:flex; align-items:center; gap:11px; width:100%; text-align:left; border:none; background:transparent; cursor:pointer; font-size:13.5px; font-weight:600; color:var(--ink); padding:9px 18px; min-height:40px; }
+  .ws-navitem:hover { background:var(--chrome); }
+  .ws-navitem.active { background:var(--gold-fade); color:var(--gold-deep); box-shadow:inset 3px 0 0 var(--gold-deep); }
+  .ws-navitem .ic { width:20px; text-align:center; font-size:15px; flex-shrink:0; }
+  .ws-navitem .badge { margin-left:auto; background:var(--burgundy); color:#fff; font-size:10.5px; font-weight:800; border-radius:999px; padding:1px 7px; min-width:18px; text-align:center; }
+  .ws-navitem .badge.unread { background:#c0392b; }
+
+  /* Persistent left rail (desktop only). Mobile falls back to the ☰ drawer. */
+  .ws-rail { display:none; }
+  .ws-rail-head { padding:14px 18px 12px; border-bottom:1px solid var(--chrome-mute); }
+  .ws-rail-back { background:none; border:none; color:var(--gold-deep); font-weight:700; font-size:12.5px; cursor:pointer; padding:0; display:inline-flex; align-items:center; gap:5px; }
+  .ws-rail-back:hover { text-decoration:underline; }
+  .ws-rail-lbl { font-size:10px; font-weight:800; letter-spacing:1.3px; text-transform:uppercase; color:var(--muted); margin-top:12px; }
+  .ws-rail-client { font-size:15.5px; font-weight:800; color:var(--ink); line-height:1.25; margin-top:3px; }
+  /* Breadcrumb (where am I) */
+  .ws-crumb { display:none; font-size:13px; color:var(--muted); align-items:center; gap:6px; flex-wrap:wrap; }
+  .ws-crumb a { color:var(--gold-deep); text-decoration:none; font-weight:600; cursor:pointer; }
+  .ws-crumb a:hover { text-decoration:underline; }
+  .ws-crumb .cur { color:var(--ink); font-weight:700; }
+  .ws-crumb .sep { color:var(--chrome-mute); }
+  @media (min-width:1024px) {
+    .ws-rail { display:flex; flex-direction:column; position:fixed; left:0; top:54px; bottom:0; width:238px; z-index:45; background:#fff; border-right:1px solid var(--chrome-mute); overflow-y:auto; padding-bottom:24px; }
+    body.in-client .page { padding-left:24px; margin-left:238px; max-width:1080px; }
+    body.in-client .ws-menu-btn { display:none; }
+    body.in-client #wsBack { display:none; }        /* rail has its own back */
+    body.in-client .ws-client { display:none; }     /* breadcrumb shows the client */
+    body.in-client .ws-crumb { display:flex; }
+    body.in-client #wsSectionName { display:none; }
+  }
+
+  /* Overview: prominent Email banner (first thing a bookkeeper sees). */
+  .ov-email { display:flex; align-items:center; gap:14px; width:100%; text-align:left; border:1px solid var(--chrome-mute); border-radius:12px; background:#fff; cursor:pointer; font:inherit; padding:14px 16px; margin-bottom:14px; }
+  .ov-email:hover { border-color:var(--gold); background:var(--gold-fade); }
+  .ov-email.has-unread { border-color:#e0b4b0; background:#fbf1f0; }
+  .ov-email .ic { font-size:24px; line-height:1; flex-shrink:0; }
+  .ov-email .txt { display:flex; flex-direction:column; min-width:0; }
+  .ov-email .txt strong { font-size:15px; color:var(--ink); }
+  .ov-email .txt .sub { font-size:12.5px; color:var(--muted); margin-top:2px; }
+  .ov-email.has-unread .txt .sub { color:#c0392b; font-weight:700; }
+  .ov-email .count { margin-left:auto; background:#c0392b; color:#fff; font-size:13px; font-weight:800; border-radius:999px; padding:3px 11px; flex-shrink:0; }
+  .ov-email .go { margin-left:auto; color:var(--gold-deep); font-weight:800; font-size:16px; flex-shrink:0; }
+  .ov-email.has-unread .go { margin-left:12px; }
 
   /* Overview quick-action tiles. */
   .ov-actions { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:16px; }
@@ -360,7 +409,8 @@
     <div class="ws-head">
       <button class="btn btn-ghost" id="wsBack" type="button">← Clients</button>
       <button class="btn btn-ghost ws-menu-btn" id="wsMenuBtn" type="button" aria-label="Open section menu">☰ <strong id="wsSectionName">Overview</strong></button>
-      <span class="ws-client">· <strong id="wsClientName"></strong></span>
+      <span class="ws-client"><strong id="wsClientName"></strong></span>
+      <nav class="ws-crumb" id="wsCrumb" aria-label="Breadcrumb"></nav>
     </div>
   </div>
 
@@ -2493,15 +2543,43 @@
     { key: 'info',         label: 'Client info',        ic: '🏢' },
     { key: 'access',       label: 'Team & access',      ic: '👥' }
   ];
+  // Logical grouping for the nav — visible + labeled + predictable (High-C/High-S).
+  // Email is surfaced at the TOP of the first group so it's one of the first things
+  // a bookkeeper sees, with an unread badge.
+  var SECTION_GROUPS = [
+    { title: '',              keys: ['overview'] },
+    { title: 'Communication', keys: ['email', 'tasks', 'activity'] },
+    { title: 'Bookkeeping',   keys: ['transactions', 'reports', 'close'] },
+    { title: 'Documents',     keys: ['files', 'payroll', 'payapp', 'wip'] },
+    { title: 'Setup',         keys: ['info', 'access'] }
+  ];
   function sectionLabel(k) { var s = SECTIONS.find(function (x) { return x.key === k; }); return s ? s.label : 'Overview'; }
+  function sectionIcon(k) { var s = SECTIONS.find(function (x) { return x.key === k; }); return s ? s.ic : '📋'; }
+
+  // Unread email count per client mailbox (realm -> number). Populated in the
+  // background when a client opens; drives the Email nav badge + Overview tile.
+  var _emUnread = {};
+  function loadUnreadEmail(realm, force) {
+    if (taskOnly || !realm) return;
+    if (!force && _emUnread[realm] !== undefined) { updateWsNav(); return; }
+    fetch('/api/integrations/msgraph/messages?realmId=' + encodeURIComponent(realm) + '&top=50', { credentials: 'include' })
+      .then(function (r) { return r.json().catch(function () { return null; }); })
+      .then(function (j) {
+        if (!j || !j.ok) { _emUnread[realm] = 0; }
+        else if (j.pendingMailbox) { _emUnread[realm] = 0; }   // mailbox not created yet
+        else { _emUnread[realm] = (j.messages || []).filter(function (m) { return !m.isRead; }).length; }
+        if (realm === currentRealm) { updateWsNav(); if (currentTab === 'overview') { try { renderOverview(); } catch (e) {} } }
+      })
+      .catch(function () { _emUnread[realm] = 0; });
+  }
 
   function myUpn()  { return String((window.bccUser && window.bccUser.userDetails) || '').toLowerCase(); }
   function myName() { var u = myUpn(); return (window.bccDisplayName && window.bccDisplayName(u)) || u; }
   function sani(s)  { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40); }
   function uid2()   { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
-  // ----- Section slide-out drawer -----
-  var _wsDrawerBuilt = false;
+  // ----- Section navigation (persistent desktop rail + mobile slide-out drawer) -----
+  var _wsDrawerBuilt = false, _wsRailBuilt = false;
   function buildWsDrawer() {
     if (_wsDrawerBuilt) return; _wsDrawerBuilt = true;
     var bd = document.createElement('div'); bd.className = 'ws-drawer-backdrop'; bd.id = 'wsDrawerBackdrop';
@@ -2512,20 +2590,64 @@
     dr.querySelector('#wsDrawerClose').addEventListener('click', closeWsDrawer);
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeWsDrawer(); });
   }
-  function openWsDrawer() { buildWsDrawer(); updateDrawer(); document.getElementById('wsDrawerBackdrop').classList.add('open'); document.getElementById('wsDrawer').classList.add('open'); }
+  // The always-visible left rail (desktop). CSS hides it under 1024px.
+  function buildWsRail() {
+    if (_wsRailBuilt) return; _wsRailBuilt = true;
+    var rail = document.createElement('nav'); rail.className = 'ws-rail'; rail.id = 'wsRail'; rail.setAttribute('aria-label', 'Client sections');
+    rail.innerHTML = '<div class="ws-rail-head"><button class="ws-rail-back" id="wsRailBack" type="button">← All clients</button><div class="ws-rail-lbl">Client</div><div class="ws-rail-client" id="wsRailClient"></div></div><div id="wsRailList"></div>';
+    document.body.appendChild(rail);
+    rail.querySelector('#wsRailBack').addEventListener('click', function () { var b = document.getElementById('wsBack'); if (b) b.click(); });
+    // Anchor the fixed rail right below the sticky header (its height is responsive).
+    var syncTop = function () { var h = document.querySelector('header.topbar'); if (h) rail.style.top = h.offsetHeight + 'px'; };
+    syncTop(); window.addEventListener('resize', syncTop);
+  }
+  function openWsDrawer() { buildWsDrawer(); updateWsNav(); document.getElementById('wsDrawerBackdrop').classList.add('open'); document.getElementById('wsDrawer').classList.add('open'); }
   function closeWsDrawer() { var b = document.getElementById('wsDrawerBackdrop'), d = document.getElementById('wsDrawer'); if (b) b.classList.remove('open'); if (d) d.classList.remove('open'); }
-  function updateDrawer() {
-    if (!_wsDrawerBuilt) return;
-    document.getElementById('wsDrawerClient').textContent = companyName(currentRealm);
+
+  // Build the grouped nav markup once, reused by BOTH the rail and the drawer.
+  function navHtml(openTodos) {
+    var unread = _emUnread[currentRealm] || 0;
+    var badgeFor = function (key) {
+      if ((key === 'overview' || key === 'tasks') && openTodos) return '<span class="badge" title="Open to-dos">' + openTodos + '</span>';
+      if (key === 'email' && unread) return '<span class="badge unread" title="Unread email">' + unread + '</span>';
+      return '';
+    };
+    var item = function (key) {
+      var s = SECTIONS.find(function (x) { return x.key === key; }); if (!s) return '';
+      return '<button class="ws-navitem' + (key === currentTab ? ' active' : '') + '" data-sec="' + key + '" type="button"><span class="ic" aria-hidden="true">' + s.ic + '</span>' + esc(s.label) + badgeFor(key) + '</button>';
+    };
+    if (taskOnly) return item('tasks');
+    return SECTION_GROUPS.map(function (g) {
+      return (g.title ? '<div class="ws-navgroup">' + esc(g.title) + '</div>' : '') + g.keys.map(item).join('');
+    }).join('');
+  }
+  function wireNav(container) {
+    container.querySelectorAll('[data-sec]').forEach(function (b) { b.addEventListener('click', function () { setSection(b.getAttribute('data-sec')); }); });
+  }
+  // Refresh rail + drawer + breadcrumb + badges together.
+  function updateWsNav() {
     var tmap = buildTaskMap();
     var openTodos = (tmap[currentRealm] && tmap[currentRealm].count) || 0;
-    var listEl = document.getElementById('wsDrawerList');
-    listEl.innerHTML = SECTIONS.filter(function (s) { return !taskOnly || s.key === 'tasks'; }).map(function (s) {
-      var badge = ((s.key === 'overview' || s.key === 'tasks') && openTodos) ? '<span class="badge">' + openTodos + '</span>' : '';
-      return '<button class="ws-drawer-item' + (s.key === currentTab ? ' active' : '') + '" data-sec="' + s.key + '" type="button"><span class="ic" aria-hidden="true">' + s.ic + '</span>' + esc(s.label) + badge + '</button>';
-    }).join('');
-    listEl.querySelectorAll('[data-sec]').forEach(function (b) { b.addEventListener('click', function () { setSection(b.getAttribute('data-sec')); }); });
+    var html = navHtml(openTodos), name = companyName(currentRealm);
+    if (_wsRailBuilt) {
+      var rc = document.getElementById('wsRailClient'); if (rc) rc.textContent = name;
+      var rl = document.getElementById('wsRailList'); if (rl) { rl.innerHTML = html; wireNav(rl); }
+    }
+    if (_wsDrawerBuilt) {
+      var dc = document.getElementById('wsDrawerClient'); if (dc) dc.textContent = name;
+      var dl = document.getElementById('wsDrawerList'); if (dl) { dl.innerHTML = html; wireNav(dl); } // same grouped markup as the rail
+    }
+    // Breadcrumb: All clients › Client › Section  (desktop; the ☰ label covers mobile)
+    var crumb = document.getElementById('wsCrumb');
+    if (crumb) {
+      crumb.innerHTML = taskOnly
+        ? '<a data-crumb="back">All clients</a> <span class="sep">›</span> <span class="cur">' + esc(name) + '</span>'
+        : '<a data-crumb="back">All clients</a> <span class="sep">›</span> <span class="cur">' + esc(name) + '</span> <span class="sep">›</span> <span class="cur">' + esc(sectionIcon(currentTab) + ' ' + sectionLabel(currentTab)) + '</span>';
+      var bk = crumb.querySelector('[data-crumb="back"]'); if (bk) bk.onclick = function () { var b = document.getElementById('wsBack'); if (b) b.click(); };
+    }
   }
+  // Back-compat alias — many callers (toggleTask, saveTaskEdit, live-sync) call updateDrawer().
+  function updateDrawer() { updateWsNav(); }
   function setSection(key) { if (taskOnly && key !== 'tasks') key = 'tasks'; currentTab = key; closeWsDrawer(); renderWorkspace(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
   // Reveal the Transactions section WITHOUT re-rendering (so an in-progress form
   // is preserved). Used when a scan / + New is triggered from elsewhere.
@@ -2560,13 +2682,21 @@
   function renderWorkspace() {
     if (typeof emCloseModal === 'function') emCloseModal(); // never leave an email reader open across a realm/section change
     var tabbar = document.getElementById('wsTabs');
-    if (currentRealm !== _wsLastRealm) { currentTab = taskOnly ? 'tasks' : 'overview'; _wsLastRealm = currentRealm; }
+    var newRealm = currentRealm !== _wsLastRealm;
+    if (newRealm) { currentTab = taskOnly ? 'tasks' : 'overview'; _wsLastRealm = currentRealm; }
     if (taskOnly && currentTab !== 'tasks') currentTab = 'tasks'; // tasks-only tier never renders another section
     if (tabbar) tabbar.style.display = currentRealm ? '' : 'none';
+    // Persistent desktop rail + content shift only while inside a client.
+    if (currentRealm) buildWsRail();
+    var rail = document.getElementById('wsRail');
+    document.body.classList.toggle('in-client', !!currentRealm);
+    if (rail) rail.style.display = currentRealm ? '' : 'none';
     if (!currentRealm) { hideAllSections(); return; }
     document.getElementById('wsClientName').textContent = companyName(currentRealm);
     document.getElementById('wsSectionName').textContent = sectionLabel(currentTab);
-    updateDrawer();
+    updateWsNav();
+    // Refresh the unread-email badge when landing on a client (background, cached).
+    if (newRealm) loadUnreadEmail(currentRealm);
     showSection(currentTab);
     renderSectionContent(currentTab);
   }
@@ -2589,11 +2719,27 @@
   /* ---- Overview (the bookkeeper's landing for a client) ---- */
   function renderOverview() {
     var body = document.getElementById('overview-body'); if (!body) return;
+    // Prominent Email banner — surfaced at the very top so a bookkeeper sees a
+    // client's unread mail the moment they open the client.
+    var unread = _emUnread[currentRealm];
+    var emailBanner = '';
+    if (!taskOnly) {
+      var hasUnread = unread > 0;
+      var sub = (unread === undefined) ? 'Open the client inbox'
+              : hasUnread ? ('🔔 ' + unread + ' unread — needs attention')
+              : 'Inbox up to date — no unread mail';
+      emailBanner = '<button class="ov-email' + (hasUnread ? ' has-unread' : '') + '" type="button" data-ov="email">' +
+        '<span class="ic" aria-hidden="true">📬</span>' +
+        '<span class="txt"><strong>Client email</strong><span class="sub">' + sub + '</span></span>' +
+        (hasUnread ? '<span class="count">' + unread + '</span>' : '') +
+        '<span class="go" aria-hidden="true">→</span></button>';
+    }
     var actions = '<div class="ov-actions">' +
       '<label class="ov-action" for="scanInput"><span class="ic" aria-hidden="true">📷</span><span>Scan a receipt<span class="sub">AI fills a bill</span></span></label>' +
       '<button class="ov-action" type="button" data-ov="transactions"><span class="ic" aria-hidden="true">🧾</span><span>New transaction<span class="sub">invoice · bill · payment</span></span></button>' +
       '<button class="ov-action" type="button" data-ov="tasks"><span class="ic" aria-hidden="true">➕</span><span>Tasks &amp; to-dos<span class="sub">track the work</span></span></button>' +
     '</div>';
+    actions = emailBanner + actions;
     var open = allTasks().filter(function (t) { return t.status !== 'done'; }).sort(function (a, b) { return (a.dueDate || '9999').localeCompare(b.dueDate || '9999') || (b.createdAt || '').localeCompare(a.createdAt || ''); });
     var today = new Date().toISOString().slice(0, 10);
     var list = open.length ? open.map(function (t) {
@@ -3470,10 +3616,12 @@
         if (currentRealm !== realmAt) return;
         if (resp && resp.ok && resp.pendingMailbox) {
           list.innerHTML = '<div style="background:var(--gold-fade);border:1px solid var(--chrome-mute);border-radius:8px;padding:12px 14px;font-size:13px;color:var(--ink);">📬 <strong>' + esc((_clientMailbox && _clientMailbox.mailbox) || 'This mailbox') + '</strong> is set up in the app but hasn’t been created in Microsoft 365 yet. An admin can create it as a <strong>shared mailbox</strong> in the M365 admin center — mail will appear here automatically once it exists.</div>';
-          _emMsgs = []; return;
+          _emMsgs = []; _emUnread[currentRealm] = 0; updateWsNav(); return;
         }
         if (!resp || !resp.ok) { list.innerHTML = '<div style="color:var(--burgundy);">Mailbox unavailable: ' + esc((resp && resp.error) || 'error') + '</div>'; return; }
         _emMsgs = resp.messages || []; _emLoadedFor = currentRealm; renderEmailList();
+        // Keep the nav/overview unread badge in sync with what we just loaded.
+        _emUnread[currentRealm] = _emMsgs.filter(function (m) { return !m.isRead; }).length; updateWsNav();
       })
       .catch(function () { if (currentRealm === realmAt) list.innerHTML = '<div style="color:var(--burgundy);">Could not load mail.</div>'; });
   }
