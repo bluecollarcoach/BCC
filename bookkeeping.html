@@ -4060,6 +4060,7 @@
         '<td>' + esc(r.payPeriodEnd || '—') + '</td><td>' + esc(r.projectName || '—') + '</td>' +
         '<td class="num">' + ((r.employees || []).length) + '</td><td style="color:var(--muted);font-size:12.5px;">' + esc(when) + '</td>' +
         '<td style="text-align:right;white-space:nowrap;"><button class="btn btn-ghost" data-cpr-open="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;">Open</button> ' +
+        '<button class="btn btn-ghost" data-cpr-dup="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;" title="Start a new report from this one — carries the job info, compliance, and employees forward">Duplicate</button> ' +
         '<button class="btn btn-ghost" data-cpr-print="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;">Print</button> ' +
         '<button class="btn btn-ghost" data-cpr-del="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;">Delete</button></td></tr>';
     }).join('') + '</tbody></table>') : (q
@@ -4082,6 +4083,7 @@
       });
     }
     body.querySelectorAll('[data-cpr-open]').forEach(function (b) { b.onclick = function () { cprEditingId = b.getAttribute('data-cpr-open'); try { cprDraft = JSON.parse(localStorage.getItem(cprEditingId)); } catch (e) { cprDraft = null; } if (!cprDraft) { cprEditingId = null; return; } if (!cprDraft.employees) cprDraft.employees = []; renderPayroll(); }; });
+    body.querySelectorAll('[data-cpr-dup]').forEach(function (b) { b.onclick = function () { cprDuplicate(b.getAttribute('data-cpr-dup')); }; });
     body.querySelectorAll('[data-cpr-print]').forEach(function (b) { b.onclick = function () { var r; try { r = JSON.parse(localStorage.getItem(b.getAttribute('data-cpr-print'))); } catch (e) {} if (r) printCpr(r); }; });
     body.querySelectorAll('[data-cpr-del]').forEach(function (b) { b.onclick = function () { if (!confirm('Delete this payroll report?')) return; localStorage.removeItem(b.getAttribute('data-cpr-del')); if (window.bccAudit) window.bccAudit('cpr-delete', { key: b.getAttribute('data-cpr-del'), path:'/bookkeeping.html', meta: { realmId: currentRealm } }); renderPayroll(); }; });
   }
@@ -4100,6 +4102,77 @@
       employees: [ blankEmp() ], createdAt: nowIso(), updatedAt: nowIso()
     };
     cprEditingId = cprDraft.id; renderPayroll();
+  }
+
+  // "Duplicate": start a NEW report pre-filled from a prior one — carries the job
+  // header, Statement of Compliance, and the employee roster (name / classification
+  // / labor code / rates) forward; clears the per-period bits (payroll #, week,
+  // dates, daily hours, gross, deductions) for the new pay period. (Jenna's ask.)
+  function cprDuplicate(id) {
+    var src; try { src = JSON.parse(localStorage.getItem(id)); } catch (e) {} if (!src) return;
+    var reports = allCpr(); var maxNo = 0; reports.forEach(function (r) { maxNo = Math.max(maxNo, cnum(r.payrollNo)); });
+    var d = JSON.parse(JSON.stringify(src));
+    d.id = cprPrefix() + uid2(); d.payrollNo = String(maxNo + 1); d.isFinal = false;
+    d.payPeriodEnd = ''; d.weekStart = ''; d.socCommence = ''; d.socEnd = ''; d.socDate = new Date().toISOString().slice(0, 10);
+    d.docId = null; // don't overwrite the source's filed copy
+    d.createdAt = nowIso(); d.updatedAt = nowIso();
+    (d.employees || []).forEach(function (e) {
+      e.st = ['', '', '', '', '', '', '']; e.ot = ['', '', '', '', '', '', '']; // clear this period's hours
+      e.grossThisPeriod = ''; e.dedFica = ''; e.dedFed = ''; e.dedState = ''; e.dedOther1 = ''; e.dedOther2 = '';
+    });
+    localStorage.setItem(d.id, JSON.stringify(d));
+    cprDraft = d; cprEditingId = d.id; renderPayroll();
+    if (window.bccNotify) window.bccNotify('New report started from #' + (src.payrollNo || '?') + ' — enter this period’s hours and dates.', 'info', 4500);
+  }
+
+  // Most-recent employee record (from any prior report) matching a name.
+  function cprEmpHistory(name) {
+    name = String(name || '').trim().toLowerCase(); if (!name) return null;
+    var best = null, bestAt = '';
+    allCpr().forEach(function (r) {
+      if (cprDraft && r.id === cprDraft.id) return;
+      (r.employees || []).forEach(function (e) {
+        if (String(e.name || '').trim().toLowerCase() === name) { var at = r.updatedAt || r.createdAt || ''; if (at >= bestAt) { bestAt = at; best = e; } }
+      });
+    });
+    return best;
+  }
+  // Most-recent report for the same job/project.
+  function cprJobHistory(project) {
+    project = String(project || '').trim().toLowerCase(); if (!project) return null;
+    var best = null, bestAt = '';
+    allCpr().forEach(function (r) {
+      if (cprDraft && r.id === cprDraft.id) return;
+      if (String(r.projectName || '').trim().toLowerCase() === project) { var at = r.updatedAt || r.createdAt || ''; if (at >= bestAt) { bestAt = at; best = r; } }
+    });
+    return best;
+  }
+  // Fill a just-named employee's blank details from their last report.
+  function cprEmpAutofill(i) {
+    if (!cprDraft || !cprDraft.employees) return;
+    var e = cprDraft.employees[i]; if (!e) return;
+    var hist = cprEmpHistory(e.name); if (!hist) return;
+    var fields = ['address', 'idNumber', 'exemptions', 'laborCode', 'classification', 'stRate', 'otRate'];
+    var filled = [];
+    fields.forEach(function (f) { if (!String(e[f] || '').trim() && String(hist[f] || '').trim()) { e[f] = hist[f]; filled.push(f); } });
+    if (!filled.length) return;
+    filled.forEach(function (f) { var inp = document.querySelector('[data-emp="' + i + '"][data-f="' + f + '"]'); if (inp) inp.value = e[f]; });
+    var c = computeEmp(e), row = document.querySelector('[data-calcrow="' + i + '"]');
+    if (row) { row.querySelector('[data-calc=job]').textContent = '$' + money(c.grossJob); row.querySelector('[data-calc=net]').textContent = '$' + money(c.net); }
+    if (window.bccNotify) window.bccNotify('Filled ' + hist.name + '’s classification, labor code & rates from a previous report — review before saving.', 'info', 4000);
+  }
+  // Fill the header + compliance block from a prior report for the same job.
+  function cprJobAutofill() {
+    if (!cprDraft) return;
+    var hist = cprJobHistory(cprDraft.projectName); if (!hist) return;
+    var fields = ['contractorName', 'contractorAddress', 'contractorPhone', 'primeName', 'primeAddress', 'primePhone',
+      'contractName', 'contractNumber', 'mndotSp', 'mndotFed', 'contractingAuthority', 'typeOfWork',
+      'socName', 'socTitle', 'socBusiness', 'fringe', 'fringePrograms', 'fringeExceptions'];
+    var filled = [];
+    fields.forEach(function (f) { if (!String(cprDraft[f] || '').trim() && String(hist[f] || '').trim()) { cprDraft[f] = hist[f]; filled.push(f); } });
+    if (!filled.length) return;
+    filled.forEach(function (f) { var inp = document.querySelector('[data-cf="' + f + '"]'); if (inp) inp.value = cprDraft[f]; });
+    if (window.bccNotify) window.bccNotify('Filled the header & compliance info from a previous “' + hist.projectName + '” report — review before saving.', 'info', 4500);
   }
 
   function txt(label, field, ph, wide) { return '<label' + (wide ? ' class="full"' : '') + '>' + esc(label) + '<input data-cf="' + field + '" value="' + esc(cprDraft[field] || '') + '"' + (ph ? ' placeholder="' + esc(ph) + '"' : '') + ' /></label>'; }
@@ -4159,6 +4232,11 @@
       if (el.type === 'checkbox' || el.tagName === 'SELECT') el.addEventListener('change', cprCollectField);
     });
     body.querySelectorAll('[data-emp]').forEach(function (el) { el.addEventListener('input', cprEmpField); });
+    // Auto-fill on blur: type a job name → header + compliance fill from a prior
+    // report for that job; type an employee name → their class/labor code/rates
+    // fill from the last report they were on. Only fills BLANK fields; review before saving.
+    var pn = body.querySelector('[data-cf="projectName"]'); if (pn) pn.addEventListener('change', cprJobAutofill);
+    body.querySelectorAll('[data-emp][data-f="name"]').forEach(function (el) { el.addEventListener('change', function () { cprEmpAutofill(+el.getAttribute('data-emp')); }); });
     var addb = document.getElementById('cpr_addemp'); if (addb) addb.onclick = function () { cprDraft.employees.push(blankEmp()); renderPayroll(); };
     document.getElementById('cpr_back').onclick = document.getElementById('cpr_back2').onclick = function () { cprEditingId = null; cprDraft = null; renderPayroll(); };
     document.getElementById('cpr_save').onclick = document.getElementById('cpr_save2').onclick = cprSave;
