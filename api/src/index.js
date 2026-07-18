@@ -1103,12 +1103,17 @@ app.http('feedback', {
         status: 'new', createdAt: new Date().toISOString()
       };
       await c.items.upsert(doc);
-      // Notify the owner(s) that feedback landed.
-      const preview = message.length > 90 ? message.slice(0, 90) + '…' : message;
-      const from = who ? (who.split('@')[0] + ': ') : '';
-      for (const owner of feedbackNotifyUpns()) {
-        await notifyUser(c, owner, { title: 'New ' + type + ' feedback', body: from + preview, url: '/admin.html#feedback', tag: 'fbnew-' + fid });
-      }
+      // Notify the owner(s) that feedback landed — BEST-EFFORT. A push/notify
+      // failure must NEVER fail the submission (the feedback is already saved);
+      // otherwise the user sees "couldn't send" and re-submits a duplicate.
+      try {
+        const preview = message.length > 90 ? message.slice(0, 90) + '…' : message;
+        const from = who ? (who.split('@')[0] + ': ') : '';
+        for (const owner of feedbackNotifyUpns()) {
+          try { await notifyUser(c, owner, { title: 'New ' + type + ' feedback', body: from + preview, url: '/admin.html#feedback', tag: 'fbnew-' + fid }); }
+          catch (nerr) { context.error && context.error('feedback owner-notify failed (non-fatal)', nerr); }
+        }
+      } catch (nerr2) { context.error && context.error('feedback notify loop failed (non-fatal)', nerr2); }
       return { jsonBody: { ok: true, id: fid } };
     } catch (e) { context.error('feedback error', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })

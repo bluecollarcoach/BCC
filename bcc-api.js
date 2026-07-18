@@ -910,10 +910,33 @@
       var msg = (document.getElementById('bcc-fb-msg').value || '').trim();
       if (!msg) { (window.bccNotify || alert)('Please write your feedback first.', 'warn'); return; }
       var btn = document.getElementById('bcc-fb-send'); btn.disabled = true; btn.textContent = 'Sending…';
-      fetch('/api/feedback', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: chosenType, message: msg, rating: rating || null, page: location.pathname }) })
-        .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+      var payload = JSON.stringify({ type: chosenType, message: msg, rating: rating || null, page: location.pathname });
+      // Submit with one automatic retry on a transient failure (network blip /
+      // 5xx), so a momentary hiccup doesn't look like "feedback is broken".
+      // The typed text is NEVER cleared unless the send actually succeeds.
+      function attempt(triesLeft) {
+        return fetch('/api/feedback', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: payload })
+          .then(function (r) {
+            if (r.ok) return r.json();
+            // 4xx = won't fix on retry; 5xx / network = retry once.
+            if (r.status >= 500 && triesLeft > 0) return new Promise(function (res) { setTimeout(res, 900); }).then(function () { return attempt(triesLeft - 1); });
+            return Promise.reject(new Error('HTTP ' + r.status));
+          })
+          .catch(function (err) {
+            // fetch() rejects (offline / DNS / CORS) → retry once before giving up.
+            if (triesLeft > 0 && /Failed to fetch|NetworkError|load failed/i.test(String(err && err.message))) {
+              return new Promise(function (res) { setTimeout(res, 900); }).then(function () { return attempt(triesLeft - 1); });
+            }
+            throw err;
+          });
+      }
+      attempt(1)
         .then(function () { close(); if (window.bccNotifySaved) window.bccNotifySaved('Thanks! Your feedback was sent.'); else (window.bccNotify || alert)('Thanks! Feedback sent.', 'success'); })
-        .catch(function () { btn.disabled = false; btn.textContent = 'Send feedback'; (window.bccNotify || alert)('Could not send — please try again.', 'warn'); });
+        .catch(function (err) {
+          btn.disabled = false; btn.textContent = 'Send feedback';
+          // Keep the user's text in place so they never retype; give a real reason.
+          (window.bccNotify || alert)('Could not send your feedback (' + (String(err && err.message || 'network error')) + '). Your text is still here — please try again in a moment.', 'warn', 8000);
+        });
     };
     setTimeout(function () { var m = document.getElementById('bcc-fb-msg'); if (m) m.focus(); }, 50);
   };
