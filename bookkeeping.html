@@ -3390,8 +3390,13 @@
           '<div class="fs-sub">The firm\'s working files for this client, live from SharePoint. <strong>Import</strong> copies a file into Internal files below.</div></div>' +
           '<span class="fs-pill">Read-only</span></div>' +
           '<div class="fs-body">' +
+            '<div style="background:var(--gold-fade);border:1px solid var(--chrome-mute);border-radius:8px;padding:10px 12px;margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">' +
+              '<div style="flex:1;min-width:180px;font-size:12.5px;color:var(--ink);"><strong>Move everything into the app</strong><br>' +
+              '<span style="color:var(--muted);">Copies this client\'s entire SharePoint folder — every subfolder — into Internal files. Files stay flat and each is tagged with its folder name.</span></div>' +
+              '<button class="btn btn-primary" id="sp_migrate" type="button" style="font-size:12px;">⬇ Import ALL files for this client</button>' +
+            '</div>' +
             '<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:8px;">' + crumbs +
-            (fileCount ? '<span style="flex:1;"></span><button class="btn btn-ghost" id="sp_importall" type="button" style="font-size:11px;min-height:26px;">⬇ Import all ' + fileCount + ' file' + (fileCount === 1 ? '' : 's') + ' here</button>' : '') +
+            (fileCount ? '<span style="flex:1;"></span><button class="btn btn-ghost" id="sp_importall" type="button" style="font-size:11px;min-height:26px;">⬇ Import ' + fileCount + ' file' + (fileCount === 1 ? '' : 's') + ' in this folder</button>' : '') +
             '</div>' +
             '<div id="sp_status" style="font-size:12px;color:var(--muted);margin-bottom:6px;"></div>' + rows +
           '</div></div>';
@@ -3400,9 +3405,49 @@
         area.querySelectorAll('[data-spimport]').forEach(function (b) { b.onclick = function () { spImport([{ id: b.getAttribute('data-spimport'), name: b.getAttribute('data-spname') }]); }; });
         var all = document.getElementById('sp_importall');
         if (all) all.onclick = function () { spImport(items.filter(function (x) { return !x.folder; }).map(function (x) { return { id: x.id, name: x.name }; })); };
+        var mig = document.getElementById('sp_migrate');
+        if (mig) mig.onclick = function () { spMigrateAll(mig); };
         wirePreviews(area, '&');
       })
       .catch(function () { if (currentRealm === realmAt) area.innerHTML = ''; });
+  }
+  /* Full migration: walk this client's whole SharePoint tree into Internal files.
+     The server does bounded batches and reports what's left, so we loop until it
+     says done. Guarded so a batch that imports nothing can't spin forever. */
+  function spMigrateAll(btn) {
+    var realmAt = currentRealm;
+    var st = document.getElementById('sp_status');
+    var total = 0, stall = 0;
+    if (btn) { btn.disabled = true; btn.textContent = 'Importing…'; }
+    function say(t) { if (st && currentRealm === realmAt) st.textContent = t; }
+    function step() {
+      return fetch('/api/integrations/sharepoint/' + encodeURIComponent(realmAt) + '/import-all', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: '{}' })
+        .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+        .then(function (resp) {
+          if (currentRealm !== realmAt) return null;              // user navigated away
+          if (!resp || !resp.ok) throw new Error((resp && resp.error) || 'import failed');
+          total += resp.imported || 0;
+          if (!resp.imported) stall++; else stall = 0;
+          say('Imported ' + total + ' file' + (total === 1 ? '' : 's') + '… ' + (resp.remaining ? resp.remaining + ' to go' : 'finishing up'));
+          if (resp.done || stall >= 2) return resp;
+          return step();
+        });
+    }
+    step().then(function (resp) {
+      if (!resp || currentRealm !== realmAt) return;
+      if (btn) { btn.disabled = false; btn.textContent = '⬇ Import ALL files for this client'; }
+      var notes = [];
+      if (resp.alreadyHad) notes.push(resp.alreadyHad + ' already imported previously');
+      if ((resp.oversized || []).length) notes.push((resp.oversized || []).length + ' skipped over 25 MB: ' + resp.oversized.map(function (o) { return o.name + ' (' + o.mb + ' MB)'; }).join(', '));
+      if ((resp.failed || []).length) notes.push((resp.failed || []).length + ' failed');
+      say('Done — ' + total + ' file' + (total === 1 ? '' : 's') + ' imported into Internal files, tagged by folder.' + (notes.length ? ' (' + notes.join('; ') + ')' : ''));
+      if (window.bccNotifySaved) window.bccNotifySaved(total + ' file' + (total === 1 ? '' : 's') + ' brought over from SharePoint.');
+      loadFiles();
+    }).catch(function (e) {
+      if (btn) { btn.disabled = false; btn.textContent = '⬇ Import ALL files for this client'; }
+      say('');
+      (window.bccNotify || alert)('Import failed: ' + e.message, 'error', 7000);
+    });
   }
   function spImport(list) {
     if (!list || !list.length) return;

@@ -2035,7 +2035,8 @@ app.http('sharepoint-import', {
             id: docId, tenantId: BCC_TENANT_ID, docType: 'document', name: it.name || fname,
             folder, tags: importTags, sizeBytes: buf.length, mimeType: ct, storageKey,
             uploaderUpn: who, linkedContactId: null, linkedEngagementId: null,
-            source: 'sharepoint', createdAt: now, updatedAt: now
+            source: 'sharepoint', sharepointItemId: String(it.id), sharepointPath: subPath,
+            createdAt: now, updatedAt: now
           });
           logAudit('document-upload', { user: who, path: '/api/integrations/sharepoint/import', key: docId, meta: { folder, realmId, source: 'sharepoint' } });
           out.push({ name: it.name, ok: true, id: docId });
@@ -2045,6 +2046,98 @@ app.http('sharepoint-import', {
     } catch (e) { context.error('sharepoint-import', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
+/* Bulk RECURSIVE import: walk a client's whole SharePoint tree and copy every
+ * file into their internal Files. Everything lands FLAT — the folder tree is not
+ * recreated; each folder level becomes a tag instead. Resumable: each call does a
+ * bounded batch and reports what's left, so the browser can loop without ever
+ * hitting the function timeout. Already-imported files are skipped by their
+ * SharePoint item id, so re-running is safe and never duplicates. */
+const SP_BATCH = 20, SP_MAX_DEPTH = 8;
+async function spWalk(driveId, access, path, depth, out) {
+  if (depth > SP_MAX_DEPTH || out.length > 3000) return;
+  const url = 'https://graph.microsoft.com/v1.0/drives/' + driveId + '/root:' + encodeURI(path) + ':/children?$top=300&$select=id,name,folder,file,size';
+  const r = await fetch(url, { headers: { Authorization: 'Bearer ' + access } });
+  if (!r.ok) return;
+  const j = await r.json();
+  for (const it of (j.value || [])) {
+    if (it.folder) await spWalk(driveId, access, path + '/' + it.name, depth + 1, out);
+    else out.push({ id: it.id, name: it.name, size: it.size || 0, path: path });
+  }
+}
+app.http('sharepoint-import-all', {
+  methods: ['POST'], authLevel: 'anonymous', route: 'integrations/sharepoint/{realmId}/import-all',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    const realmId = request.params.realmId;
+    const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
+    try {
+      const folder = await spFolderFor(realmId);
+      if (!folder) return { jsonBody: { ok: false, error: 'No SharePoint folder is matched to this client.' } };
+      const access = await getGraphToken();
+      const driveId = await spDriveId();
+      const clientRoot = spPathFor(folder, '');
+      const all = [];
+      await spWalk(driveId, access, clientRoot, 0, all);
+
+      const c = container();
+      const dest = safeFolder('/clients/' + realmId);
+      // Which SharePoint items are already in this client's Files?
+      const { resources: have } = await c.items.query({
+        query: 'SELECT c.sharepointItemId FROM c WHERE c.tenantId=@t AND c.docType="document" AND c.folder=@f AND IS_DEFINED(c.sharepointItemId)',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@f', value: dest }]
+      }).fetchAll();
+      const done = new Set(have.map(h => String(h.sharepointItemId)));
+      const notYet = all.filter(f => !done.has(String(f.id)));
+      // Files over the 25 MB cap can never import — pull them out of the queue up
+      // front (size is known before download) so they can't loop forever, and
+      // report them by name so nothing is silently left behind.
+      const oversized = notYet.filter(f => f.size > MAX_UPLOAD_BYTES).map(f => ({ name: f.name, mb: Math.round(f.size / 1048576) }));
+      const pending = notYet.filter(f => f.size <= MAX_UPLOAD_BYTES);
+
+      const cont = getBlobContainer();
+      try { await cont.createIfNotExists(); } catch (_) {}
+      const who = (p.userDetails || p.userId || '').toLowerCase();
+      const batch = pending.slice(0, SP_BATCH);
+      const results = [];
+      for (const f of batch) {
+        try {
+          if (f.size > MAX_UPLOAD_BYTES) { results.push({ name: f.name, ok: false, error: 'over 25 MB' }); continue; }
+          const dr = await fetch('https://graph.microsoft.com/v1.0/drives/' + driveId + '/items/' + encodeURIComponent(f.id) + '/content', { headers: { Authorization: 'Bearer ' + access } });
+          if (!dr.ok) { results.push({ name: f.name, ok: false, error: 'download ' + dr.status }); continue; }
+          const buf = Buffer.from(await dr.arrayBuffer());
+          if (buf.length > MAX_UPLOAD_BYTES) { results.push({ name: f.name, ok: false, error: 'over 25 MB' }); continue; }
+          // Tag by the folder path RELATIVE to the client's root folder.
+          const rel = String(f.path || '').slice(clientRoot.length).replace(/^\/+|\/+$/g, '');
+          const tags = (rel ? rel.split('/').map(s => s.trim()).filter(Boolean) : []).concat(['SharePoint']).join(', ').slice(0, 200);
+          const now = new Date().toISOString();
+          const stamp = now.replace(/[:.]/g, '').slice(0, 15);
+          const storageKey = (BCC_TENANT_ID + dest + '/' + stamp + '-' + safeFilename(f.name)).replace(/\/+/g, '/').replace(/^\//, '');
+          const ct = dr.headers.get('content-type') || 'application/octet-stream';
+          await cont.getBlockBlobClient(storageKey).uploadData(buf, { blobHTTPHeaders: { blobContentType: ct } });
+          const docId = DOC_DOC_PREFIX + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
+          await c.items.upsert({
+            id: docId, tenantId: BCC_TENANT_ID, docType: 'document', name: f.name,
+            folder: dest, tags, sizeBytes: buf.length, mimeType: ct, storageKey,
+            uploaderUpn: who, linkedContactId: null, linkedEngagementId: null,
+            source: 'sharepoint', sharepointItemId: String(f.id), sharepointPath: rel,
+            createdAt: now, updatedAt: now
+          });
+          results.push({ name: f.name, ok: true, tags });
+        } catch (e) { results.push({ name: f.name, ok: false, error: String(e && e.message || e) }); }
+      }
+      const importedNow = results.filter(r => r.ok).length;
+      const failed = results.filter(r => !r.ok);
+      // Anything that failed would otherwise loop forever — count it as processed.
+      const remaining = Math.max(0, pending.length - batch.length);
+      logAudit('document-upload', { user: who, path: '/api/integrations/sharepoint/import-all', meta: { realmId, imported: importedNow, source: 'sharepoint-bulk' } });
+      return { jsonBody: {
+        ok: true, folder, totalFiles: all.length, alreadyHad: done.size,
+        imported: importedNow, failed, oversized, remaining, done: remaining === 0
+      } };
+    } catch (e) { context.error('sharepoint-import-all', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+
 // Admin: view/set which SharePoint folder belongs to which client.
 app.http('sharepoint-map', {
   methods: ['GET', 'POST'], authLevel: 'anonymous', route: 'integrations/sharepoint/map',
