@@ -1640,13 +1640,29 @@
     }
     var cc = d.columns || [];
     if (!(d.rows || []).length) return '<div style="color:var(--muted);padding:10px;">No data in this report' + (d.range ? ' for ' + esc(JSON.stringify(d.range)) : '') + '.</div>';
-    var head2 = '<tr>' + cc.map(function (c, i) { return '<th' + (i > 0 ? ' class="num"' : '') + '>' + esc(c || '') + '</th>'; }).join('') + '</tr>';
+    // Only MONEY columns get currency formatting + right alignment. Detail reports
+    // (A/R aging, transactions) carry text columns like Num / Due Date / Customer —
+    // running those through money2 turned invoice "61" into "$61" and the date
+    // "2026-04-02" into "$2,026". Decide per column, by its header name.
+    var moneyCol = cc.map(function (name, i) {
+      if (i === 0) return false;                       // first column is always the label
+      var n = String(name == null ? '' : name).toLowerCase().trim();
+      if (!n) return true;                              // unnamed period columns (P&L/BS) are amounts
+      if (/date|num\b|number|type|customer|vendor|name|memo|descript|account|class|department|terms|method|status|split|posting|doc|qty|quantity|product|service|item|address|email|phone|term/.test(n)) return false;
+      if (/amount|balance|total|debit|credit|subtotal|paid|payment|income|expense|cost|price|value|sales|profit|loss|net|cash/.test(n)) return true;
+      return true;                                      // period/summary grids default to money
+    });
+    var head2 = '<tr>' + cc.map(function (c, i) { return '<th' + (moneyCol[i] ? ' class="num"' : '') + '>' + esc(c || '') + '</th>'; }).join('') + '</tr>';
     var body = (d.rows || []).map(function (row) {
       var canDrill = drillable && !!row.acctId; // only the P&L popup is drillable; transaction/inline views are not
       var drill = canDrill ? (' data-acct="' + esc(row.acctId) + '" data-acctname="' + esc(row.label) + '"') : '';
       var style = 'padding-left:' + (8 + (row.level || 0) * 16) + 'px;' + ((row.type === 'summary' || row.type === 'header') ? 'font-weight:700;' : '') + (canDrill ? 'color:var(--gold-deep);' : '');
-      var cells = (row.cells || []).map(function (v) { return '<td class="num">' + money2(v) + '</td>'; }).join('');
-      var pads = ''; for (var k = (row.cells || []).length; k < cc.length - 1; k++) pads += '<td class="num"></td>';
+      var cells = (row.cells || []).map(function (v, j) {
+        var isMoney = moneyCol[j + 1];                  // cells start at column 1 (0 is the label)
+        if (isMoney) return '<td class="num">' + money2(v) + '</td>';
+        return '<td>' + esc(v == null ? '' : v) + '</td>';
+      }).join('');
+      var pads = ''; for (var k = (row.cells || []).length; k < cc.length - 1; k++) pads += '<td' + (moneyCol[k + 1] ? ' class="num"' : '') + '></td>';
       return '<tr' + drill + (canDrill ? ' style="cursor:pointer;" title="See the transactions behind this line"' : '') + '><td style="' + style + '">' + esc(row.label) + (canDrill ? ' ›' : '') + '</td>' + cells + pads + '</tr>';
     }).join('');
     return '<table><thead>' + head2 + '</thead><tbody>' + body + '</tbody></table>';
