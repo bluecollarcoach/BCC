@@ -2802,6 +2802,19 @@
     else if (sec === 'access') renderAccess();
   }
 
+  // "Only mine" filter for open to-do lists (Overview + Tasks tab). Session-scoped.
+  var _todoMine = false;
+  function todoMineToggleHtml(id) {
+    return '<button class="btn btn-ghost" id="' + id + '" type="button" style="font-size:11px;min-height:28px;"' +
+      (_todoMine ? ' title="Showing only tasks assigned to you — click for all"' : ' title="Showing all tasks — click for only yours"') + '>' +
+      (_todoMine ? '👤 Only mine' : '👥 All') + '</button>';
+  }
+  function todoMineFilter(list) {
+    if (!_todoMine) return list;
+    var me = myUpn();
+    return list.filter(function (t) { return String(t.assigneeUpn || '').toLowerCase() === me; });
+  }
+
   /* ---- Overview (the bookkeeper's landing for a client) ---- */
   function renderOverview() {
     var body = document.getElementById('overview-body'); if (!body) return;
@@ -2826,7 +2839,8 @@
       '<button class="ov-action" type="button" data-ov="tasks"><span class="ic" aria-hidden="true">➕</span><span>Tasks &amp; to-dos<span class="sub">track the work</span></span></button>' +
     '</div>';
     actions = emailBanner + actions;
-    var open = allTasks().filter(function (t) { return t.status !== 'done'; }).sort(function (a, b) { return (a.dueDate || '9999').localeCompare(b.dueDate || '9999') || (b.createdAt || '').localeCompare(a.createdAt || ''); });
+    var openAll = allTasks().filter(function (t) { return t.status !== 'done'; }).sort(function (a, b) { return (a.dueDate || '9999').localeCompare(b.dueDate || '9999') || (b.createdAt || '').localeCompare(a.createdAt || ''); });
+    var open = todoMineFilter(openAll);
     var today = new Date().toISOString().slice(0, 10);
     var list = open.length ? open.map(function (t) {
       var who = t.assigneeUpn ? ((window.bccDisplayName && window.bccDisplayName(t.assigneeUpn)) || t.assigneeUpn) : '';
@@ -2837,13 +2851,15 @@
         '<div style="flex:1;min-width:0;">' + taskTitleHtml(t, isOpen, '') +
         (meta ? '<div style="font-size:12px;color:' + (overdue ? 'var(--burgundy)' : 'var(--muted)') + ';padding-left:12px;">' + esc(meta) + '</div>' : '') +
         (isOpen ? taskDetailHtml(t, true) : '') + '</div></div>';
-    }).join('') : '<div style="color:var(--muted);padding:12px 0;">No open to-dos for this client. 🎉</div>';
+    }).join('') : '<div style="color:var(--muted);padding:12px 0;">' + (_todoMine && openAll.length ? 'No open to-dos assigned to you for this client.' : 'No open to-dos for this client. 🎉') + '</div>';
     body.innerHTML = actions +
-      '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:4px 0 6px;"><div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;">Open to-dos' + (open.length ? ' (' + open.length + ')' : '') + '</div><button class="btn btn-ghost" data-ov="tasks" type="button" style="font-size:12px;">Manage tasks →</button></div>' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:4px 0 6px;flex-wrap:wrap;"><div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;">Open to-dos' + (open.length ? ' (' + open.length + (_todoMine && openAll.length !== open.length ? ' of ' + openAll.length : '') + ')' : '') + '</div>' +
+      '<div style="display:flex;gap:8px;align-items:center;">' + todoMineToggleHtml('ov_mine') + '<button class="btn btn-ghost" data-ov="tasks" type="button" style="font-size:12px;">Manage tasks →</button></div></div>' +
       list +
       '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:18px 0 6px;"><div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;">Recent activity</div><button class="btn btn-ghost" data-ov="activity" type="button" style="font-size:12px;">View all →</button></div>' +
       '<div id="ov-activity"><div style="color:var(--muted);font-size:13px;padding:6px 0;">Loading…</div></div>';
     body.querySelectorAll('[data-ov]').forEach(function (b) { b.addEventListener('click', function () { setSection(b.getAttribute('data-ov')); }); });
+    var ovMine = document.getElementById('ov_mine'); if (ovMine) ovMine.onclick = function () { _todoMine = !_todoMine; renderOverview(); };
     body.querySelectorAll('[data-ovdone]').forEach(function (cb) { cb.addEventListener('change', function () { toggleTask(cb.getAttribute('data-ovdone'), true); renderOverview(); updateDrawer(); }); });
     wireTaskExpand(body, renderOverview);
     body.querySelectorAll('[data-ovedit]').forEach(function (b) { b.onclick = function () { _taskEdit = b.getAttribute('data-ovedit'); setSection('tasks'); }; });
@@ -3066,8 +3082,8 @@
     var all = allTasks();
     // A recurring task with a future due date is "upcoming" — scheduled, not yet active.
     var isUpcoming = function (t) { return t.status !== 'done' && t.recurrence && t.recurrence !== 'none' && t.dueDate && t.dueDate > today; };
-    var active = all.filter(function (t) { return !isUpcoming(t); }).sort(function (a, b) { return ((a.status === 'done') - (b.status === 'done')) || (a.dueDate || '9999').localeCompare(b.dueDate || '9999') || (b.createdAt || '').localeCompare(a.createdAt || ''); });
-    var upcoming = all.filter(isUpcoming).sort(function (a, b) { return (a.dueDate || '').localeCompare(b.dueDate || ''); });
+    var active = todoMineFilter(all.filter(function (t) { return !isUpcoming(t); })).sort(function (a, b) { return ((a.status === 'done') - (b.status === 'done')) || (a.dueDate || '9999').localeCompare(b.dueDate || '9999') || (b.createdAt || '').localeCompare(a.createdAt || ''); });
+    var upcoming = todoMineFilter(all.filter(isUpcoming)).sort(function (a, b) { return (a.dueDate || '').localeCompare(b.dueDate || ''); });
     var add = '<div class="ws-form" style="margin-bottom:14px;">' +
       '<label class="full">New task<input id="tk_title" placeholder="What needs doing for this client?" /></label>' +
       '<label>Due<input type="date" id="tk_due" /></label>' +
@@ -3107,10 +3123,14 @@
         '<button class="btn btn-ghost" data-tedit="' + esc(t.id) + '" type="button" style="font-size:11px;min-height:30px;">✏️ Edit</button>' +
         '<button class="btn btn-ghost" data-tdel="' + esc(t.id) + '" type="button" style="font-size:11px;min-height:30px;">Delete</button></div>';
     };
-    var list = active.length ? active.map(function (t) { return taskRow(t, false); }).join('') : '<div style="color:var(--muted);padding:10px 0;">No active tasks for ' + esc(companyName(currentRealm)) + '.</div>';
+    var filterBar = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">' +
+      '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;">Tasks' + (active.length ? ' (' + active.length + ')' : '') + '</div>' +
+      todoMineToggleHtml('tk_mine') + '</div>';
+    var list = active.length ? active.map(function (t) { return taskRow(t, false); }).join('') : '<div style="color:var(--muted);padding:10px 0;">' + (_todoMine ? 'No tasks assigned to you for ' + esc(companyName(currentRealm)) + '.' : 'No active tasks for ' + esc(companyName(currentRealm)) + '.') + '</div>';
     if (upcoming.length) list += '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 6px;">Upcoming (recurring)</div>' + upcoming.map(function (t) { return taskRow(t, true); }).join('');
-    body.innerHTML = add + list;
+    body.innerHTML = add + filterBar + list;
     document.getElementById('tk_add').onclick = addTask;
+    var tkMine = document.getElementById('tk_mine'); if (tkMine) tkMine.onclick = function () { _todoMine = !_todoMine; renderTasks(); };
     body.querySelectorAll('[data-tdone]').forEach(function (cb) { cb.onchange = function () { toggleTask(cb.getAttribute('data-tdone'), cb.checked); }; });
     body.querySelectorAll('[data-tdel]').forEach(function (b) { b.onclick = function () { delTask(b.getAttribute('data-tdel')); }; });
     body.querySelectorAll('[data-tedit]').forEach(function (b) { b.onclick = function () { _taskEdit = b.getAttribute('data-tedit'); renderTasks(); var ti = document.getElementById('te_title'); if (ti) ti.focus(); }; });
