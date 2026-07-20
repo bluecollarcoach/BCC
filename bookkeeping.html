@@ -4337,7 +4337,9 @@
       '<input type="file" id="cpr_file" accept=".pdf,.png,.jpg,.jpeg,.webp,.csv,.xlsx,.xls,image/*" style="display:none;" />' +
       '<button class="btn btn-ghost" id="cpr_print" type="button" title="Minnesota DLI certified payroll form (print)">🖨️ DLI form</button>' +
       '<button class="btn btn-ghost" id="cpr_mndot" type="button" title="Official MnDOT Prevailing Wage Payroll Report + Statement of Compliance, filled as fillable PDFs">🛣️ MnDOT forms</button>' +
-      '<button class="btn btn-primary" id="cpr_save" type="button">Save</button></div></div>';
+      '<button class="btn btn-ghost" id="cpr_email" type="button" title="Email this report from this client&rsquo;s mailbox">✉️ Email report</button>' +
+      '<button class="btn btn-primary" id="cpr_save" type="button">Save</button></div></div>' +
+      '<div id="cpr_emailbox" style="display:none;"></div>';
 
     var hdr = '<div class="ws-form" style="margin-bottom:14px;">' +
       txt('Contractor / subcontractor name', 'contractorName') +
@@ -4393,10 +4395,88 @@
     document.getElementById('cpr_save').onclick = document.getElementById('cpr_save2').onclick = cprSave;
     document.getElementById('cpr_print').onclick = function () { cprSave(true); printCpr(cprDraft); };
     document.getElementById('cpr_mndot').onclick = function () { cprSave(true); cprMndotDownload(cprDraft); };
+    document.getElementById('cpr_email').onclick = function () { cprSave(true); cprEmailPanel(); };
     cprRenderSig();
     var afb = document.getElementById('cpr_autofill'); if (afb) afb.onclick = function () { var fi = document.getElementById('cpr_file'); if (fi) fi.click(); };
     var afi = document.getElementById('cpr_file'); if (afi) afi.onchange = cprAutofill;
   }
+  /* ===== Email a certified payroll report from the CLIENT's mailbox =====
+     Sends from the client's dedicated mailbox when one is live, otherwise from
+     the signed-in user's — so it works today and upgrades automatically. Attaches
+     the official MnDOT PDFs and/or the MN DLI form. */
+  function cprEmailPanel() {
+    var box = document.getElementById('cpr_emailbox'); if (!box || !cprDraft) return;
+    if (box.style.display !== 'none') { box.style.display = 'none'; box.innerHTML = ''; return; }
+    var info = {}; try { info = JSON.parse(localStorage.getItem('bcc-client-info-' + currentRealm)) || {}; } catch (e) {}
+    var from = (mailboxActive && mailboxActive() && _clientMailbox && _clientMailbox.mailbox) ? _clientMailbox.mailbox : (myUpn() || 'your account');
+    var subj = 'Certified Payroll' + (cprDraft.payrollNo ? ' #' + cprDraft.payrollNo : '') + (cprDraft.projectName ? ' — ' + cprDraft.projectName : '');
+    box.style.display = '';
+    box.innerHTML = '<div class="card" style="background:var(--gold-fade);border:1px solid var(--chrome-mute);margin-top:12px;">' +
+      '<div style="font-weight:700;font-size:14px;margin-bottom:4px;">✉️ Email this payroll report</div>' +
+      '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Sending from <strong>' + esc(from) + '</strong></div>' +
+      '<div class="ws-form">' +
+      '<label class="full">To (comma-separated)<input id="cpe_to" autocomplete="off" value="' + esc(info.email || '') + '" placeholder="gc@example.com" /></label>' +
+      '<label class="full">CC (optional)<input id="cpe_cc" autocomplete="off" /></label>' +
+      '<label class="full">Subject<input id="cpe_subj" value="' + esc(subj) + '" /></label>' +
+      '<label class="full">Message<textarea id="cpe_body" rows="5">Attached is the certified payroll report' + (cprDraft.payrollNo ? ' (#' + esc(cprDraft.payrollNo) + ')' : '') + (cprDraft.projectName ? ' for ' + esc(cprDraft.projectName) : '') + '.\n\nThank you,\n' + esc(companyName(currentRealm)) + '</textarea></label>' +
+      '<div class="full" style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:13px;">' +
+        '<label style="flex-direction:row;align-items:center;gap:6px;text-transform:none;font-size:13px;"><input type="checkbox" id="cpe_mndot" checked /> MnDOT forms (PDF)</label>' +
+        '<label style="flex-direction:row;align-items:center;gap:6px;text-transform:none;font-size:13px;"><input type="checkbox" id="cpe_dli" /> MN DLI form</label>' +
+      '</div>' +
+      '<div class="full" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><button class="btn btn-primary" id="cpe_send" type="button">Send</button><button class="btn btn-ghost" id="cpe_cancel" type="button">Cancel</button><span id="cpe_status" style="font-size:12px;color:var(--muted);"></span></div>' +
+      '</div></div>';
+    document.getElementById('cpe_cancel').onclick = function () { box.style.display = 'none'; box.innerHTML = ''; };
+    document.getElementById('cpe_send').onclick = cprEmailSend;
+  }
+  function b64FromBytes(bytes) {
+    var bin = '', arr = new Uint8Array(bytes), CH = 0x8000;
+    for (var i = 0; i < arr.length; i += CH) bin += String.fromCharCode.apply(null, arr.subarray(i, i + CH));
+    return btoa(bin);
+  }
+  function cprEmailSend() {
+    var st = document.getElementById('cpe_status');
+    var to = (document.getElementById('cpe_to').value || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+    if (!to.length) { (window.bccNotify || alert)('Add at least one recipient.', 'warn'); return; }
+    var cc = (document.getElementById('cpe_cc').value || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+    var subject = (document.getElementById('cpe_subj').value || '').trim() || 'Certified Payroll';
+    var bodyText = document.getElementById('cpe_body').value || '';
+    var wantMndot = document.getElementById('cpe_mndot').checked, wantDli = document.getElementById('cpe_dli').checked;
+    var btn = document.getElementById('cpe_send'); btn.disabled = true;
+    if (st) st.textContent = 'Preparing attachments…';
+    var atts = [];
+    if (wantDli) {
+      try { atts.push({ name: 'Certified Payroll' + (cprDraft.payrollNo ? ' #' + cprDraft.payrollNo : '') + '.html', contentType: 'text/html', contentBytes: btoa(unescape(encodeURIComponent(cprDocHtml(cprDraft, false)))) }); } catch (e) {}
+    }
+    var prep = wantMndot
+      ? Promise.all([
+          cprEnsurePdfLib(),
+          fetch('/forms/mndot-prevailing-wage-payroll.pdf', { credentials: 'include' }).then(function (x) { return x.arrayBuffer(); }),
+          fetch('/forms/mndot-statement-of-compliance.pdf', { credentials: 'include' }).then(function (x) { return x.arrayBuffer(); })
+        ]).then(function (got) {
+          return cprMndotBuild(cprDraft, got[1], got[2], got[0]).then(function (files) {
+            files.forEach(function (f) { atts.push({ name: f.name, contentType: 'application/pdf', contentBytes: b64FromBytes(f.bytes) }); });
+          });
+        })
+      : Promise.resolve();
+    prep.then(function () {
+      if (st) st.textContent = 'Sending…';
+      var payload = { to: to, subject: subject, bodyHtml: esc(bodyText).replace(/\n/g, '<br>'), attachments: atts };
+      if (cc.length) payload.cc = cc;
+      if (mailboxActive && mailboxActive()) payload.realmId = currentRealm;
+      return fetch('/api/integrations/msgraph/send-mail', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+        .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
+        .then(function (resp) {
+          if (resp && resp.ok === false) throw new Error(resp.error || 'send failed');
+          if (window.bccAudit) window.bccAudit('client-email-send', { key: cprDraft.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, what: 'certified-payroll', recipients: to.length } });
+          if (window.bccNotifySaved) window.bccNotifySaved('Payroll report emailed.');
+          var box = document.getElementById('cpr_emailbox'); if (box) { box.style.display = 'none'; box.innerHTML = ''; }
+        });
+    }).catch(function (e) {
+      btn.disabled = false; if (st) st.textContent = '';
+      (window.bccNotify || alert)('Could not send: ' + e.message, 'error', 8000);
+    });
+  }
+
   // ===== CPR signature (Jenna's feedback: owner signs the Statement of Compliance) =====
   // Per-company saved signature so the owner (e.g. Tyson) signs once and it can be
   // inserted on every report for that company. Synced like other bcc-* docs.
@@ -4477,8 +4557,13 @@
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (d) {
           if (!d || !d.data || currentRealm !== realmAt) return;
-          if (d.data === localStorage.getItem(key)) return; // unchanged
-          localStorage.setItem(key, d.data);
+          // /api/data returns .data as an OBJECT when it was written by the sync
+          // (and a string when written server-side). Storing the object raw put
+          // the literal "[object Object]" in localStorage, so JSON.parse failed
+          // and "Insert saved signature" silently never appeared.
+          var val = (typeof d.data === 'string') ? d.data : JSON.stringify(d.data);
+          if (val === localStorage.getItem(key)) return; // unchanged
+          localStorage.setItem(key, val);
           if (document.getElementById('cpr_sigwrap')) cprRenderSig();
         })
         .catch(function () {});

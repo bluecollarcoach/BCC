@@ -3189,6 +3189,23 @@ app.http('msgraph-send-mail', {
       };
       if (ccList.length)  msg.ccRecipients  = ccList.filter(Boolean).map(recip);
       if (bccList.length) msg.bccRecipients = bccList.filter(Boolean).map(recip);
+      // File attachments (base64). Graph's simple-attachment path tops out around
+      // 3 MB per message, so cap and report rather than letting Graph 413.
+      const atts = Array.isArray(body.attachments) ? body.attachments.slice(0, 10) : [];
+      if (atts.length) {
+        let totalB = 0;
+        msg.attachments = atts.map(a => {
+          const b64 = String(a.contentBytes || '');
+          totalB += Math.ceil(b64.length * 0.75);
+          return {
+            '@odata.type': '#microsoft.graph.fileAttachment',
+            name: String(a.name || 'attachment').replace(/[\r\n"]/g, '').slice(0, 150),
+            contentType: String(a.contentType || 'application/octet-stream'),
+            contentBytes: b64
+          };
+        });
+        if (totalB > 3 * 1024 * 1024) return { status: 400, jsonBody: { ok: false, error: 'Attachments total ' + Math.round(totalB / 1048576) + ' MB — Outlook caps this at about 3 MB. Send fewer or smaller files.' } };
+      }
       const payload = { message: msg, saveToSentItems: true };
       const r = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/sendMail', {
         method: 'POST',
