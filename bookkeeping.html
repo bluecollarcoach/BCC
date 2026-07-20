@@ -2241,7 +2241,21 @@
           dateRow = '<label>Date<input type="date" id="tx_date" value="' + esc(pre.TxnDate || (seed && seed.date) || today) + '" /></label>' +
             '<label>Due date<input type="date" id="tx_due" value="' + esc(pre.DueDate || '') + '" /></label>';
         }
-        html += '<div class="ws-form" style="margin-bottom:10px;">' + who + dateRow + '</div>' +
+        // Bills/invoices: a reference (PO / bill no.), the job it belongs to, and
+        // payment terms — the things a bookkeeper types off the paper document.
+        var extraRow = '';
+        if (entity === 'bill' || entity === 'invoice') {
+          var termOpts = '<option value="">— none —</option>' + (refs.terms || []).map(function (t) {
+            var sel = (pre.SalesTermRef && String(pre.SalesTermRef.value) === String(t.id)) ? ' selected' : '';
+            return '<option value="' + esc(t.id) + '"' + sel + '>' + esc(t.name) + '</option>';
+          }).join('');
+          var jobSel = (pre.Line && pre.Line[0] && pre.Line[0].AccountBasedExpenseLineDetail && pre.Line[0].AccountBasedExpenseLineDetail.CustomerRef && pre.Line[0].AccountBasedExpenseLineDetail.CustomerRef.value) || '';
+          extraRow =
+            '<label>' + (entity === 'bill' ? 'PO / Bill no.' : 'PO / Ref no.') + '<input id="tx_docnum" value="' + esc(pre.DocNumber || '') + '" placeholder="optional" /></label>' +
+            '<label>Terms<select id="tx_terms">' + termOpts + '</select></label>' +
+            (entity === 'bill' ? '<label class="full">Job / customer (optional — bills the cost to a job)<select id="tx_job">' + txOpt(refs.customers, jobSel) + '</select></label>' : '');
+        }
+        html += '<div class="ws-form" style="margin-bottom:10px;">' + who + dateRow + extraRow + '</div>' +
           '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Line items</div><div id="tx_lines"></div>' +
           '<button class="btn btn-ghost" id="tx_addline" type="button" style="margin-top:6px;font-size:12px;">+ Add line</button>' +
           '<div style="margin-top:14px;"><div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Attachment</div>' +
@@ -2289,6 +2303,10 @@
             // downgrade a Check to Cash just because the paid-from account isn't a credit card.
             g.paymentType = (edit && pre.PaymentType) ? pre.PaymentType : ((acct && /credit card/i.test(acct.type || '')) ? 'CreditCard' : 'Cash');
           } else { g.due = document.getElementById('tx_due').value; }
+          // PO/ref no., payment terms, and the job the cost belongs to.
+          var dn = document.getElementById('tx_docnum'); if (dn && dn.value.trim()) g.docNumber = dn.value.trim();
+          var tm = document.getElementById('tx_terms'); if (tm && tm.value) g.termId = tm.value;
+          var jb = document.getElementById('tx_job'); if (jb && jb.value) g.jobCustomerId = jb.value;
           // On EDIT, a sparse update REPLACES all lines — carry through any line types the editor
           // doesn't render (item-based lines, discounts, etc.) verbatim so they aren't dropped.
           if (edit) { var editable = (entity === 'invoice' ? 'SalesItemLineDetail' : 'AccountBasedExpenseLineDetail'); g.keepLines = (pre.Line || []).filter(function (l) { return l.DetailType && l.DetailType !== editable; }); }
@@ -4592,15 +4610,51 @@
     if ((e.st || []).some(function (x) { return x; }) || (e.ot || []).some(function (x) { return x; })) return false;
     return true;
   }
+  // Normalized employee name for matching across uploads ("SMITH, John" == "john smith").
+  function cprEmpKey(n) {
+    var s = String(n || '').toLowerCase().replace(/[^a-z, ]/g, '').trim();
+    if (s.indexOf(',') > 0) { var p = s.split(','); s = (p[1] || '').trim() + ' ' + (p[0] || '').trim(); } // "last, first" -> "first last"
+    return s.replace(/\s+/g, ' ').trim();
+  }
+  // Merge an extracted employee INTO an existing row: fill blanks, and fill day
+  // cells that are empty. A day that already has hours is left alone (never
+  // silently changed — these are payroll numbers) and reported as a conflict.
+  function cprMergeEmp(dst, src) {
+    var conflicts = 0;
+    ['address', 'idNumber', 'exemptions', 'laborCode', 'classification', 'stRate', 'otRate', 'grossThisPeriod',
+     'dedFica', 'dedFed', 'dedState', 'dedOther1Label', 'dedOther1', 'dedOther2Label', 'dedOther2'].forEach(function (f) {
+      if (!String(dst[f] == null ? '' : dst[f]).trim() && String(src[f] == null ? '' : src[f]).trim()) dst[f] = src[f];
+    });
+    if (src.apprentice) dst.apprentice = true;
+    ['st', 'ot'].forEach(function (k) {
+      var a = dst[k] || (dst[k] = ['', '', '', '', '', '', '']), b = src[k] || [];
+      for (var i = 0; i < 7; i++) {
+        var have = String(a[i] == null ? '' : a[i]).trim(), inc = String(b[i] == null ? '' : b[i]).trim();
+        if (!inc) continue;
+        if (!have) a[i] = b[i];
+        else if (have !== inc) conflicts++;   // both files claim this day — keep what's there
+      }
+    });
+    return conflicts;
+  }
   function cprApplyExtract(data) {
     data = data || {};
     ['weekStart', 'payPeriodEnd', 'projectName'].forEach(function (f) { if (!String(cprDraft[f] || '').trim() && data[f]) cprDraft[f] = String(data[f]).trim(); });
     var emps = (data.employees || []).map(cprEmpFromExtract).filter(function (e) { return (e.name || '').trim(); });
     if (!emps.length) return 0;
-    var existing = cprDraft.employees || [];
-    cprDraft.employees = existing.every(cprEmpIsBlank) ? emps : existing.concat(emps);
-    return emps.length;
+    var existing = (cprDraft.employees || []).filter(function (e) { return !cprEmpIsBlank(e); });
+    var byKey = {}; existing.forEach(function (e) { var k = cprEmpKey(e.name); if (k) byKey[k] = e; });
+    var added = 0, merged = 0, conflicts = 0;
+    emps.forEach(function (e) {
+      var k = cprEmpKey(e.name), hit = k && byKey[k];
+      if (hit) { conflicts += cprMergeEmp(hit, e); merged++; }        // same person from another file
+      else { existing.push(e); if (k) byKey[k] = e; added++; }
+    });
+    cprDraft.employees = existing.length ? existing : emps;
+    _cprLastMerge = { added: added, merged: merged, conflicts: conflicts };
+    return added + merged;
   }
+  var _cprLastMerge = null;
   function cprAutofill(ev) {
     var file = ev.target.files && ev.target.files[0]; ev.target.value = '';
     if (!file) return;
@@ -4616,7 +4670,15 @@
         var n = cprApplyExtract(j.data);
         if (!n) { (window.bccNotify || alert)('No employees were found in that file. Try the payroll register that lists each employee and their hours.', 'warn', 8000); return; }
         renderPayroll();
-        if (window.bccNotify) window.bccNotify('Pre-filled ' + n + ' employee' + (n === 1 ? '' : 's') + ' from the file — please review every value (especially daily hours and rates) before saving.', 'success', 9000);
+        if (window.bccNotify) {
+          var mm = _cprLastMerge || { added: n, merged: 0, conflicts: 0 };
+          var parts = [];
+          if (mm.added) parts.push('added ' + mm.added + ' employee' + (mm.added === 1 ? '' : 's'));
+          if (mm.merged) parts.push('merged into ' + mm.merged + ' existing');
+          var msg = 'Pre-filled from the file — ' + (parts.join(', ') || n + ' employees') + '.';
+          if (mm.conflicts) msg += ' ' + mm.conflicts + ' day' + (mm.conflicts === 1 ? '' : 's') + ' already had hours and were left as-is — check those.';
+          window.bccNotify(msg + ' Please review every value (especially daily hours and rates) before saving.', mm.conflicts ? 'warn' : 'success', mm.conflicts ? 12000 : 9000);
+        }
       })
       .catch(function (e) { if (btn) { btn.disabled = false; btn.textContent = ot; } (window.bccNotify || alert)('Could not read that file: ' + e.message, 'error', 8000); });
   }

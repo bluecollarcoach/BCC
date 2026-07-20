@@ -4302,7 +4302,10 @@ app.http('qbo-refs', {
       const vendors   = (await ctx.queryAll('SELECT Id, DisplayName FROM Vendor WHERE Active = true')).map(x => ({ id: x.Id, name: x.DisplayName }));
       const items     = (await ctx.queryAll('SELECT Id, Name, UnitPrice FROM Item WHERE Active = true')).map(x => ({ id: x.Id, name: x.Name, price: x.UnitPrice }));
       const accounts  = (await ctx.queryAll('SELECT Id, Name, AccountType, Classification FROM Account WHERE Active = true')).map(x => ({ id: x.Id, name: x.Name, type: x.AccountType, classification: x.Classification }));
-      return { jsonBody: { ok: true, customers, vendors, items, accounts } };
+      // Payment terms (Net 30 etc.) so a bill can carry its terms like it does in QBO.
+      let terms = [];
+      try { terms = (await ctx.queryAll('SELECT Id, Name FROM Term WHERE Active = true')).map(x => ({ id: x.Id, name: x.Name })); } catch (_) { terms = []; }
+      return { jsonBody: { ok: true, customers, vendors, items, accounts, terms } };
     } catch (e) { context.error('qbo-refs', e); return { status: 502, jsonBody: { ok: false, error: String(e.message || e) } }; }
   })
 });
@@ -4349,7 +4352,11 @@ app.http('qbo-write', {
       } else if (entity === 'bill') {
         const lines = (f.lines || []).filter(l => l && (l.amount || l.accountId)).map(l => ({
           DetailType: 'AccountBasedExpenseLineDetail', Amount: Number(l.amount) || 0, Description: l.desc || undefined,
-          AccountBasedExpenseLineDetail: { AccountRef: { value: String(l.accountId) } }
+          // A job/customer on the line books the cost to that job (and makes it billable).
+          AccountBasedExpenseLineDetail: Object.assign(
+            { AccountRef: { value: String(l.accountId) } },
+            f.jobCustomerId ? { CustomerRef: { value: String(f.jobCustomerId) }, BillableStatus: 'Billable' } : {}
+          )
         }));
         if (!f.vendorId || !lines.length) return badRequest('vendor and at least one line required');
         payload = { VendorRef: { value: String(f.vendorId) }, Line: lines };
@@ -4411,6 +4418,12 @@ app.http('qbo-write', {
         if (f.txnDate) payload.TxnDate = f.txnDate;
         if (f.docNumber) payload.DocNumber = String(f.docNumber);
         if (f.memo) payload.PrivateNote = String(f.memo);
+      }
+      // Reference number (PO / bill no.) and payment terms — both live on the
+      // document header for bills and invoices.
+      if ((entity === 'bill' || entity === 'invoice') && payload) {
+        if (f.docNumber) payload.DocNumber = String(f.docNumber).slice(0, 21);
+        if (f.termId) payload.SalesTermRef = { value: String(f.termId) };
       }
       // On edit, a sparse update with Line REPLACES all lines — re-append any existing line
       // types the editor didn't render (item-based lines, discounts) verbatim so nothing is lost.
