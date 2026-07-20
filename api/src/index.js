@@ -1872,6 +1872,200 @@ app.http('drive-set-root', {
 // token rotations (and rotation races) against the providers. Tokens live
 // ~60 min at both providers; cache well inside that.
 const _driveATCache = new Map(); // realmId -> { at, exp }
+/* ===== SharePoint (the firm's Bookkeeping Operations library) =====
+ * Client working files live in SharePoint:
+ *   Site "Bookkeeping Operations" → Documents → "Recurring Client Work" → <Client>
+ * These endpoints let a bookkeeper BROWSE that client's folder in-app and IMPORT
+ * files into the client's internal Files. READ-ONLY against SharePoint
+ * (Sites.Read.All app permission); per-client access is gated exactly like the
+ * client drives, so nobody sees a client they can't already open.
+ */
+const SP_SITE_NAME  = process.env.SHAREPOINT_SITE_NAME  || 'Bookkeeping Operations';
+const SP_ROOT_FOLDER = process.env.SHAREPOINT_ROOT_FOLDER || 'Recurring Client Work';
+const SP_MAP_ID = 'bcc-sharepoint-map-v1';
+let _spDrive = { id: null, exp: 0 };
+// Resolve the document library by SEARCHING for the site (no hard-coded ids/hostnames).
+async function spDriveId() {
+  if (_spDrive.id && Date.now() < _spDrive.exp) return _spDrive.id;
+  const access = await getGraphToken();
+  const H = { Authorization: 'Bearer ' + access };
+  const sr = await fetch('https://graph.microsoft.com/v1.0/sites?search=' + encodeURIComponent(SP_SITE_NAME), { headers: H });
+  if (!sr.ok) throw new Error('SharePoint site lookup failed (' + sr.status + ')');
+  const sj = await sr.json();
+  const site = (sj.value || []).find(s => String(s.displayName || '').toLowerCase() === SP_SITE_NAME.toLowerCase()) || (sj.value || [])[0];
+  if (!site) throw new Error('SharePoint site "' + SP_SITE_NAME + '" not found');
+  const dr = await fetch('https://graph.microsoft.com/v1.0/sites/' + site.id + '/drives', { headers: H });
+  if (!dr.ok) throw new Error('SharePoint drives lookup failed (' + dr.status + ')');
+  const dj = await dr.json();
+  const drive = (dj.value || []).find(d => String(d.name || '').toLowerCase() === 'documents') || (dj.value || [])[0];
+  if (!drive) throw new Error('No document library on the SharePoint site');
+  _spDrive = { id: drive.id, exp: Date.now() + 30 * 60 * 1000 };
+  return drive.id;
+}
+// "Howard Lake Tire & Auto Service LLC" and "Howard Lake Tire and Auto" must match,
+// so fold & -> and BEFORE stripping punctuation, then drop entity suffixes.
+function spNorm(s) { return String(s || '').toLowerCase().replace(/&/g, 'and').replace(/\b(llc|llp|inc|co|company|corp|ltd|the|service|services)\b/g, '').replace(/[^a-z0-9]+/g, ''); }
+async function spFolderNames() {
+  const access = await getGraphToken();
+  const driveId = await spDriveId();
+  const r = await fetch('https://graph.microsoft.com/v1.0/drives/' + driveId + '/root:/' + encodeURIComponent(SP_ROOT_FOLDER) + ':/children?$top=200&$select=name,folder', { headers: { Authorization: 'Bearer ' + access } });
+  if (!r.ok) throw new Error('SharePoint root listing failed (' + r.status + ')');
+  const j = await r.json();
+  return (j.value || []).filter(x => x.folder).map(x => x.name);
+}
+// realmId -> SharePoint folder name. Stored overrides win; otherwise auto-match on name.
+async function spFolderFor(realmId) {
+  const c = container();
+  let map = {};
+  try { const d = await c.item(SP_MAP_ID, BCC_TENANT_ID).read().then(r => r.resource); if (d && d.map) map = d.map; } catch (_) {}
+  if (map[realmId]) return map[realmId];
+  const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+  const name = comp && comp.companyName;
+  if (!name) return null;
+  const folders = await spFolderNames();
+  const target = spNorm(name);
+  let hit = folders.find(f => spNorm(f) === target);
+  if (!hit) hit = folders.find(f => spNorm(f) && (target.indexOf(spNorm(f)) === 0 || spNorm(f).indexOf(target) === 0));
+  return hit || null;
+}
+// Path inside the library for a client (optionally a subpath under their folder).
+function spPathFor(folderName, sub) {
+  const clean = String(sub || '').replace(/^\/+|\/+$/g, '');
+  return '/' + SP_ROOT_FOLDER + '/' + folderName + (clean ? '/' + clean : '');
+}
+app.http('sharepoint-list', {
+  methods: ['GET'], authLevel: 'anonymous', route: 'integrations/sharepoint/{realmId}',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    const realmId = request.params.realmId;
+    const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
+    try {
+      const folder = await spFolderFor(realmId);
+      if (!folder) return { jsonBody: { ok: true, mapped: false, items: [], error: 'No SharePoint folder is matched to this client yet.' } };
+      const sub = new URL(request.url).searchParams.get('path') || '';
+      const access = await getGraphToken();
+      const driveId = await spDriveId();
+      const path = spPathFor(folder, sub);
+      const url = 'https://graph.microsoft.com/v1.0/drives/' + driveId + '/root:' + encodeURI(path) + ':/children?$top=300&$select=id,name,folder,file,size,lastModifiedDateTime,webUrl';
+      const r = await fetch(url, { headers: { Authorization: 'Bearer ' + access } });
+      if (!r.ok) { const d = (await r.text().catch(() => '')).slice(0, 200); return { status: 502, jsonBody: { ok: false, error: 'SharePoint list failed (' + r.status + ')', detail: d } }; }
+      const j = await r.json();
+      const items = (j.value || []).map(f => ({
+        id: f.id, name: f.name, folder: !!f.folder, childCount: f.folder ? f.folder.childCount : null,
+        size: f.size || null, mimeType: (f.file && f.file.mimeType) || null,
+        modified: f.lastModifiedDateTime || null, webUrl: f.webUrl || null
+      })).sort((a, b) => ((b.folder ? 1 : 0) - (a.folder ? 1 : 0)) || String(a.name).localeCompare(b.name));
+      return { jsonBody: { ok: true, mapped: true, folder, path: sub, items } };
+    } catch (e) { context.error('sharepoint-list', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+app.http('sharepoint-download', {
+  methods: ['GET'], authLevel: 'anonymous', route: 'integrations/sharepoint/{realmId}/download/{itemId}',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    const realmId = request.params.realmId, itemId = request.params.itemId;
+    const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
+    try {
+      const access = await getGraphToken();
+      const driveId = await spDriveId();
+      const uq = new URL(request.url).searchParams;
+      const name = (uq.get('name') || 'download').replace(/[^a-zA-Z0-9._ -]+/g, '_').slice(0, 120);
+      const inline = uq.get('inline') === '1' && /\.(pdf|png|jpe?g|gif|webp|bmp|txt|csv)$/i.test(name);
+      const r = await fetch('https://graph.microsoft.com/v1.0/drives/' + driveId + '/items/' + encodeURIComponent(itemId) + '/content', { headers: { Authorization: 'Bearer ' + access } });
+      if (!r.ok) return { status: 502, jsonBody: { ok: false, error: 'SharePoint download failed (' + r.status + ')' } };
+      const buf = Buffer.from(await r.arrayBuffer());
+      return { status: 200, headers: {
+        'content-type': r.headers.get('content-type') || 'application/octet-stream',
+        'content-disposition': (inline ? 'inline' : 'attachment') + '; filename="' + name + '"',
+        'x-content-type-options': 'nosniff', 'cache-control': 'private, no-store'
+      }, body: buf };
+    } catch (e) { context.error('sharepoint-download', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+// Copy a SharePoint file into the client's internal Files (Blob + metadata doc).
+app.http('sharepoint-import', {
+  methods: ['POST'], authLevel: 'anonymous', route: 'integrations/sharepoint/{realmId}/import',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    const realmId = request.params.realmId;
+    const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
+    try {
+      const body = await request.json().catch(() => ({}));
+      const items = Array.isArray(body.items) ? body.items.slice(0, 50) : (body.itemId ? [{ id: body.itemId, name: body.name }] : []);
+      if (!items.length) return badRequest('items[] or itemId required');
+      // Files land FLAT in the client's internal Files — we don't recreate the
+      // SharePoint folder tree. Instead each folder level becomes a TAG, so the
+      // existing category filter can slice by "04-Payroll", "Jobs", etc.
+      const subPath = String(body.path || '').replace(/^\/+|\/+$/g, '');
+      const folderTags = subPath ? subPath.split('/').map(s => s.trim()).filter(Boolean) : [];
+      const importTags = folderTags.concat(['SharePoint']).join(', ').slice(0, 200);
+      const access = await getGraphToken();
+      const driveId = await spDriveId();
+      const cont = getBlobContainer();
+      try { await cont.createIfNotExists(); } catch (_) {}
+      const c = container();
+      const who = (p.userDetails || p.userId || '').toLowerCase();
+      const folder = safeFolder('/clients/' + realmId);
+      const out = [];
+      for (const it of items) {
+        try {
+          const r = await fetch('https://graph.microsoft.com/v1.0/drives/' + driveId + '/items/' + encodeURIComponent(it.id) + '/content', { headers: { Authorization: 'Bearer ' + access } });
+          if (!r.ok) { out.push({ name: it.name, ok: false, error: 'download ' + r.status }); continue; }
+          const buf = Buffer.from(await r.arrayBuffer());
+          if (buf.length > MAX_UPLOAD_BYTES) { out.push({ name: it.name, ok: false, error: 'larger than 25 MB' }); continue; }
+          const now = new Date().toISOString();
+          const stamp = now.replace(/[:.]/g, '').slice(0, 15);
+          const fname = safeFilename(it.name || 'file');
+          const storageKey = (BCC_TENANT_ID + folder + '/' + stamp + '-' + fname).replace(/\/+/g, '/').replace(/^\//, '');
+          const ct = r.headers.get('content-type') || 'application/octet-stream';
+          await cont.getBlockBlobClient(storageKey).uploadData(buf, { blobHTTPHeaders: { blobContentType: ct } });
+          const docId = DOC_DOC_PREFIX + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
+          await c.items.upsert({
+            id: docId, tenantId: BCC_TENANT_ID, docType: 'document', name: it.name || fname,
+            folder, tags: importTags, sizeBytes: buf.length, mimeType: ct, storageKey,
+            uploaderUpn: who, linkedContactId: null, linkedEngagementId: null,
+            source: 'sharepoint', createdAt: now, updatedAt: now
+          });
+          logAudit('document-upload', { user: who, path: '/api/integrations/sharepoint/import', key: docId, meta: { folder, realmId, source: 'sharepoint' } });
+          out.push({ name: it.name, ok: true, id: docId });
+        } catch (e) { out.push({ name: it.name, ok: false, error: String(e && e.message || e) }); }
+      }
+      return { jsonBody: { ok: true, results: out, imported: out.filter(x => x.ok).length } };
+    } catch (e) { context.error('sharepoint-import', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+// Admin: view/set which SharePoint folder belongs to which client.
+app.http('sharepoint-map', {
+  methods: ['GET', 'POST'], authLevel: 'anonymous', route: 'integrations/sharepoint/map',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    if (!(await isAppAdmin(p))) return { status: 403, jsonBody: { ok: false, error: 'admin only' } };
+    const c = container();
+    try {
+      if (request.method === 'POST') {
+        const body = await request.json().catch(() => ({}));
+        const map = (body && typeof body.map === 'object' && body.map) || {};
+        await c.items.upsert({ id: SP_MAP_ID, tenantId: BCC_TENANT_ID, docType: 'sharepoint-map', map, updatedAt: new Date().toISOString(), updatedBy: (p.userDetails || '').toLowerCase() });
+        return { jsonBody: { ok: true, map } };
+      }
+      let map = {};
+      try { const d = await c.item(SP_MAP_ID, BCC_TENANT_ID).read().then(r => r.resource); if (d && d.map) map = d.map; } catch (_) {}
+      const folders = await spFolderNames();
+      const { resources: comps } = await c.items.query({
+        query: 'SELECT c.realmId, c.companyName FROM c WHERE c.tenantId=@t AND c.docType="qbo-company"',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+      }).fetchAll();
+      // Include the auto-match so the UI can show what it WOULD use.
+      const rows = [];
+      for (const co of comps) {
+        const auto = map[co.realmId] ? null : (folders.find(f => spNorm(f) === spNorm(co.companyName)) || null);
+        rows.push({ realmId: co.realmId, companyName: co.companyName, mapped: map[co.realmId] || null, auto });
+      }
+      return { jsonBody: { ok: true, folders, map, companies: rows } };
+    } catch (e) { context.error('sharepoint-map', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+
 async function driveDocAndToken(realmId) {
   const c = container();
   const doc = await c.item('bcc-clientdrive-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);

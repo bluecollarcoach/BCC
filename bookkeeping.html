@@ -3324,6 +3324,7 @@
   function renderFiles() {
     var body = document.getElementById('files-body'); if (!body) return;
     body.innerHTML =
+      '<div id="sp-area"></div>' +
       '<div id="drive-area"></div>' +
       '<div class="fs-block fs-internal">' +
         '<div class="fs-head fs-head-internal">' +
@@ -3349,6 +3350,75 @@
     });
     loadFiles();
     loadDrive();
+    loadSharePoint();
+  }
+
+  /* ---- SharePoint: the firm's Bookkeeping Operations library ----
+     Browses THIS client's folder under "Recurring Client Work" live (read-only)
+     and can import files into the client's internal Files. Server resolves the
+     site/library and the client→folder mapping; access is gated per client. */
+  var _spPath = '', _spStack = [], _spRealm = null;
+  function loadSharePoint() {
+    var area = document.getElementById('sp-area'); if (!area) return;
+    // New client → start at the top of their folder (don't carry the old path over).
+    if (_spRealm !== currentRealm) { _spRealm = currentRealm; _spPath = ''; _spStack = []; }
+    var realmAt = currentRealm;
+    area.innerHTML = '<div style="color:var(--muted);font-size:13px;">Checking SharePoint…</div>';
+    fetch('/api/integrations/sharepoint/' + encodeURIComponent(currentRealm) + '?path=' + encodeURIComponent(_spPath), { credentials: 'include' })
+      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+      .then(function (resp) {
+        if (currentRealm !== realmAt) return;
+        if (!resp || !resp.ok) { area.innerHTML = '<div class="fs-block"><div class="fs-body" style="color:var(--burgundy);font-size:13px;">SharePoint unavailable: ' + esc((resp && resp.error) || 'error') + '</div></div>'; return; }
+        if (!resp.mapped) {
+          area.innerHTML = '<div class="fs-block"><div class="fs-head"><div><div class="fs-title">📁 SharePoint — Bookkeeping Operations</div>' +
+            '<div class="fs-sub">No SharePoint folder is matched to this client yet' + (isAdmin ? ' — an admin can map it in Admin → Integrations.' : '. Ask an admin to map it.') + '</div></div></div></div>';
+          return;
+        }
+        var crumbs = '<button class="btn btn-ghost" data-spcrumb="-1" type="button" style="font-size:11px;min-height:26px;">' + esc(resp.folder) + '</button>' +
+          _spStack.map(function (s, i) { return '<span style="color:var(--muted);">/</span><button class="btn btn-ghost" data-spcrumb="' + i + '" type="button" style="font-size:11px;min-height:26px;">' + esc(s.name) + '</button>'; }).join('');
+        var items = resp.items || [];
+        var fileCount = items.filter(function (x) { return !x.folder; }).length;
+        var rows = items.length ? '<table><tbody>' + items.map(function (it) {
+          if (it.folder) return '<tr><td><button type="button" class="fs-folder" data-spfolder="' + esc(it.name) + '">📁 ' + esc(it.name) + '</button></td><td style="text-align:right;color:var(--muted);font-size:12px;white-space:nowrap;">' + (it.childCount || 0) + ' items</td></tr>';
+          var kb = it.size ? (Math.max(1, Math.round(it.size / 1024)) + ' KB') : '';
+          return '<tr><td><a class="fs-file" href="/api/integrations/sharepoint/' + encodeURIComponent(currentRealm) + '/download/' + encodeURIComponent(it.id) + '?name=' + encodeURIComponent(it.name) + '" data-pvname="' + esc(it.name) + '" data-pvmime="' + esc(it.mimeType || '') + '">📄 ' + esc(it.name) + '</a></td>' +
+            '<td style="text-align:right;white-space:nowrap;"><span style="color:var(--muted);font-size:12px;margin-right:8px;">' + esc(kb) + '</span>' +
+            '<button class="btn btn-ghost" data-spimport="' + esc(it.id) + '" data-spname="' + esc(it.name) + '" type="button" style="font-size:11px;min-height:26px;">⬇ Import</button></td></tr>';
+        }).join('') + '</tbody></table>' : '<div style="color:var(--muted);padding:8px 0;">This folder is empty.</div>';
+        area.innerHTML = '<div class="fs-block">' +
+          '<div class="fs-head"><div><div class="fs-title">📁 SharePoint — Bookkeeping Operations</div>' +
+          '<div class="fs-sub">The firm\'s working files for this client, live from SharePoint. <strong>Import</strong> copies a file into Internal files below.</div></div>' +
+          '<span class="fs-pill">Read-only</span></div>' +
+          '<div class="fs-body">' +
+            '<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:8px;">' + crumbs +
+            (fileCount ? '<span style="flex:1;"></span><button class="btn btn-ghost" id="sp_importall" type="button" style="font-size:11px;min-height:26px;">⬇ Import all ' + fileCount + ' file' + (fileCount === 1 ? '' : 's') + ' here</button>' : '') +
+            '</div>' +
+            '<div id="sp_status" style="font-size:12px;color:var(--muted);margin-bottom:6px;"></div>' + rows +
+          '</div></div>';
+        area.querySelectorAll('[data-spfolder]').forEach(function (b) { b.onclick = function () { var n = b.getAttribute('data-spfolder'); _spStack.push({ name: n }); _spPath = _spStack.map(function (s) { return s.name; }).join('/'); loadSharePoint(); }; });
+        area.querySelectorAll('[data-spcrumb]').forEach(function (b) { b.onclick = function () { var i = +b.getAttribute('data-spcrumb'); _spStack = i < 0 ? [] : _spStack.slice(0, i + 1); _spPath = _spStack.map(function (s) { return s.name; }).join('/'); loadSharePoint(); }; });
+        area.querySelectorAll('[data-spimport]').forEach(function (b) { b.onclick = function () { spImport([{ id: b.getAttribute('data-spimport'), name: b.getAttribute('data-spname') }]); }; });
+        var all = document.getElementById('sp_importall');
+        if (all) all.onclick = function () { spImport(items.filter(function (x) { return !x.folder; }).map(function (x) { return { id: x.id, name: x.name }; })); };
+        wirePreviews(area, '&');
+      })
+      .catch(function () { if (currentRealm === realmAt) area.innerHTML = ''; });
+  }
+  function spImport(list) {
+    if (!list || !list.length) return;
+    var st = document.getElementById('sp_status'); if (st) st.textContent = 'Importing ' + list.length + ' file' + (list.length === 1 ? '' : 's') + '…';
+    // Send the folder path so the server tags each file by its SharePoint folder
+    // (files themselves land flat in Internal files — no folder tree recreated).
+    fetch('/api/integrations/sharepoint/' + encodeURIComponent(currentRealm) + '/import', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ items: list, path: _spPath }) })
+      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+      .then(function (resp) {
+        if (!resp || !resp.ok) throw new Error((resp && resp.error) || 'import failed');
+        var failed = (resp.results || []).filter(function (x) { return !x.ok; });
+        if (st) st.textContent = 'Imported ' + resp.imported + ' file' + (resp.imported === 1 ? '' : 's') + ' into Internal files.' + (failed.length ? ' ' + failed.length + ' skipped: ' + failed.map(function (f) { return f.name + ' (' + f.error + ')'; }).join(', ') : '');
+        if (window.bccNotifySaved && resp.imported) window.bccNotifySaved(resp.imported + ' file' + (resp.imported === 1 ? '' : 's') + ' imported from SharePoint.');
+        loadFiles();
+      })
+      .catch(function (e) { if (st) st.textContent = ''; (window.bccNotify || alert)('Import failed: ' + e.message, 'error', 7000); });
   }
 
   /* ---- Shared client drive (Google Drive / OneDrive) ---- */
