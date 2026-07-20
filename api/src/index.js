@@ -1125,6 +1125,35 @@ app.http('feedback', {
 });
 
 /**
+ * GET /api/feedback-mine — the caller's OWN feedback, with the full reply.
+ * The bell only carries a short preview and admin.html is admin-only, so without
+ * this a normal user has no way to read the reply to something they submitted.
+ * Scoped to the caller by UPN, so it exposes nobody else's submissions.
+ */
+app.http('feedback-mine', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'feedback-mine',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const who = String(p.userDetails || p.userId || '').toLowerCase();
+    if (!who) return { jsonBody: { ok: true, items: [] } };
+    try {
+      const { resources } = await container().items.query({
+        query: 'SELECT c.id, c.type, c.message, c.status, c.createdAt, c.rating, c.resolutionNote, c.resolutionAt FROM c WHERE c.tenantId=@t AND c.docType="feedback" AND LOWER(c.userUpn)=@u ORDER BY c.createdAt DESC',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@u', value: who }]
+      }).fetchAll();
+      return { jsonBody: { ok: true, items: resources || [] } };
+    } catch (e) {
+      context.error('feedback-mine', e);
+      return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } };
+    }
+  })
+});
+
+/**
  * Remote signature capture for certified payroll.
  * The signer (a client company's owner) is OUTSIDE the firm's domain and has no
  * app login, so the flow is a tokenized public link that exposes ONLY a signature

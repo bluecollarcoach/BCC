@@ -896,6 +896,12 @@
       '<div class="bcc-modal-actions">' +
         '<button type="button" class="bcc-btn-ghost" id="bcc-fb-cancel">Cancel</button>' +
         '<button type="button" class="bcc-btn-primary" id="bcc-fb-send">Send feedback</button>' +
+      '</div>' +
+      // Somewhere to read the FULL reply to something you sent — the bell only
+      // carries a short preview, and the admin view isn't open to everyone.
+      '<div style="border-top:1px solid #eee;margin-top:14px;padding-top:10px;">' +
+        '<button type="button" id="bcc-fb-minebtn" style="background:none;border:none;padding:0;color:#a8884a;font-weight:700;font-size:12.5px;cursor:pointer;">📋 My past feedback &amp; replies</button>' +
+        '<div id="bcc-fb-mine" style="display:none;margin-top:10px;max-height:260px;overflow-y:auto;"></div>' +
       '</div></div>';
     document.body.appendChild(ov);
     var chosenType = 'idea', rating = 0;
@@ -937,6 +943,40 @@
           // Keep the user's text in place so they never retype; give a real reason.
           (window.bccNotify || alert)('Could not send your feedback (' + (String(err && err.message || 'network error')) + '). Your text is still here — please try again in a moment.', 'warn', 8000);
         });
+    };
+    // "My past feedback" — load on first open, render each submission with its full reply.
+    var mineLoaded = false;
+    document.getElementById('bcc-fb-minebtn').onclick = function () {
+      var box = document.getElementById('bcc-fb-mine');
+      if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+      box.style.display = 'block';
+      if (mineLoaded) return;
+      mineLoaded = true;
+      box.innerHTML = '<div style="color:#6b7077;font-size:12.5px;">Loading…</div>';
+      fetch('/api/feedback-mine', { credentials: 'include' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (j) {
+          var items = (j && j.items) || [];
+          if (!items.length) { box.innerHTML = '<div style="color:#6b7077;font-size:12.5px;">You haven’t sent any feedback yet.</div>'; return; }
+          var LBL = { idea: '💡 Idea', bug: '🐞 Bug', question: '❓ Question', praise: '🎉 Praise', other: '💬 Other' };
+          box.innerHTML = items.map(function (f) {
+            var when = '';
+            try { when = new Date(f.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' }); } catch (e) {}
+            var st = f.status === 'resolved' ? '<span style="color:#1f8a4c;font-weight:700;">✓ answered</span>'
+                   : f.status === 'reviewed' ? '<span style="color:#8a6f3c;font-weight:700;">seen</span>'
+                   : '<span style="color:#6b7077;">waiting</span>';
+            return '<div style="border:1px solid #eee;border-radius:8px;padding:9px 11px;margin-bottom:8px;">' +
+              '<div style="font-size:11px;color:#6b7077;display:flex;gap:8px;align-items:center;">' + (LBL[f.type] || '💬') + ' · ' + escapeHtml(when) + ' · ' + st + '</div>' +
+              '<div style="font-size:13px;color:#1a1a1a;margin-top:4px;white-space:pre-wrap;word-break:break-word;">' + escapeHtml(f.message || '') + '</div>' +
+              (f.resolutionNote
+                ? '<div style="background:#e9f5ec;border:1px solid #cfe7d6;border-radius:7px;padding:8px 10px;margin-top:8px;">' +
+                  '<div style="font-size:11px;font-weight:800;color:#1f8a4c;text-transform:uppercase;letter-spacing:.6px;">Reply</div>' +
+                  '<div style="font-size:13px;color:#1a1a1a;margin-top:3px;white-space:pre-wrap;word-break:break-word;">' + escapeHtml(f.resolutionNote) + '</div></div>'
+                : '') +
+              '</div>';
+          }).join('');
+        })
+        .catch(function () { box.innerHTML = '<div style="color:#7a1f2b;font-size:12.5px;">Could not load your feedback.</div>'; });
     };
     setTimeout(function () { var m = document.getElementById('bcc-fb-msg'); if (m) m.focus(); }, 50);
   };
