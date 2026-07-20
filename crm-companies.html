@@ -245,6 +245,7 @@
         <option value="50+">50+</option>
       </select>
       <button class="btn btn-ghost" id="bkSyncBtn" type="button" title="Create CRM records for your QuickBooks bookkeeping companies and fill in their details">⟳ Sync from Bookkeeping</button>
+      <button class="btn btn-ghost" id="custImportBtn" type="button" style="display:none;" title="Import the customer list from your own QuickBooks company into the CRM">👥 Import customers from QuickBooks</button>
       <button class="btn btn-primary" id="newBtn" type="button">+ New company</button>
     </div>
 
@@ -406,6 +407,72 @@
       })
       .catch(function () { if (btn) btn.disabled = false; setSyncMeta(''); });
   }
+  /* ===== Import OUR OWN customers (from the firm's own QuickBooks) =====
+     The firm's own QBO company is flagged isOwnBooks and is locked to its owner,
+     so this button only appears for that person. Their QBO Customer list becomes
+     CRM companies — de-duped by QBO customer id, then by normalized name. */
+  var _ownBooksRealm = null;
+  function checkOwnBooks() {
+    return fetch('/api/integrations/qbo/companies', { credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : { companies: [] }; })
+      .then(function (d) {
+        var own = ((d && d.companies) || []).filter(function (q) { return q.isOwnBooks; })[0];
+        _ownBooksRealm = own ? String(own.realmId) : null;
+        var btn = document.getElementById('custImportBtn');
+        if (btn) { btn.style.display = _ownBooksRealm ? '' : 'none'; if (own) btn.title = 'Import the customer list from ' + (own.companyName || 'your QuickBooks') + ' into the CRM'; }
+      })
+      .catch(function () {});
+  }
+  function importOwnCustomers() {
+    if (!_ownBooksRealm) return;
+    var btn = document.getElementById('custImportBtn'); if (btn) { btn.disabled = true; }
+    setSyncMeta('Reading customers from QuickBooks…');
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(_ownBooksRealm) + '/customers', { credentials: 'include' })
+      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+      .then(function (resp) {
+        if (!resp || !resp.ok) throw new Error((resp && resp.error) || 'could not read customers');
+        var existing = allCompanies();
+        var byQbo = {}, byName = {};
+        existing.forEach(function (c) {
+          if (c.qboCustomerId) byQbo[String(c.qboCustomerId)] = c;
+          byName[normName(c.name)] = c;
+        });
+        var created = 0, updated = 0, skipped = 0;
+        (resp.customers || []).forEach(function (cu) {
+          var nm = (cu.name || cu.displayName || '').trim();
+          if (!nm) { skipped++; return; }
+          var hit = byQbo[String(cu.qboId)] || byName[normName(nm)];
+          if (hit) {
+            // Link + backfill blanks only — never overwrite what someone typed.
+            var changed = false;
+            if (!hit.qboCustomerId) { hit.qboCustomerId = String(cu.qboId); changed = true; }
+            if (!hit.phone && cu.phone) { hit.phone = cu.phone; changed = true; }
+            if (!hit.email && cu.email) { hit.email = cu.email; changed = true; }
+            if (!hit.website && cu.website) { hit.website = cleanWeb(cu.website); changed = true; }
+            if (!hit.address && cu.address) { hit.address = cu.address; changed = true; }
+            if (changed) { saveCompany(hit); updated++; } else skipped++;
+            return;
+          }
+          var nc = saveCompany({
+            name: nm, phone: cu.phone || '', email: cu.email || '',
+            website: cleanWeb(cu.website || ''), address: cu.address || '',
+            contactName: cu.contactName || '', qboCustomerId: String(cu.qboId),
+            source: 'qbo-customer'
+          });
+          byQbo[String(cu.qboId)] = nc; byName[normName(nm)] = nc; created++;
+        });
+        setSyncMeta('');
+        if (btn) btn.disabled = false;
+        renderList();
+        var msg = 'Customers imported: ' + created + ' added, ' + updated + ' updated, ' + skipped + ' already current.';
+        if (window.bccNotifySaved) window.bccNotifySaved(msg); else (window.bccNotify || alert)(msg, 'success');
+      })
+      .catch(function (e) {
+        setSyncMeta(''); if (btn) btn.disabled = false;
+        (window.bccNotify || alert)('Customer import failed: ' + e.message, 'error', 7000);
+      });
+  }
+
   // Fill each company's blank fields from QBO CompanyInfo (sequential, best-effort).
   function fillCompanyDetails(ids) {
     var filled = 0, ai = 0;
@@ -745,6 +812,8 @@
     });
     var bk = document.getElementById('bkSyncBtn');
     if (bk) bk.addEventListener('click', function () { _bkSyncRan = true; syncFromBookkeeping({ full: true }); });
+    var ci = document.getElementById('custImportBtn');
+    if (ci) ci.addEventListener('click', importOwnCustomers);
     document.getElementById('cancelBtn').addEventListener('click', function () {
       panel.classList.remove('open'); resetForm();
     });
@@ -818,6 +887,7 @@
     if (_bkSyncRan || getParam('id') || !rowsEl) return;
     _bkSyncRan = true;
     syncFromBookkeeping({ auto: true });
+    checkOwnBooks(); // reveals "Import customers from QuickBooks" for the owner only
   }
   window.addEventListener('bcc-auth-ready', function () { bootOnce(); maybeAutoSync(); });
   // Fallback init only (offline / no bcc-api). NO auto-sync here: the pull may not
