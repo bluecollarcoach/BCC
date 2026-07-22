@@ -4205,6 +4205,43 @@
     return out;
   }
 
+  /* ---- Per-job "sent email" history (Jenna: autofill from the last CPR for that job,
+     and show which forms were sent before). Keyed by project so every weekly payroll for
+     the same job shares one history. Stored under a synced bcc-* key, so the history
+     follows the client across devices and teammates. ---- */
+  function cprJobKey(r) {
+    if (!r) return 'default';
+    var p = String(r.projectName || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    var cn = String(r.contractNumber || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    var k = (p + '|' + cn).replace(/^\|+|\|+$/g, '');
+    return k || 'default';
+  }
+  function cprSendsKey() { return 'bcc-cpr-sends-' + currentRealm; }
+  function cprSendsLoad() { try { var a = JSON.parse(localStorage.getItem(cprSendsKey())); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+  function cprSendsForJob(jobKey) {
+    return cprSendsLoad().filter(function (s) { return s && s.jobKey === jobKey; })
+      .sort(function (a, b) { return String(b.at || '').localeCompare(String(a.at || '')); });
+  }
+  function cprSendsRecord(rec) {
+    try {
+      var all = cprSendsLoad();
+      all.push(rec);
+      all.sort(function (a, b) { return String(b.at || '').localeCompare(String(a.at || '')); });
+      if (all.length > 200) all = all.slice(0, 200); // keep the synced doc small
+      localStorage.setItem(cprSendsKey(), JSON.stringify(all)); // normal setItem → syncs to server
+    } catch (e) {}
+  }
+  function cprFormsLabel(f) {
+    var parts = [];
+    if (f && f.mndot) parts.push('MnDOT forms');
+    if (f && f.dli) parts.push('MN DLI form');
+    return parts.length ? parts.join(' + ') : 'the report only';
+  }
+  function cprSendWhen(iso) {
+    if (!iso) return '';
+    try { return new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); } catch (e) { return iso; }
+  }
+
   var _cprSearch = '';
   function renderPayroll() {
     var body = document.getElementById('payroll-body'); if (!body) return;
@@ -4428,19 +4465,40 @@
     var info = {}; try { info = JSON.parse(localStorage.getItem('bcc-client-info-' + currentRealm)) || {}; } catch (e) {}
     var from = (mailboxActive && mailboxActive() && _clientMailbox && _clientMailbox.mailbox) ? _clientMailbox.mailbox : (myUpn() || 'your account');
     var subj = 'Certified Payroll' + (cprDraft.payrollNo ? ' #' + cprDraft.payrollNo : '') + (cprDraft.projectName ? ' — ' + cprDraft.projectName : '');
+    // Autofill from the last CPR emailed for this same job (Jenna's request), and show history.
+    // Skip when the job can't be identified (no project/contract) so unrelated drafts don't
+    // share one "default" bucket and pre-fill the wrong recipient.
+    var _jk = cprJobKey(cprDraft);
+    var prior = _jk === 'default' ? [] : cprSendsForJob(_jk), last = prior[0] || null;
+    var toVal = (last && last.to && last.to.length) ? last.to.join(', ') : (info.email || '');
+    var ccVal = (last && last.cc && last.cc.length) ? last.cc.join(', ') : '';
+    var mndotChk = last ? (last.forms && last.forms.mndot ? ' checked' : '') : ' checked';
+    var dliChk = last ? (last.forms && last.forms.dli ? ' checked' : '') : '';
+    var lastNote = last ? '<div class="full" style="font-size:12px;background:var(--chrome-fade,#faf7ef);border:1px solid var(--chrome-mute);border-radius:8px;padding:8px 10px;">' +
+        '🕘 <strong>Last sent for this job:</strong> ' + esc(cprFormsLabel(last.forms)) + ' to ' + esc((last.to || []).join(', ')) +
+        (last.payrollNo ? ' (payroll #' + esc(last.payrollNo) + ')' : '') + ' on ' + esc(cprSendWhen(last.at)) + '.' +
+        '<br><span style="color:var(--muted);">Recipients and form choices below are pre-filled to match — change them if needed.</span></div>' : '';
+    var histRows = prior.slice(0, 8).map(function (s) {
+      return '<li style="margin:2px 0;">' + esc(cprSendWhen(s.at)) + ' — ' + esc(cprFormsLabel(s.forms)) +
+        ' → ' + esc((s.to || []).join(', ')) + (s.payrollNo ? ' <span style="color:var(--muted);">(#' + esc(s.payrollNo) + ')</span>' : '') + '</li>';
+    }).join('');
+    var histPanel = prior.length ? '<details class="full" style="font-size:12px;"><summary style="cursor:pointer;color:var(--muted);">🕘 Sent history for this job (' + prior.length + ')</summary>' +
+      '<ul style="margin:6px 0 0;padding-left:18px;list-style:disc;">' + histRows + '</ul></details>' : '';
     box.style.display = '';
     box.innerHTML = '<div class="card" style="background:var(--gold-fade);border:1px solid var(--chrome-mute);margin-top:12px;">' +
       '<div style="font-weight:700;font-size:14px;margin-bottom:4px;">✉️ Email this payroll report</div>' +
       '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Sending from <strong>' + esc(from) + '</strong></div>' +
       '<div class="ws-form">' +
-      '<label class="full">To (comma-separated)<input id="cpe_to" autocomplete="off" value="' + esc(info.email || '') + '" placeholder="gc@example.com" /></label>' +
-      '<label class="full">CC (optional)<input id="cpe_cc" autocomplete="off" /></label>' +
+      lastNote +
+      '<label class="full">To (comma-separated)<input id="cpe_to" autocomplete="off" value="' + esc(toVal) + '" placeholder="gc@example.com" /></label>' +
+      '<label class="full">CC (optional)<input id="cpe_cc" autocomplete="off" value="' + esc(ccVal) + '" /></label>' +
       '<label class="full">Subject<input id="cpe_subj" value="' + esc(subj) + '" /></label>' +
       '<label class="full">Message<textarea id="cpe_body" rows="5">Attached is the certified payroll report' + (cprDraft.payrollNo ? ' (#' + esc(cprDraft.payrollNo) + ')' : '') + (cprDraft.projectName ? ' for ' + esc(cprDraft.projectName) : '') + '.\n\nThank you,\n' + esc(companyName(currentRealm)) + '</textarea></label>' +
       '<div class="full" style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:13px;">' +
-        '<label style="flex-direction:row;align-items:center;gap:6px;text-transform:none;font-size:13px;"><input type="checkbox" id="cpe_mndot" checked /> MnDOT forms (PDF)</label>' +
-        '<label style="flex-direction:row;align-items:center;gap:6px;text-transform:none;font-size:13px;"><input type="checkbox" id="cpe_dli" /> MN DLI form</label>' +
+        '<label style="flex-direction:row;align-items:center;gap:6px;text-transform:none;font-size:13px;"><input type="checkbox" id="cpe_mndot"' + mndotChk + ' /> MnDOT forms (PDF)</label>' +
+        '<label style="flex-direction:row;align-items:center;gap:6px;text-transform:none;font-size:13px;"><input type="checkbox" id="cpe_dli"' + dliChk + ' /> MN DLI form (PDF)</label>' +
       '</div>' +
+      histPanel +
       '<div class="full" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><button class="btn btn-primary" id="cpe_send" type="button">Send</button><button class="btn btn-ghost" id="cpe_cancel" type="button">Cancel</button><span id="cpe_status" style="font-size:12px;color:var(--muted);"></span></div>' +
       '</div></div>';
     document.getElementById('cpe_cancel').onclick = function () { box.style.display = 'none'; box.innerHTML = ''; };
@@ -4462,21 +4520,34 @@
     var btn = document.getElementById('cpe_send'); btn.disabled = true;
     if (st) st.textContent = 'Preparing attachments…';
     var atts = [];
-    if (wantDli) {
-      try { atts.push({ name: 'Certified Payroll' + (cprDraft.payrollNo ? ' #' + cprDraft.payrollNo : '') + '.html', contentType: 'text/html', contentBytes: btoa(unescape(encodeURIComponent(cprDocHtml(cprDraft, false)))) }); } catch (e) {}
-    }
-    var prep = wantMndot
-      ? Promise.all([
-          cprEnsurePdfLib(),
-          fetch('/forms/mndot-prevailing-wage-payroll.pdf', { credentials: 'include' }).then(function (x) { return x.arrayBuffer(); }),
-          fetch('/forms/mndot-statement-of-compliance.pdf', { credentials: 'include' }).then(function (x) { return x.arrayBuffer(); })
-        ]).then(function (got) {
-          return cprMndotBuild(cprDraft, got[1], got[2], got[0]).then(function (files) {
-            files.forEach(function (f) { atts.push({ name: f.name, contentType: 'application/pdf', contentBytes: b64FromBytes(f.bytes) }); });
-          });
+    // Both MnDOT and DLI are now real PDFs (the DLI form used to go out as .html, which
+    // recipients often couldn't open — Jenna's report). Load pdf-lib once, build both.
+    var prep = (wantMndot || wantDli)
+      ? cprEnsurePdfLib().then(function (PDFLib) {
+          var jobs = [];
+          if (wantMndot) {
+            jobs.push(Promise.all([
+              fetch('/forms/mndot-prevailing-wage-payroll.pdf', { credentials: 'include' }).then(function (x) { return x.arrayBuffer(); }),
+              fetch('/forms/mndot-statement-of-compliance.pdf', { credentials: 'include' }).then(function (x) { return x.arrayBuffer(); })
+            ]).then(function (got) {
+              return cprMndotBuild(cprDraft, got[0], got[1], PDFLib).then(function (files) {
+                files.forEach(function (f) { atts.push({ name: f.name, contentType: 'application/pdf', contentBytes: b64FromBytes(f.bytes) }); });
+              });
+            }));
+          }
+          if (wantDli) {
+            jobs.push(cprDliBuild(cprDraft, PDFLib).then(function (files) {
+              files.forEach(function (f) { atts.push({ name: f.name, contentType: 'application/pdf', contentBytes: b64FromBytes(f.bytes) }); });
+            }));
+          }
+          return Promise.all(jobs);
         })
       : Promise.resolve();
     prep.then(function () {
+      // Outlook caps attachments at ~3 MB (enforced server-side too). Check here so a big
+      // job gets an actionable message instead of a generic failure after a slow build.
+      var approxB = atts.reduce(function (s, a) { return s + Math.ceil(String(a.contentBytes || '').length * 0.75); }, 0);
+      if (approxB > 3 * 1024 * 1024) throw new Error('Attachments are about ' + Math.round(approxB / 1048576) + ' MB — Outlook limits email attachments to ~3 MB. Try sending the MnDOT and MN DLI forms in separate emails.');
       if (st) st.textContent = 'Sending…';
       var payload = { to: to, subject: subject, bodyHtml: esc(bodyText).replace(/\n/g, '<br>'), attachments: atts };
       if (cc.length) payload.cc = cc;
@@ -4485,6 +4556,8 @@
         .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
         .then(function (resp) {
           if (resp && resp.ok === false) throw new Error(resp.error || 'send failed');
+          // Remember this send first (so nothing downstream can lose it), then audit/notify.
+          cprSendsRecord({ jobKey: cprJobKey(cprDraft), projectName: cprDraft.projectName || '', to: to, cc: cc, subject: subject, forms: { mndot: wantMndot, dli: wantDli }, payrollNo: cprDraft.payrollNo || '', at: new Date().toISOString() });
           if (window.bccAudit) window.bccAudit('client-email-send', { key: cprDraft.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, what: 'certified-payroll', recipients: to.length } });
           if (window.bccNotifySaved) window.bccNotifySaved('Payroll report emailed.');
           var box = document.getElementById('cpr_emailbox'); if (box) { box.style.display = 'none'; box.innerHTML = ''; }
@@ -5016,6 +5089,201 @@
     files.push({ name: 'MnDOT Statement of Compliance' + (r.payrollNo ? ' #' + r.payrollNo : '') + '.pdf', bytes: await soc.save() });
     return files;
   }
+  /* ---- MN DLI certified payroll as a real PDF (Jenna: recipients couldn't open the
+     .html attachment — "can we send it as a PDF"). Drawn from scratch with pdf-lib so it
+     opens anywhere, mirroring the on-screen DLI layout: a landscape employee grid
+     (8/page, ST/OT sub-rows) followed by the Statement of Compliance. Pure & testable:
+     takes bytes-free input and returns [{name, bytes}]. ---- */
+  async function cprDliBuild(r, PDFLib) {
+    var rgb = PDFLib.rgb;
+    var doc = await PDFLib.PDFDocument.create();
+    var font = await doc.embedFont(PDFLib.StandardFonts.Helvetica);
+    var bold = await doc.embedFont(PDFLib.StandardFonts.HelveticaBold);
+    var ink = rgb(0.05, 0.09, 0.25), line = rgb(0.4, 0.4, 0.45), hdrBg = rgb(0.93, 0.93, 0.90);
+    var PW = 792, PH = 612, M = 24;
+    var wd = weekDates(r.weekStart);
+
+    function clip(s, f, size, maxW) {
+      s = String(s == null ? '' : s);
+      if (!maxW || f.widthOfTextAtSize(s, size) <= maxW) return s;
+      while (s.length > 1 && f.widthOfTextAtSize(s + '…', size) > maxW) s = s.slice(0, -1);
+      return s + '…';
+    }
+    function txt(pg, s, x, y, opt) {
+      opt = opt || {}; s = String(s == null ? '' : s); if (!s) return;
+      var f = opt.bold ? bold : font, size = opt.size || 7;
+      if (opt.maxW) s = clip(s, f, size, opt.maxW);
+      var tx = x;
+      if (opt.align === 'right') tx = x - f.widthOfTextAtSize(s, size);
+      else if (opt.align === 'center') tx = x - f.widthOfTextAtSize(s, size) / 2;
+      pg.drawText(s, { x: tx, y: y, size: size, font: f, color: opt.color || ink });
+    }
+    function box(pg, x, y, w, h, opt) {
+      opt = opt || {};
+      pg.drawRectangle({ x: x, y: y, width: w, height: h, borderColor: opt.border || line, borderWidth: opt.bw == null ? 0.5 : opt.bw, color: opt.fill });
+    }
+
+    // Column spec — widths sum to <= PW-2M (744). Day columns spliced in after OT/ST.
+    var cols = [
+      { key:'name',  w:100, align:'left',   h:'Employee name,\naddress & ID' },
+      { key:'ex',    w:20,  align:'center', h:'# ex' },
+      { key:'class', w:66,  align:'left',   h:'Labor code &\nclassification' },
+      { key:'otst',  w:22,  align:'center', h:'OT/\nST' },
+      { key:'toth',  w:30,  align:'right',  h:'Tot\nhrs' },
+      { key:'rate',  w:36,  align:'right',  h:'Hrly\nrate' },
+      { key:'gjob',  w:46,  align:'right',  h:'Gross\nthis job' },
+      { key:'gper',  w:46,  align:'right',  h:'Gross\npay per.' },
+      { key:'fica',  w:30,  align:'right',  h:'FICA' },
+      { key:'fed',   w:28,  align:'right',  h:'Fed\ntax' },
+      { key:'state', w:30,  align:'right',  h:'State\ntax' },
+      { key:'oth1',  w:28,  align:'right',  h:'Other' },
+      { key:'oth2',  w:28,  align:'right',  h:'Other' },
+      { key:'ded',   w:38,  align:'right',  h:'Tot\nded.' },
+      { key:'net',   w:42,  align:'right',  h:'Net\nwages' }
+    ];
+    var dayCols = [];
+    for (var di = 0; di < 7; di++) dayCols.push({ key:'day'+di, day:di, w:22, align:'center', h: DOW[di] + '\n' + (wd[di] || '') });
+    var otstAt = 0; for (var ci0 = 0; ci0 < cols.length; ci0++) { if (cols[ci0].key === 'otst') { otstAt = ci0 + 1; break; } }
+    cols = cols.slice(0, otstAt).concat(dayCols, cols.slice(otstAt));
+    var cx = M; cols.forEach(function (c) { c.x = cx; cx += c.w; });
+    function col(k) { for (var i = 0; i < cols.length; i++) if (cols[i].key === k) return cols[i]; return null; }
+
+    var emps = (r.employees || []).filter(function (e) { return e && ((e.name || '').trim() || !cprEmpIsBlank(e)); });
+    var chunks = []; for (var c = 0; c < Math.max(1, Math.ceil(emps.length / 8)); c++) chunks.push(emps.slice(c * 8, c * 8 + 8));
+    var totals = { hrs:0, job:0, gp:0, ded:0, net:0 };
+    emps.forEach(function (e) { var cc = computeEmp(e); totals.hrs += cc.totalHrs; totals.job += cc.grossJob; totals.gp += cc.grossPeriod; totals.ded += cc.ded; totals.net += cc.net; });
+
+    function infoBlock(pg, y) {
+      txt(pg, 'Certified Payroll Report — Minnesota Department of Labor and Industry', PW / 2, y, { bold:true, size:11, align:'center' });
+      y -= 16;
+      var rows = [
+        [['Contractor / subcontractor', [r.contractorName, r.contractorAddress].filter(Boolean).join(' · ')],
+         ['Prime contractor', [r.primeName, r.primeAddress].filter(Boolean).join(' · ')],
+         ['Payroll #', String(r.payrollNo || '') + (r.isFinal ? ' (FINAL)' : '')]],
+        [['Contract / grant name & number', [r.contractName, r.contractNumber].filter(Boolean).join(' ')],
+         ['Project name & location', r.projectName || ''],
+         ['Pay period end', r.payPeriodEnd || '']],
+        [['Contracting authority', r.contractingAuthority || ''],
+         ['Type of work', r.typeOfWork || ''],
+         ['Week of', r.weekStart || '']]
+      ];
+      var colW = (PW - 2 * M) / 3, rowH = 22;
+      rows.forEach(function (row) {
+        row.forEach(function (cell, i) {
+          var bx = M + i * colW;
+          box(pg, bx, y - rowH, colW, rowH);
+          txt(pg, cell[0], bx + 3, y - 8, { bold:true, size:6.5, color: rgb(0.32,0.32,0.37), maxW: colW - 6 });
+          txt(pg, cell[1], bx + 3, y - 18, { size:7.5, maxW: colW - 6 });
+        });
+        y -= rowH;
+      });
+      return y - 8;
+    }
+    function gridHeader(pg, y) {
+      var hH = 20;
+      cols.forEach(function (c) {
+        box(pg, c.x, y - hH, c.w, hH, { fill: hdrBg });
+        var lines = String(c.h).split('\n'), ly = y - 8;
+        lines.forEach(function (ln) {
+          var anchor = c.align === 'right' ? c.x + c.w - 2 : (c.align === 'left' ? c.x + 2 : c.x + c.w / 2);
+          txt(pg, ln, anchor, ly, { bold:true, size:5.6, align: c.align, color: rgb(0.2,0.2,0.25), maxW: c.w - 2 });
+          ly -= 6.5;
+        });
+      });
+      return y - hH;
+    }
+    function empBand(pg, y, e) {
+      var comp = computeEmp(e), rowH = 12, bandH = rowH * 2;
+      ['name','ex','class','gjob','gper','fica','fed','state','oth1','oth2','ded','net'].forEach(function (k) {
+        var c = col(k); box(pg, c.x, y - bandH, c.w, bandH);
+      });
+      var cN = col('name'), ny = y - 8;
+      [ [e.name || '', true, 7] ].concat(e.address ? [[e.address, false, 6]] : []).concat(e.idNumber ? [[e.idNumber, false, 6]] : [])
+        .slice(0, 3).forEach(function (ln) { txt(pg, ln[0], cN.x + 2, ny, { size: ln[2], bold: ln[1], maxW: cN.w - 4 }); ny -= 6.5; });
+      txt(pg, e.exemptions || '', col('ex').x + col('ex').w / 2, y - 14, { size:7, align:'center' });
+      var cC = col('class');
+      txt(pg, (e.classification || '') + (e.apprentice ? ' (appr)' : ''), cC.x + 2, y - 8, { size:6.5, maxW: cC.w - 4 });
+      if (e.laborCode) txt(pg, 'code ' + e.laborCode, cC.x + 2, y - 16, { size:6, color: rgb(0.42,0.42,0.47), maxW: cC.w - 4 });
+      [['ST', e.st, comp.stH, e.stRate], ['OT', e.ot, comp.otH, e.otRate]].forEach(function (rs, sub) {
+        var ry = y - rowH * sub, cO = col('otst');
+        box(pg, cO.x, ry - rowH, cO.w, rowH);
+        txt(pg, rs[0], cO.x + cO.w / 2, ry - 8.5, { size:6, bold:true, align:'center' });
+        dayCols.forEach(function (dc) {
+          box(pg, dc.x, ry - rowH, dc.w, rowH);
+          var v = (rs[1] || [])[dc.day];
+          txt(pg, (v === 0 || v) ? String(v) : '', dc.x + dc.w / 2, ry - 8.5, { size:6.5, align:'center' });
+        });
+        var cT = col('toth'); box(pg, cT.x, ry - rowH, cT.w, rowH);
+        txt(pg, rs[2] ? rs[2].toFixed(2) : '', cT.x + cT.w - 2, ry - 8.5, { size:6.5, align:'right' });
+        var cR = col('rate'); box(pg, cR.x, ry - rowH, cR.w, rowH);
+        txt(pg, rs[3] ? money(rs[3]) : '', cR.x + cR.w - 2, ry - 8.5, { size:6.5, align:'right' });
+      });
+      [['gjob', money(comp.grossJob)], ['gper', money(comp.grossPeriod)],
+       ['fica', e.dedFica ? money(e.dedFica) : ''], ['fed', e.dedFed ? money(e.dedFed) : ''],
+       ['state', e.dedState ? money(e.dedState) : ''], ['oth1', e.dedOther1 ? money(e.dedOther1) : ''],
+       ['oth2', e.dedOther2 ? money(e.dedOther2) : ''], ['ded', money(comp.ded)], ['net', money(comp.net)]
+      ].forEach(function (p) { var c = col(p[0]); txt(pg, p[1], c.x + c.w - 2, y - bandH / 2 - 3, { size:6, align:'right' }); });
+      return y - bandH;
+    }
+
+    for (var pi = 0; pi < chunks.length; pi++) {
+      var pg = doc.addPage([PW, PH]);
+      var y = PH - M;
+      if (pi === 0) y = infoBlock(pg, y);
+      else { txt(pg, 'Certified Payroll Report (continued) — Payroll #' + (r.payrollNo || '') + ', page ' + (pi + 1) + ' of ' + chunks.length, M, y - 8, { bold:true, size:9 }); y -= 18; }
+      y = gridHeader(pg, y);
+      chunks[pi].forEach(function (e) { y = empBand(pg, y, e); });
+      if (pi === chunks.length - 1) {
+        var totH = 14, lab = col('otst');
+        box(pg, M, y - totH, lab.x + lab.w - M, totH, { fill: hdrBg });
+        txt(pg, 'TOTALS', M + 3, y - 10, { bold:true, size:7 });
+        box(pg, col('toth').x, y - totH, col('toth').w, totH, { fill: hdrBg });
+        txt(pg, totals.hrs.toFixed(2), col('toth').x + col('toth').w - 2, y - 10, { bold:true, size:6.5, align:'right' });
+        [['gjob', totals.job], ['gper', totals.gp], ['ded', totals.ded], ['net', totals.net]].forEach(function (p) {
+          var c = col(p[0]); box(pg, c.x, y - totH, c.w, totH, { fill: hdrBg });
+          txt(pg, money(p[1]), c.x + c.w - 2, y - 10, { bold:true, size:6.5, align:'right' });
+        });
+      }
+    }
+
+    // ---- Statement of Compliance page(s) ---- (paginates so long free-text never runs off-page)
+    var LW = PW - 2 * M;
+    var soc = { pg: doc.addPage([PW, PH]), y: PH - M };
+    function socRoom(h) { if (soc.y - h < M) { soc.pg = doc.addPage([PW, PH]); soc.y = PH - M; } }
+    function socPara(s, size, opt) {
+      opt = opt || {}; var f = opt.bold ? bold : font, lh = size + 3;
+      var words = String(s == null ? '' : s).split(/\s+/), lineStr = '';
+      function flush() { if (lineStr) { socRoom(lh); txt(soc.pg, lineStr, M, soc.y, { size: size, bold: opt.bold, color: opt.color }); soc.y -= lh; lineStr = ''; } }
+      words.forEach(function (w2) { var test = lineStr ? lineStr + ' ' + w2 : w2; if (f.widthOfTextAtSize(test, size) > LW && lineStr) { flush(); lineStr = w2; } else { lineStr = test; } });
+      flush();
+    }
+    socRoom(22); txt(soc.pg, 'Statement of Compliance — Minnesota Department of Labor and Industry', PW / 2, soc.y, { bold:true, size:12, align:'center' }); soc.y -= 24;
+    socPara('I, ' + (r.socName || '__________') + ' (name), ' + (r.socTitle || '__________') + ' (title), do hereby state:', 9); soc.y -= 6;
+    socPara('(1) That I pay or supervise the payment of the persons employed by ' + (r.socBusiness || r.contractorName || '__________') +
+      ' on the ' + (r.projectName || '__________') + ' project; that during the payroll period commencing on the ' + (r.socCommence || '__________') +
+      ' and ending the ' + (r.socEnd || '__________') + ', all persons employed on said project have been paid the full weekly wages earned, that no rebates have been or will be made, and that no deductions have been made other than permissible deductions.', 9); soc.y -= 8;
+    var fringeLine = r.fringe === 'plans' ? '[X] (a) paid into approved plans, funds, or programs    [ ] (b) paid in cash'
+      : r.fringe === 'cash' ? '[ ] (a) approved plans    [X] (b) paid in cash to employees'
+      : '[ ] (a) approved plans    [ ] (b) paid in cash';
+    socPara('(4) Fringe benefits: ' + fringeLine, 9); soc.y -= 4;
+    if ((r.fringeExceptions || '').trim()) { socPara('Exceptions: ' + r.fringeExceptions.trim(), 9); soc.y -= 4; }
+    if ((r.fringePrograms || '').trim()) { socPara('Benefit program details: ' + r.fringePrograms.trim(), 9); soc.y -= 4; }
+    soc.y -= 24;
+    socRoom(56); // keep the whole signature block together on one page
+    if (r.signatureSrc) {
+      try { var png = await doc.embedPng(r.signatureSrc); var h = 40, w = png.width * (h / png.height); if (w > 280) { w = 280; h = png.height * (w / png.width); } soc.pg.drawImage(png, { x: M + 66, y: soc.y - 2, width: w, height: h }); } catch (e) {}
+    }
+    soc.pg.drawLine({ start: { x: M + 62, y: soc.y - 4 }, end: { x: M + 380, y: soc.y - 4 }, thickness: 0.6, color: line });
+    txt(soc.pg, 'Signature:', M, soc.y + 4, { bold:true, size:9 });
+    txt(soc.pg, 'Date: ' + (r.socDate || ''), M + 400, soc.y + 4, { size:9 });
+    soc.y -= 22;
+    txt(soc.pg, 'Name & title: ' + [r.socName, r.socTitle].filter(Boolean).join(', '), M, soc.y, { size:9 }); soc.y -= 24;
+    socPara('Pursuant to the Minnesota Government Data Practices Act, data on this form is public. Do not provide Social Security numbers. Willful falsification may subject the contractor to civil or criminal prosecution.', 7, { color: rgb(0.4,0.4,0.45) });
+
+    var fname = 'MN DLI Certified Payroll' + (r.payrollNo ? ' #' + r.payrollNo : '') + (r.projectName ? ' — ' + String(r.projectName).replace(/[\\/:*?"<>|]/g, '').slice(0, 40) : '') + '.pdf';
+    return [{ name: fname, bytes: await doc.save() }];
+  }
+
   function cprMndotDownload(r) {
     if (window.bccNotify) window.bccNotify('Building the MnDOT forms…', 'info', 3000);
     Promise.all([
