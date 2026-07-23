@@ -339,7 +339,7 @@ app.http('data', {
           if (!isPcKey(key)) return badRequest('invalid key');
           // These are access-scoped / server-owned — never serve them by direct
           // key (financials, per-user notifications, feedback have their own APIs).
-          if (/^bcc-(financial-period|usernotif|feedback|errorlog|bkentry|report)-/.test(String(key))) return { jsonBody: { key, data: null } };
+          if (/^bcc-(financial-period|usernotif|feedback|errorlog|bkentry|report|cpr-sends)-/.test(String(key))) return { jsonBody: { key, data: null } };
           // Integration docs hold OAuth client secrets / tokens — redact for non-admins.
           const keyRedact = key.startsWith('bcc-integration-') && !(await isAppAdmin(p));
           try {
@@ -364,7 +364,7 @@ app.http('data', {
           // financial-period is excluded by ID PREFIX (not docType) — legacy docs
           // pushed via /api/data nest docType under .data, so a docType filter
           // would miss them and leak client books. Served only via qbo-periods.
-          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND NOT STARTSWITH(c.id, "bcc-bkentry-") AND NOT STARTSWITH(c.id, "bcc-report-") AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "bk-entry" AND c.docType != "monthly-report" AND c.docType != "client-drive"))' + (sinceOk ? ' AND c.updatedAt > @since' : ''),
+          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND NOT STARTSWITH(c.id, "bcc-bkentry-") AND NOT STARTSWITH(c.id, "bcc-report-") AND NOT STARTSWITH(c.id, "bcc-cpr-sends-") AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "bk-entry" AND c.docType != "monthly-report" AND c.docType != "client-drive"))' + (sinceOk ? ' AND c.updatedAt > @since' : ''),
           parameters: sinceOk
             ? [{ name: '@t', value: BCC_TENANT_ID }, { name: '@since', value: sinceD }]
             : [{ name: '@t', value: BCC_TENANT_ID }]
@@ -579,7 +579,7 @@ const ALLOWED_AUDIT_ACTIONS = new Set([
   // Rates / signatures
   'rate-sheet-save', 'rate-signature',
   // My Day / time
-  'clock-in', 'clock-out', 'daily-log-save',
+  'clock-in', 'clock-out', 'clock-edit', 'daily-log-save',
   // Chat
   'chat-send', 'chat-delete', 'chat-clear-channel',
   // Marketing / campaigns

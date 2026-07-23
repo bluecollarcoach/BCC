@@ -471,7 +471,17 @@
     renderMyTime();
     renderLog();
   }
-  window.addEventListener('bcc-data-ready', init);
+  // Live sync (every ~8s, plus on focus) fires bcc-data-ready. A full init() rebuilds the
+  // My time list and the daily-log textareas from stored values — which would silently wipe
+  // an in-progress clock-out edit or half-typed note. Skip those two while the user is
+  // actively editing/typing; everything else still refreshes live.
+  function liveRefresh() {
+    renderHero(); renderKpis(); renderSessions(); renderClock();
+    if (!_editDay) renderMyTime();
+    var ae = document.activeElement;
+    if (!(ae && (ae.id === 'logWins' || ae.id === 'logBlockers' || ae.id === 'logTomorrow'))) renderLog();
+  }
+  window.addEventListener('bcc-data-ready', liveRefresh);
   window.addEventListener('bcc-users-ready', renderHero);
   window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
   setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);

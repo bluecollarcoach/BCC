@@ -4207,8 +4207,11 @@
 
   /* ---- Per-job "sent email" history (Jenna: autofill from the last CPR for that job,
      and show which forms were sent before). Keyed by project so every weekly payroll for
-     the same job shares one history. Stored under a synced bcc-* key, so the history
-     follows the client across devices and teammates. ---- */
+     the same job shares one history. Kept DEVICE-LOCAL on purpose: the records hold
+     third-party recipient emails + a send timeline, and the generic /api/data store has no
+     per-client access gate, so syncing it would expose one client's payroll contacts to
+     staff without access to that client. The bcc-cpr-sends- prefix is excluded from the
+     sync push in bcc-api.js (mirroring bcc-financial-period-). ---- */
   function cprJobKey(r) {
     if (!r) return 'default';
     var p = String(r.projectName || '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -4227,8 +4230,8 @@
       var all = cprSendsLoad();
       all.push(rec);
       all.sort(function (a, b) { return String(b.at || '').localeCompare(String(a.at || '')); });
-      if (all.length > 200) all = all.slice(0, 200); // keep the synced doc small
-      localStorage.setItem(cprSendsKey(), JSON.stringify(all)); // normal setItem → syncs to server
+      if (all.length > 200) all = all.slice(0, 200); // keep it small
+      localStorage.setItem(cprSendsKey(), JSON.stringify(all)); // device-local (push-excluded in bcc-api.js)
     } catch (e) {}
   }
   function cprFormsLabel(f) {
@@ -5103,6 +5106,23 @@
     var PW = 792, PH = 612, M = 24;
     var wd = weekDates(r.weekStart);
 
+    // pdf-lib's standard Helvetica is WinAnsi-encoded and THROWS on any character outside
+    // Latin-1 (Vietnamese/Hmong/Polish names, pasted “smart” quotes, → ≥ symbols, etc.).
+    // Transliterate to a WinAnsi-safe form so one name can never reject the whole build
+    // (which would fail the email). Accents are stripped via NFKD; a few non-decomposable
+    // letters and common symbols get explicit fallbacks; anything still un-encodable → '?'.
+    function toWinAnsi(s) {
+      s = String(s == null ? '' : s);
+      var out = s.normalize ? s.normalize('NFKD').replace(/[̀-ͯ]/g, '') : s;
+      out = out
+        .replace(/ł/g, 'l').replace(/Ł/g, 'L').replace(/đ/g, 'd').replace(/Đ/g, 'D')
+        .replace(/ø/g, 'o').replace(/Ø/g, 'O').replace(/æ/g, 'ae').replace(/Æ/g, 'AE')
+        .replace(/œ/g, 'oe').replace(/Œ/g, 'OE').replace(/ß/g, 'ss')
+        .replace(/[’‘‚]/g, "'").replace(/[“”„]/g, '"').replace(/[–—]/g, '-').replace(/…/g, '...')
+        .replace(/→/g, '->').replace(/≥/g, '>=').replace(/≤/g, '<=').replace(/×/g, 'x').replace(/•/g, '*');
+      return out.replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\xFF]/g, '?');
+    }
+
     function clip(s, f, size, maxW) {
       s = String(s == null ? '' : s);
       if (!maxW || f.widthOfTextAtSize(s, size) <= maxW) return s;
@@ -5110,7 +5130,7 @@
       return s + '…';
     }
     function txt(pg, s, x, y, opt) {
-      opt = opt || {}; s = String(s == null ? '' : s); if (!s) return;
+      opt = opt || {}; s = toWinAnsi(s); if (!s) return;
       var f = opt.bold ? bold : font, size = opt.size || 7;
       if (opt.maxW) s = clip(s, f, size, opt.maxW);
       var tx = x;
@@ -5252,7 +5272,7 @@
     function socRoom(h) { if (soc.y - h < M) { soc.pg = doc.addPage([PW, PH]); soc.y = PH - M; } }
     function socPara(s, size, opt) {
       opt = opt || {}; var f = opt.bold ? bold : font, lh = size + 3;
-      var words = String(s == null ? '' : s).split(/\s+/), lineStr = '';
+      var words = toWinAnsi(s).split(/\s+/), lineStr = '';
       function flush() { if (lineStr) { socRoom(lh); txt(soc.pg, lineStr, M, soc.y, { size: size, bold: opt.bold, color: opt.color }); soc.y -= lh; lineStr = ''; } }
       words.forEach(function (w2) { var test = lineStr ? lineStr + ' ' + w2 : w2; if (f.widthOfTextAtSize(test, size) > LW && lineStr) { flush(); lineStr = w2; } else { lineStr = test; } });
       flush();
@@ -5271,7 +5291,7 @@
     soc.y -= 24;
     socRoom(56); // keep the whole signature block together on one page
     if (r.signatureSrc) {
-      try { var png = await doc.embedPng(r.signatureSrc); var h = 40, w = png.width * (h / png.height); if (w > 280) { w = 280; h = png.height * (w / png.width); } soc.pg.drawImage(png, { x: M + 66, y: soc.y - 2, width: w, height: h }); } catch (e) {}
+      try { var png = await doc.embedPng(r.signatureSrc); var h = 40, w = png.width * (h / png.height); if (w > 280) { w = 280; h = png.height * (w / png.width); } var sigY = Math.min(soc.y - 2, PH - M - h); soc.pg.drawImage(png, { x: M + 66, y: sigY, width: w, height: h }); } catch (e) {}
     }
     soc.pg.drawLine({ start: { x: M + 62, y: soc.y - 4 }, end: { x: M + 380, y: soc.y - 4 }, thickness: 0.6, color: line });
     txt(soc.pg, 'Signature:', M, soc.y + 4, { bold:true, size:9 });

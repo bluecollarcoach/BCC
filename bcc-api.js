@@ -171,6 +171,10 @@
       // collide with the server doc AND expose every client's books through the
       // un-scoped /api/data pull. The UI loads them via /integrations/qbo/periods.
       if (key.indexOf('bcc-financial-period-') === 0) return;
+      // CPR "sent email" history holds third-party recipient emails + a send timeline.
+      // The generic /api/data store has no per-client access gate, so keep it device-local
+      // (never pushed) rather than expose one client's payroll contacts tenant-wide.
+      if (key.indexOf('bcc-cpr-sends-') === 0) return;
       pending.set(key, value);
       schedulePush();
       // Admin user list / status changed → re-filter bccPeople immediately so
@@ -188,6 +192,7 @@
     _origRemoveItem.call(this, key);
     if (this === window.localStorage && signedIn && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0) {
       if (key.indexOf('bcc-financial-period-') === 0) return; // server-owned (see setItem)
+      if (key.indexOf('bcc-cpr-sends-') === 0) return; // device-local (see setItem)
       pending.set(key, null); // null marks deletion
       schedulePush();
     }
