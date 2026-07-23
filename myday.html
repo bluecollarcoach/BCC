@@ -166,6 +166,13 @@
     </div>
   </div>
 
+  <!-- My time: view & fix your own clock-ins -->
+  <section class="log-card" id="timeCard">
+    <h3>My time <span class="saved-at" id="timeHint">your clock-ins — view &amp; fix a missed clock-out</span></h3>
+    <div id="timeWarn"></div>
+    <div id="timeList"></div>
+  </section>
+
   <!-- Daily log -->
   <section class="log-card" id="logCard">
     <h3>Daily log <span class="saved-at" id="savedAt"></span></h3>
@@ -274,20 +281,27 @@
   }
 
   /* ===== Clock in / out ===== */
-  function todayKey() { return 'bcc-daily-log-' + (meUpn() || 'anon') + '-' + ymd(new Date()); }
+  function logPrefix() { return 'bcc-daily-log-' + (meUpn() || 'anon') + '-'; }
+  function logKeyForDay(day) { return logPrefix() + day; }
+  function todayKey() { return logKeyForDay(ymd(new Date())); }
   function loadTodayLog() {
     try { return JSON.parse(localStorage.getItem(todayKey()) || 'null'); } catch (e) { return null; }
   }
-  function saveTodayLog(log) {
-    log.id = todayKey();
+  function loadLogForDay(day) {
+    try { return JSON.parse(localStorage.getItem(logKeyForDay(day)) || 'null'); } catch (e) { return null; }
+  }
+  // Save a daily-log for a specific day (defaults to today). Editing a past day keeps its date.
+  function saveLogDoc(log) {
+    log.day = log.day || ymd(new Date());
+    log.id = logKeyForDay(log.day);
     log.tenantId = 'blue-collar-coach';
     log.docType = 'daily-log';
     log.userUpn = meUpn();
-    log.day = ymd(new Date());
     log.updatedAt = nowIso();
     if (!log.createdAt) log.createdAt = log.updatedAt;
     localStorage.setItem(log.id, JSON.stringify(log));
   }
+  function saveTodayLog(log) { log.day = ymd(new Date()); saveLogDoc(log); }
 
   var timerInt = null;
   function renderClock() {
@@ -333,6 +347,100 @@
       if (window.bccNotifySaved) window.bccNotifySaved('Clocked in.');
     }
     renderClock();
+    renderMyTime();
+  });
+
+  /* ===== My time: list + edit your own clock-ins across days ===== */
+  var _editDay = null; // which day's row is open for editing
+  function myLogs() {
+    var out = [], pre = logPrefix();
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i); if (!k || k.indexOf(pre) !== 0) continue;
+      try { var d = JSON.parse(localStorage.getItem(k)); if (d && d.clockedInAt) out.push(d); } catch (e) {}
+    }
+    return out.sort(function (a, b) { return String(b.day || '').localeCompare(String(a.day || '')); });
+  }
+  function fmtDur(ms) {
+    if (!(ms > 0)) return '';
+    var h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000);
+    return h + 'h ' + String(m).padStart(2, '0') + 'm';
+  }
+  function fmtDay(day) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day || ''); if (!m) return day || '';
+    var d = new Date(+m[1], +m[2] - 1, +m[3]);
+    return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+  }
+  function fmtTime(iso) { if (!iso) return '—'; var d = new Date(iso); return isNaN(d) ? '—' : d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+  function isoToInput(iso) {
+    if (!iso) return ''; var d = new Date(iso); if (isNaN(d)) return '';
+    var p = function (n) { return String(n).padStart(2, '0'); };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+  function inputToIso(v) { if (!v) return null; var d = new Date(v); return isNaN(d) ? null : d.toISOString(); }
+
+  function renderMyTime() {
+    var listEl = document.getElementById('timeList'), warnEl = document.getElementById('timeWarn');
+    if (!listEl) return;
+    var logs = myLogs();
+    var today = ymd(new Date());
+    // Warn about any PAST day still open (forgot to clock out) — that is Jenna's case.
+    var openPast = logs.filter(function (l) { return l.clockedInAt && !l.clockedOutAt && l.day !== today; });
+    warnEl.innerHTML = openPast.length
+      ? '<div style="background:#fff4e5;border:1px solid #f0c789;border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:13px;color:#8a5a12;">⚠️ ' +
+        openPast.length + ' day' + (openPast.length === 1 ? '' : 's') + ' with no clock-out (' +
+        openPast.map(function (l) { return esc(fmtDay(l.day)); }).join(', ') + '). Open it below to add your clock-out time.</div>'
+      : '';
+    if (!logs.length) { listEl.innerHTML = '<div class="empty-mini">No time logged yet. Use “Clock in” above to start.</div>'; return; }
+    listEl.innerHTML = logs.map(function (l) {
+      var open = l.clockedInAt && !l.clockedOutAt;
+      var dur = (l.clockedInAt && l.clockedOutAt) ? fmtDur(new Date(l.clockedOutAt) - new Date(l.clockedInAt)) : '';
+      var rowStyle = 'display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;padding:9px 2px;border-bottom:1px solid var(--line,#eee);font-size:13px;';
+      if (_editDay === l.day) {
+        return '<div data-row="' + esc(l.day) + '" style="' + rowStyle + '">' +
+          '<div style="font-weight:600;min-width:96px;">' + esc(fmtDay(l.day)) + '</div>' +
+          '<label style="font-size:12px;color:var(--muted,#666);display:flex;flex-direction:column;gap:2px;">In<input type="datetime-local" data-fld="in" value="' + esc(isoToInput(l.clockedInAt)) + '" style="font:inherit;padding:4px 6px;border:1px solid var(--line,#ccc);border-radius:6px;"></label>' +
+          '<label style="font-size:12px;color:var(--muted,#666);display:flex;flex-direction:column;gap:2px;">Out<input type="datetime-local" data-fld="out" value="' + esc(isoToInput(l.clockedOutAt)) + '" style="font:inherit;padding:4px 6px;border:1px solid var(--line,#ccc);border-radius:6px;"></label>' +
+          '<div style="display:flex;gap:6px;margin-left:auto;">' +
+            '<button type="button" data-act="save" data-day="' + esc(l.day) + '" style="padding:5px 12px;">Save</button>' +
+            '<button type="button" data-act="cancel" style="padding:5px 12px;background:transparent;color:var(--muted,#666);border:1px solid var(--line,#ccc);">Cancel</button>' +
+            '<button type="button" data-act="clear" data-day="' + esc(l.day) + '" title="Remove these clock times (keeps your notes)" style="padding:5px 10px;background:transparent;color:#b23b3b;border:1px solid #e3b4b4;">Remove</button>' +
+          '</div></div>';
+      }
+      return '<div style="' + rowStyle + (open ? 'background:#fff8ef;' : '') + '">' +
+        '<div style="font-weight:600;min-width:96px;">' + esc(fmtDay(l.day)) + '</div>' +
+        '<div style="color:var(--muted,#555);">In <strong>' + esc(fmtTime(l.clockedInAt)) + '</strong> · Out <strong>' + (l.clockedOutAt ? esc(fmtTime(l.clockedOutAt)) : '<span style="color:#c8721a;">not clocked out</span>') + '</strong>' +
+          (dur ? ' · ' + dur : '') + '</div>' +
+        '<button type="button" data-act="edit" data-day="' + esc(l.day) + '" style="margin-left:auto;padding:5px 12px;background:transparent;color:var(--ink,#0c1a4b);border:1px solid var(--line,#ccc);">' + (open ? 'Add clock-out' : 'Edit') + '</button>' +
+      '</div>';
+    }).join('');
+  }
+
+  document.getElementById('timeList').addEventListener('click', function (ev) {
+    var btn = ev.target.closest('button[data-act]'); if (!btn) return;
+    var act = btn.getAttribute('data-act'), day = btn.getAttribute('data-day');
+    if (act === 'edit') { _editDay = day; renderMyTime(); return; }
+    if (act === 'cancel') { _editDay = null; renderMyTime(); return; }
+    if (act === 'save') {
+      var row = btn.closest('[data-row]');
+      var inEl = row.querySelector('[data-fld="in"]'), outEl = row.querySelector('[data-fld="out"]');
+      var inIso = inputToIso(inEl && inEl.value), outIso = inputToIso(outEl && outEl.value);
+      if (!inIso) { (window.bccNotify || alert)('Enter a clock-in time.', 'warn'); return; }
+      if (outIso && new Date(outIso) <= new Date(inIso)) { (window.bccNotify || alert)('Clock-out must be after clock-in.', 'warn'); return; }
+      var log = loadLogForDay(day) || { day: day };
+      log.day = day; log.clockedInAt = inIso; log.clockedOutAt = outIso;
+      saveLogDoc(log);
+      if (window.bccAudit) window.bccAudit('clock-edit', { path: '/myday.html', meta: { day: day } });
+      if (window.bccNotifySaved) window.bccNotifySaved('Time updated.');
+      _editDay = null; renderMyTime(); renderClock();
+      return;
+    }
+    if (act === 'clear') {
+      if (!confirm('Remove the clock times for ' + fmtDay(day) + '? Your daily-log notes are kept.')) return;
+      var l2 = loadLogForDay(day); if (l2) { l2.day = day; l2.clockedInAt = null; l2.clockedOutAt = null; saveLogDoc(l2); }
+      if (window.bccAudit) window.bccAudit('clock-edit', { path: '/myday.html', meta: { day: day, cleared: true } });
+      _editDay = null; renderMyTime(); renderClock();
+      return;
+    }
   });
 
   /* ===== Daily log notes ===== */
@@ -360,6 +468,7 @@
     renderKpis();
     renderSessions();
     renderClock();
+    renderMyTime();
     renderLog();
   }
   window.addEventListener('bcc-data-ready', init);
