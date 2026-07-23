@@ -3796,6 +3796,22 @@
     }; });
   }
   function notaryMsg(id, txt) { var el = document.querySelector('[data-nt-msg="' + id + '"]'); if (el) { el.textContent = txt; if (txt) setTimeout(function () { if (el.textContent === txt) el.textContent = ''; }, 4000); } }
+  // Alert the assigned team notary that a notarization was assigned to them (in-app bell +
+  // web push). Mirrors taskAssignNotify; skipped when you assign it to yourself. This was
+  // missing — assigning a notary set notaryUpn but never notified them (Janice's report).
+  function notaryAssignNotify(r) {
+    var to = String(r.notaryUpn || '').toLowerCase();
+    if (!to || to === String(myUpn() || '').toLowerCase()) return;
+    fetch('/api/notify', {
+      method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        toUpn: to,
+        title: '🖊️ Notarization assigned to you — ' + companyName(r.realmId || currentRealm),
+        body: (r.docName || 'A document') + (r.signerName ? ' · signer ' + r.signerName : '') + ' — please set up the online notarization.',
+        url: '/bookkeeping.html', tag: 'notary-' + r.id
+      })
+    }).catch(function () {});
+  }
   function notaryCreate() {
     var docName = (document.getElementById('nt_docname').value || '').trim();
     if (!docName) { (window.bccNotify || alert)('Give the document a name.', 'warn'); return; }
@@ -3810,7 +3826,7 @@
       status: 'requested', requestedBy: myUpn(), requestedAt: nowIso()
     };
     var fileInput = document.getElementById('nt_file'), file = fileInput && fileInput.files && fileInput.files[0];
-    var finish = function () { saveNotaryReq(r); _notaryNew = false; renderNotary(); if (window.bccNotifySaved) window.bccNotifySaved('Notarization request created.'); };
+    var finish = function () { saveNotaryReq(r); notaryAssignNotify(r); _notaryNew = false; renderNotary(); if (window.bccNotifySaved) window.bccNotifySaved('Notarization request created.'); };
     if (file) {
       var cs = document.getElementById('nt_cstatus'); if (cs) cs.textContent = 'Uploading document…';
       var fd = new FormData(); fd.append('file', file, file.name);
