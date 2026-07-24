@@ -1754,10 +1754,16 @@
     if (k.retainage) add('Retainage', mrMoney0(k.retainage), '', k.retainage, k.retainagePrior, 'neutral');
     if (k.ap) add('A/P Balance', mrMoney0(k.ap), (k.apOver90 > 0 ? mrMoney0(k.apOver90) + ' over 90d' : ''), k.ap, k.apPrior, 'up-bad');
     if (k.creditCards) add('Credit Card Balance', mrMoney0(k.creditCards), '', k.creditCards, k.creditCardsPrior, 'up-bad');
-    if (k.ccInterestAnnual) add('CC Interest (annualized)', '~' + mrMoney0(k.ccInterestAnnual) + '/yr', 'est ' + Math.round((k.ccApr || 0.2) * 100) + '% APR', null, null, 'none');
+    // CC Interest (annualized) removed: it's a blanket balance*APR guess, not a real
+    // GL figure, and it's misleading noise for any client who pays their card off in
+    // full each month (Lyle's feedback re: Howard Lake Tire & Auto).
     if (k.lineOfCredit) add('Line of Credit', mrMoney0(k.lineOfCredit), '', k.lineOfCredit, k.lineOfCreditPrior, 'up-bad');
     if (k.locInterestAnnual) add('LOC Interest (annualized)', '~' + mrMoney0(k.locInterestAnnual) + '/yr', 'est ' + Math.round((k.locApr || 0.12) * 100) + '% APR', null, null, 'none');
-    if (k.longTermDebt) add('Long-Term Debt', mrMoney0(k.longTermDebt), '', k.longTermDebt, k.longTermDebtPrior, 'up-bad');
+    // When there's exactly ONE long-term-debt account, the generic "Long-Term Debt"
+    // total and that account's own line are the same number — show only the named
+    // line (more specific) instead of both (Lyle: "one and the same... duplicate").
+    // With 2+ accounts the total is a real sum, not a duplicate of any single line.
+    if (k.longTermDebt && (k.debtLines || []).length !== 1) add('Long-Term Debt', mrMoney0(k.longTermDebt), '', k.longTermDebt, k.longTermDebtPrior, 'up-bad');
     (k.debtLines || []).forEach(function (dl) { if (dl && dl.label) add(dl.label, mrMoney0(dl.amount), '', null, null, 'none'); });
     add('Total Equity', mrMoney0(k.equity), '', k.equity, k.equityPrior, 'up-good', 'posneg', k.equity);
     if (k.currentRatio != null) add('Current Ratio', String(k.currentRatio), (k.currentRatioPrior != null ? ('was ' + k.currentRatioPrior) : ''), k.currentRatio, k.currentRatioPrior, 'up-good', 'currentRatio', k.currentRatio);
