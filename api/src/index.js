@@ -5135,6 +5135,15 @@ function agingOver90(rep) {
     return isNaN(n) ? null : n;
   } catch (e) { return null; }
 }
+// "YYYY-MM" for the CURRENT period in BCC's operating timezone (Central) — not the
+// server's own (Azure Functions run UTC). A raw server-local check would already call
+// the last few hours of a US business's month "past" and could freeze a monthly report
+// that's missing that day's closing entries.
+function currentPeriodInBusinessTz(atDate) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Chicago', year: 'numeric', month: '2-digit' }).formatToParts(atDate || new Date());
+  const y = parts.find(p => p.type === 'year').value, m = parts.find(p => p.type === 'month').value;
+  return y + '-' + m;
+}
 // Build the full monthly-report dataset (KPIs + statements) for a company. Extracted so
 // both the access-scoped GET endpoint and the cron verification path share ONE code path.
 async function assembleMonthlyReport(apiGet, comp, per, method) {
@@ -5219,6 +5228,11 @@ async function assembleMonthlyReport(apiGet, comp, per, method) {
   return {
     ok: true, realmId, method, period, periodLabel, priorLabel,
     periodEnd: iso(mEnd), preparedOn: new Date().toISOString(),
+    // True if a comparison-critical fetch (prior-month P&L/BS, or the YTD P&L that
+    // "months of cash" depends on) came back null — e.g. a transient QBO rate-limit
+    // hit. A past period should NOT be frozen off a degraded result (it would lock in
+    // missing prior-period figures forever); the caller checks this before freezing.
+    degraded: !plPrior || !plYtd || !bsPrior,
     company: { name: comp.companyName || realmId, legalName: comp.legalName || comp.companyName || '' },
     kpis: {
       cash, cashPrior: bsPrior ? bsCash(bsPrior) : null, monthsOfCash, monthlyBurn,
@@ -5273,7 +5287,11 @@ app.http('qbo-monthly-report', {
               : { text: String((o && o.text) || '').slice(0, 600), dir: ['up', 'down', 'flat'].indexOf(o && o.dir) >= 0 ? o.dir : 'flat', tone: ['good', 'bad', 'neutral'].indexOf(o && o.tone) >= 0 ? o.tone : 'neutral' }
             ).filter(o => o.text) : [];
         const who = String((ctx.p && (ctx.p.userDetails || ctx.p.userId)) || '').toLowerCase();
-        await c.items.upsert({ id: docId(period), tenantId: BCC_TENANT_ID, docType: 'monthly-report', realmId, period, observations, updatedAt: new Date().toISOString(), updatedBy: who });
+        // Read-modify-write (not a blind overwrite) — a past period may already carry a
+        // frozen snapshot (frozenByMethod, see GET below); saving notes must not wipe it.
+        const existingObs = await c.item(docId(period), BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+        const obsDoc = Object.assign({}, existingObs || {}, { id: docId(period), tenantId: BCC_TENANT_ID, docType: 'monthly-report', realmId, period, observations, updatedAt: new Date().toISOString(), updatedBy: who });
+        await c.items.upsert(obsDoc);
         logAudit('report-save', { user: who, path: '/api/integrations/qbo/companies/' + realmId + '/monthly-report', meta: { realmId, period } });
         return { jsonBody: { ok: true, period, observations } };
       }
@@ -5281,8 +5299,70 @@ app.http('qbo-monthly-report', {
       const url = new URL(request.url);
       const method = (url.searchParams.get('method') || 'accrual').toLowerCase() === 'cash' ? 'Cash' : 'Accrual';
       const per = resolvePeriod(url.searchParams.get('period'));
-      const [data, goals] = await Promise.all([assembleMonthlyReport(ctx.apiGet, ctx.comp, per, method), getReportGoals()]);
-      const saved = await c.item(docId(data.period), BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      const period = per.y + '-' + String(per.mo + 1).padStart(2, '0');
+      const wantRefresh = url.searchParams.get('refresh') === '1';
+      const who = String((ctx.p && (ctx.p.userDetails || ctx.p.userId)) || '').toLowerCase();
+      // A period is "past" once we're no longer inside its calendar month, checked in
+      // BCC's own operating timezone (not the server's, which is UTC) — otherwise the
+      // last few hours of a US business's month would already read as "past" server-side
+      // and could freeze a snapshot missing that day's closing entries.
+      const isPast = period < currentPeriodInBusinessTz();
+      let [saved, goals] = await Promise.all([
+        c.item(docId(period), BCC_TENANT_ID).read().then(r => r.resource).catch(() => null),
+        getReportGoals()
+      ]);
+      // Frozen snapshots are keyed by accounting method — Cash and Accrual are genuinely
+      // different views, not "the same report drifting," so switching between them for a
+      // past period must never silently destroy the other method's locked-in numbers.
+      const fd = saved && saved.frozenByMethod && saved.frozenByMethod[method];
+
+      let data;
+      if (isPast && fd && !wantRefresh) {
+        // Serve the LOCKED-IN snapshot from when this period+method was first reported —
+        // a report must never silently change just because the client's QuickBooks was
+        // corrected or reclassified after the fact (proven case: an expense/COGS
+        // reclassification weeks later swung "months of cash" even though cash barely
+        // moved). Explicit ?refresh=1 (a deliberate user action) re-pulls and re-freezes.
+        data = {
+          ok: true, realmId, method, period,
+          periodLabel: MONTHS[per.mo] + ' ' + per.y,
+          priorLabel: MONTHS[(per.mo + 11) % 12] + ' ' + (per.mo === 0 ? per.y - 1 : per.y),
+          periodEnd: fd.periodEnd, preparedOn: fd.frozenAt, frozen: true, frozenAt: fd.frozenAt,
+          company: fd.company, kpis: fd.kpis, statements: fd.statements
+        };
+      } else {
+        data = await assembleMonthlyReport(ctx.apiGet, ctx.comp, per, method);
+        data.frozen = false;
+        // Re-read right before touching the doc again — assembleMonthlyReport just spent
+        // several seconds on live QBO calls, and building off the earlier, now-stale
+        // `saved` would risk silently discarding an observations save (or another
+        // method's freeze) that landed on this same doc during that window.
+        saved = await c.item(docId(period), BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+        // Never lock in a result missing prior-period data (e.g. a transient QBO
+        // rate-limit hit) — that would freeze permanently-incomplete comparisons.
+        // Leaving it unfrozen means the next view retries live and self-heals.
+        if (isPast && !data.degraded) {
+          const frozenAt = new Date().toISOString();
+          const priorFrozenByMethod = (saved && saved.frozenByMethod) || {};
+          // "method-switch" = some OTHER method was already frozen for this period (this
+          // one wasn't, or it would have been served from the freeze above, never reaching
+          // here without ?refresh=1) — i.e. any prior freeze at all counts as a switch.
+          const reason = wantRefresh ? 'refresh' : (Object.keys(priorFrozenByMethod).length ? 'method-switch' : 'initial');
+          const toSave = Object.assign({}, saved || {}, {
+            id: docId(period), tenantId: BCC_TENANT_ID, docType: 'monthly-report', realmId, period,
+            frozenByMethod: Object.assign({}, priorFrozenByMethod, {
+              [method]: { periodEnd: data.periodEnd, company: data.company, kpis: data.kpis, statements: data.statements, frozenAt }
+            })
+          });
+          await c.items.upsert(toSave);
+          saved = toSave;
+          data.frozenAt = frozenAt;
+          // Any time a past period's numbers get (re)frozen, log why — including a plain
+          // method switch, not just an explicit refresh, so there's always a trail of when
+          // and why a "locked-in" report actually changed.
+          logAudit('report-freeze', { user: who, path: '/api/integrations/qbo/companies/' + realmId + '/monthly-report', meta: { realmId, period, method, reason } });
+        }
+      }
       // Default to bare-fact observations when none saved, so a report is never blank.
       data.observations = (saved && Array.isArray(saved.observations) && saved.observations.length) ? saved.observations : factObservations(data.kpis);
       data.observationsUpdatedAt = saved ? saved.updatedAt : null;

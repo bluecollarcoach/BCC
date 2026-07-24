@@ -1789,6 +1789,7 @@
           '<button id="mrClose" type="button" class="btn btn-ghost" style="font-size:18px;min-height:34px;width:38px;">&times;</button></div>' +
         '<div style="padding:14px 18px;display:flex;gap:12px;flex-wrap:wrap;align-items:end;border-bottom:1px solid var(--chrome-mute,#e6e5e1);">' +
           '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:700;color:var(--muted);">Month<select id="mrPeriod" style="min-height:40px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;padding:8px;font:inherit;"></select></label>' +
+          '<button id="mrRefresh" type="button" class="btn btn-ghost" style="font-size:12px;min-height:34px;display:none;" title="Past months are locked in once reported, so a report never silently changes if the client\'s books get corrected later. Re-pull only if you know something changed and want this report to reflect it.">🔄 Refresh from QuickBooks</button>' +
           '<span id="mrStatus" style="font-size:12.5px;color:var(--muted);align-self:center;"></span></div>' +
         '<div id="mrBody" style="padding:16px 18px;"></div>' +
         '<div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;padding:14px 18px;border-top:1px solid var(--chrome-mute,#e6e5e1);">' +
@@ -1803,6 +1804,10 @@
       ov.querySelector('#mrSaveFile').onclick = saveMonthlyReportToFiles;
       ov.querySelector('#mrSaveObs').onclick = function () { saveReportObservations(true); };
       ov.querySelector('#mrPeriod').onchange = function () { loadMonthlyReport(this.value); };
+      ov.querySelector('#mrRefresh').onclick = function () {
+        if (!confirm('Re-pull this period\'s numbers from QuickBooks now? Only do this if you know the client\'s books changed since it was last reported — this replaces the locked-in figures.')) return;
+        loadMonthlyReport(_mr.period, true);
+      };
     }
     ov.style.display = 'flex';
     ov.querySelector('#mrPeriod').innerHTML = mrPeriodOptions(_mr.period);
@@ -1810,15 +1815,16 @@
   }
   function closeMonthlyReport() { var ov = document.getElementById('mrOverlay'); if (ov) ov.style.display = 'none'; }
   function mrBtns(disabled) { ['mrPrint', 'mrSaveFile', 'mrSaveObs'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = disabled; }); }
-  function loadMonthlyReport(period) {
+  function loadMonthlyReport(period, forceRefresh) {
     _mr.period = period; _mr.forecast = null; _mr.fcManual = null; _mr.fcInclude = true;
-    var body = document.getElementById('mrBody'), st = document.getElementById('mrStatus');
+    var body = document.getElementById('mrBody'), st = document.getElementById('mrStatus'), rb = document.getElementById('mrRefresh');
     body.innerHTML = '<div style="color:var(--muted);padding:22px;text-align:center;">Pulling QuickBooks statements, KPIs &amp; cash-flow forecast…</div>';
-    if (st) st.textContent = ''; mrBtns(true);
+    if (st) st.textContent = ''; if (rb) rb.style.display = 'none'; mrBtns(true);
     var method = (typeof qboRange === 'function' ? qboRange().method : 'accrual');
     var base = '/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm);
+    var url = base + '/monthly-report?period=' + encodeURIComponent(period) + '&method=' + method + (forceRefresh ? '&refresh=1' : '');
     Promise.all([
-      fetch(base + '/monthly-report?period=' + encodeURIComponent(period) + '&method=' + method, { credentials: 'include' })
+      fetch(url, { credentials: 'include' })
         .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); }),
       // Forward-looking forecast is as-of-today (current open A/R/A/P + run-rate); best-effort.
       fetch('/api/integrations/qbo/cashflow?realmId=' + encodeURIComponent(currentRealm), { credentials: 'include' })
@@ -1829,7 +1835,11 @@
       _mr.forecast = (cf && cf.ok && cf.companies && cf.companies[0] && !cf.companies[0].error) ? cf.companies[0] : null;
       mrInitManual(_mr.forecast);
       renderMrBody();
-      if (st) st.textContent = d.periodLabel + ' · ' + d.method + ' basis' + (d.observationsUpdatedAt ? ' · notes saved' : '') + (_mr.forecast ? ' · forecast ✓' : '');
+      // Past periods are locked in once reported (see server-side freeze) so the numbers
+      // can't silently drift if the client's books get corrected/reclassified later.
+      var lockNote = d.frozenAt ? ('🔒 Locked in ' + new Date(d.frozenAt).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })) : (d.frozen === false ? '🔓 Current month — live from QuickBooks' : '');
+      if (st) st.textContent = d.periodLabel + ' · ' + d.method + ' basis' + (lockNote ? ' · ' + lockNote : '') + (d.observationsUpdatedAt ? ' · notes saved' : '') + (_mr.forecast ? ' · forecast ✓' : '');
+      if (rb) rb.style.display = d.frozenAt ? '' : 'none'; // only a locked-in past period has anything to refresh
       mrBtns(false);
     }).catch(function (e) { body.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:12px;">' + esc(qboFriendly(e && e.message)) + '</div>'; });
   }
