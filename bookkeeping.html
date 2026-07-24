@@ -4329,16 +4329,46 @@
   }
 
   // Most-recent employee record (from any prior report) matching a name.
-  function cprEmpHistory(name) {
-    name = String(name || '').trim().toLowerCase(); if (!name) return null;
-    var best = null, bestAt = '';
+  // Matches by cprEmpKey() (same normalizer the file-merge logic uses), not a raw
+  // exact string — so "Smith, John" from one upload matches "John Smith" typed by
+  // hand another week. Was previously an exact-match, which silently missed anyone
+  // whose name was formatted even slightly differently across reports.
+  //
+  // Person fields (address/idNumber/exemptions) come from the MOST RECENT report
+  // this name appears on anywhere — those describe the worker, not the job. WAGE
+  // fields (labor code/classification/rates) are prevailing-wage data and are
+  // job-specific: the SAME classification can legally pay a different rate on a
+  // different project, so those are only pulled from a report on the SAME project
+  // — never guessed from an unrelated job. Pass `project` (cprDraft.projectName)
+  // to get that scoping; omit it to skip wage-field fill entirely.
+  function cprEmpHistory(name, project) {
+    var key = cprEmpKey(name); if (!key) return null;
+    var wantProject = String(project || '').trim().toLowerCase();
+    var anyBest = null, anyAt = '', jobBest = null, jobAt = '';
     allCpr().forEach(function (r) {
       if (cprDraft && r.id === cprDraft.id) return;
+      var at = r.updatedAt || r.createdAt || '';
+      var sameJob = wantProject && String(r.projectName || '').trim().toLowerCase() === wantProject;
       (r.employees || []).forEach(function (e) {
-        if (String(e.name || '').trim().toLowerCase() === name) { var at = r.updatedAt || r.createdAt || ''; if (at >= bestAt) { bestAt = at; best = e; } }
+        if (cprEmpKey(e.name) !== key) return;
+        if (at >= anyAt) { anyAt = at; anyBest = e; }
+        if (sameJob && at >= jobAt) { jobAt = at; jobBest = e; }
       });
     });
-    return best;
+    if (!anyBest) return null;
+    var out = { name: anyBest.name, address: anyBest.address, idNumber: anyBest.idNumber, exemptions: anyBest.exemptions };
+    if (jobBest) ['laborCode', 'classification', 'stRate', 'otRate'].forEach(function (f) { out[f] = jobBest[f]; });
+    return out;
+  }
+  // A name-key match can collide two DIFFERENT real people who happen to share a
+  // normalized name (e.g. "John Smith" and "John Smith 2" — a common way payroll
+  // data disambiguates two same-name workers; cprEmpKey strips the "2"). If the
+  // row being filled and the historical match both already carry an ID number and
+  // they DISAGREE, this isn't the same person — never fill anything from it. A
+  // false match here could put one worker's rate or ID onto another worker's row.
+  function cprHistMatchOk(target, hist) {
+    var a = String((target && target.idNumber) || '').trim(), b = String((hist && hist.idNumber) || '').trim();
+    return !(a && b && a !== b);
   }
   // Most-recent report for the same job/project.
   function cprJobHistory(project) {
@@ -4351,13 +4381,15 @@
     return best;
   }
   // Fill a just-named employee's blank details from their last report.
+  // Fields a returning employee's classification/rate history can fill (shared with
+  // the bulk file-import autofill in cprApplyExtract, below).
+  var CPR_HIST_FIELDS = ['address', 'idNumber', 'exemptions', 'laborCode', 'classification', 'stRate', 'otRate'];
   function cprEmpAutofill(i) {
     if (!cprDraft || !cprDraft.employees) return;
     var e = cprDraft.employees[i]; if (!e) return;
-    var hist = cprEmpHistory(e.name); if (!hist) return;
-    var fields = ['address', 'idNumber', 'exemptions', 'laborCode', 'classification', 'stRate', 'otRate'];
+    var hist = cprEmpHistory(e.name, cprDraft.projectName); if (!hist || !cprHistMatchOk(e, hist)) return;
     var filled = [];
-    fields.forEach(function (f) { if (!String(e[f] || '').trim() && String(hist[f] || '').trim()) { e[f] = hist[f]; filled.push(f); } });
+    CPR_HIST_FIELDS.forEach(function (f) { if (!String(e[f] || '').trim() && String(hist[f] || '').trim()) { e[f] = hist[f]; filled.push(f); } });
     if (!filled.length) return;
     filled.forEach(function (f) { var inp = document.querySelector('[data-emp="' + i + '"][data-f="' + f + '"]'); if (inp) inp.value = e[f]; });
     var c = computeEmp(e), row = document.querySelector('[data-calcrow="' + i + '"]');
@@ -4714,14 +4746,25 @@
     if (!emps.length) return 0;
     var existing = (cprDraft.employees || []).filter(function (e) { return !cprEmpIsBlank(e); });
     var byKey = {}; existing.forEach(function (e) { var k = cprEmpKey(e.name); if (k) byKey[k] = e; });
-    var added = 0, merged = 0, conflicts = 0;
+    var added = 0, merged = 0, conflicts = 0, histFilled = 0, histNames = [];
     emps.forEach(function (e) {
       var k = cprEmpKey(e.name), hit = k && byKey[k];
       if (hit) { conflicts += cprMergeEmp(hit, e); merged++; }        // same person from another file
       else { existing.push(e); if (k) byKey[k] = e; added++; }
+      // A timesheet/payroll register typically has hours, not wage rate/labor code/
+      // classification (those don't change week to week) — pull them from the last
+      // report this person appeared on, same as the manual-entry autofill does.
+      // Skipped if the name-match doesn't check out against a conflicting ID number
+      // already on file (cprHistMatchOk) — two different people can share a name.
+      var target = hit || e, hist = cprEmpHistory(target.name, cprDraft.projectName);
+      if (hist && cprHistMatchOk(target, hist)) {
+        var any = false;
+        CPR_HIST_FIELDS.forEach(function (f) { if (!String(target[f] || '').trim() && String(hist[f] || '').trim()) { target[f] = hist[f]; any = true; } });
+        if (any) { histFilled++; histNames.push(target.name); }
+      }
     });
     cprDraft.employees = existing.length ? existing : emps;
-    _cprLastMerge = { added: added, merged: merged, conflicts: conflicts };
+    _cprLastMerge = { added: added, merged: merged, conflicts: conflicts, histFilled: histFilled, histNames: histNames };
     return added + merged;
   }
   var _cprLastMerge = null;
@@ -4741,11 +4784,15 @@
         if (!n) { (window.bccNotify || alert)('No employees were found in that file. Try the payroll register that lists each employee and their hours.', 'warn', 8000); return; }
         renderPayroll();
         if (window.bccNotify) {
-          var mm = _cprLastMerge || { added: n, merged: 0, conflicts: 0 };
+          var mm = _cprLastMerge || { added: n, merged: 0, conflicts: 0, histFilled: 0 };
           var parts = [];
           if (mm.added) parts.push('added ' + mm.added + ' employee' + (mm.added === 1 ? '' : 's'));
           if (mm.merged) parts.push('merged into ' + mm.merged + ' existing');
           var msg = 'Pre-filled from the file — ' + (parts.join(', ') || n + ' employees') + '.';
+          if (mm.histFilled) {
+            var who = (mm.histNames && mm.histNames.length <= 4) ? ' (' + mm.histNames.join(', ') + ')' : '';
+            msg += ' Filled some details for ' + mm.histFilled + who + ' from a previous report — double-check labor code, classification & rates.';
+          }
           if (mm.conflicts) msg += ' ' + mm.conflicts + ' day' + (mm.conflicts === 1 ? '' : 's') + ' already had hours and were left as-is — check those.';
           window.bccNotify(msg + ' Please review every value (especially daily hours and rates) before saving.', mm.conflicts ? 'warn' : 'success', mm.conflicts ? 12000 : 9000);
         }
