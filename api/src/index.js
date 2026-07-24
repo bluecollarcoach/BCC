@@ -332,6 +332,20 @@ app.http('data', {
     const c = container();
     const key = request.params.key || null;
     const method = request.method;
+    const me = String(p.userDetails || p.userId || '').toLowerCase();
+    // Personal per-user docs — only the owner may read/write. Returns the owner
+    // upn recorded in the doc, or null if the key isn't a personal doc.
+    const personalOwner = (id, data) => {
+      if (/^bcc-mytasks-/.test(id)) return String((data && data.upn) || '').toLowerCase();
+      if (/^bcc-daily-log-/.test(id)) return String((data && data.userUpn) || '').toLowerCase();
+      return undefined;
+    };
+    // True if `me` is allowed to write/delete this personal key (by key shape).
+    const ownsPersonalKey = (id) => {
+      if (/^bcc-mytasks-/.test(id)) return id === 'bcc-mytasks-' + saniTaskKey(me);
+      if (/^bcc-daily-log-/.test(id)) return id.toLowerCase().startsWith('bcc-daily-log-' + me + '-');
+      return true; // not a personal key → not restricted here
+    };
 
     try {
       if (method === 'GET') {
@@ -340,6 +354,8 @@ app.http('data', {
           // These are access-scoped / server-owned — never serve them by direct
           // key (financials, per-user notifications, feedback have their own APIs).
           if (/^bcc-(financial-period|usernotif|feedback|errorlog|bkentry|report|cpr-sends)-/.test(String(key))) return { jsonBody: { key, data: null } };
+          // Personal docs (tasks, daily time log) — only the owner may read.
+          if (!ownsPersonalKey(key)) return { jsonBody: { key, data: null } };
           // Integration docs hold OAuth client secrets / tokens — redact for non-admins.
           const keyRedact = key.startsWith('bcc-integration-') && !(await isAppAdmin(p));
           try {
@@ -364,10 +380,13 @@ app.http('data', {
           // financial-period is excluded by ID PREFIX (not docType) — legacy docs
           // pushed via /api/data nest docType under .data, so a docType filter
           // would miss them and leak client books. Served only via qbo-periods.
-          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND NOT STARTSWITH(c.id, "bcc-bkentry-") AND NOT STARTSWITH(c.id, "bcc-report-") AND NOT STARTSWITH(c.id, "bcc-cpr-sends-") AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "bk-entry" AND c.docType != "monthly-report" AND c.docType != "client-drive"))' + (sinceOk ? ' AND c.updatedAt > @since' : ''),
+          // Personal per-user docs (My tasks, My Day time log) are owner-scoped:
+          // only the caller's own rows come back, so one person's tasks/hours are
+          // never shipped to another signed-in user.
+          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND NOT STARTSWITH(c.id, "bcc-bkentry-") AND NOT STARTSWITH(c.id, "bcc-report-") AND NOT STARTSWITH(c.id, "bcc-cpr-sends-") AND (NOT STARTSWITH(c.id, "bcc-mytasks-") OR LOWER(c.data.upn) = @me) AND (NOT STARTSWITH(c.id, "bcc-daily-log-") OR LOWER(c.data.userUpn) = @me) AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "bk-entry" AND c.docType != "monthly-report" AND c.docType != "client-drive"))' + (sinceOk ? ' AND c.updatedAt > @since' : ''),
           parameters: sinceOk
-            ? [{ name: '@t', value: BCC_TENANT_ID }, { name: '@since', value: sinceD }]
-            : [{ name: '@t', value: BCC_TENANT_ID }]
+            ? [{ name: '@t', value: BCC_TENANT_ID }, { name: '@me', value: me }, { name: '@since', value: sinceD }]
+            : [{ name: '@t', value: BCC_TENANT_ID }, { name: '@me', value: me }]
         };
         const { resources } = await c.items.query(q).fetchAll();
         // Integration docs hold secrets — redact credential fields for non-admins
@@ -393,6 +412,10 @@ app.http('data', {
         for (const it of items) {
           if (!isPcKey(it.key)) return badRequest('invalid key: ' + it.key);
           if (isProtectedServerKey(it.key)) return forbidden('this record is managed by a secure endpoint and cannot be written here');
+          // Personal docs: you may only write your OWN tasks / time log.
+          if (!ownsPersonalKey(it.key)) return forbidden('you can only write your own personal records');
+          const claimed = personalOwner(it.key, it.data);
+          if (claimed && claimed !== me) return forbidden('personal record owner mismatch');
           if (ADMIN_KEYS.has(it.key)) touchesAdminKey = true;
           if (it.key.startsWith('bcc-integration-')) touchesIntegration = true;
         }
@@ -429,6 +452,7 @@ app.http('data', {
         if (!key) return badRequest('key required');
         if (!isPcKey(key)) return badRequest('invalid key');
         if (isProtectedServerKey(key)) return forbidden('this record is managed by a secure endpoint and cannot be deleted here');
+        if (!ownsPersonalKey(key)) return forbidden('you can only delete your own personal records');
         if (ADMIN_KEYS.has(key) && !(await isAppAdmin(p))) return forbidden();
         if (key.startsWith('bcc-integration-') && !(await isAppAdmin(p))) return forbidden('only administrators may delete integration credentials');
         try { await c.item(key, BCC_TENANT_ID).delete(); } catch (e) { if (e.code !== 404) throw e; }
@@ -780,6 +804,12 @@ app.http('users', {
 
 function sanitizeUpn(upn) {
   return String(upn || 'anon').toLowerCase().replace(/[^a-z0-9._-]+/g, '_').slice(0, 60);
+}
+
+// Matches the CLIENT sani() used to build the personal "My tasks" key
+// (bcc-mytasks-<sani(upn)>) — deliberately different from sanitizeUpn above.
+function saniTaskKey(upn) {
+  return String(upn || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
 }
 
 function shortHash(s) {
