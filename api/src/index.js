@@ -5174,9 +5174,12 @@ async function assembleMonthlyReport(apiGet, comp, per, method) {
     apiGet('/reports/AgedPayableDetail?report_date=' + iso(mEnd)).then(flattenQboReport).catch(() => null)
   ]);
   // Aging SUMMARY reports (raw) — for the 91+ days bucket total on A/R and A/P.
-  const [arSummary, apSummary] = await Promise.all([
+  // plBurn: trailing-3-month P&L ending this period, for "months of cash" (see below) —
+  // matches the same trailing-window burn-rate the qbo-kpis dashboard endpoint already uses.
+  const [arSummary, apSummary, plBurn] = await Promise.all([
     apiGet('/reports/AgedReceivables?report_date=' + iso(mEnd)).catch(() => null),
-    apiGet('/reports/AgedPayables?report_date=' + iso(mEnd)).catch(() => null)
+    apiGet('/reports/AgedPayables?report_date=' + iso(mEnd)).catch(() => null),
+    apiGet(plUrl(new Date(per.y, per.mo - 2, 1), mEnd)).then(flattenQboReport).catch(() => null)
   ]);
   const arOver90 = agingOver90(arSummary), apOver90 = agingOver90(apSummary);
 
@@ -5219,20 +5222,30 @@ async function assembleMonthlyReport(apiGet, comp, per, method) {
   const arRaw = bsAR(bsCur), arPriorRaw = bsPrior ? bsAR(bsPrior) : null;
   const ar = retUnderAR ? arRaw - retainage : arRaw;
   const arPrior = (arPriorRaw == null) ? null : (retUnderAR ? arPriorRaw - (retainagePrior || 0) : arPriorRaw);
-  // Months-of-cash burn = AVERAGE monthly overhead (YTD ÷ months elapsed), so a lumpy
-  // one-off month (e.g. an annual premium or bonus run) doesn't distort the runway.
-  const monthlyBurn = (plYtd && plOpex(plYtd) > 0) ? Math.round((plOpex(plYtd) / (per.mo + 1)) * 100) / 100 : opex;
+  // Months-of-cash burn = average monthly overhead over the TRAILING 3 months (this one
+  // + the 2 before it) — matches the qbo-kpis dashboard endpoint's own burnMonths=3
+  // default, so the two views of the same client never disagree. This used to be a
+  // YTD-average (Jan1-to-date ÷ months elapsed), which sounded reasonable ("a lumpy
+  // one-off month like an annual premium doesn't distort the runway") but has an
+  // equally bad failure in the OTHER direction: months early in the year with little
+  // or no data (a business that onboarded mid-year, a slow start, data not yet
+  // entered) drag the average down and make the runway look far longer than the
+  // client is actually spending right now (proven case: $135K cash read as "8.5
+  // months" off a $16K/mo YTD average, when the actual last 3 months averaged
+  // ~$31.7K/mo — a true runway of ~4.3 months).
+  const monthlyBurn = (plBurn && plOpex(plBurn) > 0) ? Math.round((plOpex(plBurn) / 3) * 100) / 100 : opex;
   const monthsOfCash = monthlyBurn > 0 ? Math.round((cash / monthlyBurn) * 10) / 10 : null;
   const currentRatio = currentLiabilities > 0 ? Math.round((currentAssets / currentLiabilities) * 100) / 100 : null;
 
   return {
     ok: true, realmId, method, period, periodLabel, priorLabel,
     periodEnd: iso(mEnd), preparedOn: new Date().toISOString(),
-    // True if a comparison-critical fetch (prior-month P&L/BS, or the YTD P&L that
-    // "months of cash" depends on) came back null — e.g. a transient QBO rate-limit
-    // hit. A past period should NOT be frozen off a degraded result (it would lock in
-    // missing prior-period figures forever); the caller checks this before freezing.
-    degraded: !plPrior || !plYtd || !bsPrior,
+    // True if a comparison-critical fetch came back null — prior-month P&L/BS (most
+    // comparisons), the YTD P&L (revenueYtd/netIncomeYtd), or the trailing-3-month P&L
+    // that "months of cash" now depends on — e.g. a transient QBO rate-limit hit. A
+    // past period should NOT be frozen off a degraded result (it would lock in missing
+    // figures forever); the caller checks this before freezing.
+    degraded: !plPrior || !plYtd || !bsPrior || !plBurn,
     company: { name: comp.companyName || realmId, legalName: comp.legalName || comp.companyName || '' },
     kpis: {
       cash, cashPrior: bsPrior ? bsCash(bsPrior) : null, monthsOfCash, monthlyBurn,

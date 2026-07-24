@@ -1744,7 +1744,7 @@
       var n = customN || (prior != null && pol !== 'none' ? ('was ' + mrMoney0(prior)) : '');
       out.push({ l: l, v: v, n: n, dir: t.dir, tone: t.tone, vt: hkey ? mrHealthTone(hkey, hval, goals) : 'neutral' });
     };
-    if (k.monthsOfCash != null) add('Months of Cash', String(Math.round(k.monthsOfCash)), (k.monthsOfCash) + ' mo (exact)', null, null, 'none', 'monthsOfCash', k.monthsOfCash);
+    if (k.monthsOfCash != null) add('Months of Cash', String(Math.round(k.monthsOfCash)), (k.monthsOfCash) + ' mo · cash ÷ trailing 3-mo avg opex', null, null, 'none', 'monthsOfCash', k.monthsOfCash);
     add('Cash on Hand', mrMoney0(k.cash), '', k.cash, k.cashPrior, 'up-good');
     add('Monthly Net Income', mrMoney0(k.netIncome), '', k.netIncome, k.netIncomePrior, 'up-good', 'posneg', k.netIncome);
     add('Revenue', mrMoney0(k.revenue), '', k.revenue, k.revenuePrior, 'up-good');
