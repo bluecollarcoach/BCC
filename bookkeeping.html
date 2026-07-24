@@ -386,6 +386,7 @@
       <button class="btn btn-primary" id="connectBtn" type="button">+ Connect a company</button>
       <button class="btn btn-ghost" id="syncBtn" type="button">Sync all from QBO</button>
       <button class="btn btn-ghost" id="cashflowBtn" type="button">📈 90-day cash flow</button>
+      <button class="btn btn-ghost" id="notaryBtn" type="button" style="display:none;">🖋️ Notary</button>
       <button class="btn btn-ghost" id="importTasksBtn" type="button" style="display:none;">📋 Import tasks from Planner</button>
       <button class="btn btn-ghost" id="newBtn" type="button">+ Manual entry</button>
       <button class="btn btn-ghost" id="printBtn" type="button">Print report</button>
@@ -613,12 +614,21 @@
   <div class="card" id="tab-wip" style="display:none; margin-top:14px;">
     <div id="wip-body"></div>
   </div>
-  <div class="card" id="tab-notary" style="display:none; margin-top:14px;">
-    <div id="notary-body"></div>
-  </div>
   <div class="card" id="tab-access" style="display:none; margin-top:14px;">
     <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Team &amp; access</h3>
     <div id="access-body"></div>
+  </div>
+</div>
+
+<!-- Firm-level Notary (moved out of the per-client workspace so it's reachable
+     without client access — Janice is the notary but has no client access). -->
+<div id="notaryOverlay" style="display:none; position:fixed; inset:0; z-index:1200; background:rgba(20,18,14,0.5); overflow:auto;">
+  <div class="card" style="max-width:880px; margin:32px auto; background:#fff;">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px;">
+      <strong style="font-size:16px;">🖋️ Notary <span style="color:var(--muted); font-weight:400; font-size:13px;">· firm-wide</span></strong>
+      <button class="btn btn-ghost" id="notaryClose" type="button">✕ Close</button>
+    </div>
+    <div id="notary-body"></div>
   </div>
 </div>
 
@@ -1232,6 +1242,11 @@
   document.getElementById('printBtn').addEventListener('click', function () { window.print(); });
   document.getElementById('mgmtBtn').addEventListener('click', function () { if (!canManage()) return; managementMode = !managementMode; accessEditRealm = null; renderAll(); });
   document.getElementById('cashflowBtn').addEventListener('click', openCashflow);
+  var _notaryBtnEl = document.getElementById('notaryBtn'); if (_notaryBtnEl) _notaryBtnEl.addEventListener('click', openNotaryHome);
+  var _notaryCloseEl = document.getElementById('notaryClose'); if (_notaryCloseEl) _notaryCloseEl.addEventListener('click', closeNotaryHome);
+  var _notaryOverlayEl = document.getElementById('notaryOverlay');
+  if (_notaryOverlayEl) _notaryOverlayEl.addEventListener('click', function (e) { if (e.target === _notaryOverlayEl) closeNotaryHome(); }); // backdrop click closes
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') { var o = document.getElementById('notaryOverlay'); if (o && o.style.display !== 'none') closeNotaryHome(); } });
   (function () { var b = document.getElementById('importTasksBtn'); if (b) b.addEventListener('click', openPlannerImport); })();
   document.getElementById('yearFilter').addEventListener('change', renderTable);
   document.getElementById('companyFilter').addEventListener('change', function () { currentRealm = this.value; renderAll(); });
@@ -2583,7 +2598,6 @@
     { key: 'payroll',      label: 'Certified payroll',  ic: '🧮' },
     { key: 'payapp',       label: 'Pay applications',   ic: '📄' },
     { key: 'wip',          label: 'Job costing',        ic: '🏗️' },
-    { key: 'notary',       label: 'Notary',             ic: '🖋️' },
     { key: 'info',         label: 'Client info',        ic: '🏢' },
     { key: 'access',       label: 'Team & access',      ic: '👥' }
   ];
@@ -2594,7 +2608,7 @@
     { title: '',              keys: ['overview'] },
     { title: 'Communication', keys: ['email', 'tasks', 'activity'] },
     { title: 'Bookkeeping',   keys: ['transactions', 'reports', 'close'] },
-    { title: 'Documents',     keys: ['files', 'payroll', 'payapp', 'wip', 'notary'] },
+    { title: 'Documents',     keys: ['files', 'payroll', 'payapp', 'wip'] },
     { title: 'Setup',         keys: ['info', 'access'] }
   ];
   function sectionLabel(k) { var s = SECTIONS.find(function (x) { return x.key === k; }); return s ? s.label : 'Overview'; }
@@ -2705,7 +2719,7 @@
   // ----- Section visibility -----
   function hideAllSections() {
     ['qboKpis', 'qboReports', 'qboWrite'].forEach(function (id) { var e = document.getElementById(id); if (e) e.style.display = 'none'; });
-    ['overview', 'activity', 'info', 'files', 'tasks', 'email', 'payroll', 'payapp', 'wip', 'notary', 'close', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
+    ['overview', 'activity', 'info', 'files', 'tasks', 'email', 'payroll', 'payapp', 'wip', 'close', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
   }
   function showSection(sec) {
     hideAllSections();
@@ -2757,7 +2771,6 @@
     else if (sec === 'payapp') renderPayApp();
     else if (sec === 'close') renderClose();
     else if (sec === 'wip') renderWip();
-    else if (sec === 'notary') renderNotary();
     else if (sec === 'access') renderAccess();
   }
 
@@ -3642,10 +3655,20 @@
      email the signer the platform session link, track status, and file the
      finished notarized PDF back into the client's Files. Docs: bcc-notary-<realm>-*. */
   var _notaryNew = false;
-  function notaryPrefix() { return 'bcc-notary-' + currentRealm + '-'; }
-  function allNotary() { var out = []; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (!k || k.indexOf(notaryPrefix()) !== 0) continue; try { var r = JSON.parse(localStorage.getItem(k)); if (r && r.id) out.push(r); } catch (e) {} } return out; }
+  // Notary is firm-level: at root (no client selected) it uses a firm bucket + folder,
+  // so a notary with no per-client access can still work it. Inside a client it stays
+  // scoped to that client (kept for back-compat, though the nav entry was removed).
+  function notaryPrefix() { return 'bcc-notary-' + (currentRealm || 'firm') + '-'; }
+  function notaryFolder() { return currentRealm ? (typeof clientFolder === 'function' ? clientFolder() : ('/clients/' + currentRealm)) : '/notary'; }
+  function notaryOrgName() { return currentRealm ? companyName(currentRealm) : 'Blue Collar Coach'; }
+  function openNotaryHome() { var o = document.getElementById('notaryOverlay'); if (!o) return; _notaryNew = false; o.style.display = ''; renderNotary(); }
+  function closeNotaryHome() { var o = document.getElementById('notaryOverlay'); if (o) o.style.display = 'none'; }
+  // At root the firm overlay lists EVERY notary request (firm bucket + any client-scoped
+  // ones created before notary went firm-level), so in-flight work is never stranded.
+  // Inside a client it stays scoped to that client's bucket.
+  function allNotary() { var pre = currentRealm ? notaryPrefix() : 'bcc-notary-'; var out = []; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (!k || k.indexOf(pre) !== 0) continue; try { var r = JSON.parse(localStorage.getItem(k)); if (r && r.id) out.push(r); } catch (e) {} } return out; }
   function loadNotaryReq(id) { try { return JSON.parse(localStorage.getItem(id)); } catch (e) { return null; } }
-  function saveNotaryReq(r) { r.updatedAt = nowIso(); r.updatedBy = myUpn(); localStorage.setItem(r.id, JSON.stringify(r)); if (window.bccAudit) window.bccAudit('client-file-upload', { key: r.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, source: 'notary' } }); }
+  function saveNotaryReq(r) { r.updatedAt = nowIso(); r.updatedBy = myUpn(); localStorage.setItem(r.id, JSON.stringify(r)); if (window.bccAudit) window.bccAudit('client-file-upload', { key: r.id, path: '/bookkeeping.html', meta: { realmId: currentRealm || 'firm', source: 'notary' } }); }
   var NOTARY_STATUS = { requested: ['🟡 Requested', '#8a6f3c'], scheduled: ['🔵 Scheduled', '#1d5fb0'], completed: ['🟢 Completed', '#1f8a4c'] };
   function notaryForm() {
     return '<div class="card" style="background:var(--gold-fade);border:1px solid var(--chrome-mute);margin-bottom:14px;">' +
@@ -3731,7 +3754,7 @@
       method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         toUpn: to,
-        title: '🖊️ Notarization assigned to you — ' + companyName(r.realmId || currentRealm),
+        title: '🖊️ Notarization assigned to you — ' + ((r.realmId || currentRealm) ? companyName(r.realmId || currentRealm) : 'Blue Collar Coach'),
         body: (r.docName || 'A document') + (r.signerName ? ' · signer ' + r.signerName : '') + ' — please set up the online notarization.',
         url: '/bookkeeping.html', tag: 'notary-' + r.id
       })
@@ -3755,11 +3778,11 @@
     if (file) {
       var cs = document.getElementById('nt_cstatus'); if (cs) cs.textContent = 'Uploading document…';
       var fd = new FormData(); fd.append('file', file, file.name);
-      fd.append('folder', (typeof clientFolder === 'function' ? clientFolder() : ('/clients/' + currentRealm)));
+      fd.append('folder', notaryFolder());
       fd.append('tags', 'To notarize, notary');
       fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
         .then(function (rr) { return rr.json().then(function (j) { return rr.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + rr.status))); }); })
-        .then(function (j) { if (j && j.id) r.fileId = j.id; if (typeof loadFiles === 'function') loadFiles(); finish(); })
+        .then(function (j) { if (j && j.id) r.fileId = j.id; if (currentRealm && typeof loadFiles === 'function') loadFiles(); finish(); })
         .catch(function (e) { if (cs) cs.textContent = ''; (window.bccNotify || alert)('Document upload failed: ' + e.message + ' — request not created.', 'error', 7000); });
     } else finish();
   }
@@ -3767,11 +3790,11 @@
     if (!file) return; var r = loadNotaryReq(id); if (!r) return;
     notaryMsg(id, 'Uploading notarized PDF…');
     var fd = new FormData(); fd.append('file', file, file.name);
-    fd.append('folder', (typeof clientFolder === 'function' ? clientFolder() : ('/clients/' + currentRealm)));
+    fd.append('folder', notaryFolder());
     fd.append('tags', 'Notarized, notary');
     fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
       .then(function (rr) { return rr.json().then(function (j) { return rr.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + rr.status))); }); })
-      .then(function (j) { if (j && j.id) r.notarizedDocId = j.id; r.status = 'completed'; r.completedAt = nowIso(); saveNotaryReq(r); if (typeof loadFiles === 'function') loadFiles(); renderNotary(); updateWsNav(); if (window.bccNotifySaved) window.bccNotifySaved('Notarized document filed to the client.'); })
+      .then(function (j) { if (j && j.id) r.notarizedDocId = j.id; r.status = 'completed'; r.completedAt = nowIso(); saveNotaryReq(r); if (currentRealm && typeof loadFiles === 'function') loadFiles(); renderNotary(); updateWsNav(); if (window.bccNotifySaved) window.bccNotifySaved('Notarized document filed' + (currentRealm ? ' to the client.' : '.')); })
       .catch(function (e) { notaryMsg(id, ''); (window.bccNotify || alert)('Upload failed: ' + e.message, 'error', 6000); });
   }
   function notaryEmailSigner(id) {
@@ -3779,7 +3802,7 @@
     if (!r.signerEmail) { notaryMsg(id, 'Add a signer email first.'); return; }
     if (!r.sessionUrl) { notaryMsg(id, 'Paste the RON session link first.'); return; }
     notaryMsg(id, 'Sending…');
-    var body = 'Hello ' + esc(r.signerName || '') + ',<br><br>Your document <strong>' + esc(r.docName) + '</strong> is ready for online notarization with ' + esc(companyName(currentRealm)) + '.<br><br>Join your notary session here: <a href="' + esc(r.sessionUrl) + '">' + esc(r.sessionUrl) + '</a><br><br>You will verify your identity and meet the notary by live video. Please have a valid government photo ID ready.<br><br>Thank you.';
+    var body = 'Hello ' + esc(r.signerName || '') + ',<br><br>Your document <strong>' + esc(r.docName) + '</strong> is ready for online notarization with ' + esc(notaryOrgName()) + '.<br><br>Join your notary session here: <a href="' + esc(r.sessionUrl) + '">' + esc(r.sessionUrl) + '</a><br><br>You will verify your identity and meet the notary by live video. Please have a valid government photo ID ready.<br><br>Thank you.';
     var payload = { to: [r.signerEmail], subject: 'Online notarization link — ' + r.docName, bodyHtml: body };
     if (mailboxActive && mailboxActive()) payload.realmId = currentRealm;
     fetch('/api/integrations/msgraph/send-mail', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
@@ -5877,6 +5900,7 @@
     var sb = document.getElementById('syncBtn'); if (sb) sb.style.display = (mgmt || currentRealm) ? '' : 'none'; // Sync is useful per-client too
     ['newBtn', 'printBtn'].forEach(function (id) { var b = document.getElementById(id); if (b) b.style.display = mgmt ? '' : 'none'; }); // manual entry + print are management-only
     var cf = document.getElementById('cashflowBtn'); if (cf) cf.style.display = (atRoot && canManage()) ? '' : 'none'; // cash flow: any manager, from the work queue or management view
+    var nt = document.getElementById('notaryBtn'); if (nt) nt.style.display = atRoot ? '' : 'none'; // firm-wide notary: reachable at root without per-client access (Janice is the notary)
     var it = document.getElementById('importTasksBtn'); if (it) it.style.display = (mgmt && isAdmin) ? '' : 'none'; // firm-wide task seed: admin, from the management dashboard
     var mb = document.getElementById('mgmtBtn');
     if (mb) { mb.style.display = (atRoot && canManage()) ? '' : 'none'; mb.textContent = managementMode ? '← Working view' : 'Management dashboard →'; }
