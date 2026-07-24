@@ -5222,7 +5222,7 @@ async function assembleMonthlyReport(apiGet, comp, per, method) {
     company: { name: comp.companyName || realmId, legalName: comp.legalName || comp.companyName || '' },
     kpis: {
       cash, cashPrior: bsPrior ? bsCash(bsPrior) : null, monthsOfCash, monthlyBurn,
-      revenue, revenuePrior: plPrior ? plRevenue(plPrior) : null,
+      revenue, revenuePrior: plPrior ? plRevenue(plPrior) : null, revenueYtd: plYtd ? plRevenue(plYtd) : null,
       cogs, grossProfit, grossMargin: revenue ? grossProfit / revenue : null,
       grossMarginPrior: plPrior && plRevenue(plPrior) ? (plRevenue(plPrior) - plCogs(plPrior)) / plRevenue(plPrior) : null,
       opex, netIncome, netIncomePrior: plPrior ? plNet(plPrior) : null, netIncomeYtd: plYtd ? plNet(plYtd) : null,

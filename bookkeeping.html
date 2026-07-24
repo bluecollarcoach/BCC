@@ -1748,8 +1748,10 @@
     add('Cash on Hand', mrMoney0(k.cash), '', k.cash, k.cashPrior, 'up-good');
     add('Monthly Net Income', mrMoney0(k.netIncome), '', k.netIncome, k.netIncomePrior, 'up-good', 'posneg', k.netIncome);
     add('Revenue', mrMoney0(k.revenue), '', k.revenue, k.revenuePrior, 'up-good');
-    if (k.grossMargin != null) add('Gross Margin', Math.round(k.grossMargin * 100) + '%', (k.grossMarginPrior != null ? ('was ' + Math.round(k.grossMarginPrior * 100) + '%') : ''), k.grossMargin, k.grossMarginPrior, 'up-good', 'grossMargin', k.grossMargin);
+    // YTD pair sits right below the monthly Revenue/Net Income row, same left-right order.
+    if (k.revenueYtd != null) add('Revenue YTD', mrMoney0(k.revenueYtd), '', null, null, 'none');
     if (k.netIncomeYtd != null) add('Net Income YTD', mrMoney0(k.netIncomeYtd), '', null, null, 'none', 'posneg', k.netIncomeYtd);
+    if (k.grossMargin != null) add('Gross Margin', Math.round(k.grossMargin * 100) + '%', (k.grossMarginPrior != null ? ('was ' + Math.round(k.grossMarginPrior * 100) + '%') : ''), k.grossMargin, k.grossMarginPrior, 'up-good', 'grossMargin', k.grossMargin);
     if (k.ar) add('A/R Outstanding', mrMoney0(k.ar), (k.arOver90 > 0 ? mrMoney0(k.arOver90) + ' over 90d' : ''), k.ar, k.arPrior, 'neutral');
     if (k.retainage) add('Retainage', mrMoney0(k.retainage), '', k.retainage, k.retainagePrior, 'neutral');
     if (k.ap) add('A/P Balance', mrMoney0(k.ap), (k.apOver90 > 0 ? mrMoney0(k.apOver90) + ' over 90d' : ''), k.ap, k.apPrior, 'up-bad');
