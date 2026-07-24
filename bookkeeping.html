@@ -3719,7 +3719,8 @@
     var head = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px;">' +
       '<h3 style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;margin:0;">Online notarization</h3>' +
       '<button class="btn btn-primary" id="nt_new" type="button">+ New notarization request</button></div>' +
-      '<div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">Request a document be notarized by your team notary on your online-notary platform. The app tracks the request, can email the signer the session link, and files the finished notarized PDF back into <strong>Files</strong>. <em>The notarial act itself is performed by your commissioned notary on the RON platform.</em></div>';
+      '<div style="font-size:12.5px;color:var(--muted);margin-bottom:8px;">Request a document be notarized by your team notary on your online-notary platform. The app tracks the request, can email the signer the session link, and files the finished notarized PDF back into <strong>Files</strong>. <em>The notarial act itself is performed by your commissioned notary on the RON platform.</em></div>' +
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);margin-bottom:12px;">🔔 Alert on every new request goes to<select id="nt_contact">' + assigneeOpts(notaryContact()) + '</select></div>';
     var list = reqs.length ? reqs.map(notaryCard).join('') : (_notaryNew ? '' : '<div style="color:var(--muted);padding:10px 0;">No notarization requests yet. Click <strong>+ New notarization request</strong> to start one.</div>');
     body.innerHTML = head + (_notaryNew ? notaryForm() : '') + list;
     wireNotary(body);
@@ -3727,6 +3728,7 @@
   function wireNotary(body) {
     var nb = document.getElementById('nt_new'); if (nb) nb.onclick = function () { _notaryNew = true; renderNotary(); };
     var nc = document.getElementById('nt_cancel'); if (nc) nc.onclick = function () { _notaryNew = false; renderNotary(); };
+    var ntc = document.getElementById('nt_contact'); if (ntc) ntc.onchange = function () { setNotaryContact(ntc.value); };
     var create = document.getElementById('nt_create'); if (create) create.onclick = notaryCreate;
     body.querySelectorAll('[data-nt-savelink]').forEach(function (b) { b.onclick = function () {
       var id = b.getAttribute('data-nt-savelink'); var inp = body.querySelector('[data-nt-link="' + id + '"]'); var r = loadNotaryReq(id); if (!r) return;
@@ -3744,21 +3746,38 @@
     }; });
   }
   function notaryMsg(id, txt) { var el = document.querySelector('[data-nt-msg="' + id + '"]'); if (el) { el.textContent = txt; if (txt) setTimeout(function () { if (el.textContent === txt) el.textContent = ''; }, 4000); } }
-  // Alert the assigned team notary that a notarization was assigned to them (in-app bell +
-  // web push). Mirrors taskAssignNotify; skipped when you assign it to yourself. This was
-  // missing — assigning a notary set notaryUpn but never notified them (Janice's report).
-  function notaryAssignNotify(r) {
-    var to = String(r.notaryUpn || '').toLowerCase();
-    if (!to || to === String(myUpn() || '').toLowerCase()) return;
+  // The firm's designated notary gets alerted on EVERY notarization request, not just
+  // ones assigned to them — so they always know what's in the queue. Configurable
+  // (mirrors monthEndContact), defaults to Janice.
+  var NOTARY_CONTACT_KEY = 'bcc-notary-contact-v1';
+  function notaryContact() {
+    try { var d = JSON.parse(localStorage.getItem(NOTARY_CONTACT_KEY) || 'null'); if (d && d.upn) return String(d.upn); } catch (e) {}
+    return 'janice@bluecollarcoach.us';
+  }
+  function setNotaryContact(upn) {
+    localStorage.setItem(NOTARY_CONTACT_KEY, JSON.stringify({ id: NOTARY_CONTACT_KEY, tenantId: 'blue-collar-coach', docType: 'setting', upn: String(upn || '').trim().toLowerCase(), updatedAt: nowIso(), updatedBy: myUpn() }));
+  }
+  function notarySendAlert(to, r, isAssignee) {
     fetch('/api/notify', {
       method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         toUpn: to,
-        title: '🖊️ Notarization assigned to you — ' + ((r.realmId || currentRealm) ? companyName(r.realmId || currentRealm) : 'Blue Collar Coach'),
-        body: (r.docName || 'A document') + (r.signerName ? ' · signer ' + r.signerName : '') + ' — please set up the online notarization.',
-        url: '/bookkeeping.html', tag: 'notary-' + r.id
+        title: '🖊️ Notarization ' + (isAssignee ? 'assigned to you' : 'requested') + ' — ' + ((r.realmId || currentRealm) ? companyName(r.realmId || currentRealm) : 'Blue Collar Coach'),
+        body: (r.docName || 'A document') + (r.signerName ? ' · signer ' + r.signerName : '') + (isAssignee ? ' — please set up the online notarization.' : ' has been requested.'),
+        url: '/bookkeeping.html', tag: 'notary-' + r.id + '-' + to
       })
     }).catch(function () {});
+  }
+  // Alert the assigned team notary (in-app bell + web push), AND the firm's designated
+  // notary contact so nothing in the queue goes unseen. Skips notifying yourself.
+  // This was missing — assigning a notary set notaryUpn but never notified them
+  // (Janice's original report).
+  function notaryAssignNotify(r) {
+    var me = String(myUpn() || '').toLowerCase();
+    var assignee = String(r.notaryUpn || '').toLowerCase();
+    var contact = String(notaryContact() || '').toLowerCase();
+    if (assignee && assignee !== me) notarySendAlert(assignee, r, true);
+    if (contact && contact !== me && contact !== assignee) notarySendAlert(contact, r, false);
   }
   function notaryCreate() {
     var docName = (document.getElementById('nt_docname').value || '').trim();
