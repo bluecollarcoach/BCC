@@ -249,31 +249,6 @@
     body.in-client #wsSectionName { display:none; }
   }
 
-  /* Personal "My tasks" panel on the bookkeeper home. */
-  .mt-card { margin-bottom:16px; padding:14px 16px; }
-  .mt-head { display:flex; align-items:center; gap:10px; }
-  .mt-head strong { font-size:15px; }
-  .mt-toggle { background:none; border:none; cursor:pointer; font-size:13px; color:var(--muted); padding:0 2px; }
-  .mt-count { font-size:12px; font-weight:700; color:var(--gold-deep); }
-  .mt-priv { margin-left:auto; font-size:11px; color:var(--muted); }
-  .mt-add { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0 8px; }
-  .mt-add #mt_new { flex:1; min-width:180px; border:1px solid var(--chrome-mute); border-radius:8px; padding:9px 11px; font:inherit; font-size:14px; }
-  .mt-add #mt_due { border:1px solid var(--chrome-mute); border-radius:8px; padding:9px 10px; font:inherit; font-size:13px; }
-  .mt-row { display:flex; align-items:center; gap:10px; padding:9px 4px; border-bottom:1px solid #f3f3f1; }
-  .mt-row:last-child { border-bottom:none; }
-  .mt-row input[type=checkbox] { width:18px; height:18px; flex-shrink:0; }
-  .mt-text { flex:1; min-width:0; font-size:14px; font-weight:600; word-break:break-word; }
-  .mt-row.done .mt-text { text-decoration:line-through; color:var(--muted); font-weight:400; }
-  .mt-due { font-size:11.5px; color:var(--muted); background:var(--chrome); border-radius:6px; padding:2px 8px; white-space:nowrap; flex-shrink:0; }
-  .mt-due.over { color:#fff; background:var(--burgundy); }
-  .mt-move { display:inline-flex; flex-direction:column; gap:1px; flex-shrink:0; }
-  .mt-move button { border:1px solid var(--chrome-mute); background:#fff; color:var(--muted); cursor:pointer; font-size:9px; line-height:1; width:22px; height:15px; border-radius:4px; }
-  .mt-move button:disabled { opacity:.3; cursor:default; }
-  .mt-move button:not(:disabled):hover { border-color:var(--gold); color:var(--gold-deep); }
-  .mt-del { border:none; background:none; color:var(--muted); cursor:pointer; font-size:18px; line-height:1; width:26px; flex-shrink:0; }
-  .mt-del:hover { color:var(--burgundy); }
-  .mt-empty { color:var(--muted); font-size:13px; padding:8px 2px; }
-
   /* Overview: prominent Email banner (first thing a bookkeeper sees). */
   .ov-email { display:flex; align-items:center; gap:14px; width:100%; text-align:left; border:1px solid var(--chrome-mute); border-radius:12px; background:#fff; cursor:pointer; font:inherit; padding:14px 16px; margin-bottom:14px; }
   .ov-email:hover { border-color:var(--gold); background:var(--gold-fade); }
@@ -471,7 +446,6 @@
   </div>
 
   <!-- Personal "My tasks" panel (bookkeeper home only; private per user) -->
-  <div id="myTasksWrap" style="display:none;"></div>
 
   <!-- Period list -->
   <div class="list">
@@ -928,57 +902,9 @@
      Add / complete / delete, an optional due date, and ▲▼ to reorder &
      prioritize. Stored as one synced doc per user (bcc-mytasks-<upn>); only
      the owner's screen ever renders it. Requested by Jessica. ---- */
-  var _myTasksOpen = true;
-  function myTasksKey() { return 'bcc-mytasks-' + sani(myUpn()); }
-  function loadMyTasks() {
-    try { var d = JSON.parse(localStorage.getItem(myTasksKey()) || 'null'); if (d && Array.isArray(d.items)) return d; } catch (e) {}
-    return { id: myTasksKey(), tenantId: 'blue-collar-coach', docType: 'mytasks', upn: myUpn(), items: [], createdAt: nowIso() };
-  }
-  function saveMyTasks(d) { d.updatedAt = nowIso(); d.updatedBy = myUpn(); localStorage.setItem(d.id, JSON.stringify(d)); }
-  function renderMyTasks() {
-    var wrap = document.getElementById('myTasksWrap'); if (!wrap) return;
-    wrap.style.display = '';
-    var d = loadMyTasks(), items = d.items || [];
-    var openCount = items.filter(function (t) { return !t.done; }).length;
-    var today = new Date().toISOString().slice(0, 10);
-    var rows = items.map(function (t, i) {
-      var overdue = !t.done && t.due && t.due < today;
-      return '<div class="mt-row' + (t.done ? ' done' : '') + '">' +
-        '<input type="checkbox" data-mt-done="' + i + '"' + (t.done ? ' checked' : '') + ' aria-label="Mark done" />' +
-        '<span class="mt-text">' + esc(t.text) + '</span>' +
-        (t.due ? '<span class="mt-due' + (overdue ? ' over' : '') + '">' + (overdue ? 'Overdue · ' : 'Due ') + esc(t.due) + '</span>' : '') +
-        '<span class="mt-move"><button data-mt-up="' + i + '" type="button" aria-label="Move up"' + (i === 0 ? ' disabled' : '') + '>▲</button>' +
-        '<button data-mt-down="' + i + '" type="button" aria-label="Move down"' + (i === items.length - 1 ? ' disabled' : '') + '>▼</button></span>' +
-        '<button class="mt-del" data-mt-del="' + i + '" type="button" aria-label="Delete">×</button></div>';
-    }).join('');
-    wrap.innerHTML = '<div class="card mt-card">' +
-      '<div class="mt-head"><button class="mt-toggle" id="mt_toggle" type="button" aria-label="Toggle">' + (_myTasksOpen ? '▾' : '▸') + '</button>' +
-      '<strong>📌 My tasks</strong><span class="mt-count">' + (openCount ? openCount + ' open' : 'all clear') + '</span>' +
-      '<span class="mt-priv">Personal — only you see this</span></div>' +
-      '<div id="mt_body"' + (_myTasksOpen ? '' : ' style="display:none;"') + '>' +
-        '<div class="mt-add"><input id="mt_new" autocomplete="off" placeholder="Add a personal to-do…" /><input type="date" id="mt_due" title="Due date (optional)" /><button class="btn btn-primary" id="mt_add" type="button">Add</button></div>' +
-        (rows || '<div class="mt-empty">No personal tasks yet. Add one above; use ▲▼ to set your priority order.</div>') +
-      '</div></div>';
-    document.getElementById('mt_toggle').onclick = function () { _myTasksOpen = !_myTasksOpen; renderMyTasks(); };
-    var addFn = function () {
-      var inp = document.getElementById('mt_new'); var txt = (inp.value || '').trim(); if (!txt) return;
-      var due = (document.getElementById('mt_due') || {}).value || '';
-      var dd = loadMyTasks(); dd.items.unshift({ id: uid2(), text: txt.slice(0, 300), due: due, done: false, createdAt: nowIso() });
-      saveMyTasks(dd); renderMyTasks(); var n = document.getElementById('mt_new'); if (n) n.focus();
-    };
-    document.getElementById('mt_add').onclick = addFn;
-    var ni = document.getElementById('mt_new'); if (ni) ni.addEventListener('keydown', function (e) { if (e.key === 'Enter') addFn(); });
-    var swap = function (i, j) { var dd = loadMyTasks(); if (i < 0 || j < 0 || i >= dd.items.length || j >= dd.items.length) return; var t = dd.items[i]; dd.items[i] = dd.items[j]; dd.items[j] = t; saveMyTasks(dd); renderMyTasks(); };
-    wrap.querySelectorAll('[data-mt-done]').forEach(function (b) { b.onchange = function () { var i = +b.getAttribute('data-mt-done'); var dd = loadMyTasks(); if (dd.items[i]) { dd.items[i].done = b.checked; dd.items[i].doneAt = b.checked ? nowIso() : null; } saveMyTasks(dd); renderMyTasks(); }; });
-    wrap.querySelectorAll('[data-mt-del]').forEach(function (b) { b.onclick = function () { var i = +b.getAttribute('data-mt-del'); var dd = loadMyTasks(); dd.items.splice(i, 1); saveMyTasks(dd); renderMyTasks(); }; });
-    wrap.querySelectorAll('[data-mt-up]').forEach(function (b) { b.onclick = function () { var i = +b.getAttribute('data-mt-up'); swap(i, i - 1); }; });
-    wrap.querySelectorAll('[data-mt-down]').forEach(function (b) { b.onclick = function () { var i = +b.getAttribute('data-mt-down'); swap(i, i + 1); }; });
-  }
-
   // The working bookkeeper's landing: their client queue, to-dos first.
   function renderWorkList() {
     var yf = document.getElementById('yearFilter'); if (yf) yf.style.display = 'none';
-    if (!taskOnly) renderMyTasks(); // personal to-do panel above the client queue
     setHead([{ label: 'Client' }, { label: 'To-dos' }, { label: 'Last sync' }, { label: '' }]);
     document.getElementById('periodCount').textContent = companies.length + ' client' + (companies.length === 1 ? '' : 's');
     if (!companies.length) {
@@ -1016,7 +942,6 @@
 
   function renderTable() {
     var yf = document.getElementById('yearFilter');
-    var mtw = document.getElementById('myTasksWrap'); if (mtw) mtw.style.display = 'none'; // shown only on the bookkeeper home
 
     if (!currentRealm) {
       // Working bookkeepers get the client queue; the firm-wide financial
