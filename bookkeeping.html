@@ -5135,8 +5135,10 @@
         .replace(/ø/g, 'o').replace(/Ø/g, 'O').replace(/æ/g, 'ae').replace(/Æ/g, 'AE')
         .replace(/œ/g, 'oe').replace(/Œ/g, 'OE').replace(/ß/g, 'ss')
         .replace(/[’‘‚]/g, "'").replace(/[“”„]/g, '"').replace(/[–—]/g, '-').replace(/…/g, '...')
-        .replace(/→/g, '->').replace(/≥/g, '>=').replace(/≤/g, '<=').replace(/×/g, 'x').replace(/•/g, '*');
-      return out.replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\xFF]/g, '?');
+        .replace(/→/g, '->').replace(/≥/g, '>=').replace(/≤/g, '<=').replace(/×/g, 'x').replace(/•/g, '*')
+        .replace(/[​-‍﻿]/g, '')       // zero-width chars → drop
+        .replace(/[ \t\n\r\f\v]+/g, ' ');        // nbsp + tab/newline/CR → space (pdf-lib's WinAnsi THROWS on 0x09 tab, 0x0A, etc.)
+      return out.replace(/[^\x20-\x7E\xA0-\xFF]/g, '?').replace(/ {2,}/g, ' '); // strip control/out-of-range → '?', collapse runs
     }
 
     function clip(s, f, size, maxW) {
