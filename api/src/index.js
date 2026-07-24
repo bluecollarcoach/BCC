@@ -5091,7 +5091,10 @@ const REPORT_CC_APR = 0.20; // credit-card interest estimate (annualized) shown 
 const REPORT_LOC_APR = 0.12; // line-of-credit interest estimate (annualized), a reasonable business-LOC rate
 // Health goals used to color KPI values green(good)/red(bad). Admin-editable (bcc-report-goals);
 // these are the sensible defaults. A value >= target = good; < floor = bad; between = neutral.
-const REPORT_GOAL_DEFAULTS = { monthsCash: 3, monthsCashMin: 1, currentRatio: 1.5, currentRatioMin: 1, grossMargin: 0.30, grossMarginMin: 0.15, netMargin: 0.05, netMarginMin: 0 };
+// ccHighBalance: the credit card balance (dollars) above which the "CC Interest
+// (annualized)" estimate is worth showing — below it, it's just monthly float a
+// client pays off in full, and the estimate is noise rather than a real cost signal.
+const REPORT_GOAL_DEFAULTS = { monthsCash: 3, monthsCashMin: 1, currentRatio: 1.5, currentRatioMin: 1, grossMargin: 0.30, grossMarginMin: 0.15, netMargin: 0.05, netMarginMin: 0, ccHighBalance: 10000 };
 async function getReportGoals() {
   try {
     const d = await container().item('bcc-report-goals', BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);

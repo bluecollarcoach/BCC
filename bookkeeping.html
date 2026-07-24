@@ -1754,9 +1754,12 @@
     if (k.retainage) add('Retainage', mrMoney0(k.retainage), '', k.retainage, k.retainagePrior, 'neutral');
     if (k.ap) add('A/P Balance', mrMoney0(k.ap), (k.apOver90 > 0 ? mrMoney0(k.apOver90) + ' over 90d' : ''), k.ap, k.apPrior, 'up-bad');
     if (k.creditCards) add('Credit Card Balance', mrMoney0(k.creditCards), '', k.creditCards, k.creditCardsPrior, 'up-bad');
-    // CC Interest (annualized) removed: it's a blanket balance*APR guess, not a real
-    // GL figure, and it's misleading noise for any client who pays their card off in
-    // full each month (Lyle's feedback re: Howard Lake Tire & Auto).
+    // CC Interest (annualized) is a blanket balance*APR guess, not a real GL figure —
+    // only worth showing once the balance is high enough to plausibly be a carried
+    // (revolving) cost rather than monthly float a client pays off in full. Threshold
+    // is admin-configurable (Admin -> Report goals), default $10,000.
+    var ccHighBalance = Number(goals && goals.ccHighBalance); if (!isFinite(ccHighBalance)) ccHighBalance = 10000;
+    if (k.ccInterestAnnual && k.creditCards >= ccHighBalance) add('CC Interest (annualized)', '~' + mrMoney0(k.ccInterestAnnual) + '/yr', 'est ' + Math.round((k.ccApr || 0.2) * 100) + '% APR', null, null, 'none');
     if (k.lineOfCredit) add('Line of Credit', mrMoney0(k.lineOfCredit), '', k.lineOfCredit, k.lineOfCreditPrior, 'up-bad');
     if (k.locInterestAnnual) add('LOC Interest (annualized)', '~' + mrMoney0(k.locInterestAnnual) + '/yr', 'est ' + Math.round((k.locApr || 0.12) * 100) + '% APR', null, null, 'none');
     // When there's exactly ONE long-term-debt account, the generic "Long-Term Debt"

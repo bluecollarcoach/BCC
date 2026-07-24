@@ -495,13 +495,21 @@
   function inputToGoal(f, raw) { var n = parseFloat(raw); if (!isFinite(n)) return null; return f.fmt === '%' ? n / 100 : n; }
   function renderGoalsForm(g) {
     var suffix = function (f) { return f.fmt === '%' ? '%' : '×'; };
-    document.getElementById('goalsForm').innerHTML = GOAL_FIELDS.map(function (f) {
+    var cards = GOAL_FIELDS.map(function (f) {
       return '<div style="border:1px solid var(--chrome-mute);border-radius:9px;padding:12px 14px;">' +
         '<div style="font-weight:700;font-size:13.5px;margin-bottom:8px;">' + esc(f.grp) + '</div>' +
         '<label style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);margin-bottom:6px;">Goal (green at or above)<span><input type="number" step="' + f.step + '" id="goal_' + f.goal + '" value="' + goalToInput(f, f.goal, g) + '" style="width:80px;min-height:34px;padding:5px 7px;border:1px solid var(--chrome-mute);border-radius:6px;font:inherit;text-align:right;" /> ' + suffix(f) + '</span></label>' +
         '<label style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);">Floor (red below)<span><input type="number" step="' + f.step + '" id="goal_' + f.floor + '" value="' + goalToInput(f, f.floor, g) + '" style="width:80px;min-height:34px;padding:5px 7px;border:1px solid var(--chrome-mute);border-radius:6px;font:inherit;text-align:right;" /> ' + suffix(f) + '</span></label>' +
         '</div>';
     }).join('');
+    // Single-value threshold (not a goal/floor pair): the credit-card balance above
+    // which the "CC Interest (annualized)" estimate is worth showing on a report.
+    cards += '<div style="border:1px solid var(--chrome-mute);border-radius:9px;padding:12px 14px;">' +
+      '<div style="font-weight:700;font-size:13.5px;margin-bottom:8px;">Credit card "high balance"</div>' +
+      '<label style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);">Show CC interest estimate above<span>$<input type="number" step="500" id="goal_ccHighBalance" value="' + (g.ccHighBalance != null ? g.ccHighBalance : '') + '" style="width:80px;min-height:34px;padding:5px 7px;border:1px solid var(--chrome-mute);border-radius:6px;font:inherit;text-align:right;" /></span></label>' +
+      '<div style="font-size:11.5px;color:var(--muted);margin-top:6px;">Below this, a card balance is treated as monthly float (paid off in full) and the interest estimate is hidden — it isn\'t a real GL number, just a balance × APR guess.</div>' +
+      '</div>';
+    document.getElementById('goalsForm').innerHTML = cards;
   }
   function collectGoals() {
     var out = {};
@@ -511,6 +519,8 @@
         var v = inputToGoal(f, el.value); if (v != null) out[pair[1]] = v;
       });
     });
+    var ccEl = document.getElementById('goal_ccHighBalance');
+    if (ccEl) { var ccV = parseFloat(ccEl.value); if (isFinite(ccV)) out.ccHighBalance = ccV; }
     return out;
   }
   function loadGoals() {
