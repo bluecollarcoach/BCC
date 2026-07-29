@@ -3903,6 +3903,11 @@ app.http('qbo-company-update', {
       const id = 'bcc-qbo-company-' + realmId;
       const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
       if (!doc) return { status: 404, jsonBody: { error: 'company not found' } };
+      // OWNER-ONLY companies (the firm's own books) are hidden from other admins on
+      // READ — enforce the same on WRITE, or another admin who knows the realmId could
+      // still mutate a company they can't see (e.g. plant a clientAppUrl link that the
+      // owner then sees rendered by our own trusted chrome).
+      if (companyPrivateBlocked(doc, p)) return { status: 403, jsonBody: { error: 'no access to this company' } };
 
       if (request.method === 'DELETE') {
         // Best-effort revoke the refresh token at Intuit so our access truly ends.
@@ -3939,35 +3944,67 @@ app.http('qbo-company-update', {
 
       const body = await request.json().catch(() => ({}));
       const me = String(p.userDetails || p.userId || '').toLowerCase();
-      // OWNER-ONLY lock. Guard-railed so it can't be weaponised: you may only lock a
-      // company TO YOURSELF, and only the current owner may change/clear it. That stops
-      // one admin locking another out of a client.
-      if (body.privateToUpn !== undefined) {
-        const cur = String(doc.privateToUpn || '').toLowerCase();
-        if (cur && cur !== me) return { status: 403, jsonBody: { error: 'only the owner can change this company’s private lock' } };
-        const want = String(body.privateToUpn || '').toLowerCase();
-        if (want && want !== me) return { status: 400, jsonBody: { error: 'a company can only be made private to yourself' } };
-        if (want) doc.privateToUpn = me; else delete doc.privateToUpn;
-      }
-      // Marks the firm's OWN books — the CRM customer import reads from this company.
-      if (typeof body.isOwnBooks === 'boolean') {
-        if (String(doc.privateToUpn || '').toLowerCase() && String(doc.privateToUpn).toLowerCase() !== me) return { status: 403, jsonBody: { error: 'not your company' } };
-        doc.isOwnBooks = body.isOwnBooks;
-      }
-      if (typeof body.enabled === 'boolean') doc.enabled = body.enabled;
-      if (Array.isArray(body.allowedUserUpns)) doc.allowedUserUpns = body.allowedUserUpns.map(s => String(s).toLowerCase()).filter(Boolean);
-      // Link to the client's OWN separate app (e.g. a bespoke Static Web App we built
-      // for them) shown as a button in their workspace. http(s) only -- this becomes an
-      // anchor href, so reject anything else (javascript:, data:, etc.) up front.
+      // Validate BEFORE any write so a bad request can never half-apply.
+      // Over-length is rejected, not silently truncated — a mangled 500-char URL that
+      // looks saved is worse than a clear error.
+      let appUrl;
       if (typeof body.clientAppUrl === 'string') {
-        const u = body.clientAppUrl.trim().slice(0, 500);
-        if (!u) doc.clientAppUrl = '';
-        else if (/^https?:\/\//i.test(u)) doc.clientAppUrl = u;
-        else return { status: 400, jsonBody: { error: 'clientAppUrl must start with http:// or https://' } };
+        const u = body.clientAppUrl.trim();
+        if (u.length > 500) return { status: 400, jsonBody: { error: 'clientAppUrl is too long (max 500 characters)' } };
+        if (u && !/^https?:\/\//i.test(u)) return { status: 400, jsonBody: { error: 'clientAppUrl must start with http:// or https://' } };
+        appUrl = u;
       }
-      doc.updatedAt = new Date().toISOString();
-      await c.items.upsert(doc);
-      return { jsonBody: { ok: true, realmId, enabled: doc.enabled !== false, allowedUserUpns: doc.allowedUserUpns || [], privateToUpn: doc.privateToUpn || null, isOwnBooks: !!doc.isOwnBooks, clientAppUrl: doc.clientAppUrl || '' } };
+      // Apply the patch to a freshly-read doc, then write it back guarded by that read's
+      // ETag. This doc is ALSO rewritten by qboAccessForCompany whenever Intuit rotates
+      // the refresh token, so a blind full-doc upsert here could write back a stale,
+      // already-invalidated token and silently kill the client's QuickBooks connection.
+      // On a 412 (someone else wrote first) we re-read and re-apply, never clobber.
+      const applyPatch = (d) => {
+        // OWNER-ONLY lock. Guard-railed so it can't be weaponised: you may only lock a
+        // company TO YOURSELF, and only the current owner may change/clear it. That stops
+        // one admin locking another out of a client.
+        if (body.privateToUpn !== undefined) {
+          const cur = String(d.privateToUpn || '').toLowerCase();
+          if (cur && cur !== me) return { status: 403, jsonBody: { error: 'only the owner can change this company’s private lock' } };
+          const want = String(body.privateToUpn || '').toLowerCase();
+          if (want && want !== me) return { status: 400, jsonBody: { error: 'a company can only be made private to yourself' } };
+          if (want) d.privateToUpn = me; else delete d.privateToUpn;
+        }
+        // Marks the firm's OWN books — the CRM customer import reads from this company.
+        if (typeof body.isOwnBooks === 'boolean') {
+          if (String(d.privateToUpn || '').toLowerCase() && String(d.privateToUpn).toLowerCase() !== me) return { status: 403, jsonBody: { error: 'not your company' } };
+          d.isOwnBooks = body.isOwnBooks;
+        }
+        if (typeof body.enabled === 'boolean') d.enabled = body.enabled;
+        if (Array.isArray(body.allowedUserUpns)) d.allowedUserUpns = body.allowedUserUpns.map(s => String(s).toLowerCase()).filter(Boolean);
+        // Link to the client's OWN separate app (e.g. a bespoke Static Web App we built
+        // for them) shown as a button in their workspace. http(s) only -- this becomes an
+        // anchor href, so anything else was already rejected above.
+        if (appUrl !== undefined) d.clientAppUrl = appUrl;
+        d.updatedAt = new Date().toISOString();
+        return null;
+      };
+
+      let cur = doc, saved = null;
+      for (let attempt = 0; attempt < 3 && !saved; attempt++) {
+        if (attempt > 0) {
+          cur = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+          if (!cur) return { status: 404, jsonBody: { error: 'company not found' } };
+          if (companyPrivateBlocked(cur, p)) return { status: 403, jsonBody: { error: 'no access to this company' } };
+        }
+        const rejected = applyPatch(cur);
+        if (rejected) return rejected;
+        try {
+          const opts = cur._etag ? { accessCondition: { type: 'IfMatch', condition: cur._etag } } : undefined;
+          const res = await c.items.upsert(cur, opts);
+          saved = res.resource || cur;
+        } catch (e) {
+          if (e && (e.code === 412 || e.statusCode === 412)) { context.log('qbo-company-update etag conflict, retrying'); continue; }
+          throw e;
+        }
+      }
+      if (!saved) return { status: 409, jsonBody: { error: 'this company was being updated elsewhere — please try again' } };
+      return { jsonBody: { ok: true, realmId, enabled: saved.enabled !== false, allowedUserUpns: saved.allowedUserUpns || [], privateToUpn: saved.privateToUpn || null, isOwnBooks: !!saved.isOwnBooks, clientAppUrl: saved.clientAppUrl || '' } };
     } catch (e) {
       context.error('qbo-company-update error', e);
       return { status: 500, jsonBody: { error: String(e.message || e) } };

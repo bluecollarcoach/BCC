@@ -249,6 +249,13 @@
     body.in-client #wsSectionName { display:none; }
   }
 
+  /* On a phone the workspace header already carries Back + menu + client name; the
+     full link label would wrap it onto a third row, so show just the icon there. */
+  @media (max-width: 700px) {
+    #wsClientAppLink .wsAppLbl { display:none; }
+    #wsClientAppLink { padding:0 10px; }
+  }
+
   /* Overview: prominent Email banner (first thing a bookkeeper sees). */
   .ov-email { display:flex; align-items:center; gap:14px; width:100%; text-align:left; border:1px solid var(--chrome-mute); border-radius:12px; background:#fff; cursor:pointer; font:inherit; padding:14px 16px; margin-bottom:14px; }
   .ov-email:hover { border-color:var(--gold); background:var(--gold-fade); }
@@ -411,8 +418,8 @@
       <button class="btn btn-ghost" id="wsBack" type="button">← Clients</button>
       <button class="btn btn-ghost ws-menu-btn" id="wsMenuBtn" type="button" aria-label="Open section menu">☰ <strong id="wsSectionName">Overview</strong></button>
       <span class="ws-client"><strong id="wsClientName"></strong></span>
-      <a class="btn btn-ghost" id="wsClientAppLink" href="#" target="_blank" rel="noopener" style="display:none;text-decoration:none;">🔗 Open client&rsquo;s app</a>
       <nav class="ws-crumb" id="wsCrumb" aria-label="Breadcrumb"></nav>
+      <a class="btn btn-ghost" id="wsClientAppLink" target="_blank" rel="noopener noreferrer" style="display:none;text-decoration:none;margin-left:auto;"><span aria-hidden="true">🔗</span> <span class="wsAppLbl">Open client&rsquo;s app</span> <span aria-hidden="true">↗</span></a>
     </div>
   </div>
 
@@ -657,6 +664,13 @@
     return d.toLocaleString([], o);
   }
   function esc(s) { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
+  // A pasted bare domain ("connect.acme.com") would be rejected server-side and take the
+  // whole access save down with it — so default it to https:// here instead.
+  function normAppUrl(v) {
+    var s = String(v == null ? '' : v).trim();
+    if (!s) return '';
+    return /^https?:\/\//i.test(s) ? s : 'https://' + s.replace(/^\/+/, '');
+  }
   function dollars(cents) {
     if (cents == null || isNaN(cents)) return '—';
     var n = Math.round(cents / 100);
@@ -712,8 +726,8 @@
       method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch)
     }).then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
       .then(function () { return loadCompanies(); })
-      .then(function () { renderAll(); })
-      .catch(function (e) { if (window.bccNotify) window.bccNotify('Update failed: ' + e.message, 'warn'); else alert(e.message); });
+      .then(function () { renderAll(); return true; })  // resolves true ONLY on a real save
+      .catch(function (e) { if (window.bccNotify) window.bccNotify('Update failed: ' + e.message, 'warn'); else alert(e.message); return false; });
   }
   function disconnectCompany(realm) {
     var name = companyName(realm) || 'this company';
@@ -1001,7 +1015,13 @@
         if (isAdmin && accessEditRealm === c.realmId) {
           var allow = (c.allowedUserUpns || []).map(function (u) { return u.toLowerCase(); });
           var mode = isAdminOnly(allow) ? 'admin' : (allow.length ? 'specific' : 'all');
+          // Hide inactive users — but NOT anyone already on this client's allow list, or
+          // saving from here would silently prune them (they have no checkbox, so they'd
+          // vanish from the list and not come back when reactivated).
           var accessDir = (window.bccFilterActive ? window.bccFilterActive(usersDir) : usersDir);
+          usersDir.forEach(function (u) {
+            if (allow.indexOf((u.upn || '').toLowerCase()) >= 0 && !accessDir.some(function (x) { return x.upn === u.upn; })) accessDir = accessDir.concat([u]);
+          });
           var checks = accessDir.length
             ? accessDir.map(function (u) {
                 return '<label style="display:inline-flex;align-items:center;gap:6px;margin:0 14px 8px 0;font-size:13px;"><input type="checkbox" data-upn="' + esc(u.upn) + '" ' + (allow.indexOf(u.upn) >= 0 ? 'checked' : '') + ' /> ' + esc(u.displayName || u.upn) + '</label>';
@@ -1016,7 +1036,7 @@
               '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Admins always see every company. New companies start as <strong>Admins only</strong>.</div>' +
               '<div style="margin-bottom:10px;">' +
                 '<label style="display:block;font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Client&rsquo;s own app (optional)</label>' +
-                '<input type="url" data-appurl value="' + esc(c.clientAppUrl || '') + '" placeholder="https://connect.example.com" style="width:100%;max-width:380px;box-sizing:border-box;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;padding:7px 10px;font:inherit;font-size:13px;" />' +
+                '<input type="url" data-appurl maxlength="500" value="' + esc(c.clientAppUrl || '') + '" placeholder="https://connect.example.com" style="width:100%;max-width:380px;box-sizing:border-box;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;padding:7px 10px;font:inherit;font-size:13px;" />' +
                 '<div style="font-size:11.5px;color:var(--muted);margin-top:4px;">If we built ' + esc(c.companyName || 'this client') + ' their own separate app, link it here — a button appears in their workspace for anyone with access.</div>' +
               '</div>' +
               '<button class="btn btn-primary" data-act="access-save" type="button" style="font-size:12px;min-height:32px;">Save access</button> ' +
@@ -1049,6 +1069,13 @@
         rowsEl.querySelectorAll('button[data-act=access-cancel]').forEach(function (b) {
           b.addEventListener('click', function (ev) { ev.stopPropagation(); accessEditRealm = null; renderTable(); });
         });
+        rowsEl.querySelectorAll('input[data-appurl]').forEach(function (inp) {
+          // Enter saves; also stop the row's drill-in handler from ever seeing these keys.
+          inp.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); var sv = inp.closest('tr').querySelector('button[data-act=access-save]'); if (sv) sv.click(); }
+          });
+          inp.addEventListener('click', function (e) { e.stopPropagation(); });
+        });
         rowsEl.querySelectorAll('button[data-act=access-save]').forEach(function (b) {
           b.addEventListener('click', function (ev) {
             ev.stopPropagation();
@@ -1058,9 +1085,15 @@
             if (mode === 'all') upns = [];
             else if (mode === 'specific') { upns = []; editorTr.querySelectorAll('input[data-upn]:checked').forEach(function (i) { upns.push(i.getAttribute('data-upn')); }); if (!upns.length) upns = [ADMIN_ONLY_UPN]; }
             else upns = [ADMIN_ONLY_UPN];
-            var appUrl = (editorTr.querySelector('input[data-appurl]') || {}).value || '';
+            // Send clientAppUrl ONLY if this admin actually edited the field. Comparing
+            // against defaultValue (the rendered value= attribute) matters: a tab left
+            // open for hours holds a stale snapshot, and blindly sending it would wipe a
+            // URL a different admin set in the meantime.
+            var appIn = editorTr.querySelector('input[data-appurl]');
+            var patch = { allowedUserUpns: upns };
+            if (appIn && normAppUrl(appIn.value) !== normAppUrl(appIn.defaultValue)) patch.clientAppUrl = normAppUrl(appIn.value);
             accessEditRealm = null;
-            updateCompany(realm, { allowedUserUpns: upns, clientAppUrl: appUrl.trim() });
+            updateCompany(realm, patch).then(function (ok) { if (ok && window.bccNotifySaved) window.bccNotifySaved('Access updated.'); });
           });
         });
       }
@@ -2783,8 +2816,18 @@
     var wsAppLink = document.getElementById('wsClientAppLink');
     if (wsAppLink) {
       var wsCo = companies.filter(function (x) { return x.realmId === currentRealm; })[0];
-      if (wsCo && wsCo.clientAppUrl) { wsAppLink.href = wsCo.clientAppUrl; wsAppLink.style.display = ''; }
-      else wsAppLink.style.display = 'none';
+      var wsUrl = (wsCo && wsCo.clientAppUrl) || '';
+      // Only ever emit an http(s) href (the server validates on write; this is the
+      // second gate, since this becomes a live link for everyone with access).
+      if (/^https?:\/\//i.test(wsUrl)) {
+        wsAppLink.href = wsUrl;
+        wsAppLink.title = wsUrl;  // hover shows exactly where it goes — a typo'd URL is otherwise invisible
+        // Name the client and say it leaves the app: this link looks identical to the
+        // in-app buttons beside it, and screen readers would otherwise read every
+        // client's link the same way.
+        wsAppLink.setAttribute('aria-label', 'Open ' + companyName(currentRealm) + '’s own app (opens in a new tab)');
+        wsAppLink.style.display = '';
+      } else { wsAppLink.removeAttribute('href'); wsAppLink.removeAttribute('title'); wsAppLink.style.display = 'none'; }
     }
     updateWsNav();
     // Refresh the unread-email badge when landing on a client (background, cached).
@@ -3883,20 +3926,25 @@
       '<div style="font-size:12px;color:var(--muted);margin-bottom:12px;">Admins always see every client. New clients start as <strong>Admins only</strong>.</div>' +
       '<div style="margin-bottom:14px;max-width:420px;">' +
         '<label style="display:block;font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Client&rsquo;s own app (optional)</label>' +
-        '<input type="url" id="acc_appurl" value="' + esc(co.clientAppUrl || '') + '" placeholder="https://connect.example.com" style="width:100%;box-sizing:border-box;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;padding:8px 10px;font:inherit;font-size:13.5px;" />' +
+        '<input type="url" id="acc_appurl" maxlength="500" value="' + esc(co.clientAppUrl || '') + '" placeholder="https://connect.example.com" style="width:100%;box-sizing:border-box;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;padding:8px 10px;font:inherit;font-size:13.5px;" />' +
         '<div style="font-size:11.5px;color:var(--muted);margin-top:4px;">If we built ' + esc(companyName(currentRealm)) + ' their own separate app, link it here — a &ldquo;🔗 Open client&rsquo;s app&rdquo; button appears in their workspace for anyone with access.</div>' +
       '</div>' +
       '<button class="btn btn-primary" id="acc_save" type="button">Save access</button>';
     body.querySelectorAll('input[name=accmode2]').forEach(function (rb) { rb.addEventListener('change', function () { var u = document.getElementById('acc_users'); if (u) u.style.display = (rb.value === 'specific') ? '' : 'none'; }); });
+    // Enter saves, matching every other single-field editor in the app.
+    var accUrlIn = document.getElementById('acc_appurl');
+    if (accUrlIn) accUrlIn.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); document.getElementById('acc_save').click(); } });
     document.getElementById('acc_save').onclick = function () {
       var m = (body.querySelector('input[name=accmode2]:checked') || {}).value || 'admin';
       var upns;
       if (m === 'all') upns = [];
       else if (m === 'specific') { upns = []; body.querySelectorAll('input[data-acc]:checked').forEach(function (i) { upns.push(i.getAttribute('data-acc')); }); if (!upns.length) upns = [ADMIN_ONLY_UPN]; }
       else upns = [ADMIN_ONLY_UPN];
-      var appUrl2 = (document.getElementById('acc_appurl') || {}).value || '';
-      updateCompany(currentRealm, { allowedUserUpns: upns, enabled: document.getElementById('acc_enabled').checked, clientAppUrl: appUrl2.trim() });
-      if (window.bccNotifySaved) window.bccNotifySaved('Access updated.');
+      var patch2 = { allowedUserUpns: upns, enabled: document.getElementById('acc_enabled').checked };
+      // Same stale-snapshot rule as the inline editor: only send the URL if it was edited.
+      var appIn2 = document.getElementById('acc_appurl');
+      if (appIn2 && normAppUrl(appIn2.value) !== normAppUrl(appIn2.defaultValue)) patch2.clientAppUrl = normAppUrl(appIn2.value);
+      updateCompany(currentRealm, patch2).then(function (ok) { if (ok && window.bccNotifySaved) window.bccNotifySaved('Access updated.'); });
     };
   }
 
@@ -6068,7 +6116,13 @@
   }
   // localStorage→Cosmos sync can land after init; re-render the data views (not the company list).
   window.addEventListener('bcc-data-ready', function (ev) {
-    renderKpis(); renderTable(); // root work queue (to-do counts) + period views
+    renderKpis();
+    // renderTable() rebuilds rowsEl.innerHTML, which would destroy an OPEN inline access
+    // editor mid-edit — resetting the radio/checkboxes and any typed URL to the values it
+    // was rendered with. The admin wouldn't notice and would then click "Save access",
+    // persisting the reverted config. Skip the repaint while that editor is open.
+    var editorOpen = !!(accessEditRealm && rowsEl && rowsEl.querySelector('[data-editor]'));
+    if (!editorOpen) renderTable(); // root work queue (to-do counts) + period views
     // Live cross-device changes: refresh what's on screen — but NEVER clobber
     // something the user is in the middle of (an open editor or typed text).
     if (!(ev && ev.detail && ev.detail.live) || !currentRealm) return;
