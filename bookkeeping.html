@@ -411,6 +411,7 @@
       <button class="btn btn-ghost" id="wsBack" type="button">← Clients</button>
       <button class="btn btn-ghost ws-menu-btn" id="wsMenuBtn" type="button" aria-label="Open section menu">☰ <strong id="wsSectionName">Overview</strong></button>
       <span class="ws-client"><strong id="wsClientName"></strong></span>
+      <a class="btn btn-ghost" id="wsClientAppLink" href="#" target="_blank" rel="noopener" style="display:none;text-decoration:none;">🔗 Open client&rsquo;s app</a>
       <nav class="ws-crumb" id="wsCrumb" aria-label="Breadcrumb"></nav>
     </div>
   </div>
@@ -1013,6 +1014,11 @@
               '<div style="margin-bottom:10px;">' + radio('admin', 'Admins only') + radio('all', 'Everyone') + radio('specific', 'Specific users') + '</div>' +
               '<div data-accusers style="margin-bottom:8px;' + (mode === 'specific' ? '' : 'display:none;') + '">' + checks + '</div>' +
               '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Admins always see every company. New companies start as <strong>Admins only</strong>.</div>' +
+              '<div style="margin-bottom:10px;">' +
+                '<label style="display:block;font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Client&rsquo;s own app (optional)</label>' +
+                '<input type="url" data-appurl value="' + esc(c.clientAppUrl || '') + '" placeholder="https://connect.example.com" style="width:100%;max-width:380px;box-sizing:border-box;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;padding:7px 10px;font:inherit;font-size:13px;" />' +
+                '<div style="font-size:11.5px;color:var(--muted);margin-top:4px;">If we built ' + esc(c.companyName || 'this client') + ' their own separate app, link it here — a button appears in their workspace for anyone with access.</div>' +
+              '</div>' +
               '<button class="btn btn-primary" data-act="access-save" type="button" style="font-size:12px;min-height:32px;">Save access</button> ' +
               '<button class="btn btn-ghost" data-act="access-cancel" type="button" style="font-size:12px;min-height:32px;">Cancel</button>' +
             '</div></td></tr>';
@@ -1052,8 +1058,9 @@
             if (mode === 'all') upns = [];
             else if (mode === 'specific') { upns = []; editorTr.querySelectorAll('input[data-upn]:checked').forEach(function (i) { upns.push(i.getAttribute('data-upn')); }); if (!upns.length) upns = [ADMIN_ONLY_UPN]; }
             else upns = [ADMIN_ONLY_UPN];
+            var appUrl = (editorTr.querySelector('input[data-appurl]') || {}).value || '';
             accessEditRealm = null;
-            updateCompany(realm, { allowedUserUpns: upns });
+            updateCompany(realm, { allowedUserUpns: upns, clientAppUrl: appUrl.trim() });
           });
         });
       }
@@ -2773,6 +2780,12 @@
     if (!currentRealm) { hideAllSections(); return; }
     document.getElementById('wsClientName').textContent = companyName(currentRealm);
     document.getElementById('wsSectionName').textContent = sectionLabel(currentTab);
+    var wsAppLink = document.getElementById('wsClientAppLink');
+    if (wsAppLink) {
+      var wsCo = companies.filter(function (x) { return x.realmId === currentRealm; })[0];
+      if (wsCo && wsCo.clientAppUrl) { wsAppLink.href = wsCo.clientAppUrl; wsAppLink.style.display = ''; }
+      else wsAppLink.style.display = 'none';
+    }
     updateWsNav();
     // Refresh the unread-email badge when landing on a client (background, cached).
     if (newRealm) loadUnreadEmail(currentRealm);
@@ -3868,6 +3881,11 @@
       '<div style="margin-bottom:10px;">' + radio('admin', 'Admins only') + radio('all', 'Everyone') + radio('specific', 'Specific users') + '</div>' +
       '<div id="acc_users" style="margin-bottom:8px;' + (mode === 'specific' ? '' : 'display:none;') + '">' + checks + '</div>' +
       '<div style="font-size:12px;color:var(--muted);margin-bottom:12px;">Admins always see every client. New clients start as <strong>Admins only</strong>.</div>' +
+      '<div style="margin-bottom:14px;max-width:420px;">' +
+        '<label style="display:block;font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Client&rsquo;s own app (optional)</label>' +
+        '<input type="url" id="acc_appurl" value="' + esc(co.clientAppUrl || '') + '" placeholder="https://connect.example.com" style="width:100%;box-sizing:border-box;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;padding:8px 10px;font:inherit;font-size:13.5px;" />' +
+        '<div style="font-size:11.5px;color:var(--muted);margin-top:4px;">If we built ' + esc(companyName(currentRealm)) + ' their own separate app, link it here — a &ldquo;🔗 Open client&rsquo;s app&rdquo; button appears in their workspace for anyone with access.</div>' +
+      '</div>' +
       '<button class="btn btn-primary" id="acc_save" type="button">Save access</button>';
     body.querySelectorAll('input[name=accmode2]').forEach(function (rb) { rb.addEventListener('change', function () { var u = document.getElementById('acc_users'); if (u) u.style.display = (rb.value === 'specific') ? '' : 'none'; }); });
     document.getElementById('acc_save').onclick = function () {
@@ -3876,7 +3894,8 @@
       if (m === 'all') upns = [];
       else if (m === 'specific') { upns = []; body.querySelectorAll('input[data-acc]:checked').forEach(function (i) { upns.push(i.getAttribute('data-acc')); }); if (!upns.length) upns = [ADMIN_ONLY_UPN]; }
       else upns = [ADMIN_ONLY_UPN];
-      updateCompany(currentRealm, { allowedUserUpns: upns, enabled: document.getElementById('acc_enabled').checked });
+      var appUrl2 = (document.getElementById('acc_appurl') || {}).value || '';
+      updateCompany(currentRealm, { allowedUserUpns: upns, enabled: document.getElementById('acc_enabled').checked, clientAppUrl: appUrl2.trim() });
       if (window.bccNotifySaved) window.bccNotifySaved('Access updated.');
     };
   }

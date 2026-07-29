@@ -3902,6 +3902,7 @@ app.http('qbo-companies', {
         allowedUserUpns: Array.isArray(co.allowedUserUpns) ? co.allowedUserUpns : [],
         privateToUpn: co.privateToUpn || null,
         isOwnBooks: !!co.isOwnBooks,
+        clientAppUrl: co.clientAppUrl || '',
         latest: latestByRealm[co.realmId] || null
       }));
       if (!admin) {
@@ -3999,9 +4000,18 @@ app.http('qbo-company-update', {
       }
       if (typeof body.enabled === 'boolean') doc.enabled = body.enabled;
       if (Array.isArray(body.allowedUserUpns)) doc.allowedUserUpns = body.allowedUserUpns.map(s => String(s).toLowerCase()).filter(Boolean);
+      // Link to the client's OWN separate app (e.g. a bespoke Static Web App we built
+      // for them) shown as a button in their workspace. http(s) only -- this becomes an
+      // anchor href, so reject anything else (javascript:, data:, etc.) up front.
+      if (typeof body.clientAppUrl === 'string') {
+        const u = body.clientAppUrl.trim().slice(0, 500);
+        if (!u) doc.clientAppUrl = '';
+        else if (/^https?:\/\//i.test(u)) doc.clientAppUrl = u;
+        else return { status: 400, jsonBody: { error: 'clientAppUrl must start with http:// or https://' } };
+      }
       doc.updatedAt = new Date().toISOString();
       await c.items.upsert(doc);
-      return { jsonBody: { ok: true, realmId, enabled: doc.enabled !== false, allowedUserUpns: doc.allowedUserUpns || [], privateToUpn: doc.privateToUpn || null, isOwnBooks: !!doc.isOwnBooks } };
+      return { jsonBody: { ok: true, realmId, enabled: doc.enabled !== false, allowedUserUpns: doc.allowedUserUpns || [], privateToUpn: doc.privateToUpn || null, isOwnBooks: !!doc.isOwnBooks, clientAppUrl: doc.clientAppUrl || '' } };
     } catch (e) {
       context.error('qbo-company-update error', e);
       return { status: 500, jsonBody: { error: String(e.message || e) } };
