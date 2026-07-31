@@ -175,6 +175,13 @@
       // The generic /api/data store has no per-client access gate, so keep it device-local
       // (never pushed) rather than expose one client's payroll contacts tenant-wide.
       if (key.indexOf('bcc-cpr-sends-') === 0) return;
+      // Sent-client-email records hold the recipient list, subject and full body
+      // (now including the sender's personal signature). Same reasoning as
+      // bcc-cpr-sends- above: /api/data has no per-client gate, so keep them
+      // device-local instead of shipping one client's correspondence — and one
+      // person's sign-off — to every signed-in user. The durable audit trail is
+      // the 'client-email-send' audit event, not this record.
+      if (key.indexOf('bcc-email-') === 0) return;
       pending.set(key, value);
       schedulePush();
       // Admin user list / status changed → re-filter bccPeople immediately so
@@ -193,6 +200,7 @@
     if (this === window.localStorage && signedIn && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0) {
       if (key.indexOf('bcc-financial-period-') === 0) return; // server-owned (see setItem)
       if (key.indexOf('bcc-cpr-sends-') === 0) return; // device-local (see setItem)
+      if (key.indexOf('bcc-email-') === 0) return;     // device-local (see setItem)
       pending.set(key, null); // null marks deletion
       schedulePush();
     }
@@ -231,6 +239,7 @@
 
     setSyncState('pushing');
     var putStatus = 0;
+    var putRefused = false;
     try {
       if (puts.length) {
         const r = await fetch(API_BASE + '/data', {
@@ -250,13 +259,19 @@
                 detail: { key: p.key, status: r.status }
               }));
             });
-            setSyncState('error');
-            return;
+            // Deliberately NOT returning here. The server validates a PUT batch
+            // all-or-nothing, so one refused key 4xxs the whole array — but the
+            // queued DELETEs are a separate per-item request loop below and have
+            // nothing to do with it. Returning early skipped them silently: the
+            // row was already gone locally, so the UI looked right while the
+            // server copy survived and reappeared on the next pull.
+            putRefused = true;
+          } else {
+            throw new Error('PUT failed ' + r.status);
           }
-          throw new Error('PUT failed ' + r.status);
         }
         // Audit: one entry per batch flush, listing the keys touched
-        window.bccAudit && window.bccAudit('data-write', { meta: { keys: puts.map(function (p) { return p.key; }) } });
+        if (!putRefused) window.bccAudit && window.bccAudit('data-write', { meta: { keys: puts.map(function (p) { return p.key; }) } });
       }
       for (var i = 0; i < deletes.length; i++) {
         var dr = await fetch(API_BASE + '/data/' + encodeURIComponent(deletes[i]), { method: 'DELETE' });
@@ -266,7 +281,7 @@
         }
         window.bccAudit && window.bccAudit('data-delete', { key: deletes[i] });
       }
-      setSyncState('idle');
+      setSyncState(putRefused ? 'error' : 'idle');
     } catch (err) {
       console.warn('[bcc-api] push failed (transient), re-queuing in 5s:', err);
       // Only re-queue items that aren't permanently failed
@@ -726,6 +741,28 @@
       } catch (e) {
         console.warn('[bcc-api] initial pull failed', e);
       }
+
+      // 2b) One-time purge of OTHER people's email signatures.
+      // These are per-user docs, but before they were owner-scoped server-side
+      // the bulk pull shipped everyone's copy to everyone, so they're sitting in
+      // browsers that synced during that window. They're never read (the app
+      // only ever reads your own key) — this just clears the stragglers.
+      // _origRemoveItem, NOT removeItem: the hooked version would queue a DELETE
+      // for a doc this user doesn't own, which the server now rejects — and a
+      // refused key poisons the whole push batch.
+      try {
+        if (user && user.userDetails && !localStorage.getItem('bcc-sigpurge-v1')) {
+          var mineSig = 'bcc-emailsig-' + String(user.userDetails).toLowerCase().replace(/[^a-z0-9]+/g, '-');
+          var stale = [];
+          for (var si = 0; si < localStorage.length; si++) {
+            var sk = localStorage.key(si);
+            if (sk && sk.indexOf('bcc-emailsig-') === 0 && sk !== mineSig) stale.push(sk);
+          }
+          stale.forEach(function (k) { _origRemoveItem.call(localStorage, k); });
+          if (stale.length) console.info('[bcc-api] cleared ' + stale.length + " cached signature(s) belonging to other users");
+          _origSetItem.call(localStorage, 'bcc-sigpurge-v1', String(Date.now()));
+        }
+      } catch (e) {}
 
       // 3) Auto-populate bcc-field-who from the signed-in identity if not set
       if (user && user.userDetails && !localStorage.getItem('bcc-field-who')) {

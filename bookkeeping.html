@@ -3967,6 +3967,17 @@
   function emSigKey() { return 'bcc-emailsig-' + (myUpn().replace(/[^a-z0-9]+/g, '-') || 'x'); }
   function getSig() { try { var d = JSON.parse(localStorage.getItem(emSigKey()) || 'null'); return (d && d.sig) || ''; } catch (e) { return ''; } }
   function setSig(sig) { try { localStorage.setItem(emSigKey(), JSON.stringify({ sig: sig, upn: myUpn(), updatedAt: nowIso() })); } catch (e) {} }
+  // Signature as it seeds a blank message body — leading blank lines so the
+  // cursor starts above it. Empty (not two stray newlines) when unset.
+  function sigBlock() { var s = getSig(); return s ? ('\n\n' + s) : ''; }
+  // Seed a message box and record EXACTLY what we put there, so we can later
+  // tell "untouched" from "the user typed something".
+  // Assigning .value rather than baking the text into the markup is load-bearing:
+  // the HTML parser drops a newline immediately after a <textarea> start tag, so
+  // a markup-seeded box comes back one character short of sigBlock() and every
+  // later equality check against it silently fails.
+  function seedSig(el) { if (!el) return; el.value = sigBlock(); el.dataset.sigSeed = el.value; }
+  function sigUntouched(el) { return !!el && el.value === (el.dataset.sigSeed || ''); }
   function emPeople() { return (window.bccFilterActive ? window.bccFilterActive(window.bccPeopleFull) : (window.bccPeopleFull || [])).map(function (p) { return { upn: (p.upn || p.mail || '').toLowerCase(), name: p.displayName || p.upn || p.mail }; }).filter(function (p) { return p.upn; }); }
   function emName(upn) { return (window.bccDisplayName && window.bccDisplayName(upn)) || upn || ''; }
   function emInitials(upn) { var n = emName(upn) || upn || ''; var parts = n.replace(/@.*/, '').split(/[.\s_-]+/).filter(Boolean); return ((parts[0] || '').charAt(0) + (parts[1] || '').charAt(0)).toUpperCase() || (upn || '?').charAt(0).toUpperCase(); }
@@ -3984,7 +3995,7 @@
           '<label class="full">CC (optional)<input id="em_cc" autocomplete="off" placeholder="cc@example.com" /></label>' +
           '<label class="full">Subject<input id="em_subject" autocomplete="off" /></label>' +
           '<label class="full">Message<textarea id="em_body" rows="7"></textarea></label>' +
-          '<div class="full" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><button class="btn btn-primary" id="em_send" type="button">Send email</button><button class="btn btn-ghost" id="em_sig" type="button">✎ My signature</button><span id="em_status" style="font-size:12px;color:var(--muted);"></span></div>' +
+          '<div class="full" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><button class="btn btn-primary" id="em_send" type="button">Send email</button><button class="btn btn-ghost" id="em_sig" type="button" title="Your own sign-off. Only you use it — it never appears on anyone else&rsquo;s emails.">✎ My signature</button><span id="em_status" style="font-size:12px;color:var(--muted);"></span></div>' +
         '</div>' +
       '</details>' +
       '<div class="em-toolbar">' +
@@ -3994,6 +4005,7 @@
         '<span id="em_count" class="fl-count"></span>' +
       '</div>' +
       '<div id="em_list"><div style="color:var(--muted);">Loading mail…</div></div>';
+    seedSig(document.getElementById('em_body'));
     document.getElementById('em_send').onclick = sendClientEmail;
     document.getElementById('em_sig').onclick = openSigEditor;
     document.getElementById('em_refresh').onclick = function () { loadInbox(true); };
@@ -4191,12 +4203,11 @@
   }
   function openReply(id, replyAll) {
     var box = document.getElementById('em_m_reply'); if (!box) return;
-    var sig = getSig();
     box.innerHTML = '<div class="em-reply"><div style="font-weight:700;font-size:12.5px;margin-bottom:6px;">' + (replyAll ? 'Reply all' : 'Reply') + '</div>' +
-      '<textarea id="em_r_body" rows="6" placeholder="Write your reply…">' + (sig ? ('\n\n' + esc(sig)) : '') + '</textarea>' +
+      '<textarea id="em_r_body" rows="6" placeholder="Write your reply…"></textarea>' +
       '<div style="display:flex;gap:8px;align-items:center;margin-top:8px;"><button class="btn btn-primary" id="em_r_send" type="button">Send reply</button><button class="btn btn-ghost" id="em_r_cancel" type="button">Cancel</button><span id="em_r_status" style="font-size:12px;color:var(--muted);"></span></div></div>';
     document.getElementById('em_r_cancel').onclick = function () { box.innerHTML = ''; };
-    var ta = document.getElementById('em_r_body'); ta.focus(); ta.setSelectionRange(0, 0);
+    var ta = document.getElementById('em_r_body'); seedSig(ta); ta.focus(); ta.setSelectionRange(0, 0);
     document.getElementById('em_r_send').onclick = function () {
       var btn = this, txt = document.getElementById('em_r_body').value, st = document.getElementById('em_r_status');
       btn.disabled = true; st.textContent = 'Sending…';
@@ -4217,21 +4228,39 @@
   function openSigEditor() {
     var ov = document.createElement('div'); ov.id = 'em_modal'; ov.className = 'em-modal-ov';
     ov.innerHTML = '<div class="em-modal" style="max-width:560px;"><div class="em-modal-head"><div class="em-modal-subj">My email signature</div><button class="btn btn-ghost" id="sig_close" type="button" style="font-size:18px;min-height:34px;width:38px;">×</button></div>' +
-      '<div style="padding:16px;"><div style="font-size:12.5px;color:var(--muted);margin-bottom:8px;">Appended to your emails &amp; replies (just for you).</div>' +
-      '<textarea id="sig_body" rows="6" style="width:100%;border:1px solid var(--chrome-mute);border-radius:8px;padding:10px;font:inherit;font-size:14px;">' + esc(getSig()) + '</textarea>' +
+      '<div style="padding:16px;"><div style="font-size:12.5px;color:var(--muted);margin-bottom:8px;">' +
+        '<strong>This is yours alone.</strong> It&rsquo;s saved to your own account (' + esc(myUpn()) + ') and drops into the message box when <em>you</em> write or reply. Teammates have their own — yours never appears on their emails, and theirs never appears on yours.' +
+      '</div>' +
+      '<textarea id="sig_body" rows="6" placeholder="Thanks,&#10;Your name&#10;320-555-0100" style="width:100%;border:1px solid var(--chrome-mute);border-radius:8px;padding:10px;font:inherit;font-size:14px;">' + esc(getSig()) + '</textarea>' +
       '<div style="margin-top:10px;"><button class="btn btn-primary" id="sig_save" type="button">Save signature</button> <span id="sig_status" style="font-size:12px;color:var(--muted);"></span></div></div></div>';
     emWireModal(ov);
     document.getElementById('sig_close').onclick = emCloseModal;
-    document.getElementById('sig_save').onclick = function () { setSig(document.getElementById('sig_body').value); var s = document.getElementById('sig_status'); if (s) s.textContent = 'Saved'; if (window.bccNotifySaved) window.bccNotifySaved('Signature saved.'); };
+    document.getElementById('sig_save').onclick = function () {
+      setSig(document.getElementById('sig_body').value);
+      // Re-seed any message box the user hasn't started writing in, so the new
+      // signature shows immediately. A box with real content is a draft — leave
+      // it alone (same as Gmail/Outlook: changing your signature doesn't rewrite
+      // an open draft) and say so, rather than silently doing nothing.
+      var boxes = [document.getElementById('em_body'), document.getElementById('em_r_body')].filter(Boolean);
+      var drafting = false;
+      boxes.forEach(function (el) { if (sigUntouched(el)) seedSig(el); else drafting = true; });
+      var s = document.getElementById('sig_status'); if (s) s.textContent = 'Saved';
+      if (window.bccNotifySaved) {
+        window.bccNotifySaved(drafting
+          ? 'Signature saved — only you use it. Your message in progress still has the old one; edit it there if you need to.'
+          : 'Signature saved — only you use it.');
+      }
+    };
   }
 
   function sendClientEmail() {
     var to = parseAddrs(document.getElementById('em_to').value); if (!to.length) { (window.bccNotify || alert)('Add at least one valid recipient.', 'warn'); return; }
     var cc = parseAddrs(document.getElementById('em_cc').value);
     var subject = document.getElementById('em_subject').value.trim() || '(no subject)';
+    // The signature is prefilled into the compose box (same as Reply), so what
+    // you see is what goes out — do NOT append it again here or it sends twice.
     var bodyText = document.getElementById('em_body').value;
-    var sig = getSig(); var full = bodyText + (sig ? ('\n\n' + sig) : '');
-    var html = esc(full).replace(/\n/g, '<br>');
+    var html = esc(bodyText).replace(/\n/g, '<br>');
     var btn = document.getElementById('em_send'), st = document.getElementById('em_status'); var ot = btn.textContent; btn.disabled = true; btn.textContent = 'Sending…'; st.textContent = '';
     var payload = { to: to, subject: subject, bodyHtml: html }; if (cc.length) payload.cc = cc;
     var usingMailbox = mailboxActive(); if (usingMailbox) payload.realmId = currentRealm;
@@ -4244,7 +4273,8 @@
         if (window.bccAudit) window.bccAudit('client-email-send', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm, recipients: to.length } });
         if (window.bccNotifySaved) window.bccNotifySaved('Email sent.');
         btn.disabled = false; btn.textContent = ot;
-        document.getElementById('em_subject').value = ''; document.getElementById('em_body').value = '';
+        // Re-seed the signature so the next compose starts the same way.
+        document.getElementById('em_subject').value = ''; seedSig(document.getElementById('em_body'));
         var comp = document.getElementById('em_compose'); if (comp) comp.open = false;
         setTimeout(function () { loadInbox(true); }, 1500);
       })
@@ -6125,6 +6155,11 @@
     if (!editorOpen) renderTable(); // root work queue (to-do counts) + period views
     // Live cross-device changes: refresh what's on screen — but NEVER clobber
     // something the user is in the middle of (an open editor or typed text).
+    // The signature can arrive AFTER the compose box rendered (first load on a
+    // new device, or edited on another device). Re-seed any box the user hasn't
+    // typed in, so a late signature can't result in an unsigned email.
+    [document.getElementById('em_body'), document.getElementById('em_r_body')]
+      .forEach(function (el) { if (el && el !== document.activeElement && sigUntouched(el)) seedSig(el); });
     if (!(ev && ev.detail && ev.detail.live) || !currentRealm) return;
     if (typeof updateDrawer === 'function') updateDrawer();
     var ae = document.activeElement;

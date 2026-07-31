@@ -338,12 +338,17 @@ app.http('data', {
     const personalOwner = (id, data) => {
       if (/^bcc-mytasks-/.test(id)) return String((data && data.upn) || '').toLowerCase();
       if (/^bcc-daily-log-/.test(id)) return String((data && data.userUpn) || '').toLowerCase();
+      if (/^bcc-emailsig-/.test(id)) return String((data && data.upn) || '').toLowerCase();
       return undefined;
     };
     // True if `me` is allowed to write/delete this personal key (by key shape).
     const ownsPersonalKey = (id) => {
       if (/^bcc-mytasks-/.test(id)) return id === 'bcc-mytasks-' + saniTaskKey(me);
       if (/^bcc-daily-log-/.test(id)) return id.toLowerCase().startsWith('bcc-daily-log-' + me + '-');
+      // Email signature: your own only. Must mirror the CLIENT's key transform
+      // byte-for-byte (bookkeeping.html emSigKey) — saniTaskKey also trims and
+      // truncates, so reusing it here would reject long or edge-shaped UPNs.
+      if (/^bcc-emailsig-/.test(id)) return id === 'bcc-emailsig-' + me.replace(/[^a-z0-9]+/g, '-');
       return true; // not a personal key → not restricted here
     };
 
@@ -354,7 +359,7 @@ app.http('data', {
           // These are access-scoped / server-owned — never serve them by direct
           // key (financials, per-user notifications, feedback have their own APIs).
           if (/^bcc-(financial-period|usernotif|feedback|errorlog|bkentry|report|cpr-sends)-/.test(String(key))) return { jsonBody: { key, data: null } };
-          // Personal docs (tasks, daily time log) — only the owner may read.
+          // Personal docs (tasks, daily time log, email signature) — owner only.
           if (!ownsPersonalKey(key)) return { jsonBody: { key, data: null } };
           // Integration docs hold OAuth client secrets / tokens — redact for non-admins.
           const keyRedact = key.startsWith('bcc-integration-') && !(await isAppAdmin(p));
@@ -380,10 +385,11 @@ app.http('data', {
           // financial-period is excluded by ID PREFIX (not docType) — legacy docs
           // pushed via /api/data nest docType under .data, so a docType filter
           // would miss them and leak client books. Served only via qbo-periods.
-          // Personal per-user docs (My tasks, My Day time log) are owner-scoped:
-          // only the caller's own rows come back, so one person's tasks/hours are
-          // never shipped to another signed-in user.
-          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND NOT STARTSWITH(c.id, "bcc-bkentry-") AND NOT STARTSWITH(c.id, "bcc-report-") AND NOT STARTSWITH(c.id, "bcc-cpr-sends-") AND (NOT STARTSWITH(c.id, "bcc-mytasks-") OR LOWER(c.data.upn) = @me) AND (NOT STARTSWITH(c.id, "bcc-daily-log-") OR LOWER(c.data.userUpn) = @me) AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "bk-entry" AND c.docType != "monthly-report" AND c.docType != "client-drive"))' + (sinceOk ? ' AND c.updatedAt > @since' : ''),
+          // Personal per-user docs (My tasks, My Day time log, email signature)
+          // are owner-scoped: only the caller's own rows come back, so one
+          // person's tasks/hours/signature are never shipped to another
+          // signed-in user.
+          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND NOT STARTSWITH(c.id, "bcc-bkentry-") AND NOT STARTSWITH(c.id, "bcc-report-") AND NOT STARTSWITH(c.id, "bcc-cpr-sends-") AND (NOT STARTSWITH(c.id, "bcc-mytasks-") OR LOWER(c.data.upn) = @me) AND (NOT STARTSWITH(c.id, "bcc-daily-log-") OR LOWER(c.data.userUpn) = @me) AND (NOT STARTSWITH(c.id, "bcc-emailsig-") OR LOWER(c.data.upn) = @me) AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "bk-entry" AND c.docType != "monthly-report" AND c.docType != "client-drive"))' + (sinceOk ? ' AND c.updatedAt > @since' : ''),
           parameters: sinceOk
             ? [{ name: '@t', value: BCC_TENANT_ID }, { name: '@me', value: me }, { name: '@since', value: sinceD }]
             : [{ name: '@t', value: BCC_TENANT_ID }, { name: '@me', value: me }]
