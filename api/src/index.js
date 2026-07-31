@@ -358,7 +358,12 @@ app.http('data', {
           if (!isPcKey(key)) return badRequest('invalid key');
           // These are access-scoped / server-owned — never serve them by direct
           // key (financials, per-user notifications, feedback have their own APIs).
-          if (/^bcc-(financial-period|usernotif|feedback|errorlog|bkentry|report|cpr-sends)-/.test(String(key))) return { jsonBody: { key, data: null } };
+          // bcc-email- = sent client correspondence (recipients + body). Device-
+          // local like cpr-sends: /api/data has no per-client gate, so serving it
+          // would show one client's contacts to a bookkeeper who can't see that
+          // client. Note the prefix deliberately does NOT catch bcc-emailsig- or
+          // bcc-emailmeta-, which must keep syncing.
+          if (/^bcc-(financial-period|usernotif|feedback|errorlog|bkentry|report|cpr-sends|email)-/.test(String(key))) return { jsonBody: { key, data: null } };
           // Personal docs (tasks, daily time log, email signature) — owner only.
           if (!ownsPersonalKey(key)) return { jsonBody: { key, data: null } };
           // Integration docs hold OAuth client secrets / tokens — redact for non-admins.
@@ -389,7 +394,7 @@ app.http('data', {
           // are owner-scoped: only the caller's own rows come back, so one
           // person's tasks/hours/signature are never shipped to another
           // signed-in user.
-          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND NOT STARTSWITH(c.id, "bcc-bkentry-") AND NOT STARTSWITH(c.id, "bcc-report-") AND NOT STARTSWITH(c.id, "bcc-cpr-sends-") AND (NOT STARTSWITH(c.id, "bcc-mytasks-") OR LOWER(c.data.upn) = @me) AND (NOT STARTSWITH(c.id, "bcc-daily-log-") OR LOWER(c.data.userUpn) = @me) AND (NOT STARTSWITH(c.id, "bcc-emailsig-") OR LOWER(c.data.upn) = @me) AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "bk-entry" AND c.docType != "monthly-report" AND c.docType != "client-drive"))' + (sinceOk ? ' AND c.updatedAt > @since' : ''),
+          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND NOT STARTSWITH(c.id, "bcc-bkentry-") AND NOT STARTSWITH(c.id, "bcc-report-") AND NOT STARTSWITH(c.id, "bcc-cpr-sends-") AND NOT STARTSWITH(c.id, "bcc-email-") AND (NOT STARTSWITH(c.id, "bcc-mytasks-") OR LOWER(c.data.upn) = @me) AND (NOT STARTSWITH(c.id, "bcc-daily-log-") OR LOWER(c.data.userUpn) = @me) AND (NOT STARTSWITH(c.id, "bcc-emailsig-") OR LOWER(c.data.upn) = @me) AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "bk-entry" AND c.docType != "monthly-report" AND c.docType != "client-drive"))' + (sinceOk ? ' AND c.updatedAt > @since' : ''),
           parameters: sinceOk
             ? [{ name: '@t', value: BCC_TENANT_ID }, { name: '@me', value: me }, { name: '@since', value: sinceD }]
             : [{ name: '@t', value: BCC_TENANT_ID }, { name: '@me', value: me }]
