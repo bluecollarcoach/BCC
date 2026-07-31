@@ -3982,6 +3982,39 @@
   function emName(upn) { return (window.bccDisplayName && window.bccDisplayName(upn)) || upn || ''; }
   function emInitials(upn) { var n = emName(upn) || upn || ''; var parts = n.replace(/@.*/, '').split(/[.\s_-]+/).filter(Boolean); return ((parts[0] || '').charAt(0) + (parts[1] || '').charAt(0)).toUpperCase() || (upn || '?').charAt(0).toUpperCase(); }
   function metaFor(id) { return _emMeta[id] || { tags: [], assignedTo: '', archived: false, readBy: {}, repliedBy: [] }; }
+  // Files staged for the NEW-email compose box. Reply has no attachment support —
+  // Graph's reply/replyAll action only takes a plain comment, no attachments;
+  // doing it properly needs create-reply-draft + PATCH attachments + send, a
+  // separate piece of work.
+  var _emAttachments = [];
+  var EM_ATT_MAX_TOTAL = 3 * 1024 * 1024; // mirrors the server's cap (msgraph-send-mail)
+  function emAttTotalBytes() { return _emAttachments.reduce(function (s, f) { return s + f.size; }, 0); }
+  function emFmtBytes(n) { return n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB'; }
+  function renderEmAttachments() {
+    var el = document.getElementById('em_file_list'); if (!el) return;
+    if (!_emAttachments.length) { el.innerHTML = ''; return; }
+    var total = emAttTotalBytes();
+    var over = total > EM_ATT_MAX_TOTAL;
+    el.innerHTML = _emAttachments.map(function (f, i) {
+      return '<div style="display:inline-flex;align-items:center;gap:4px;background:var(--chrome);border-radius:6px;padding:3px 8px;margin:0 6px 6px 0;">' +
+        esc(f.name) + ' <span style="color:var(--muted);">(' + emFmtBytes(f.size) + ')</span>' +
+        '<button type="button" data-rmatt="' + i + '" style="border:none;background:none;cursor:pointer;color:var(--muted);font-size:13px;line-height:1;" title="Remove">✕</button></div>';
+    }).join('') +
+      '<div style="' + (over ? 'color:var(--burgundy);font-weight:600;' : '') + '">' + emFmtBytes(total) + ' total' +
+      (over ? ' — over the ~3 MB Outlook limit; remove something before sending' : '') + '</div>';
+    el.querySelectorAll('[data-rmatt]').forEach(function (b) {
+      b.onclick = function () { _emAttachments.splice(+b.getAttribute('data-rmatt'), 1); renderEmAttachments(); };
+    });
+  }
+  // FileReader -> base64 payload the server expects: {name, contentType, contentBytes}
+  function emFileToAttachment(f) {
+    return new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onload = function () { resolve({ name: f.name, contentType: f.type || 'application/octet-stream', contentBytes: String(fr.result).split(',')[1] || '' }); };
+      fr.onerror = function () { reject(new Error('could not read ' + f.name)); };
+      fr.readAsDataURL(f);
+    });
+  }
   function readByMe(id) { var m = metaFor(id); return !!(m.readBy && m.readBy[myUpn()]); }
 
   function renderEmail() {
@@ -3995,6 +4028,11 @@
           '<label class="full">CC (optional)<input id="em_cc" autocomplete="off" placeholder="cc@example.com" /></label>' +
           '<label class="full">Subject<input id="em_subject" autocomplete="off" /></label>' +
           '<label class="full">Message<textarea id="em_body" rows="7"></textarea></label>' +
+          '<div class="full">' +
+            '<label class="btn btn-ghost" for="em_files" style="display:inline-flex;cursor:pointer;font-size:13px;">📎 Attach files</label>' +
+            '<input type="file" id="em_files" multiple style="display:none;" />' +
+            '<div id="em_file_list" style="margin-top:6px;font-size:12.5px;color:var(--muted);"></div>' +
+          '</div>' +
           '<div class="full" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><button class="btn btn-primary" id="em_send" type="button">Send email</button><button class="btn btn-ghost" id="em_sig" type="button" title="Your own sign-off. Only you use it — it never appears on anyone else&rsquo;s emails.">✎ My signature</button><span id="em_status" style="font-size:12px;color:var(--muted);"></span></div>' +
         '</div>' +
       '</details>' +
@@ -4006,6 +4044,12 @@
       '</div>' +
       '<div id="em_list"><div style="color:var(--muted);">Loading mail…</div></div>';
     seedSig(document.getElementById('em_body'));
+    _emAttachments = [];
+    document.getElementById('em_files').addEventListener('change', function (e) {
+      Array.prototype.forEach.call(e.target.files, function (f) { _emAttachments.push(f); });
+      e.target.value = ''; // let the same file be picked again if removed then re-added
+      renderEmAttachments();
+    });
     document.getElementById('em_send').onclick = sendClientEmail;
     document.getElementById('em_sig').onclick = openSigEditor;
     document.getElementById('em_refresh').onclick = function () { loadInbox(true); };
@@ -4261,20 +4305,28 @@
     // you see is what goes out — do NOT append it again here or it sends twice.
     var bodyText = document.getElementById('em_body').value;
     var html = esc(bodyText).replace(/\n/g, '<br>');
+    if (emAttTotalBytes() > EM_ATT_MAX_TOTAL) { (window.bccNotify || alert)('Attachments are over the ~3 MB limit — remove something before sending.', 'warn'); return; }
     var btn = document.getElementById('em_send'), st = document.getElementById('em_status'); var ot = btn.textContent; btn.disabled = true; btn.textContent = 'Sending…'; st.textContent = '';
-    var payload = { to: to, subject: subject, bodyHtml: html }; if (cc.length) payload.cc = cc;
-    var usingMailbox = mailboxActive(); if (usingMailbox) payload.realmId = currentRealm;
-    fetch('/api/integrations/msgraph/send-mail', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+    var usingMailbox = mailboxActive();
+    Promise.all(_emAttachments.map(emFileToAttachment))
+      .then(function (attachments) {
+        var payload = { to: to, subject: subject, bodyHtml: html }; if (cc.length) payload.cc = cc;
+        if (attachments.length) payload.attachments = attachments;
+        if (usingMailbox) payload.realmId = currentRealm;
+        return fetch('/api/integrations/msgraph/send-mail', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+      })
       .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
       .then(function (resp) {
         if (resp && resp.ok === false) throw new Error(resp.error || 'send failed');
         var id = emailPrefix() + uid2();
-        localStorage.setItem(id, JSON.stringify({ id: id, tenantId: 'blue-collar-coach', docType: 'client-email', realmId: currentRealm, from: (usingMailbox && _clientMailbox ? _clientMailbox.mailbox : myUpn()), to: to, cc: cc, subject: subject, bodyText: bodyText, sentAt: nowIso(), sentBy: myUpn(), status: 'sent' }));
-        if (window.bccAudit) window.bccAudit('client-email-send', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm, recipients: to.length } });
-        if (window.bccNotifySaved) window.bccNotifySaved('Email sent.');
+        var attNames = _emAttachments.map(function (f) { return f.name; });
+        localStorage.setItem(id, JSON.stringify({ id: id, tenantId: 'blue-collar-coach', docType: 'client-email', realmId: currentRealm, from: (usingMailbox && _clientMailbox ? _clientMailbox.mailbox : myUpn()), to: to, cc: cc, subject: subject, bodyText: bodyText, attachmentNames: attNames, sentAt: nowIso(), sentBy: myUpn(), status: 'sent' }));
+        if (window.bccAudit) window.bccAudit('client-email-send', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm, recipients: to.length, attachments: attNames.length } });
+        if (window.bccNotifySaved) window.bccNotifySaved('Email sent' + (attNames.length ? ' with ' + attNames.length + ' attachment' + (attNames.length === 1 ? '' : 's') : '') + '.');
         btn.disabled = false; btn.textContent = ot;
-        // Re-seed the signature so the next compose starts the same way.
+        // Re-seed the signature and clear attachments so the next compose starts the same way.
         document.getElementById('em_subject').value = ''; seedSig(document.getElementById('em_body'));
+        _emAttachments = []; renderEmAttachments();
         var comp = document.getElementById('em_compose'); if (comp) comp.open = false;
         setTimeout(function () { loadInbox(true); }, 1500);
       })
