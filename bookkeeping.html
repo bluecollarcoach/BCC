@@ -2681,15 +2681,24 @@
   function loadUnreadEmail(realm, force) {
     if (taskOnly || !realm) return;
     if (!force && _emUnread[realm] !== undefined) { updateWsNav(); return; }
-    fetch('/api/integrations/msgraph/messages?realmId=' + encodeURIComponent(realm) + '&top=50', { credentials: 'include' })
-      .then(function (r) { return r.json().catch(function () { return null; }); })
-      .then(function (j) {
-        if (!j || !j.ok) { _emUnread[realm] = 0; }
-        else if (j.pendingMailbox) { _emUnread[realm] = 0; }   // mailbox not created yet
-        else { _emUnread[realm] = (j.messages || []).filter(function (m) { return !m.isRead; }).length; }
-        if (realm === currentRealm) { updateWsNav(); if (currentTab === 'overview') { try { renderOverview(); } catch (e) {} } }
-      })
-      .catch(function () { _emUnread[realm] = 0; });
+    // This can run before the Email tab (and its module-level _emMeta) has ever
+    // loaded for this realm — sometimes before it's ever been loaded for ANY
+    // realm — so it fetches its own archived-state snapshot rather than trusting
+    // whatever _emMeta currently holds. Otherwise an unread-but-archived message
+    // inflates this badge forever: the default email list hides archived
+    // messages, but a plain !isRead count never did, and the two would silently
+    // disagree (Renee's report: badge said 4, the list showed none of them).
+    Promise.all([
+      fetch('/api/integrations/msgraph/messages?realmId=' + encodeURIComponent(realm) + '&top=50', { credentials: 'include' }).then(function (r) { return r.json().catch(function () { return null; }); }),
+      fetch('/api/bookkeeping/email-meta/' + encodeURIComponent(realm), { credentials: 'include' }).then(function (r) { return r.json().catch(function () { return null; }); })
+    ]).then(function (results) {
+      var j = results[0], metaResp = results[1];
+      var meta = (metaResp && metaResp.ok && metaResp.msgs) || {};
+      if (!j || !j.ok) { _emUnread[realm] = 0; }
+      else if (j.pendingMailbox) { _emUnread[realm] = 0; }   // mailbox not created yet
+      else { _emUnread[realm] = (j.messages || []).filter(function (m) { return !m.isRead && !(meta[m.id] && meta[m.id].archived); }).length; }
+      if (realm === currentRealm) { updateWsNav(); if (currentTab === 'overview') { try { renderOverview(); } catch (e) {} } }
+    }).catch(function () { _emUnread[realm] = 0; });
   }
 
   function myUpn()  { return String((window.bccUser && window.bccUser.userDetails) || '').toLowerCase(); }
@@ -4131,17 +4140,30 @@
       .catch(function (e) { if (st) st.textContent = 'Save failed: ' + e.message; });
   }
 
+  // The nav/overview unread badge and the "unread" state used by loadInbox's
+  // resync line both need to agree with what the default email list actually
+  // shows — which excludes archived messages. archived state (_emMeta) and the
+  // message list (_emMsgs) load via two independent, unordered fetches (see
+  // renderEmail(): loadEmailMeta() and loadInbox() both fire without awaiting
+  // each other), so recomputing the count from BOTH functions' success handlers
+  // — not just one — means whichever resolves last always lands the correct
+  // final number, regardless of which happened to finish first.
+  function recomputeUnreadBadge() {
+    if (_emLoadedFor !== currentRealm) return; // _emMsgs isn't for this realm yet
+    _emUnread[currentRealm] = _emMsgs.filter(function (m) { return !m.isRead && !metaFor(m.id).archived; }).length;
+    updateWsNav();
+  }
   function loadEmailMeta() {
     var realmAt = currentRealm;
     fetch('/api/bookkeeping/email-meta/' + encodeURIComponent(currentRealm), { credentials: 'include' })
       .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
-      .then(function (resp) { if (currentRealm !== realmAt) return; _emMeta = (resp && resp.ok && resp.msgs) || {}; renderEmailList(); })
+      .then(function (resp) { if (currentRealm !== realmAt) return; _emMeta = (resp && resp.ok && resp.msgs) || {}; renderEmailList(); recomputeUnreadBadge(); })
       .catch(function () {});
   }
   function emMetaOp(messageId, op, value) {
     return fetch('/api/bookkeeping/email-meta/' + encodeURIComponent(currentRealm), { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ messageId: messageId, op: op, value: value }) })
       .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
-      .then(function (resp) { if (resp && resp.ok && resp.msg) { _emMeta[messageId] = resp.msg; renderEmailList(); } return resp; });
+      .then(function (resp) { if (resp && resp.ok && resp.msg) { _emMeta[messageId] = resp.msg; renderEmailList(); recomputeUnreadBadge(); } return resp; });
   }
 
   function loadInbox(force) {
@@ -4161,7 +4183,7 @@
         if (!resp || !resp.ok) { list.innerHTML = '<div style="color:var(--burgundy);">Mailbox unavailable: ' + esc((resp && resp.error) || 'error') + '</div>'; return; }
         _emMsgs = resp.messages || []; _emLoadedFor = currentRealm; renderEmailList();
         // Keep the nav/overview unread badge in sync with what we just loaded.
-        _emUnread[currentRealm] = _emMsgs.filter(function (m) { return !m.isRead; }).length; updateWsNav();
+        recomputeUnreadBadge();
       })
       .catch(function () { if (currentRealm === realmAt) list.innerHTML = '<div style="color:var(--burgundy);">Could not load mail.</div>'; });
   }
