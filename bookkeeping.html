@@ -4683,7 +4683,7 @@
     var header = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;">' +
       '<h3 style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;margin:0;">Payroll #' + esc(cprDraft.payrollNo || '') + ' — ' + esc(companyName(currentRealm)) + '</h3>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-ghost" id="cpr_back" type="button">← Back</button>' +
-      '<button class="btn btn-ghost" id="cpr_autofill" type="button" title="Upload a payroll register or timesheet (PDF, photo, or Excel/CSV) and let AI pre-fill the employees and hours for you to review">✨ Auto-fill from a file</button>' +
+      '<label class="btn btn-ghost" id="cpr_autofill" for="cpr_file" style="cursor:pointer;display:inline-flex;align-items:center;" title="Upload a payroll register or timesheet (PDF, photo, or Excel/CSV) and let AI pre-fill the employees and hours for you to review">✨ Auto-fill from a file</label>' +
       '<input type="file" id="cpr_file" accept=".pdf,.png,.jpg,.jpeg,.webp,.csv,.xlsx,.xls,image/*" style="display:none;" />' +
       '<button class="btn btn-ghost" id="cpr_print" type="button" title="Minnesota DLI certified payroll form (print)">🖨️ DLI form</button>' +
       '<button class="btn btn-ghost" id="cpr_mndot" type="button" title="Official MnDOT Prevailing Wage Payroll Report + Statement of Compliance, filled as fillable PDFs">🛣️ MnDOT forms</button>' +
@@ -4747,7 +4747,9 @@
     document.getElementById('cpr_mndot').onclick = function () { cprSave(true); cprMndotDownload(cprDraft); };
     document.getElementById('cpr_email').onclick = function () { cprSave(true); cprEmailPanel(); };
     cprRenderSig();
-    var afb = document.getElementById('cpr_autofill'); if (afb) afb.onclick = function () { var fi = document.getElementById('cpr_file'); if (fi) fi.click(); };
+    // "Auto-fill from a file" is now a <label for="cpr_file"> in the markup — the
+    // browser opens the native file picker natively on click, same reasoning as
+    // crm.html's card-scan/csv-import labels.
     var afi = document.getElementById('cpr_file'); if (afi) afi.onchange = cprAutofill;
   }
   /* ===== Email a certified payroll report from the CLIENT's mailbox =====
@@ -5039,12 +5041,15 @@
     if (!file) return;
     if (file.size > 12 * 1024 * 1024) { (window.bccNotify || alert)('That file is over 12 MB — export a smaller PDF or the Excel/CSV instead.', 'warn'); return; }
     var btn = document.getElementById('cpr_autofill'), ot = btn ? btn.textContent : '';
-    if (btn) { btn.disabled = true; btn.textContent = 'Reading…'; }
+    // cpr_autofill is a <label for="cpr_file">, not a <button> — labels have no
+    // .disabled property, so the busy state is expressed via pointer-events/opacity
+    // instead (otherwise clicking it mid-request would silently reopen the file picker).
+    if (btn) { btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; btn.textContent = 'Reading…'; }
     var fd = new FormData(); fd.append('file', file);
     fetch('/api/ai/extract-cpr', { method: 'POST', credentials: 'include', body: fd })
       .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'Server error.' }; }); })
       .then(function (j) {
-        if (btn) { btn.disabled = false; btn.textContent = ot; }
+        if (btn) { btn.style.pointerEvents = ''; btn.style.opacity = ''; btn.textContent = ot; }
         if (!j || !j.ok) { (window.bccNotify || alert)((j && (j.error || (j.needsKey ? 'AI is not configured — an admin needs to add the AI key.' : ''))) || 'Could not read that file.', 'error', 8000); return; }
         var n = cprApplyExtract(j.data);
         if (!n) { (window.bccNotify || alert)('No employees were found in that file. Try the payroll register that lists each employee and their hours.', 'warn', 8000); return; }
@@ -5063,7 +5068,7 @@
           window.bccNotify(msg + ' Please review every value (especially daily hours and rates) before saving.', mm.conflicts ? 'warn' : 'success', mm.conflicts ? 12000 : 9000);
         }
       })
-      .catch(function (e) { if (btn) { btn.disabled = false; btn.textContent = ot; } (window.bccNotify || alert)('Could not read that file: ' + e.message, 'error', 8000); });
+      .catch(function (e) { if (btn) { btn.style.pointerEvents = ''; btn.style.opacity = ''; btn.textContent = ot; } (window.bccNotify || alert)('Could not read that file: ' + e.message, 'error', 8000); });
   }
 
   function cprEmpCard(e, i, wd) {

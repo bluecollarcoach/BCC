@@ -301,8 +301,8 @@
       <select id="regionFilter" aria-label="Filter by region">
         <option value="">All regions</option>
       </select>
-      <button class="btn btn-ghost" id="csvBtn" type="button">Import CSV</button>
-      <button class="btn btn-ghost" id="scanBtn" type="button">📇 Scan card</button>
+      <label class="btn btn-ghost" for="csvFile" style="cursor:pointer;display:inline-flex;align-items:center;">Import CSV</label>
+      <label class="btn btn-ghost" for="cardFile" style="cursor:pointer;display:inline-flex;align-items:center;">📇 Scan card</label>
       <button class="btn btn-primary" id="newBtn" type="button">+ New contact</button>
     </div>
 
@@ -1053,7 +1053,11 @@
       fillForce('f-street', d.street); fillForce('f-city', d.city); fillForce('f-state', d.state); fillForce('f-zip', d.zip);
       appendNote(d.otherInfo);
     }
-    document.getElementById('scanBtn').addEventListener('click', function () { document.getElementById('cardFile').click(); });
+    // "Scan card" is now a <label for="cardFile"> in the markup — the browser opens
+    // the native file picker natively on click, no JS forwarding needed (this is the
+    // same reliable pattern bookkeeping.html's receipt scanner already uses; a plain
+    // button + el.click() is known to silently no-op the file dialog on some
+    // browsers when the target input is display:none).
     document.getElementById('cardFile').addEventListener('change', function () {
       var files = this.files ? Array.prototype.slice.call(this.files) : []; this.value = '';
       if (!files.length) return;
@@ -1235,9 +1239,7 @@
       location.href = 'crm.html?id=' + encodeURIComponent(id);
     });
 
-    document.getElementById('csvBtn').addEventListener('click', function () {
-      document.getElementById('csvFile').click();
-    });
+    // "Import CSV" is now a <label for="csvFile">, same reasoning as cardFile above.
     document.getElementById('csvFile').addEventListener('change', function (e) {
       var f = e.target.files && e.target.files[0]; if (!f) return;
       var reader = new FileReader();
