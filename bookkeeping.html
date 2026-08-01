@@ -3962,6 +3962,12 @@
   var _emFilter = 'all';     // all | unread | mine | tagged | archived
   var _emSearch = '';
   var _emLoadedFor = null;   // realm whose messages are cached in _emMsgs
+  // Files staged for the compose box. Module-scoped (not local to renderEmail)
+  // because the compose <details> persists across multiple sends without a
+  // re-render — sendClientEmail clears this array IN PLACE (.length = 0) after
+  // a send, since the file input's change listener is closured over this exact
+  // array object, not whatever renderEmail last handed out.
+  var _emAttachments = [];
   function suggestMailbox() { var n = companyName(currentRealm) || ''; var local = n.toLowerCase().replace(/[^a-z0-9]+/g, ''); return local ? (local + '@bluecollarcoach.us') : ''; }
   function mailboxActive() { return !!(_clientMailbox && _clientMailbox.mailbox && _clientMailbox.enabled !== false); }
   function emSigKey() { return 'bcc-emailsig-' + (myUpn().replace(/[^a-z0-9]+/g, '-') || 'x'); }
@@ -3982,20 +3988,19 @@
   function emName(upn) { return (window.bccDisplayName && window.bccDisplayName(upn)) || upn || ''; }
   function emInitials(upn) { var n = emName(upn) || upn || ''; var parts = n.replace(/@.*/, '').split(/[.\s_-]+/).filter(Boolean); return ((parts[0] || '').charAt(0) + (parts[1] || '').charAt(0)).toUpperCase() || (upn || '?').charAt(0).toUpperCase(); }
   function metaFor(id) { return _emMeta[id] || { tags: [], assignedTo: '', archived: false, readBy: {}, repliedBy: [] }; }
-  // Files staged for the NEW-email compose box. Reply has no attachment support —
-  // Graph's reply/replyAll action only takes a plain comment, no attachments;
-  // doing it properly needs create-reply-draft + PATCH attachments + send, a
-  // separate piece of work.
-  var _emAttachments = [];
-  var EM_ATT_MAX_TOTAL = 3 * 1024 * 1024; // mirrors the server's cap (msgraph-send-mail)
-  function emAttTotalBytes() { return _emAttachments.reduce(function (s, f) { return s + f.size; }, 0); }
+  // Shared attachment picker — used by both the new-email compose box and the
+  // reply box. `list` holds the staged File objects; `listElId` is where the
+  // running file list renders. Two independent instances (compose, reply) so
+  // files staged in one never bleed into the other.
+  var EM_ATT_MAX_TOTAL = 3 * 1024 * 1024; // mirrors the server's cap (msgraph-send-mail / msgraph-reply)
+  function emAttTotalBytes(list) { return list.reduce(function (s, f) { return s + f.size; }, 0); }
   function emFmtBytes(n) { return n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB'; }
-  function renderEmAttachments() {
-    var el = document.getElementById('em_file_list'); if (!el) return;
-    if (!_emAttachments.length) { el.innerHTML = ''; return; }
-    var total = emAttTotalBytes();
+  function renderEmAttachments(list, listElId) {
+    var el = document.getElementById(listElId); if (!el) return;
+    if (!list.length) { el.innerHTML = ''; return; }
+    var total = emAttTotalBytes(list);
     var over = total > EM_ATT_MAX_TOTAL;
-    el.innerHTML = _emAttachments.map(function (f, i) {
+    el.innerHTML = list.map(function (f, i) {
       return '<div style="display:inline-flex;align-items:center;gap:4px;background:var(--chrome);border-radius:6px;padding:3px 8px;margin:0 6px 6px 0;">' +
         esc(f.name) + ' <span style="color:var(--muted);">(' + emFmtBytes(f.size) + ')</span>' +
         '<button type="button" data-rmatt="' + i + '" style="border:none;background:none;cursor:pointer;color:var(--muted);font-size:13px;line-height:1;" title="Remove">✕</button></div>';
@@ -4003,7 +4008,7 @@
       '<div style="' + (over ? 'color:var(--burgundy);font-weight:600;' : '') + '">' + emFmtBytes(total) + ' total' +
       (over ? ' — over the ~3 MB Outlook limit; remove something before sending' : '') + '</div>';
     el.querySelectorAll('[data-rmatt]').forEach(function (b) {
-      b.onclick = function () { _emAttachments.splice(+b.getAttribute('data-rmatt'), 1); renderEmAttachments(); };
+      b.onclick = function () { list.splice(+b.getAttribute('data-rmatt'), 1); renderEmAttachments(list, listElId); };
     });
   }
   // FileReader -> base64 payload the server expects: {name, contentType, contentBytes}
@@ -4014,6 +4019,18 @@
       fr.onerror = function () { reject(new Error('could not read ' + f.name)); };
       fr.readAsDataURL(f);
     });
+  }
+  // Wire a file-input + list pair to a staging array. Returns the array so the
+  // caller can read it at send time.
+  function wireAttachmentPicker(inputElId, listElId) {
+    var list = [];
+    var input = document.getElementById(inputElId);
+    input.addEventListener('change', function (e) {
+      Array.prototype.forEach.call(e.target.files, function (f) { list.push(f); });
+      e.target.value = ''; // let the same file be picked again if removed then re-added
+      renderEmAttachments(list, listElId);
+    });
+    return list;
   }
   function readByMe(id) { var m = metaFor(id); return !!(m.readBy && m.readBy[myUpn()]); }
 
@@ -4044,11 +4061,15 @@
       '</div>' +
       '<div id="em_list"><div style="color:var(--muted);">Loading mail…</div></div>';
     seedSig(document.getElementById('em_body'));
-    _emAttachments = [];
+    _emAttachments.length = 0; // renderEmail can re-run (tab switch); start each fresh render clean
+    // Not wireAttachmentPicker here on purpose: compose's <details> persists across
+    // multiple sends without a re-render, so this listener must stay closured over
+    // the module-level _emAttachments — a factory-fresh array would go stale the
+    // moment sendClientEmail clears _emAttachments in place after a send.
     document.getElementById('em_files').addEventListener('change', function (e) {
       Array.prototype.forEach.call(e.target.files, function (f) { _emAttachments.push(f); });
       e.target.value = ''; // let the same file be picked again if removed then re-added
-      renderEmAttachments();
+      renderEmAttachments(_emAttachments, 'em_file_list');
     });
     document.getElementById('em_send').onclick = sendClientEmail;
     document.getElementById('em_sig').onclick = openSigEditor;
@@ -4183,7 +4204,7 @@
 
   /* ---- Reader / reply modal ---- */
   var _emEsc = null;
-  function emCloseModal() { var m = document.getElementById('em_modal'); if (m) m.remove(); if (_emEsc) { document.removeEventListener('keydown', _emEsc); _emEsc = null; } }
+  function emCloseModal() { var m = document.getElementById('em_modal'); if (m) m.remove(); if (_emEsc) { document.removeEventListener('keydown', _emEsc); _emEsc = null; } window._emReplyAttsInProgress = null; }
   function emWireModal(ov) {
     document.body.appendChild(ov);
     ov.addEventListener('click', function (e) { if (e.target === ov) emCloseModal(); });
@@ -4247,25 +4268,69 @@
   }
   function openReply(id, replyAll) {
     var box = document.getElementById('em_m_reply'); if (!box) return;
+    // openReply rebuilds the box from scratch every call. If it's already holding
+    // an in-progress reply (typed text, or files already staged), switching Reply
+    // <-> Reply-all — or opening a reply on a different message — would silently
+    // wipe it. Confirm first rather than discarding a drafted reply and its
+    // attachments with no warning.
+    var existingBody = document.getElementById('em_r_body');
+    var existingAtts = window._emReplyAttsInProgress || [];
+    if (existingBody && (existingBody.value.trim() || existingAtts.length)) {
+      if (!confirm('Discard your unsent reply' + (existingAtts.length ? ' and ' + existingAtts.length + ' attached file' + (existingAtts.length === 1 ? '' : 's') : '') + '?')) return;
+    }
     box.innerHTML = '<div class="em-reply"><div style="font-weight:700;font-size:12.5px;margin-bottom:6px;">' + (replyAll ? 'Reply all' : 'Reply') + '</div>' +
       '<textarea id="em_r_body" rows="6" placeholder="Write your reply…"></textarea>' +
+      '<div style="margin-top:6px;">' +
+        '<label class="btn btn-ghost" for="em_r_files" style="display:inline-flex;cursor:pointer;font-size:12.5px;">📎 Attach files</label>' +
+        '<input type="file" id="em_r_files" multiple style="display:none;" />' +
+        '<div id="em_r_file_list" style="margin-top:6px;font-size:12px;color:var(--muted);"></div>' +
+      '</div>' +
       '<div style="display:flex;gap:8px;align-items:center;margin-top:8px;"><button class="btn btn-primary" id="em_r_send" type="button">Send reply</button><button class="btn btn-ghost" id="em_r_cancel" type="button">Cancel</button><span id="em_r_status" style="font-size:12px;color:var(--muted);"></span></div></div>';
-    document.getElementById('em_r_cancel').onclick = function () { box.innerHTML = ''; };
+    document.getElementById('em_r_cancel').onclick = function () { box.innerHTML = ''; window._emReplyAttsInProgress = null; };
     var ta = document.getElementById('em_r_body'); seedSig(ta); ta.focus(); ta.setSelectionRange(0, 0);
+    // Fresh array each time openReply runs — the reply box is torn down and
+    // rebuilt (box.innerHTML) on every open, so there's no persistence concern
+    // like compose has. Exposed on window so the discard-confirm check above (run
+    // at the START of the NEXT openReply call) can see what's staged right now.
+    var replyAtts = wireAttachmentPicker('em_r_files', 'em_r_file_list');
+    window._emReplyAttsInProgress = replyAtts;
+    // Known limitation, unchanged from the pre-attachment reply flow: a lost response
+    // after Graph has already sent (client sees a timeout, but the send succeeded)
+    // could let a retry send twice. No idempotency key exists on this endpoint today.
+    // The disabled Send button + emCloseModal() on success closes the most common
+    // trigger (double-click), but not a genuine dropped-response retry. Flagged, not
+    // silently accepted — a proper fix needs a client-generated dedupe token echoed
+    // server-side, which is a bigger change than this pass.
+    var replyFilesBtn = document.querySelector('label[for="em_r_files"]');
     document.getElementById('em_r_send').onclick = function () {
       var btn = this, txt = document.getElementById('em_r_body').value, st = document.getElementById('em_r_status');
+      if (emAttTotalBytes(replyAtts) > EM_ATT_MAX_TOTAL) { st.textContent = 'Attachments are over the ~3 MB limit — remove something first.'; return; }
       btn.disabled = true; st.textContent = 'Sending…';
+      document.getElementById('em_r_files').disabled = true; if (replyFilesBtn) replyFilesBtn.style.pointerEvents = 'none';
       var html = esc(txt).replace(/\n/g, '<br>');
-      fetch('/api/integrations/msgraph/reply', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ realmId: mailboxActive() ? currentRealm : undefined, messageId: id, body: html, replyAll: !!replyAll }) })
-        .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
-        .then(function (resp) {
+      Promise.all(replyAtts.map(emFileToAttachment)).then(function (attachments) {
+        var payload = { realmId: mailboxActive() ? currentRealm : undefined, messageId: id, body: html, replyAll: !!replyAll };
+        if (attachments.length) payload.attachments = attachments;
+        return fetch('/api/integrations/msgraph/reply', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+          .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
+          .then(function (resp) { return { resp: resp, attachments: attachments }; }); // carry the RESOLVED attachments forward, not the live array
+      })
+        .then(function (result) {
+          var resp = result.resp;
           if (resp && resp.ok === false) throw new Error(resp.error || 'reply failed');
           emMetaOp(id, 'replied');
-          if (window.bccAudit) window.bccAudit('client-email-send', { path: '/bookkeeping.html', meta: { realmId: currentRealm, kind: 'reply' } });
-          if (window.bccNotifySaved) window.bccNotifySaved('Reply sent.');
+          // Counted from what was actually encoded and sent — not replyAtts.length,
+          // which could have grown if a file was staged after Send was clicked.
+          var sentCount = result.attachments.length;
+          if (window.bccAudit) window.bccAudit('client-email-send', { path: '/bookkeeping.html', meta: { realmId: currentRealm, kind: 'reply', attachments: sentCount } });
+          if (window.bccNotifySaved) window.bccNotifySaved('Reply sent' + (sentCount ? ' with ' + sentCount + ' attachment' + (sentCount === 1 ? '' : 's') : '') + '.');
+          window._emReplyAttsInProgress = null;
           emCloseModal();
         })
-        .catch(function (e) { btn.disabled = false; st.textContent = 'Failed: ' + e.message; });
+        .catch(function (e) {
+          btn.disabled = false; st.textContent = 'Failed: ' + e.message;
+          document.getElementById('em_r_files').disabled = false; if (replyFilesBtn) replyFilesBtn.style.pointerEvents = '';
+        });
     };
   }
 
@@ -4305,32 +4370,52 @@
     // you see is what goes out — do NOT append it again here or it sends twice.
     var bodyText = document.getElementById('em_body').value;
     var html = esc(bodyText).replace(/\n/g, '<br>');
-    if (emAttTotalBytes() > EM_ATT_MAX_TOTAL) { (window.bccNotify || alert)('Attachments are over the ~3 MB limit — remove something before sending.', 'warn'); return; }
+    if (emAttTotalBytes(_emAttachments) > EM_ATT_MAX_TOTAL) { (window.bccNotify || alert)('Attachments are over the ~3 MB limit — remove something before sending.', 'warn'); return; }
     var btn = document.getElementById('em_send'), st = document.getElementById('em_status'); var ot = btn.textContent; btn.disabled = true; btn.textContent = 'Sending…'; st.textContent = '';
+    // Lock the picker for the duration of the send. Base64-encoding + the network
+    // round trip both take real time; without this, a file dropped in mid-send
+    // gets recorded in the sent-email log and reported in the toast/audit as if it
+    // went out, when it was actually never in the payload that was encoded moments
+    // earlier — and then it's silently wiped when attachments are cleared below.
+    var filesBtn = document.querySelector('label[for="em_files"]');
+    document.getElementById('em_files').disabled = true; if (filesBtn) filesBtn.style.pointerEvents = 'none';
     var usingMailbox = mailboxActive();
     Promise.all(_emAttachments.map(emFileToAttachment))
       .then(function (attachments) {
         var payload = { to: to, subject: subject, bodyHtml: html }; if (cc.length) payload.cc = cc;
         if (attachments.length) payload.attachments = attachments;
         if (usingMailbox) payload.realmId = currentRealm;
-        return fetch('/api/integrations/msgraph/send-mail', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+        return fetch('/api/integrations/msgraph/send-mail', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+          .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
+          .then(function (resp) { return { resp: resp, attachments: attachments }; }); // carry the RESOLVED attachments forward — not the live array
       })
-      .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
-      .then(function (resp) {
+      .then(function (result) {
+        var resp = result.resp;
         if (resp && resp.ok === false) throw new Error(resp.error || 'send failed');
         var id = emailPrefix() + uid2();
-        var attNames = _emAttachments.map(function (f) { return f.name; });
+        // Named from what was actually encoded and sent, NOT from re-reading
+        // _emAttachments here — by now that array may already hold files staged
+        // after the send started.
+        var attNames = result.attachments.map(function (a) { return a.name; });
         localStorage.setItem(id, JSON.stringify({ id: id, tenantId: 'blue-collar-coach', docType: 'client-email', realmId: currentRealm, from: (usingMailbox && _clientMailbox ? _clientMailbox.mailbox : myUpn()), to: to, cc: cc, subject: subject, bodyText: bodyText, attachmentNames: attNames, sentAt: nowIso(), sentBy: myUpn(), status: 'sent' }));
         if (window.bccAudit) window.bccAudit('client-email-send', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm, recipients: to.length, attachments: attNames.length } });
         if (window.bccNotifySaved) window.bccNotifySaved('Email sent' + (attNames.length ? ' with ' + attNames.length + ' attachment' + (attNames.length === 1 ? '' : 's') : '') + '.');
         btn.disabled = false; btn.textContent = ot;
+        document.getElementById('em_files').disabled = false; if (filesBtn) filesBtn.style.pointerEvents = '';
         // Re-seed the signature and clear attachments so the next compose starts the same way.
+        // Anything staged DURING the send (the picker was locked, but a drag-drop onto the
+        // textarea or a queued dialog callback could theoretically still land one) is
+        // deliberately dropped here too — it was never encoded into result.attachments, so
+        // it was never sent, and keeping it staged for the NEXT email would misattribute it.
         document.getElementById('em_subject').value = ''; seedSig(document.getElementById('em_body'));
-        _emAttachments = []; renderEmAttachments();
+        _emAttachments.length = 0; renderEmAttachments(_emAttachments, 'em_file_list'); // clear IN PLACE — the change listener above is closured over this exact array
         var comp = document.getElementById('em_compose'); if (comp) comp.open = false;
         setTimeout(function () { loadInbox(true); }, 1500);
       })
-      .catch(function (e) { st.textContent = 'Send failed: ' + e.message; btn.disabled = false; btn.textContent = ot; });
+      .catch(function (e) {
+        st.textContent = 'Send failed: ' + e.message; btn.disabled = false; btn.textContent = ot;
+        document.getElementById('em_files').disabled = false; if (filesBtn) filesBtn.style.pointerEvents = '';
+      });
   }
 
   /* ---- Certified payroll (Minnesota DLI format) ---- */

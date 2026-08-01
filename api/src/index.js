@@ -3484,6 +3484,12 @@ app.http('msgraph-reply', {
   methods: ['POST'], authLevel: 'anonymous', route: 'integrations/msgraph/reply',
   handler: withAccessLog(async (request, context) => {
     const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    // Hoisted OUTSIDE the try so the outer catch can still see (and attempt to clean
+    // up) a draft that was created before something later threw — e.g. a network
+    // drop mid-attachment-loop. A const declared inside the try is invisible to its
+    // own catch block; that gap is exactly why a draft could previously leak with
+    // no cleanup and no trace of its id anywhere.
+    let draftUrl = null;
     try {
       const b = await request.json().catch(() => ({}));
       const messageId = String(b.messageId || ''); if (!messageId) return badRequest('messageId required');
@@ -3495,13 +3501,87 @@ app.http('msgraph-reply', {
       } else { upn = encodeURIComponent(p.userDetails || p.userId); }
       const access = await getGraphToken();
       const action = b.replyAll ? 'replyAll' : 'reply';
-      const r = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + encodeURIComponent(messageId) + '/' + action, {
-        method: 'POST', headers: { Authorization: 'Bearer ' + access, 'Content-Type': 'application/json' },
+      const base = 'https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + encodeURIComponent(messageId);
+      // NOTE: Object.assign({headers: X}, opts) is a SHALLOW merge — if opts also has
+      // a `headers` key (every call below does), that key wins outright and Authorization
+      // is dropped, not merged. Every gfetch call in this handler supplies its own
+      // headers, so build the merged headers object first, then let opts override
+      // everything EXCEPT that.
+      const gfetch = (url, opts) => {
+        const merged = Object.assign({ Authorization: 'Bearer ' + access }, (opts && opts.headers) || {});
+        return fetch(url, Object.assign({}, opts, { headers: merged }));
+      };
+      // Best-effort delete of a leaked draft, using a fresh token (the `access`
+      // closure above isn't reachable from the outer catch — this is deliberately
+      // self-contained so it works from either place).
+      const cleanupDraft = async (url) => {
+        try { const tok = await getGraphToken(); await fetch(url, { method: 'DELETE', headers: { Authorization: 'Bearer ' + tok } }); }
+        catch (_) { /* best-effort only — nothing more we can do server-side */ }
+      };
+
+      const atts = Array.isArray(b.attachments) ? b.attachments.slice(0, 10) : [];
+      if (!atts.length) {
+        // No attachments — the one-call reply/replyAll action Graph provides for exactly this.
+        const r = await gfetch(base + '/' + action, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ comment: String(b.body || '') })
+        });
+        if (!r.ok && r.status !== 202) { const detail = (await r.text()).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')', detail } }; }
+        return { jsonBody: { ok: true } };
+      }
+
+      // With attachments, Graph has no single-call action — reply/replyAll only take
+      // a plain comment. The documented path is: create a draft reply (with the
+      // comment already inserted ahead of the quoted thread), attach files to that
+      // draft, then send it. Same 3 MB total cap as a new compose.
+      let totalB = 0;
+      const attPayloads = atts.map(a => {
+        const b64 = String(a.contentBytes || '');
+        totalB += Math.ceil(b64.length * 0.75);
+        return {
+          '@odata.type': '#microsoft.graph.fileAttachment',
+          name: String(a.name || 'attachment').replace(/[\r\n"]/g, '').slice(0, 150),
+          contentType: String(a.contentType || 'application/octet-stream'),
+          contentBytes: b64
+        };
+      });
+      if (totalB > 3 * 1024 * 1024) return { status: 400, jsonBody: { ok: false, error: 'Attachments total ' + Math.round(totalB / 1048576) + ' MB — Outlook caps this at about 3 MB. Send fewer or smaller files.' } };
+
+      const createR = await gfetch(base + '/create' + action.charAt(0).toUpperCase() + action.slice(1), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ comment: String(b.body || '') })
       });
-      if (!r.ok && r.status !== 202) { const detail = (await r.text()).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')', detail } }; }
+      if (!createR.ok) { const detail = (await createR.text()).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'Graph rejected draft creation (' + createR.status + ')', detail } }; }
+      const draft = await createR.json();
+      draftUrl = 'https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + encodeURIComponent(draft.id);
+
+      for (const att of attPayloads) {
+        const ar = await gfetch(draftUrl + '/attachments', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(att)
+        });
+        if (!ar.ok) {
+          const detail = (await ar.text()).slice(0, 300);
+          // Best-effort cleanup so a half-attached draft doesn't sit in the mailbox.
+          await cleanupDraft(draftUrl);
+          return { status: 502, jsonBody: { ok: false, error: 'Graph rejected attachment "' + att.name + '" (' + ar.status + ')', detail } };
+        }
+      }
+
+      const sendR = await gfetch(draftUrl + '/send', { method: 'POST' });
+      if (!sendR.ok && sendR.status !== 202) {
+        const detail = (await sendR.text()).slice(0, 300);
+        // Every attachment made it onto the draft — don't leave a fully-built,
+        // never-sent copy of a real client reply sitting in the mailbox where
+        // someone could later stumble on it and manually send it unreviewed.
+        await cleanupDraft(draftUrl);
+        return { status: 502, jsonBody: { ok: false, error: 'Graph rejected send (' + sendR.status + ')', detail } };
+      }
       return { jsonBody: { ok: true } };
-    } catch (e) { context.error('msgraph-reply', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+    } catch (e) {
+      context.error('msgraph-reply', e);
+      if (draftUrl) await (async () => { try { const tok = await getGraphToken(); await fetch(draftUrl, { method: 'DELETE', headers: { Authorization: 'Bearer ' + tok } }); } catch (_) {} })();
+      return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } };
+    }
   })
 });
 
