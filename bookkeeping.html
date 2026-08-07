@@ -3904,7 +3904,11 @@
     var create = document.getElementById('nt_create'); if (create) create.onclick = notaryCreate;
     body.querySelectorAll('[data-nt-savelink]').forEach(function (b) { b.onclick = function () {
       var id = b.getAttribute('data-nt-savelink'); var inp = body.querySelector('[data-nt-link="' + id + '"]'); var r = loadNotaryReq(id); if (!r) return;
-      r.sessionUrl = (inp && inp.value || '').trim(); saveNotaryReq(r); notaryMsg(id, 'Link saved.');
+      // Same fix as clientAppUrl (normAppUrl): a link pasted without "https://" (e.g.
+      // copied from a platform that displays it bare) renders as <a href="platform.com/...">,
+      // which the browser treats as a path on THIS app's own domain — a silently broken link
+      // in the email the signer receives.
+      r.sessionUrl = normAppUrl(inp && inp.value); saveNotaryReq(r); renderNotary(); notaryMsg(id, 'Link saved.');
     }; });
     body.querySelectorAll('[data-nt-email]').forEach(function (b) { b.onclick = function () { notaryEmailSigner(b.getAttribute('data-nt-email')); }; });
     body.querySelectorAll('[data-nt-status]').forEach(function (b) { b.onclick = function () {
