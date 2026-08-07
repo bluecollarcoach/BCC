@@ -6018,10 +6018,15 @@
   }
 
   /* ---- Month-end close checklist + reconciliation helper ---- */
+  // caption on reconcile-bank/reconcile-cc: asked independently by 3 different people
+  // over 2026-07-18–24 ("does this actually reconcile in QB?") — QuickBooks' API has no
+  // way for an outside app to perform the real reconcile (mark-cleared + lock), Intuit-side,
+  // not something we can build around. Saying so up front here should head off the question.
+  var RECONCILE_CAPTION = 'This ties the QuickBooks balance to your statement — it does NOT perform the reconcile itself. QuickBooks doesn’t let outside apps do that (no API for it); still click Reconcile inside QuickBooks to mark items cleared.';
   var CLOSE_STEPS = [
     { key: 'categorize', label: 'Categorize uncategorized transactions', help: 'cat' },
-    { key: 'reconcile-bank', label: 'Reconcile bank accounts', help: 'recon-bank' },
-    { key: 'reconcile-cc', label: 'Reconcile credit cards', help: 'recon-cc' },
+    { key: 'reconcile-bank', label: 'Reconcile bank accounts', help: 'recon-bank', caption: RECONCILE_CAPTION },
+    { key: 'reconcile-cc', label: 'Reconcile credit cards', help: 'recon-cc', caption: RECONCILE_CAPTION },
     { key: 'review-ar', label: 'Review A/R aging', help: 'ar' },
     { key: 'review-ap', label: 'Review A/P aging', help: 'ap' },
     { key: 'adjusting', label: 'Post adjusting journal entries' },
@@ -6054,6 +6059,7 @@
       var st = _close.steps[s.key] || {};
       return '<div style="border:1px solid var(--chrome-mute);border-radius:10px;padding:10px 12px;margin-bottom:8px;">' +
         '<label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:14px;"><input type="checkbox" data-cstep="' + s.key + '"' + (st.done ? ' checked' : '') + ' style="width:18px;height:18px;flex:none;" /><span' + (st.done ? ' style="text-decoration:line-through;color:var(--muted);"' : '') + '>' + esc(s.label) + '</span></label>' +
+        (s.caption ? '<div style="margin:6px 0 0 28px;font-size:11.5px;color:var(--muted);font-style:italic;">' + esc(s.caption) + '</div>' : '') +
         (s.help ? '<div class="close-help" data-help="' + s.help + '" style="margin:8px 0 0 28px;font-size:12px;color:var(--muted);"></div>' : '') +
         '<input data-cnote="' + s.key + '" value="' + esc(st.note || '') + '" placeholder="note (optional)" style="margin:8px 0 0 28px;width:calc(100% - 28px);border:1px solid var(--chrome-mute);border-radius:6px;padding:5px 7px;font:inherit;font-size:12px;box-sizing:border-box;" />' +
       '</div>';
