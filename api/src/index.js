@@ -4608,7 +4608,12 @@ app.http('qbo-write', {
         // A/P liability, which is the correct treatment for a paid point-of-sale receipt.
         const lines = (f.lines || []).filter(l => l && (l.amount || l.accountId)).map(l => ({
           DetailType: 'AccountBasedExpenseLineDetail', Amount: Number(l.amount) || 0, Description: l.desc || undefined,
-          AccountBasedExpenseLineDetail: { AccountRef: { value: String(l.accountId) } }
+          // A job/customer on the line books the cost to that job (and makes it billable),
+          // same as a Bill.
+          AccountBasedExpenseLineDetail: Object.assign(
+            { AccountRef: { value: String(l.accountId) } },
+            f.jobCustomerId ? { CustomerRef: { value: String(f.jobCustomerId) }, BillableStatus: 'Billable' } : {}
+          )
         }));
         if (!f.paymentAccountId || !lines.length) return badRequest('payment account and at least one line required');
         const payType = ['Cash', 'Check', 'CreditCard'].includes(String(f.paymentType)) ? String(f.paymentType) : 'Cash';

@@ -2197,12 +2197,38 @@
   var _qboRefs = null, _qboRefsRealm = null, _txnEdit = null, _txnFile = null, _txnFormRealm = null;
   function loadQboRefs(cb) {
     if (_qboRefs && _qboRefsRealm === currentRealm) { cb(_qboRefs); return; }
-    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/refs', { credentials: 'include' })
+    // Capture the realm this fetch is FOR, not whatever currentRealm is by the time it
+    // resolves — otherwise switching clients while a fetch is in flight caches the OLD
+    // client's customers/vendors/jobs mislabeled as belonging to the NEW client, and every
+    // later cache-hit silently serves the wrong company's lists (adversarial review finding).
+    var forRealm = currentRealm;
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(forRealm) + '/refs', { credentials: 'include' })
       .then(function (r) { return r.json(); })
-      .then(function (d) { if (!d || !d.ok) throw new Error((d && d.error) || 'refs failed'); _qboRefs = d; _qboRefsRealm = currentRealm; cb(d); })
+      .then(function (d) {
+        if (!d || !d.ok) throw new Error((d && d.error) || 'refs failed');
+        if (forRealm !== currentRealm) return; // stale — the user switched clients; drop it, don't cache it
+        _qboRefs = d; _qboRefsRealm = forRealm; cb(d);
+      })
       .catch(function (e) { (window.bccNotify || alert)('Could not load QuickBooks lists: ' + e.message, 'warn'); });
   }
   function txOpt(list, sel) { return '<option value="">— select —</option>' + (list || []).map(function (o) { return '<option value="' + esc(o.id) + '"' + (String(o.id) === String(sel) ? ' selected' : '') + '>' + esc(o.name) + '</option>'; }).join(''); }
+  // Searchable customer/vendor/job picker: a native text input + <datalist> so the
+  // browser filters as you type (Lana's feedback — a plain <select> is painful to
+  // scroll through once a company has many customers/jobs). The input holds the
+  // display NAME; txResolveByName looks the id back up at submit time.
+  function txNameById(list, id) { var m = (list || []).find(function (o) { return String(o.id) === String(id); }); return m ? m.name : ''; }
+  // Trim both sides — QBO data can carry incidental leading/trailing whitespace on a
+  // DisplayName, and a name picked verbatim from the datalist must still resolve.
+  function txResolveByName(list, name) { name = String(name || '').trim(); if (!name) return ''; var m = (list || []).find(function (o) { return String(o.name || '').trim() === name; }); return m ? m.id : ''; }
+  // selName is a fallback display name for when `sel` is an id that's no longer in `list`
+  // (e.g. a customer/job that's since been marked inactive — refs only return Active=true —
+  // so it wouldn't otherwise show at all, and the field would look blank/unset). data-orig-id
+  // lets the save handler tell "still exactly what was preloaded" apart from "user retyped it."
+  function txSearchInput(id, list, sel, selName) {
+    var val = txNameById(list, sel) || selName || '';
+    return '<input id="' + id + '" list="' + id + '_list" value="' + esc(val) + '" data-orig-id="' + esc(sel || '') + '" placeholder="🔍 Type to search…" autocomplete="off" />' +
+      '<datalist id="' + id + '_list">' + (list || []).map(function (o) { return '<option value="' + esc(o.name) + '">'; }).join('') + '</datalist>';
+  }
   function txnLineRow(entity, refs, ln, i) {
     ln = ln || {};
     var amt = '<input data-l="amount" placeholder="amount" value="' + esc(ln.amount || '') + '" style="width:100px;border:1px solid var(--chrome-mute);border-radius:7px;padding:7px;text-align:right;" />';
@@ -2222,15 +2248,24 @@
     var host = document.getElementById('qboWriteForm'); if (!host) return;
     host.innerHTML = '<div style="color:var(--muted);">Loading QuickBooks lists…</div>';
     loadQboRefs(function (refs) {
+      // Same cross-client guard openJournalEntryForm already uses: if the bookkeeper
+      // switched companies while refs were loading, don't repaint this (now stale, wrong
+      // client) form over whatever they're looking at now.
+      if (currentRealm !== _txnFormRealm) return;
       var pre = (edit && edit.entity) || {};
       var today = new Date().toISOString().slice(0, 10);
-      var partyVal = (entity === 'invoice' ? (pre.CustomerRef && pre.CustomerRef.value) : (pre.VendorRef && pre.VendorRef.value)) || (seed && seed.party) || '';
+      var partyVal = (entity === 'invoice' ? (pre.CustomerRef && pre.CustomerRef.value)
+        : entity === 'purchase' ? (pre.EntityRef && pre.EntityRef.value)
+        : (pre.VendorRef && pre.VendorRef.value)) || (seed && seed.party) || '';
+      var partyValName = (entity === 'invoice' ? (pre.CustomerRef && pre.CustomerRef.name)
+        : entity === 'purchase' ? (pre.EntityRef && pre.EntityRef.name)
+        : (pre.VendorRef && pre.VendorRef.name)) || '';
       var html = '<div style="border:1px solid var(--chrome-mute);border-radius:10px;padding:14px;">' +
         '<div style="font-weight:700;margin-bottom:10px;">' + (edit ? 'Edit ' : 'New ') + esc(entity) + (edit && edit.docNumber ? (' #' + esc(edit.docNumber)) : '') + '</div>';
       if (entity === 'invoice' || entity === 'bill' || entity === 'purchase') {
-        var who = entity === 'invoice'
-          ? '<label class="full">Customer<select id="tx_party">' + txOpt(refs.customers, partyVal) + '</select></label>'
-          : '<label class="full">' + (entity === 'purchase' ? 'Vendor / payee (optional)' : 'Vendor') + '<select id="tx_party">' + txOpt(refs.vendors, partyVal) + '</select></label>';
+        var partyList = entity === 'invoice' ? refs.customers : refs.vendors;
+        var who = '<label class="full">' + (entity === 'invoice' ? 'Customer' : (entity === 'purchase' ? 'Vendor / payee (optional)' : 'Vendor')) +
+          txSearchInput('tx_party', partyList, partyVal, partyValName) + '</label>';
         var dateRow;
         if (entity === 'purchase') {
           // A purchase is money already spent — it needs the account it was paid FROM
@@ -2242,19 +2277,43 @@
           dateRow = '<label>Date<input type="date" id="tx_date" value="' + esc(pre.TxnDate || (seed && seed.date) || today) + '" /></label>' +
             '<label>Due date<input type="date" id="tx_due" value="' + esc(pre.DueDate || '') + '" /></label>';
         }
-        // Bills/invoices: a reference (PO / bill no.), the job it belongs to, and
-        // payment terms — the things a bookkeeper types off the paper document.
+        // Bills/invoices: a reference (PO / bill no.) and payment terms — the things a
+        // bookkeeper types off the paper document. Bills and purchases (receipts) both
+        // get a Project / job field so the cost can be billed to a job (searchable —
+        // Lana's feedback: a plain dropdown is painful once there are many jobs).
         var extraRow = '';
         if (entity === 'bill' || entity === 'invoice') {
           var termOpts = '<option value="">— none —</option>' + (refs.terms || []).map(function (t) {
             var sel = (pre.SalesTermRef && String(pre.SalesTermRef.value) === String(t.id)) ? ' selected' : '';
             return '<option value="' + esc(t.id) + '"' + sel + '>' + esc(t.name) + '</option>';
           }).join('');
-          var jobSel = (pre.Line && pre.Line[0] && pre.Line[0].AccountBasedExpenseLineDetail && pre.Line[0].AccountBasedExpenseLineDetail.CustomerRef && pre.Line[0].AccountBasedExpenseLineDetail.CustomerRef.value) || '';
           extraRow =
             '<label>' + (entity === 'bill' ? 'PO / Bill no.' : 'PO / Ref no.') + '<input id="tx_docnum" value="' + esc(pre.DocNumber || '') + '" placeholder="optional" /></label>' +
-            '<label>Terms<select id="tx_terms">' + termOpts + '</select></label>' +
-            (entity === 'bill' ? '<label class="full">Job / customer (optional — bills the cost to a job)<select id="tx_job">' + txOpt(refs.customers, jobSel) + '</select></label>' : '');
+            '<label>Terms<select id="tx_terms">' + termOpts + '</select></label>';
+        }
+        var jobLinesHaveMixedJobs = false;
+        if (entity === 'bill' || entity === 'purchase') {
+          var jobLine0 = pre.Line && pre.Line[0] && pre.Line[0].AccountBasedExpenseLineDetail;
+          var jobSel = (jobLine0 && jobLine0.CustomerRef && jobLine0.CustomerRef.value) || '';
+          var jobSelName = (jobLine0 && jobLine0.CustomerRef && jobLine0.CustomerRef.name) || '';
+          // This is ONE field for the whole transaction, prefilled from line 1 only. If the
+          // real transaction has different jobs on different lines, saving here would apply
+          // line 1's job to ALL lines (a sparse update fully replaces Line) — warn rather than
+          // silently collapsing a real per-line split (adversarial review finding).
+          // "No job" on a line counts as its own distinct identity here — a bill with
+          // Job A on line 1 and NO job on line 2 is just as much a real per-line split as
+          // Job A + Job B, and saving here would silently give/strip a job on one of them.
+          var seenJobIds = {};
+          (pre.Line || []).forEach(function (l) {
+            if (!l.AccountBasedExpenseLineDetail) return;
+            var cr = l.AccountBasedExpenseLineDetail.CustomerRef;
+            seenJobIds[(cr && cr.value) || '(none)'] = 1;
+          });
+          jobLinesHaveMixedJobs = Object.keys(seenJobIds).length > 1;
+          extraRow += '<label class="full">Project / job (optional — bills the cost to a job)' + txSearchInput('tx_job', refs.customers, jobSel, jobSelName) + '</label>';
+          if (jobLinesHaveMixedJobs) {
+            extraRow += '<div class="full" style="color:var(--burgundy);font-size:12px;">⚠️ This transaction’s lines currently have DIFFERENT jobs. Saving here applies ONE job to every line — to keep the per-line split, edit it in QuickBooks directly.</div>';
+          }
         }
         html += '<div class="ws-form" style="margin-bottom:10px;">' + who + dateRow + extraRow + '</div>' +
           '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Line items</div><div id="tx_lines"></div>' +
@@ -2295,8 +2354,26 @@
         var txFile = document.getElementById('tx_file'); var fnameEl = document.getElementById('tx_fname');
         if (_txnFile && fnameEl) fnameEl.textContent = _txnFile.name + ' (will attach)';
         if (txFile) { txFile.addEventListener('click', function () { this.value = ''; }); txFile.addEventListener('change', function () { var f = txFile.files && txFile.files[0]; if (f) { if (f.size > 25 * 1024 * 1024) { (window.bccNotify || alert)('File too large (max 25 MB).', 'warn'); txFile.value = ''; return; } _txnFile = f; if (fnameEl) fnameEl.textContent = f.name + ' (will attach)'; } }); }
+        // tx_party/tx_job are searchable text inputs (the datalist only offers suggestions,
+        // it doesn't force a match). If the field is untouched since it was rendered, keep
+        // its ORIGINAL id even if that record is now inactive and so missing from the active
+        // refs list (an inactive customer/job would otherwise resolve to "no match" and get
+        // silently stripped on save). Only resolve-by-typed-name, and reject an unmatched
+        // name, when the bookkeeper actually changed the field.
+        function txFieldId(elId, list) {
+          var el = document.getElementById(elId);
+          if (!el) return { ok: true, id: '' };
+          var typed = el.value;
+          if (el.value === el.defaultValue) { var orig = el.getAttribute('data-orig-id') || ''; return { ok: true, id: orig }; }
+          var id = txResolveByName(list, typed);
+          if (typed.trim() && !id) return { ok: false, id: '' };
+          return { ok: true, id: id };
+        }
         document.getElementById('tx_save').onclick = function () {
-          var g = { party: document.getElementById('tx_party').value, date: document.getElementById('tx_date').value, lines: draft };
+          var partyTyped = document.getElementById('tx_party').value;
+          var partyRes = txFieldId('tx_party', partyList);
+          if (!partyRes.ok) { (window.bccNotify || alert)('“' + partyTyped + '” doesn’t match anyone in the list — pick one from the dropdown.', 'warn'); return; }
+          var g = { party: partyRes.id, date: document.getElementById('tx_date').value, lines: draft };
           if (entity === 'purchase') {
             var pa = document.getElementById('tx_payacct'); g.paymentAccountId = pa ? pa.value : '';
             var acct = (refs.accounts || []).find(function (a) { return String(a.id) === String(g.paymentAccountId); });
@@ -2307,7 +2384,13 @@
           // PO/ref no., payment terms, and the job the cost belongs to.
           var dn = document.getElementById('tx_docnum'); if (dn && dn.value.trim()) g.docNumber = dn.value.trim();
           var tm = document.getElementById('tx_terms'); if (tm && tm.value) g.termId = tm.value;
-          var jb = document.getElementById('tx_job'); if (jb && jb.value) g.jobCustomerId = jb.value;
+          var jb = document.getElementById('tx_job');
+          if (jb && jb.value.trim()) {
+            var jobRes = txFieldId('tx_job', refs.customers);
+            if (!jobRes.ok) { (window.bccNotify || alert)('“' + jb.value + '” doesn’t match a job/customer in the list — pick one from the dropdown, or clear the field.', 'warn'); return; }
+            if (jobRes.id) g.jobCustomerId = jobRes.id;
+          }
+          if (jobLinesHaveMixedJobs && !confirm('This bill/purchase currently has DIFFERENT jobs on different lines. Saving here applies the same Project/job to every line, losing that per-line split. Continue?')) return;
           // On EDIT, a sparse update REPLACES all lines — carry through any line types the editor
           // doesn't render (item-based lines, discounts, etc.) verbatim so they aren't dropped.
           if (edit) { var editable = (entity === 'invoice' ? 'SalesItemLineDetail' : 'AccountBasedExpenseLineDetail'); g.keepLines = (pre.Line || []).filter(function (l) { return l.DetailType && l.DetailType !== editable; }); }
@@ -2325,6 +2408,9 @@
     else if (entity === 'bill') { if (!g.party) { (window.bccNotify || alert)('Pick a vendor.', 'warn'); return; } fields = { vendorId: g.party, txnDate: g.date, dueDate: g.due, lines: g.lines.map(function (l) { return { accountId: l.accountId, desc: l.desc, amount: l.amount }; }) }; }
     else if (entity === 'purchase') { if (!g.paymentAccountId) { (window.bccNotify || alert)('Pick the bank / credit-card account it was paid from.', 'warn'); return; } if (!(g.lines || []).some(function (l) { return (parseFloat(l.amount) || 0) > 0 && l.accountId; })) { (window.bccNotify || alert)('Add at least one expense line (amount + account).', 'warn'); return; } fields = { vendorId: g.party || '', paymentAccountId: g.paymentAccountId, paymentType: g.paymentType || 'Cash', txnDate: g.date, lines: g.lines.map(function (l) { return { accountId: l.accountId, desc: l.desc, amount: l.amount }; }) }; }
     else { if (!g.party || !g.amount) { (window.bccNotify || alert)('Customer and amount required.', 'warn'); return; } fields = { customerId: g.party, totalAmt: g.amount, txnDate: g.date, depositAccountId: g.deposit, invoiceId: g.invoiceId }; }
+    // Was being collected from the form but never actually sent — bills/purchases
+    // silently never got job-costed even when a job was picked. Fixed 2026-08-06.
+    if (g.jobCustomerId && (entity === 'bill' || entity === 'purchase')) fields.jobCustomerId = g.jobCustomerId;
     if (g.keepLines && g.keepLines.length) fields.keepLines = g.keepLines; // preserve non-editable line types on edit
     var verb = _txnEdit ? 'update' : 'create';
     var total = entity === 'payment' ? g.amount : (g.lines || []).reduce(function (s, l) { return s + (parseFloat(l.amount) || 0); }, 0);
