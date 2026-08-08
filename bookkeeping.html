@@ -4568,7 +4568,12 @@
       .then(function (result) {
         var resp = result.resp;
         if (resp && resp.ok === false) throw new Error(resp.error || 'send failed');
-        var id = emailPrefix() + uid2();
+        // Build the id from the CAPTURED realm, not emailPrefix()'s live currentRealm.
+        // allEmails() lists a client's sent mail by matching this exact key prefix, so
+        // reading currentRealm here would file the record under whichever client the
+        // user switched to mid-send — putting one client's correspondence in another
+        // client's sent history, while the record's own realmId still said otherwise.
+        var id = 'bcc-email-' + realmAt + '-' + uid2();
         // Named from what was actually encoded and sent, NOT from re-reading
         // _emAttachments here — by now that array may already hold files staged
         // after the send started.

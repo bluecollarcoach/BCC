@@ -172,15 +172,20 @@
       // un-scoped /api/data pull. The UI loads them via /integrations/qbo/periods.
       if (key.indexOf('bcc-financial-period-') === 0) return;
       // CPR "sent email" history holds third-party recipient emails + a send timeline.
-      // The generic /api/data store has no per-client access gate, so keep it device-local
-      // (never pushed) rather than expose one client's payroll contacts tenant-wide.
+      // Deliberately device-local: never pushed, so one client's payroll contacts are
+      // never stored tenant-wide in the first place.
       if (key.indexOf('bcc-cpr-sends-') === 0) return;
       // Sent-client-email records hold the recipient list, subject and full body
-      // (now including the sender's personal signature). Same reasoning as
-      // bcc-cpr-sends- above: /api/data has no per-client gate, so keep them
-      // device-local instead of shipping one client's correspondence — and one
-      // person's sign-off — to every signed-in user. The durable audit trail is
-      // the 'client-email-send' audit event, not this record.
+      // (including the sender's personal signature). Same reasoning as bcc-cpr-sends-
+      // above. The durable audit trail is the 'client-email-send' audit event, not
+      // this record.
+      // NOTE (2026-08-08): /api/data DID gain a real per-client access gate, and both
+      // prefixes are now covered by it server-side — but that is defense in depth
+      // against a hand-crafted request, NOT a reason to start syncing these. Keeping
+      // them device-local means the correspondence body and the sender's personal
+      // sign-off are never written to shared storage at all, which is a stronger
+      // guarantee than an access check on data that IS stored. Do not "enable sync"
+      // for these on the grounds that the gate now exists.
       if (key.indexOf('bcc-email-') === 0) return;
       pending.set(key, value);
       schedulePush();
