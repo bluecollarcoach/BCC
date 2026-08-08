@@ -1580,12 +1580,14 @@
     if (!isAdmin) { if (card) card.style.display = 'none'; return; } // KPIs are admin-only for now
     if (card) card.style.display = '';
     var rg = qboRange();
+    var realmAt = currentRealm; // realm-race guard — this response belongs to THIS client only
     var tiles = document.getElementById('qboKpiTiles');
     tiles.innerHTML = '<div class="kpi"><div class="label">Loading…</div></div>';
     document.getElementById('qboKpiNote').textContent = '';
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/kpis?method=' + rg.method + '&asOf=' + rg.to + '&burnMonths=' + rg.months, { credentials: 'include' })
       .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
       .then(function (resp) {
+        if (currentRealm !== realmAt) return; // user switched clients while this KPI pull was in flight
         var k = resp.kpis || {};
         // Monthly trend series from the synced history (oldest→newest).
         // Burn = operating expenses (overhead) only, matching the KPI calc — COGS excluded.
@@ -1606,7 +1608,7 @@
           kpiTile('Net margin', k.netMargin == null ? '—' : (k.netMargin * 100).toFixed(1) + '%', 'trailing ' + resp.burnMonths + ' mo', (k.netMargin != null && k.netMargin < 0 ? 'down' : 'up'), sparkline(sMargin, { labels: L, fmt: fPct }));
         document.getElementById('qboKpiNote').textContent = 'As of ' + resp.asOf + ' · ' + resp.method + ' basis · trend = last 12 synced months · monthly overhead ' + money2(k.monthlyBurn) + ' (avg of ' + resp.burnMonths + ' mo, COGS excluded).';
       })
-      .catch(function (e) { tiles.innerHTML = ''; document.getElementById('qboKpiNote').innerHTML = '<span style="color:var(--burgundy);">' + esc(qboFriendly(e && e.message)) + '</span>'; });
+      .catch(function (e) { if (currentRealm !== realmAt) return; tiles.innerHTML = ''; document.getElementById('qboKpiNote').innerHTML = '<span style="color:var(--burgundy);">' + esc(qboFriendly(e && e.message)) + '</span>'; });
   }
   function qboRefresh() { if (!currentRealm) return; loadQboKpis(); if (qboActiveReport) loadQboReport(qboActiveReport, null); }
   function renderReport(resp, drillable) {
@@ -1661,14 +1663,16 @@
     else if (type === 'balancesheet') q += '&asOf=' + rg.to;
     var out = document.getElementById('qboReportOut');
     out.innerHTML = '<div style="color:var(--muted);padding:10px;">Loading ' + esc(type) + '…</div>';
+    var realmAt = currentRealm; // realm-race guard — some reports (1099, for-review) can take many seconds
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/report?' + q, { credentials: 'include' })
       .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
       .then(function (resp) {
+        if (currentRealm !== realmAt) return; // user switched clients while this report was in flight
         if (resp && resp.data && resp.data.kind === 'for-review') { out.innerHTML = renderForReview(resp.data); wireForReview(out); }
         else if (resp && resp.data && resp.data.kind === 'vendors-1099') { out.innerHTML = renderVendors1099(resp.data); var ys = out.querySelector('#v1099_year'); if (ys) ys.onchange = function () { _report1099Year = ys.value; loadQboReport('vendors-1099'); }; }
         else { out.innerHTML = renderReport(resp); wireTxEdit(out, resp.data); }
       })
-      .catch(function (e) { out.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:10px;font-size:13px;">' + esc(qboFriendly(e && e.message)) + '</div>'; });
+      .catch(function (e) { if (currentRealm !== realmAt) return; out.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:10px;font-size:13px;">' + esc(qboFriendly(e && e.message)) + '</div>'; });
   }
   // ===== "For review" — transactions sitting in Uncategorized / Ask-My-Accountant accounts =====
   function forReviewEntity(txnType) {
@@ -2176,18 +2180,19 @@
   }
   function saveMonthlyReportToFiles() {
     var d = _mr.data; if (!d) return;
+    var realmAt = currentRealm; // capture before the async PDF build — a client switch mid-build must not refile this into the wrong client's folder
     saveReportObservations(false);
     var fname = (d.company.legalName || d.company.name || 'Company') + ' ' + d.periodLabel + ' Report.pdf';
     var btn = document.getElementById('mrSaveFile'), ot = btn.textContent; btn.disabled = true; btn.textContent = 'Saving…';
     mrFetchPdf().then(function (blob) {
       var fd = new FormData();
       fd.append('file', new Blob([blob], { type: 'application/pdf' }), fname);
-      fd.append('folder', (typeof clientFolder === 'function' ? clientFolder() : ('/clients/' + currentRealm)));
+      fd.append('folder', '/clients/' + realmAt);
       fd.append('tags', 'Monthly Report, financials');
       return fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd }).then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); });
     }).then(function (j) {
       btn.disabled = false; btn.textContent = ot;
-      if (window.bccAudit) window.bccAudit('client-file-upload', { key: j && j.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, name: fname, source: 'monthly-report' } });
+      if (window.bccAudit) window.bccAudit('client-file-upload', { key: j && j.id, path: '/bookkeeping.html', meta: { realmId: realmAt, name: fname, source: 'monthly-report' } });
       if (window.bccNotifySaved) window.bccNotifySaved('Report (PDF) filed to the client (tag: Monthly Report).');
       if (typeof loadFiles === 'function') loadFiles();
     }).catch(function (e) { btn.disabled = false; btn.textContent = ot; (window.bccNotify || alert)('Could not save the report: ' + e.message, 'error', 8000); });
@@ -3985,11 +3990,15 @@
     if (!file) return; var r = loadNotaryReq(id); if (!r) return;
     notaryMsg(id, 'Uploading notarized PDF…');
     var fd = new FormData(); fd.append('file', file, file.name);
-    fd.append('folder', notaryFolder());
+    // File into THIS request's own client (r.realmId), never notaryFolder() — that reads
+    // currentRealm live, which for a legacy per-client request shown in the firm-root
+    // Notary view is null, silently misfiling a client's notarized document into the
+    // shared firm bucket instead of that client's private Files.
+    fd.append('folder', r.realmId ? ('/clients/' + r.realmId) : '/notary');
     fd.append('tags', 'Notarized, notary');
     fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
       .then(function (rr) { return rr.json().then(function (j) { return rr.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + rr.status))); }); })
-      .then(function (j) { if (j && j.id) r.notarizedDocId = j.id; r.status = 'completed'; r.completedAt = nowIso(); saveNotaryReq(r); if (currentRealm && typeof loadFiles === 'function') loadFiles(); renderNotary(); updateWsNav(); if (window.bccNotifySaved) window.bccNotifySaved('Notarized document filed' + (currentRealm ? ' to the client.' : '.')); })
+      .then(function (j) { if (j && j.id) r.notarizedDocId = j.id; r.status = 'completed'; r.completedAt = nowIso(); saveNotaryReq(r); if (currentRealm && typeof loadFiles === 'function') loadFiles(); renderNotary(); updateWsNav(); if (window.bccNotifySaved) window.bccNotifySaved('Notarized document filed' + (r.realmId ? ' to the client.' : '.')); })
       .catch(function (e) { notaryMsg(id, ''); (window.bccNotify || alert)('Upload failed: ' + e.message, 'error', 6000); });
   }
   function notaryEmailSigner(id) {
@@ -4251,9 +4260,10 @@
       .catch(function () {});
   }
   function emMetaOp(messageId, op, value) {
+    var realmAt = currentRealm; // realm-race guard, matches loadEmailMeta() above — two clients sharing the bookkeeper's own inbox can show the same Graph messageId
     return fetch('/api/bookkeeping/email-meta/' + encodeURIComponent(currentRealm), { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ messageId: messageId, op: op, value: value }) })
       .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
-      .then(function (resp) { if (resp && resp.ok && resp.msg) { _emMeta[messageId] = resp.msg; renderEmailList(); recomputeUnreadBadge(); } return resp; });
+      .then(function (resp) { if (currentRealm === realmAt && resp && resp.ok && resp.msg) { _emMeta[messageId] = resp.msg; renderEmailList(); recomputeUnreadBadge(); } return resp; });
   }
 
   function loadInbox(force) {
@@ -4427,9 +4437,10 @@
       if (emAttTotalBytes(replyAtts) > EM_ATT_MAX_TOTAL) { st.textContent = 'Attachments are over the ~3 MB limit — remove something first.'; return; }
       btn.disabled = true; st.textContent = 'Sending…';
       document.getElementById('em_r_files').disabled = true; if (replyFilesBtn) replyFilesBtn.style.pointerEvents = 'none';
+      var realmAt = mailboxActive() ? currentRealm : undefined; // capture at Send-click time — a client switch during the async encode/send below must not misattribute this reply
       var html = esc(txt).replace(/\n/g, '<br>');
       Promise.all(replyAtts.map(emFileToAttachment)).then(function (attachments) {
-        var payload = { realmId: mailboxActive() ? currentRealm : undefined, messageId: id, body: html, replyAll: !!replyAll };
+        var payload = { realmId: realmAt, messageId: id, body: html, replyAll: !!replyAll };
         if (attachments.length) payload.attachments = attachments;
         return fetch('/api/integrations/msgraph/reply', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
           .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
@@ -4442,7 +4453,7 @@
           // Counted from what was actually encoded and sent — not replyAtts.length,
           // which could have grown if a file was staged after Send was clicked.
           var sentCount = result.attachments.length;
-          if (window.bccAudit) window.bccAudit('client-email-send', { path: '/bookkeeping.html', meta: { realmId: currentRealm, kind: 'reply', attachments: sentCount } });
+          if (window.bccAudit) window.bccAudit('client-email-send', { path: '/bookkeeping.html', meta: { realmId: realmAt, kind: 'reply', attachments: sentCount } });
           if (window.bccNotifySaved) window.bccNotifySaved('Reply sent' + (sentCount ? ' with ' + sentCount + ' attachment' + (sentCount === 1 ? '' : 's') : '') + '.');
           window._emReplyAttsInProgress = null;
           emCloseModal();
@@ -4500,11 +4511,12 @@
     var filesBtn = document.querySelector('label[for="em_files"]');
     document.getElementById('em_files').disabled = true; if (filesBtn) filesBtn.style.pointerEvents = 'none';
     var usingMailbox = mailboxActive();
+    var realmAt = currentRealm; // capture at Send-click time — a client switch during the async encode/send below must not misattribute this email
     Promise.all(_emAttachments.map(emFileToAttachment))
       .then(function (attachments) {
         var payload = { to: to, subject: subject, bodyHtml: html }; if (cc.length) payload.cc = cc;
         if (attachments.length) payload.attachments = attachments;
-        if (usingMailbox) payload.realmId = currentRealm;
+        if (usingMailbox) payload.realmId = realmAt;
         return fetch('/api/integrations/msgraph/send-mail', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
           .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
           .then(function (resp) { return { resp: resp, attachments: attachments }; }); // carry the RESOLVED attachments forward — not the live array
@@ -4517,8 +4529,8 @@
         // _emAttachments here — by now that array may already hold files staged
         // after the send started.
         var attNames = result.attachments.map(function (a) { return a.name; });
-        localStorage.setItem(id, JSON.stringify({ id: id, tenantId: 'blue-collar-coach', docType: 'client-email', realmId: currentRealm, from: (usingMailbox && _clientMailbox ? _clientMailbox.mailbox : myUpn()), to: to, cc: cc, subject: subject, bodyText: bodyText, attachmentNames: attNames, sentAt: nowIso(), sentBy: myUpn(), status: 'sent' }));
-        if (window.bccAudit) window.bccAudit('client-email-send', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm, recipients: to.length, attachments: attNames.length } });
+        localStorage.setItem(id, JSON.stringify({ id: id, tenantId: 'blue-collar-coach', docType: 'client-email', realmId: realmAt, from: (usingMailbox && _clientMailbox ? _clientMailbox.mailbox : myUpn()), to: to, cc: cc, subject: subject, bodyText: bodyText, attachmentNames: attNames, sentAt: nowIso(), sentBy: myUpn(), status: 'sent' }));
+        if (window.bccAudit) window.bccAudit('client-email-send', { key: id, path: '/bookkeeping.html', meta: { realmId: realmAt, recipients: to.length, attachments: attNames.length } });
         if (window.bccNotifySaved) window.bccNotifySaved('Email sent' + (attNames.length ? ' with ' + attNames.length + ' attachment' + (attNames.length === 1 ? '' : 's') : '') + '.');
         btn.disabled = false; btn.textContent = ot;
         document.getElementById('em_files').disabled = false; if (filesBtn) filesBtn.style.pointerEvents = '';
@@ -4905,6 +4917,11 @@
     return btoa(bin);
   }
   function cprEmailSend() {
+    // Snapshot the report and realm being emailed right now — cprDraft/currentRealm are
+    // live globals that can move on to a different report/client while the PDF templates
+    // below are still downloading, which would otherwise attach the WRONG report's data
+    // to the To/CC/Subject captured here.
+    var draftAt = cprDraft, realmAt = currentRealm;
     var st = document.getElementById('cpe_status');
     var to = (document.getElementById('cpe_to').value || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
     if (!to.length) { (window.bccNotify || alert)('Add at least one recipient.', 'warn'); return; }
@@ -4925,13 +4942,13 @@
               fetch('/forms/mndot-prevailing-wage-payroll.pdf', { credentials: 'include' }).then(function (x) { return x.arrayBuffer(); }),
               fetch('/forms/mndot-statement-of-compliance.pdf', { credentials: 'include' }).then(function (x) { return x.arrayBuffer(); })
             ]).then(function (got) {
-              return cprMndotBuild(cprDraft, got[0], got[1], PDFLib).then(function (files) {
+              return cprMndotBuild(draftAt, got[0], got[1], PDFLib).then(function (files) {
                 files.forEach(function (f) { atts.push({ name: f.name, contentType: 'application/pdf', contentBytes: b64FromBytes(f.bytes) }); });
               });
             }));
           }
           if (wantDli) {
-            jobs.push(cprDliBuild(cprDraft, PDFLib).then(function (files) {
+            jobs.push(cprDliBuild(draftAt, PDFLib).then(function (files) {
               files.forEach(function (f) { atts.push({ name: f.name, contentType: 'application/pdf', contentBytes: b64FromBytes(f.bytes) }); });
             }));
           }
@@ -4946,14 +4963,14 @@
       if (st) st.textContent = 'Sending…';
       var payload = { to: to, subject: subject, bodyHtml: esc(bodyText).replace(/\n/g, '<br>'), attachments: atts };
       if (cc.length) payload.cc = cc;
-      if (mailboxActive && mailboxActive()) payload.realmId = currentRealm;
+      if (mailboxActive && mailboxActive()) payload.realmId = realmAt;
       return fetch('/api/integrations/msgraph/send-mail', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
         .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
         .then(function (resp) {
           if (resp && resp.ok === false) throw new Error(resp.error || 'send failed');
           // Remember this send first (so nothing downstream can lose it), then audit/notify.
-          cprSendsRecord({ jobKey: cprJobKey(cprDraft), projectName: cprDraft.projectName || '', to: to, cc: cc, subject: subject, forms: { mndot: wantMndot, dli: wantDli }, payrollNo: cprDraft.payrollNo || '', at: new Date().toISOString() });
-          if (window.bccAudit) window.bccAudit('client-email-send', { key: cprDraft.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, what: 'certified-payroll', recipients: to.length } });
+          cprSendsRecord({ jobKey: cprJobKey(draftAt), projectName: draftAt.projectName || '', to: to, cc: cc, subject: subject, forms: { mndot: wantMndot, dli: wantDli }, payrollNo: draftAt.payrollNo || '', at: new Date().toISOString() });
+          if (window.bccAudit) window.bccAudit('client-email-send', { key: draftAt.id, path: '/bookkeeping.html', meta: { realmId: realmAt, what: 'certified-payroll', recipients: to.length } });
           if (window.bccNotifySaved) window.bccNotifySaved('Payroll report emailed.');
           var box = document.getElementById('cpr_emailbox'); if (box) { box.style.display = 'none'; box.innerHTML = ''; }
         });
@@ -5260,7 +5277,7 @@
     function upload() {
       var fd = new FormData();
       fd.append('file', new Blob([html], { type: 'text/html' }), fname);
-      fd.append('folder', (typeof clientFolder === 'function' ? clientFolder() : ('/clients/' + realm)));
+      fd.append('folder', '/clients/' + realm); // use the realm CAPTURED above, not clientFolder() — that reads currentRealm live and would refile this into whatever client is active by the time the delete/upload round trip finishes
       fd.append('tags', 'Certified Payroll, payroll');
       fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
         .then(function (rr) { return rr.json().then(function (j) { return rr.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + rr.status))); }); })
@@ -5953,7 +5970,7 @@
     function upload() {
       var fd = new FormData();
       fd.append('file', new Blob([html], { type: 'text/html' }), fname);
-      fd.append('folder', (typeof clientFolder === 'function' ? clientFolder() : ('/clients/' + realm)));
+      fd.append('folder', '/clients/' + realm); // use the realm CAPTURED above, not clientFolder() — that reads currentRealm live and would refile this into whatever client is active by the time upload finishes
       fd.append('tags', 'Pay Application, billing');
       fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
         .then(function (rr) { return rr.json().then(function (j) { return rr.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + rr.status))); }); })
@@ -6089,6 +6106,10 @@
     if (meNoteEl) meNoteEl.oninput = function () { _close.meetingNote = this.value; saveClose(); };
     document.getElementById('close_menotify').onclick = function () {
       var btn = this, st = document.getElementById('close_mestatus');
+      // Capture the close doc + realm being notified right now — a period/client switch
+      // while /api/notify is in flight must not stamp meetingNotifiedAt onto whatever
+      // close doc happens to be live when the response lands.
+      var closeAt = _close, realmAt = currentRealm;
       var pd = new Date(+period.slice(0, 4), +period.slice(5, 7) - 1, 1);
       var label = pd.toLocaleDateString([], { month: 'long', year: 'numeric' });
       var note = (document.getElementById('close_menote') || {}).value || '';
@@ -6096,9 +6117,10 @@
       monthEndNotify(label, note, function (err) {
         btn.disabled = false;
         if (err) { if (st) st.textContent = ''; (window.bccNotify || alert)('Could not notify: ' + err.message, 'error', 7000); return; }
-        _close.meetingNotifiedAt = nowIso(); _close.meetingNotifiedTo = monthEndContact(); saveClose();
-        if (window.bccAudit) window.bccAudit('monthend-notify', { key: _close.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, period: period, to: monthEndContact() } });
-        renderClose();
+        closeAt.meetingNotifiedAt = nowIso(); closeAt.meetingNotifiedTo = monthEndContact();
+        closeAt.updatedAt = nowIso(); closeAt.updatedBy = myUpn(); localStorage.setItem(closeAt.id, JSON.stringify(closeAt)); // write the captured doc directly — saveClose() would target whatever _close is NOW, not the one this notification was actually for
+        if (window.bccAudit) window.bccAudit('monthend-notify', { key: closeAt.id, path: '/bookkeeping.html', meta: { realmId: realmAt, period: period, to: monthEndContact() } });
+        if (currentRealm === realmAt) renderClose(); // only repaint if still viewing the same client's Close tab
         if (window.bccNotifySaved) window.bccNotifySaved('Notification sent — ' + label + ' month-end meeting hand-off.');
       });
     };
@@ -6141,15 +6163,17 @@
   }
   function closeGoReport(t) { setSection('reports'); setTimeout(function () { loadQboReport(t); }, 60); }
   function closeLoadHelpers(period) {
+    var realmAt = currentRealm; // realm-race guard — both fetches below can take a few seconds
     var catEl = document.querySelector('.close-help[data-help="cat"]');
     if (catEl) {
       catEl.textContent = 'Checking uncategorized…';
       fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/report?type=for-review', { credentials: 'include' })
         .then(function (r) { return r.json(); }).then(function (j) {
+          if (currentRealm !== realmAt) return;
           var n = ((j && j.data && j.data.items) || []).length;
           catEl.innerHTML = n ? ('<strong style="color:#c0392b;">' + n + ' transaction' + (n === 1 ? '' : 's') + '</strong> to categorize — open <a href="#" data-goreview="1">🔎 For review</a>.') : '✓ nothing sitting in an uncategorized account.';
           var g = catEl.querySelector('[data-goreview]'); if (g) g.onclick = function (e) { e.preventDefault(); closeGoReport('for-review'); };
-        }).catch(function () { catEl.textContent = ''; });
+        }).catch(function () { if (currentRealm === realmAt) catEl.textContent = ''; });
     }
     var ar = document.querySelector('.close-help[data-help="ar"]'); if (ar) ar.innerHTML = 'Open the <a href="#" data-gorpt="ar-aging">A/R Aging</a> report.';
     var ap = document.querySelector('.close-help[data-help="ap"]'); if (ap) ap.innerHTML = 'Open the <a href="#" data-gorpt="ap-aging">A/P Aging</a> report.';
@@ -6160,12 +6184,13 @@
     if (bankEl || ccEl) {
       fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/reconcile-accounts?asOf=' + periodEndDate(period), { credentials: 'include' })
         .then(function (r) { return r.json(); }).then(function (j) {
+          if (currentRealm !== realmAt) return;
           if (!j || !j.ok) { if (bankEl) bankEl.textContent = ''; if (ccEl) ccEl.textContent = ''; return; }
           var banks = j.accounts.filter(function (a) { return a.type === 'Bank'; });
           var ccs = j.accounts.filter(function (a) { return a.type === 'Credit Card'; });
           if (bankEl) { bankEl.innerHTML = reconPanel(banks, period); wireRecon(bankEl); }
           if (ccEl) { ccEl.innerHTML = reconPanel(ccs, period); wireRecon(ccEl); }
-        }).catch(function () { if (bankEl) bankEl.textContent = ''; if (ccEl) ccEl.textContent = ''; });
+        }).catch(function () { if (currentRealm !== realmAt) return; if (bankEl) bankEl.textContent = ''; if (ccEl) ccEl.textContent = ''; });
     }
   }
   function reconPanel(accts) {
@@ -6216,14 +6241,20 @@
   function renderWip() {
     var body = document.getElementById('wip-body'); if (!body) return;
     if (!_wip || _wip.realmId !== currentRealm) _wip = loadWipDoc();
+    var realmAt = currentRealm; // realm-race guard — the job-costs fetch below can take a few seconds
     body.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px;">' +
       '<h3 style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;margin:0;">Job costing / WIP <span style="color:var(--muted);font-weight:400;font-size:12px;">· ' + esc(companyName(currentRealm)) + '</span></h3></div>' +
       '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Cost &amp; billed-to-date come from QuickBooks (by customer/job, year to date). Enter each job’s <strong>contract</strong> and <strong>estimated cost</strong> to get percent complete, earned revenue, and over/under billing.</div>' +
       '<div id="wip_out" style="color:var(--muted);padding:10px 0;">Loading jobs from QuickBooks…</div>';
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/job-costs', { credentials: 'include' })
       .then(function (r) { return r.json(); })
-      .then(function (j) { var out = document.getElementById('wip_out'); if (!out) return; if (!j || !j.ok) { out.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:10px;">' + esc(qboFriendly(j && j.error)) + '</div>'; return; } renderWipTable(j.jobs || []); })
-      .catch(function (e) { var out = document.getElementById('wip_out'); if (out) out.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:10px;">' + esc(e.message) + '</div>'; });
+      .then(function (j) {
+        if (currentRealm !== realmAt) return;
+        var out = document.getElementById('wip_out'); if (!out) return; if (!j || !j.ok) { out.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:10px;">' + esc(qboFriendly(j && j.error)) + '</div>'; return; }
+        if (!_wip || _wip.realmId !== realmAt) _wip = loadWipDoc(); // _wip is a shared global — re-verify it's still this realm's doc, not one loaded for a client visited in between
+        renderWipTable(j.jobs || []);
+      })
+      .catch(function (e) { if (currentRealm !== realmAt) return; var out = document.getElementById('wip_out'); if (out) out.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:10px;">' + esc(e.message) + '</div>'; });
   }
   function renderWipTable(jobs) {
     var out = document.getElementById('wip_out'); if (!out) return;
@@ -6397,6 +6428,11 @@
     loadCompanies().then(function () {
       var dq, dr, rid;
       try { dq = new URLSearchParams(location.search); dr = dq.get('drive'); rid = dr ? dq.get('realmId') : ''; } catch (_) {}
+      // Only trust realmId from the URL if it's one of THIS user's permitted companies —
+      // companies is the server-scoped, access-controlled list, so this is what stops
+      // someone from opening ?drive=1&realmId=<another client> and having the client-side
+      // Tasks/Close tabs render for a client they were never granted.
+      if (rid && !companies.some(function (c) { return String(c.realmId) === String(rid); })) rid = '';
       if (rid) currentRealm = rid;             // open the just-connected client BEFORE the first paint (don't flash/stick on home)
       else {
         // Restore the client the user was last in, so a refresh / next open lands there.
