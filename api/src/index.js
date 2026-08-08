@@ -97,7 +97,10 @@ const CLIENT_SCOPED_ID_RE = [
   /^bcc-cpr-(?!sends-)([^-]+)-[0-9a-z]+$/,
   /^bcc-payapp-([^-]+)-[0-9a-z]+$/,
   /^bcc-client-info-([^-]+)$/,
-  /^bcc-notary-([^-]+)-[0-9a-z]+$/,
+  // NOT bcc-notary-contact-v1 — that is a FIRM-WIDE setting (who gets alerted about
+  // new notary requests), and the naive pattern read "contact" as a client realm,
+  // so no such client existed and every read/write of the setting was denied.
+  /^bcc-notary-(?!contact-v1$)([^-]+)-[0-9a-z]+$/,
   /^bcc-email-([^-]+)-[0-9a-z]+$/,
   /^bcc-cpr-sends-([^-]+)$/,
   // The company's saved Statement-of-Compliance signature. Per-client, and BOTH the
@@ -2101,9 +2104,18 @@ function tierAtLeast(tier, min) { return (APP_TIER_RANK[tier] || 0) >= (APP_TIER
 // bcc-engagement- only by jobs.html (crm-companies.html/documents.html only read
 // it); bcc-campaign- only by marketing.html; bcc-rate-signature- and the singleton
 // bcc-rate-sheet-v1 only by rates.html.
+// `app` is the app that OWNS (writes) the doc type. `readApps` lists the other apps
+// that legitimately READ it — gating a read by the owning app alone broke pages that
+// merely reference these records: dashboard.html and jobs.html both list
+// bcc-company- docs, but 'dashboard' is a member-default app while 'crm' is NOT, so
+// an ordinary member could open the Client Dashboard and find its client picker
+// completely empty. Reads require any ONE of app+readApps; writes still require the
+// owning app.
 const SINGLE_APP_KEY_PREFIXES = [
-  { re: /^bcc-company-/, app: 'crm' },
-  { re: /^bcc-engagement-/, app: 'jobs' },
+  { re: /^bcc-company-/, app: 'crm', readApps: ['jobs', 'dashboard'] },
+  { re: /^bcc-engagement-/, app: 'jobs', readApps: ['crm', 'documents'] },
+  { re: /^bcc-convo-/, app: 'crm', readApps: ['rates'] },
+  { re: /^bcc-weeklynote-/, app: 'crm' },
   { re: /^bcc-campaign-/, app: 'marketing' },
   { re: /^bcc-rate-signature-/, app: 'rates' },
   // bcc-dashboard-<crmCompanyId> holds QuickBooks-derived financial ratios (current
@@ -2138,6 +2150,7 @@ async function appAccessForKey(p, id, minTier) {
 // in behavior.
 const ALL_TIERED_APPS = Array.from(new Set([
   ...SINGLE_APP_KEY_PREFIXES.map(x => x.app),
+  ...SINGLE_APP_KEY_PREFIXES.flatMap(x => x.readApps || []), // must be resolved too, or a read-app tier is undefined
   ...Object.values(SINGLE_APP_EXACT_KEYS),
   ...CONTACT_APPS,
 ]));
@@ -2148,7 +2161,14 @@ async function appAccessChecker(p) {
     id = String(id || '');
     const exactApp = SINGLE_APP_EXACT_KEYS[id];
     if (exactApp) return tierAtLeast(tiers[exactApp], minTier);
-    for (const { re, app } of SINGLE_APP_KEY_PREFIXES) if (re.test(id)) return tierAtLeast(tiers[app], minTier);
+    for (const { re, app, readApps } of SINGLE_APP_KEY_PREFIXES) {
+      if (!re.test(id)) continue;
+      // Writing requires the OWNING app. Reading is also satisfied by any app that
+      // legitimately references this doc type (see readApps above).
+      if (tierAtLeast(tiers[app], minTier)) return true;
+      if (minTier === 'view' && readApps) return readApps.some(a => tierAtLeast(tiers[a], minTier));
+      return false;
+    }
     if (id.startsWith('bcc-contact-')) return CONTACT_APPS.some(app => tierAtLeast(tiers[app], minTier));
     return null;
   };

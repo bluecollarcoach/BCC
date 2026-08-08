@@ -4683,7 +4683,16 @@
     // otherwise Save/Print/Email (all keyed off currentRealm at click time) would file
     // or send Client A's payroll data under Client B's identity. Back out to the list
     // view for whichever client is now active instead.
-    if (cprEditingId !== null && cprDraft && cprDraft.realmId !== currentRealm) { cprEditingId = null; cprDraft = null; }
+    // PERSIST before dropping it. The draft is a full record keyed by its own id, so
+    // writing it locally keeps whatever the bookkeeper had typed — it reopens intact
+    // from that client's list. Closing the editor without this silently threw the
+    // in-progress edits away. Saved locally only: cprSaveToFiles() would upload into
+    // the client's documents, which is a deliberate action, not something a client
+    // switch should trigger.
+    if (cprEditingId !== null && cprDraft && cprDraft.realmId !== currentRealm) {
+      try { cprDraft.updatedAt = nowIso(); cprDraft.updatedBy = myUpn(); localStorage.setItem(cprDraft.id, JSON.stringify(cprDraft)); } catch (e) {}
+      cprEditingId = null; cprDraft = null;
+    }
     if (cprEditingId !== null) { renderCprEditor(body); return; }
     var all = allCpr().sort(function (a, b) { return (cnum(b.payrollNo) - cnum(a.payrollNo)) || (b.updatedAt || '').localeCompare(a.updatedAt || ''); });
     // Search by job/project (plus payroll #, contract, week, employee names) —
@@ -5903,7 +5912,12 @@
     var body = document.getElementById('payapp-body'); if (!body) return;
     // Same hazard as renderPayroll(): a client switch while a pay app was open for
     // editing must not leave it open filing/saving under the newly-active client.
-    if (payappEditingId !== null && payappDraft && payappDraft.realmId !== currentRealm) { payappEditingId = null; payappDraft = null; }
+    // Persist before dropping, same reasoning as renderPayroll above — the in-progress
+    // pay application must survive a client switch, not vanish.
+    if (payappEditingId !== null && payappDraft && payappDraft.realmId !== currentRealm) {
+      try { payappDraft.updatedAt = nowIso(); payappDraft.updatedBy = myUpn(); localStorage.setItem(payappDraft.id, JSON.stringify(payappDraft)); } catch (e) {}
+      payappEditingId = null; payappDraft = null;
+    }
     if (payappEditingId !== null) { renderPayappEditor(body); return; }
     var reports = allPayapp().sort(function (a, b) { return (cnum(b.appNo) - cnum(a.appNo)) || (b.updatedAt || '').localeCompare(a.updatedAt || ''); });
     var head = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;">' +

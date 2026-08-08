@@ -336,12 +336,27 @@
         if (!putRefused) window.bccAudit && window.bccAudit('data-write', { meta: { keys: puts.map(function (p) { return p.key; }) } });
       }
       for (var i = 0; i < deletes.length; i++) {
-        var dr = await fetch(API_BASE + '/data/' + encodeURIComponent(deletes[i]), { method: 'DELETE' });
-        if (!dr.ok && dr.status >= 400 && dr.status < 500) {
-          permanentlyFailed.add(deletes[i]);
+        var dkey = deletes[i];
+        var dr = await fetch(API_BASE + '/data/' + encodeURIComponent(dkey), { method: 'DELETE' });
+        if (!dr.ok) {
+          // A 401/408/429 or any 5xx is TRANSIENT — the record is already gone from
+          // this browser, so dropping it here left the server copy alive to reappear
+          // on the next pull. Re-queue the deletion instead of pretending it worked.
+          if (dr.status === 401 || dr.status === 408 || dr.status === 429 || dr.status >= 500) {
+            pending.set(dkey, null);
+            schedulePush();
+            window.dispatchEvent(new CustomEvent('bcc-sync-error', { detail: { key: dkey, status: dr.status, transient: true } }));
+            continue;
+          }
+          // A genuine 4xx (e.g. no permission to delete this) is permanent — but it
+          // used to be swallowed with no event at all, so the row vanished locally
+          // while the server kept it and the user was never told.
+          permanentlyFailed.add(dkey);
+          window.dispatchEvent(new CustomEvent('bcc-sync-error', { detail: { key: dkey, status: dr.status } }));
           continue;
         }
-        window.bccAudit && window.bccAudit('data-delete', { key: deletes[i] });
+        // Only audit an actual success — this used to log 'data-delete' even for a 5xx.
+        window.bccAudit && window.bccAudit('data-delete', { key: dkey });
       }
       setSyncState(putRefused ? 'error' : 'idle');
     } catch (err) {
