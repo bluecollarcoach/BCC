@@ -52,6 +52,32 @@ const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-
 // start here so they're invisible to bookkeepers until an admin grants access.
 const ADMIN_ONLY_UPN = '__admins_only__';
 function isProtectedServerKey(k) { return PROTECTED_KEY_PREFIXES.some(pre => String(k || '').startsWith(pre)); }
+// Client-scoped generic-store doc types — unlike PROTECTED_KEY_PREFIXES (which have
+// their own dedicated, access-gated endpoints), these are ordinary /api/data records
+// with no endpoint of their own, so the per-client access gate has to live here. Each
+// belongs to exactly one QuickBooks company (client-task, close checklist, WIP,
+// certified payroll, pay application, client info, notary request) and must be
+// readable/writable only by someone with access to THAT company — same rule every
+// dedicated per-client endpoint already enforces via companyPrivateBlocked +
+// enabled/allowedUserUpns. bcc-cpr-sends- (send-history, not a report) and
+// bcc-notary-firm- (deliberately firm-wide) are excluded on purpose.
+const CLIENT_SCOPED_ID_RE = [
+  /^bcc-task-([^-]+)-[0-9a-z]+$/,
+  /^bcc-close-([^-]+)-\d{4}-\d{2}$/,
+  /^bcc-wip-([^-]+)$/,
+  /^bcc-cpr-(?!sends-)([^-]+)-[0-9a-z]+$/,
+  /^bcc-payapp-([^-]+)-[0-9a-z]+$/,
+  /^bcc-client-info-([^-]+)$/,
+  /^bcc-notary-([^-]+)-[0-9a-z]+$/,
+];
+function dataKeyClientRealm(id) {
+  id = String(id || '');
+  for (const re of CLIENT_SCOPED_ID_RE) {
+    const m = re.exec(id);
+    if (m) return m[1] === 'firm' ? null : m[1];
+  }
+  return null;
+}
 // Content types we'll serve INLINE for in-app preview. Deliberately excludes
 // text/html + svg + xhtml (active content) so an uploaded page can't render and
 // run script — those always download instead.
@@ -387,6 +413,10 @@ app.http('data', {
           // signatures, uploaded-file metadata, etc.); a direct GET here bypassed
           // that gate entirely, since only the write side checked it.
           if (isProtectedServerKey(key)) return { jsonBody: { key, data: null } };
+          // Client-scoped bookkeeping records (tasks, close checklist, WIP, CPR, pay
+          // app, client info, notary) — only someone with access to THAT company.
+          const clientRealm = dataKeyClientRealm(key);
+          if (clientRealm && (await driveClientAccess(p, clientRealm)).err) return { jsonBody: { key, data: null } };
           // Personal docs (tasks, daily time log, email signature) — owner only.
           if (!ownsPersonalKey(key)) return { jsonBody: { key, data: null } };
           // Integration docs hold OAuth client secrets / tokens — redact for non-admins.
@@ -435,10 +465,21 @@ app.http('data', {
         // truth here means a future addition to PROTECTED_KEY_PREFIXES is
         // automatically read-protected too, not just write-protected.
         const resources = rawResources.filter(r => !isProtectedServerKey(r.id));
+        // Per-client access gate for client-scoped bookkeeping docs (tasks, close
+        // checklist, WIP, CPR, pay app, client info, notary) — without this, a
+        // private/restricted client's tasks and financial-adjacent records synced
+        // to every signed-in user's browser regardless of that client's access list.
+        // Only pay for the extra company-access query when this batch actually has
+        // any client-scoped docs in it.
+        const hasClientScoped = resources.some(r => dataKeyClientRealm(r.id));
+        const coAccess = hasClientScoped ? await companyAccessMap(p) : null;
+        const gated = coAccess
+          ? resources.filter(r => { const realm = dataKeyClientRealm(r.id); return !realm || coAccess.allowed(realm); })
+          : resources;
         // Integration docs hold secrets — redact credential fields for non-admins
         // (status flags stay so connection badges keep working).
         const dataAdmin = await isAppAdmin(p);
-        const items = resources.map(r => {
+        const items = gated.map(r => {
           const isInt = String(r.id).startsWith('bcc-integration-');
           const isAdminCfg = ADMIN_KEYS.has(r.id);
           const data = isInt ? (dataAdmin ? r.data : redactIntegrationData(r.data))
@@ -459,6 +500,7 @@ app.http('data', {
 
         let touchesAdminKey = false;
         let touchesIntegration = false;
+        const realmAccessCache = new Map();
         for (const it of items) {
           if (!isPcKey(it.key)) return badRequest('invalid key: ' + it.key);
           if (isProtectedServerKey(it.key)) return forbidden('this record is managed by a secure endpoint and cannot be written here');
@@ -466,6 +508,16 @@ app.http('data', {
           if (!ownsPersonalKey(it.key)) return forbidden('you can only write your own personal records');
           const claimed = personalOwner(it.key, it.data);
           if (claimed && claimed !== me) return forbidden('personal record owner mismatch');
+          // Client-scoped bookkeeping records (tasks, close checklist, WIP, CPR, pay
+          // app, client info, notary) — only someone with access to THAT company may
+          // write them, and a payload claiming a different realmId than its own key
+          // is rejected outright rather than trusted.
+          const clientRealm = dataKeyClientRealm(it.key);
+          if (clientRealm) {
+            if (it.data && it.data.realmId != null && String(it.data.realmId) !== String(clientRealm)) return badRequest('realmId does not match record key: ' + it.key);
+            if (!realmAccessCache.has(clientRealm)) realmAccessCache.set(clientRealm, await driveClientAccess(p, clientRealm));
+            if (realmAccessCache.get(clientRealm).err) return forbidden('no access to this client');
+          }
           if (ADMIN_KEYS.has(it.key)) touchesAdminKey = true;
           if (it.key.startsWith('bcc-integration-')) touchesIntegration = true;
         }
@@ -503,6 +555,8 @@ app.http('data', {
         if (!isPcKey(key)) return badRequest('invalid key');
         if (isProtectedServerKey(key)) return forbidden('this record is managed by a secure endpoint and cannot be deleted here');
         if (!ownsPersonalKey(key)) return forbidden('you can only delete your own personal records');
+        const delRealm = dataKeyClientRealm(key);
+        if (delRealm && (await driveClientAccess(p, delRealm)).err) return forbidden('no access to this client');
         if (ADMIN_KEYS.has(key) && !(await isAppAdmin(p))) return forbidden();
         if (key.startsWith('bcc-integration-') && !(await isAppAdmin(p))) return forbidden('only administrators may delete integration credentials');
         try { await c.item(key, BCC_TENANT_ID).delete(); } catch (e) { if (e.code !== 404) throw e; }
@@ -1848,6 +1902,30 @@ async function driveClientAccess(p, realmId) {
     if (!comp || comp.enabled === false || (allow.length && allow.indexOf(who) < 0)) return { err: { status: 403, jsonBody: { ok: false, error: 'no access to this client' } } };
   }
   return { comp };
+}
+// Bulk-friendly counterpart to driveClientAccess — computes every company's access
+// decision for this caller in ONE query, so filtering a whole list of client-scoped
+// generic-store docs (tasks, close checklists, WIP, etc.) doesn't do a per-document
+// Cosmos read. Same access rule, just batched.
+async function companyAccessMap(p) {
+  const c = container();
+  const admin = await isAppAdmin(p);
+  const who = String((p && (p.userDetails || p.userId)) || '').toLowerCase();
+  const { resources } = await c.items.query({
+    query: 'SELECT c.realmId, c.enabled, c.allowedUserUpns, c.privateToUpn FROM c WHERE c.tenantId=@t AND c.docType="qbo-company"',
+    parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+  }).fetchAll();
+  const byRealm = new Map(resources.map(co => [String(co.realmId), co]));
+  return {
+    allowed(realmId) {
+      const co = byRealm.get(String(realmId));
+      if (companyPrivateBlocked(co, p)) return false;
+      if (admin) return true;
+      if (!co || co.enabled === false) return false;
+      const allow = (co.allowedUserUpns || []).map(u => String(u).toLowerCase());
+      return !(allow.length && allow.indexOf(who) < 0);
+    }
+  };
 }
 
 // Per-document access gate. A document that lives in a client folder (/clients/<realm>)
@@ -4360,14 +4438,22 @@ app.http('qbo-job-costs', {
       const rep = flattenQboReport(await ctx.apiGet('/reports/ProfitAndLoss?summarize_column_by=Customers&start_date=' + from + '&end_date=' + to + '&accounting_method=' + method));
       const cols = rep.columns || [];
       // columns = [ '' (account label), Customer1, Job1, Job2, 'Total Customer1', ..., 'TOTAL' ].
-      // Drop the grand total + the per-parent "Total <customer>" subtotal columns (they'd
-      // double-count sub-jobs) — but keep a REAL customer named e.g. "Total Comfort HVAC".
-      // A "Total X" column is a subtotal only when X is itself a customer column.
-      const realNames = new Set(cols.map((c, i) => ({ n: String(c || '').trim(), i })).filter(x => x.i > 0 && x.n && !/^total\b/i.test(x.n)).map(x => x.n));
+      // Drop the grand total + every per-parent "Total <customer>" subtotal column — keeping
+      // them alongside their own job columns double-counts every job under a parent that has
+      // sub-jobs. The previous version only dropped a "Total X" column when a BARE "X" column
+      // was also present, on the theory that's how you tell a subtotal apart from a customer
+      // literally named "Total X" — but in the standard job-costing setup, a parent whose
+      // activity is entirely on its sub-jobs has NO bare column of its own (QBO omits
+      // all-zero columns), so that check silently let the subtotal through and doubled every
+      // job's income/cost under it. That's the common case, not an edge case. QBO's report
+      // JSON gives no reliable signal to disambiguate a real "Total X"-named customer from a
+      // subtotal — both render as ColTitle "Total X" — so always dropping "Total "-prefixed
+      // columns trades a vanishingly rare customer being omitted from the view for never
+      // silently doubling real dollar amounts, which is the safer failure mode for numbers
+      // clients make decisions from.
       const custCols = cols.map((c, i) => ({ name: String(c || '').trim(), i })).filter(x => {
         if (x.i <= 0 || !x.name) return false;
-        if (/^total$/i.test(x.name)) return false; // grand-total column ("TOTAL")
-        if (/^total\s+/i.test(x.name) && realNames.has(x.name.replace(/^total\s+/i, ''))) return false; // per-parent subtotal
+        if (/^total\b/i.test(x.name)) return false; // grand total ("TOTAL") + every per-parent subtotal ("Total <Customer>")
         return true;
       });
       const num = s => parseFloat(String(s == null ? '' : s).replace(/[$,]/g, '').replace(/^\((.*)\)$/, '-$1')) || 0;
@@ -6716,6 +6802,14 @@ app.http('documents-list-create', {
       if (buf.length > MAX_UPLOAD_BYTES) return badRequest('file exceeds 25 MB');
 
       const folder = safeFolder(form.get('folder') || '/');
+      // Same client-access gate the GET (list) path above already enforces — without
+      // it, any signed-in user could POST a file straight into another (or a private)
+      // client's folder, an unauthorized cross-client write the listing check alone
+      // does nothing to stop.
+      if (!(await isAppAdmin(p))) {
+        const um = folder.match(/^\/clients\/([^/]+)(?:\/|$)/i);
+        if (um) { const uacc = await driveClientAccess(p, um[1]); if (uacc.err) return { status: 403, jsonBody: { error: 'no access to this client' } }; }
+      }
       const tags = String(form.get('tags') || '').trim();
       const docId = String(form.get('docId') || (DOC_DOC_PREFIX + Date.now().toString(36) + Math.random().toString(36).slice(2, 9)));
       const linkedContactId    = String(form.get('linkedContactId') || '').trim() || null;

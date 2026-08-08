@@ -2420,21 +2420,26 @@
     var verb = _txnEdit ? 'update' : 'create';
     var total = entity === 'payment' ? g.amount : (g.lines || []).reduce(function (s, l) { return s + (parseFloat(l.amount) || 0); }, 0);
     if (!confirm('Post this ' + entity + ' to ' + companyName(currentRealm) + '’s live QuickBooks?\n\nTotal: $' + (Number(total) || 0).toLocaleString())) return;
+    // confirm() is a blocking modal — nothing can switch clients while it's open, so
+    // currentRealm read right after it resolves is still the client the user meant.
+    // Capture it now: the network round trip below is NOT blocking, and everything
+    // downstream (audit log, attach) must stay pinned to THIS client even if the
+    // user switches away before the write resolves.
+    var realmAt = currentRealm;
     var btn = document.getElementById('tx_save'); var ot = btn.textContent; btn.disabled = true; btn.textContent = 'Posting…';
     var body = { entity: entity, op: verb, fields: fields };
     if (_txnEdit) { body.id = _txnEdit.id; body.syncToken = _txnEdit.syncToken; }
-    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/write', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(realmAt) + '/write', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
       .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
       .then(function (resp) {
         if (!resp.ok) throw new Error(resp.error || 'write failed');
-        if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: currentRealm, entity: entity, op: verb, id: resp.id } });
+        if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: realmAt, entity: entity, op: verb, id: resp.id } });
         if (window.bccNotifySaved) window.bccNotifySaved(entity.charAt(0).toUpperCase() + entity.slice(1) + (verb === 'update' ? ' updated' : ' created') + (resp.docNumber ? (' #' + resp.docNumber) : '') + ' in QuickBooks.');
         var attachFile = _txnFile; _txnFile = null;
         var attachCap = { invoice: 'Invoice', bill: 'Bill', purchase: 'Purchase' }[entity];
-        if (attachFile && attachCap && resp.id) attachToEntity(attachCap, resp.id, attachFile, resp.docNumber);
+        if (attachFile && attachCap && resp.id) attachToEntity(attachCap, resp.id, attachFile, resp.docNumber, realmAt);
         document.getElementById('qboWriteForm').innerHTML = ''; _txnEdit = null; _txnFormRealm = null;
-        loadQboKpis();
-        if (qboActiveReport) loadQboReport(qboActiveReport, null);
+        if (currentRealm === realmAt) { loadQboKpis(); if (qboActiveReport) loadQboReport(qboActiveReport, null); }
       })
       .catch(function (e) { btn.disabled = false; btn.textContent = ot; (window.bccNotify || alert)('QuickBooks rejected it: ' + e.message, 'error', 7000); });
   }
@@ -2543,10 +2548,19 @@
       .catch(function (e) { if (btn) { btn.disabled = false; btn.textContent = ot; } (window.bccNotify || alert)('QuickBooks rejected it: ' + e.message, 'error', 7000); });
   }
   function editTxn(entity, id) {
+    // realm-race guard — without this, switching clients while this GET is in flight
+    // opens the edit form under the NEW client while pre-filling the OLD client's
+    // entity id/SyncToken, so Save would post an "update" that sparse-overwrites an
+    // unrelated live transaction in the new client's own QuickBooks (QBO ids are
+    // small sequential integers per company, so a collision is very plausible).
+    var realmAt = currentRealm;
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/entity?type=' + encodeURIComponent(entity) + '&id=' + encodeURIComponent(id), { credentials: 'include' })
       .then(function (r) { return r.json(); })
-      .then(function (d) { if (!d || !d.ok || !d.entity) throw new Error((d && d.error) || 'not found'); var e = d.entity; openTxnForm(entity, { id: e.Id, syncToken: e.SyncToken, docNumber: e.DocNumber, entity: e }); var w = document.getElementById('qboWrite'); if (w && w.scrollIntoView) w.scrollIntoView({ behavior: 'smooth', block: 'start' }); })
-      .catch(function (e) { (window.bccNotify || alert)('Could not load for edit: ' + e.message, 'warn'); });
+      .then(function (d) {
+        if (currentRealm !== realmAt) return;
+        if (!d || !d.ok || !d.entity) throw new Error((d && d.error) || 'not found'); var e = d.entity; openTxnForm(entity, { id: e.Id, syncToken: e.SyncToken, docNumber: e.DocNumber, entity: e }); var w = document.getElementById('qboWrite'); if (w && w.scrollIntoView) w.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      })
+      .catch(function (e) { if (currentRealm === realmAt) (window.bccNotify || alert)('Could not load for edit: ' + e.message, 'warn'); });
   }
   function wireTxEdit(out, data) {
     if (!data || !data.editable) return;
@@ -2666,19 +2680,19 @@
   }
   // Attach a file to a posted QBO transaction (best-effort) + keep a copy in the
   // client's Files (Blob). Never blocks the transaction that already posted.
-  function attachToEntity(cap, id, file, docNumber) {
+  function attachToEntity(cap, id, file, docNumber, realm) {
     if (window.bccNotify) window.bccNotify('Attaching “' + file.name + '” to QuickBooks…', 'info', 4000);
     var fd = new FormData(); fd.append('file', file); fd.append('entityType', cap); fd.append('entityId', id);
-    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/attach', { method: 'POST', credentials: 'include', body: fd })
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(realm) + '/attach', { method: 'POST', credentials: 'include', body: fd })
       .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
       .then(function (resp) {
         if (!resp.ok) throw new Error(resp.error || 'attach failed');
         if (window.bccNotifySaved) window.bccNotifySaved('Receipt attached to ' + cap + (docNumber ? (' #' + docNumber) : '') + '.');
-        if (window.bccAudit) window.bccAudit('qbo-attach', { path: '/bookkeeping.html', meta: { realmId: currentRealm, entity: cap, id: id } });
+        if (window.bccAudit) window.bccAudit('qbo-attach', { path: '/bookkeeping.html', meta: { realmId: realm, entity: cap, id: id } });
       })
       .catch(function (e) { if (window.bccNotify) window.bccNotify('Posted, but attaching the file to QuickBooks failed: ' + e.message, 'warn', 7000); });
     // Keep a copy in the client's Files tab (Blob), best-effort, non-blocking.
-    var fd2 = new FormData(); fd2.append('file', file); fd2.append('folder', '/clients/' + currentRealm); fd2.append('tags', 'receipt,' + cap.toLowerCase() + '-' + id);
+    var fd2 = new FormData(); fd2.append('file', file); fd2.append('folder', '/clients/' + realm); fd2.append('tags', 'receipt,' + cap.toLowerCase() + '-' + id);
     fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd2 }).catch(function () {});
   }
   function scanReceipt(file) {
@@ -4618,6 +4632,11 @@
   var _cprSearch = '';
   function renderPayroll() {
     var body = document.getElementById('payroll-body'); if (!body) return;
+    // Switching clients while a report was open for editing must not leave it open —
+    // otherwise Save/Print/Email (all keyed off currentRealm at click time) would file
+    // or send Client A's payroll data under Client B's identity. Back out to the list
+    // view for whichever client is now active instead.
+    if (cprEditingId !== null && cprDraft && cprDraft.realmId !== currentRealm) { cprEditingId = null; cprDraft = null; }
     if (cprEditingId !== null) { renderCprEditor(body); return; }
     var all = allCpr().sort(function (a, b) { return (cnum(b.payrollNo) - cnum(a.payrollNo)) || (b.updatedAt || '').localeCompare(a.updatedAt || ''); });
     // Search by job/project (plus payroll #, contract, week, employee names) —
@@ -5819,6 +5838,9 @@
   }
   function renderPayApp() {
     var body = document.getElementById('payapp-body'); if (!body) return;
+    // Same hazard as renderPayroll(): a client switch while a pay app was open for
+    // editing must not leave it open filing/saving under the newly-active client.
+    if (payappEditingId !== null && payappDraft && payappDraft.realmId !== currentRealm) { payappEditingId = null; payappDraft = null; }
     if (payappEditingId !== null) { renderPayappEditor(body); return; }
     var reports = allPayapp().sort(function (a, b) { return (cnum(b.appNo) - cnum(a.appNo)) || (b.updatedAt || '').localeCompare(a.updatedAt || ''); });
     var head = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;">' +
