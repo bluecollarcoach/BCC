@@ -40,12 +40,18 @@ const COSMOS_KEY      = process.env.COSMOS_KEY;
 const COSMOS_DB       = process.env.COSMOS_DB || 'bcc-connect';
 const COSMOS_CONTAINER = process.env.COSMOS_CONTAINER || 'data';
 const BCC_TENANT_ID    = process.env.BCC_TENANT_ID || 'blue-collar-coach';
-const ADMIN_KEYS      = new Set(['bcc-admin-config-v1']); // writable only by users with 'administrator' role
+// bcc-customer-types-v1 (CRM/Engagement type taxonomy) is written only by
+// admin.html and READ by crm.html for every user — ADMIN_KEYS write-gates it while
+// leaving GET open (redactAdminConfigData is a no-op on its shape, no secret-shaped
+// fields), matching how bcc-admin-config-v1 itself needs partial non-admin reads.
+const ADMIN_KEYS      = new Set(['bcc-admin-config-v1', 'bcc-customer-types-v1']); // writable only by users with 'administrator' role
 // Docs managed exclusively by dedicated, access-gated endpoints — OAuth refresh
 // tokens (bcc-qbo-company-*, bcc-clientdrive-*), per-client mailbox config, and
 // server-only time. The generic /api/data path must NEVER create, overwrite, or
 // delete these (they each have an admin/allow-list-gated endpoint of their own).
-const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-bkentry-', 'bcc-emailmeta-', 'bcc-financial-period-', 'bcc-usernotif-', 'bcc-feedback-', 'bcc-errorlog-', 'bcc-report-', 'bcc-cprsig-', 'bcc-document-'];
+// bcc-sharepoint-map-v1's own endpoint (integrations/sharepoint/map) is admin-only
+// for BOTH read and write, unlike admin-config — belongs here, not in ADMIN_KEYS.
+const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-bkentry-', 'bcc-emailmeta-', 'bcc-financial-period-', 'bcc-usernotif-', 'bcc-feedback-', 'bcc-errorlog-', 'bcc-report-', 'bcc-cprsig-', 'bcc-document-', 'bcc-sharepoint-map-v1'];
 // Sentinel allowedUserUpns value meaning "admins only" — a non-matching UPN, so
 // every existing access check (allow.length && who not in allow → deny) denies
 // non-admins automatically, while admins bypass the allow-list. New companies
@@ -56,11 +62,15 @@ function isProtectedServerKey(k) { return PROTECTED_KEY_PREFIXES.some(pre => Str
 // their own dedicated, access-gated endpoints), these are ordinary /api/data records
 // with no endpoint of their own, so the per-client access gate has to live here. Each
 // belongs to exactly one QuickBooks company (client-task, close checklist, WIP,
-// certified payroll, pay application, client info, notary request) and must be
-// readable/writable only by someone with access to THAT company — same rule every
-// dedicated per-client endpoint already enforces via companyPrivateBlocked +
-// enabled/allowedUserUpns. bcc-cpr-sends- (send-history, not a report) and
-// bcc-notary-firm- (deliberately firm-wide) are excluded on purpose.
+// certified payroll, pay application, client info, notary request, sent-email log,
+// CPR send-history) and must be writable/deletable only by someone with access to
+// THAT company — same rule every dedicated per-client endpoint already enforces via
+// companyPrivateBlocked + enabled/allowedUserUpns. This governs WRITE/DELETE only;
+// bcc-email-/bcc-cpr-sends- are separately excluded from ever being served back by
+// GET (see the single-key and bulk-query exclusions below) regardless of access —
+// that's an unrelated, intentional "device-local, never re-synced" design, not a
+// gap this array is meant to change. bcc-notary-firm- (deliberately firm-wide) is
+// excluded here on purpose.
 const CLIENT_SCOPED_ID_RE = [
   /^bcc-task-([^-]+)-[0-9a-z]+$/,
   /^bcc-close-([^-]+)-\d{4}-\d{2}$/,
@@ -69,6 +79,8 @@ const CLIENT_SCOPED_ID_RE = [
   /^bcc-payapp-([^-]+)-[0-9a-z]+$/,
   /^bcc-client-info-([^-]+)$/,
   /^bcc-notary-([^-]+)-[0-9a-z]+$/,
+  /^bcc-email-([^-]+)-[0-9a-z]+$/,
+  /^bcc-cpr-sends-([^-]+)$/,
 ];
 function dataKeyClientRealm(id) {
   id = String(id || '');
@@ -3792,11 +3804,17 @@ app.http('msgraph-message-get', {
       if (!r.ok) { const detail = (await r.text()).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')', detail } }; }
       const m = await r.json();
       let attachments = [];
+      // Track failure separately from "no attachments" — swallowing it made a
+      // failed listing look identical to a message with none at all, so the
+      // bookkeeper saw the hasAttachments indicator with no way to explain (or
+      // retry) why nothing was downloadable.
+      let attachmentsError = null;
       if (m.hasAttachments) {
         try {
           const ar = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + id + '/attachments?$select=id,name,contentType,size', { headers: { Authorization: 'Bearer ' + access } });
           if (ar.ok) { const aj = await ar.json(); attachments = (aj.value || []).map(a => ({ id: a.id, name: a.name, contentType: a.contentType, size: a.size })); }
-        } catch (_) {}
+          else attachmentsError = 'Graph rejected (' + ar.status + ')';
+        } catch (e) { attachmentsError = String((e && e.message) || e); }
       }
       return { jsonBody: { ok: true, message: {
         id: m.id, subject: m.subject || '(no subject)',
@@ -3806,7 +3824,7 @@ app.http('msgraph-message-get', {
         cc: (m.ccRecipients || []).map(x => x.emailAddress && x.emailAddress.address).filter(Boolean),
         received: m.receivedDateTime || '', isRead: !!m.isRead, webLink: m.webLink || '',
         bodyType: (m.body && m.body.contentType) || 'text', bodyContent: (m.body && m.body.content) || '',
-        hasAttachments: !!m.hasAttachments, attachments
+        hasAttachments: !!m.hasAttachments, attachments, attachmentsError
       } } };
     } catch (e) { context.error('msgraph-message-get', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })

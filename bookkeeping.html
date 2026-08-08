@@ -2200,6 +2200,13 @@
 
   /* ===== QuickBooks write: create/edit invoices, bills, payments ===== */
   var _qboRefs = null, _qboRefsRealm = null, _txnEdit = null, _txnFile = null, _txnFormRealm = null;
+  // Bumped every time a NEW write form opens (openTxnForm/openJournalEntryForm/
+  // openEntityForm). submitTxn/submitJournalEntry/submitEntity capture this at
+  // submit time and check it again in their success callback — if it's moved on,
+  // the bookkeeper has since opened a different draft (same client or not) while
+  // the write was in flight, and that draft's #qboWriteForm must NOT be wiped out
+  // from under them by the earlier write's late-arriving success.
+  var _txnFormGen = 0;
   function loadQboRefs(cb) {
     if (_qboRefs && _qboRefsRealm === currentRealm) { cb(_qboRefs); return; }
     // Capture the realm this fetch is FOR, not whatever currentRealm is by the time it
@@ -2250,6 +2257,7 @@
     _txnEdit = edit || null;
     _txnFile = (seed && seed.file) || null;
     _txnFormRealm = currentRealm;
+    _txnFormGen++;
     var host = document.getElementById('qboWriteForm'); if (!host) return;
     host.innerHTML = '<div style="color:var(--muted);">Loading QuickBooks lists…</div>';
     loadQboRefs(function (refs) {
@@ -2426,6 +2434,8 @@
     // downstream (audit log, attach) must stay pinned to THIS client even if the
     // user switches away before the write resolves.
     var realmAt = currentRealm;
+    var formGenAt = _txnFormGen; // detects a NEW draft opened while this write is in flight
+    var attachFileAt = _txnFile; // capture before the async gap — _txnFile is a shared global a new draft could reassign before this resolves
     var btn = document.getElementById('tx_save'); var ot = btn.textContent; btn.disabled = true; btn.textContent = 'Posting…';
     var body = { entity: entity, op: verb, fields: fields };
     if (_txnEdit) { body.id = _txnEdit.id; body.syncToken = _txnEdit.syncToken; }
@@ -2435,19 +2445,19 @@
         if (!resp.ok) throw new Error(resp.error || 'write failed');
         if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: realmAt, entity: entity, op: verb, id: resp.id } });
         if (window.bccNotifySaved) window.bccNotifySaved(entity.charAt(0).toUpperCase() + entity.slice(1) + (verb === 'update' ? ' updated' : ' created') + (resp.docNumber ? (' #' + resp.docNumber) : '') + ' in QuickBooks.');
-        var attachFile = _txnFile; _txnFile = null;
         var attachCap = { invoice: 'Invoice', bill: 'Bill', purchase: 'Purchase' }[entity];
-        if (attachFile && attachCap && resp.id) attachToEntity(attachCap, resp.id, attachFile, resp.docNumber, realmAt);
-        document.getElementById('qboWriteForm').innerHTML = ''; _txnEdit = null; _txnFormRealm = null;
+        if (attachFileAt && attachCap && resp.id) attachToEntity(attachCap, resp.id, attachFileAt, resp.docNumber, realmAt);
+        if (_txnFormGen === formGenAt) { document.getElementById('qboWriteForm').innerHTML = ''; _txnEdit = null; _txnFile = null; _txnFormRealm = null; }
         if (currentRealm === realmAt) { loadQboKpis(); if (qboActiveReport) loadQboReport(qboActiveReport, null); }
       })
-      .catch(function (e) { btn.disabled = false; btn.textContent = ot; (window.bccNotify || alert)('QuickBooks rejected it: ' + e.message, 'error', 7000); });
+      .catch(function (e) { if (_txnFormGen === formGenAt) { btn.disabled = false; btn.textContent = ot; } (window.bccNotify || alert)('QuickBooks rejected it: ' + e.message, 'error', 7000); });
   }
   // ===== Journal entries (adjusting / reclass) — debit/credit lines, must balance =====
   function jeMoney(n) { return (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
   function openJournalEntryForm(edit) {
     gotoTransactions();
     _txnEdit = edit || null; _txnFile = null; _txnFormRealm = currentRealm;
+    _txnFormGen++;
     var host = document.getElementById('qboWriteForm'); if (!host) return;
     host.innerHTML = '<div style="color:var(--muted);">Loading QuickBooks lists…</div>';
     loadQboRefs(function (refs) {
@@ -2531,21 +2541,22 @@
   }
   function submitJournalEntry(fields, total) {
     if (!confirm('Post this journal entry to ' + companyName(currentRealm) + '’s live QuickBooks?\n\nDebits = Credits = $' + jeMoney(total))) return;
+    var realmAt = currentRealm;
+    var formGenAt = _txnFormGen; // detects a NEW draft opened while this write is in flight
     var verb = _txnEdit ? 'update' : 'create';
     var btn = document.getElementById('je_save'); var ot = btn ? btn.textContent : ''; if (btn) { btn.disabled = true; btn.textContent = 'Posting…'; }
     var body = { entity: 'journalentry', op: verb, fields: fields };
     if (_txnEdit) { body.id = _txnEdit.id; body.syncToken = _txnEdit.syncToken; }
-    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/write', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(realmAt) + '/write', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
       .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
       .then(function (resp) {
         if (!resp.ok) throw new Error(resp.error || 'write failed');
-        if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: currentRealm, entity: 'journalentry', op: verb, id: resp.id } });
+        if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: realmAt, entity: 'journalentry', op: verb, id: resp.id } });
         if (window.bccNotifySaved) window.bccNotifySaved('Journal entry ' + (verb === 'update' ? 'updated' : 'created') + (resp.docNumber ? (' #' + resp.docNumber) : '') + ' in QuickBooks.');
-        document.getElementById('qboWriteForm').innerHTML = ''; _txnEdit = null; _txnFormRealm = null;
-        loadQboKpis();
-        if (qboActiveReport) loadQboReport(qboActiveReport, null);
+        if (_txnFormGen === formGenAt) { document.getElementById('qboWriteForm').innerHTML = ''; _txnEdit = null; _txnFormRealm = null; }
+        if (currentRealm === realmAt) { loadQboKpis(); if (qboActiveReport) loadQboReport(qboActiveReport, null); }
       })
-      .catch(function (e) { if (btn) { btn.disabled = false; btn.textContent = ot; } (window.bccNotify || alert)('QuickBooks rejected it: ' + e.message, 'error', 7000); });
+      .catch(function (e) { if (btn && _txnFormGen === formGenAt) { btn.disabled = false; btn.textContent = ot; } (window.bccNotify || alert)('QuickBooks rejected it: ' + e.message, 'error', 7000); });
   }
   function editTxn(entity, id) {
     // realm-race guard — without this, switching clients while this GET is in flight
@@ -2573,6 +2584,7 @@
     var host = document.getElementById('qboWriteForm'); if (!host) return;
     gotoTransactions();
     _txnFormRealm = currentRealm; _txnFile = null; _txnEdit = null;
+    _txnFormGen++;
     host.innerHTML = '<div style="color:var(--muted);">Loading…</div>';
     loadQboRefs(function (refs) {
       var html = '<div style="border:1px solid var(--chrome-mute);border-radius:10px;padding:14px;"><div style="font-weight:700;margin-bottom:10px;">New ' + esc(entity) + '</div><div class="ws-form">';
@@ -2624,18 +2636,22 @@
       if (!fields.displayName) { (window.bccNotify || alert)('Project / job name required.', 'warn'); return; }
       if (!fields.parentId) { (window.bccNotify || alert)('Pick the parent customer.', 'warn'); return; }
     }
+    var realmAt = currentRealm; // no confirm() gate here, so capture immediately before anything async
+    var formGenAt = _txnFormGen; // detects a NEW draft opened while this write is in flight
     var btn = document.getElementById('en_save'); var ot = btn.textContent; btn.disabled = true; btn.textContent = 'Creating…';
-    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/write', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ entity: entity, op: 'create', fields: fields }) })
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(realmAt) + '/write', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ entity: entity, op: 'create', fields: fields }) })
       .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
       .then(function (resp) {
         if (!resp.ok) throw new Error(resp.error || 'create failed');
-        if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: currentRealm, entity: entity, op: 'create', id: resp.id } });
+        if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: realmAt, entity: entity, op: 'create', id: resp.id } });
         if (window.bccNotifySaved) window.bccNotifySaved(entity.charAt(0).toUpperCase() + entity.slice(1) + ' added to QuickBooks.');
         _qboRefs = null; // refresh dropdown cache so new record appears
-        document.getElementById('qboWriteForm').innerHTML = ''; _txnFormRealm = null;
-        if (onCreated) loadQboRefs(function () { onCreated(resp.id); });
+        if (_txnFormGen === formGenAt) {
+          document.getElementById('qboWriteForm').innerHTML = ''; _txnFormRealm = null;
+          if (onCreated) loadQboRefs(function () { onCreated(resp.id); });
+        }
       })
-      .catch(function (e) { btn.disabled = false; btn.textContent = ot; (window.bccNotify || alert)('QuickBooks rejected it: ' + e.message, 'error', 7000); });
+      .catch(function (e) { if (_txnFormGen === formGenAt) { btn.disabled = false; btn.textContent = ot; } (window.bccNotify || alert)('QuickBooks rejected it: ' + e.message, 'error', 7000); });
   }
 
   /* ----- AI receipt/invoice capture ----- */
@@ -4350,21 +4366,29 @@
   function openEmail(id) {
     var realmAt = currentRealm;
     var msg = _emMsgs.filter(function (x) { return x.id === id; })[0] || { id: id, subject: '' };
-    var ov = document.createElement('div'); ov.id = 'em_modal'; ov.className = 'em-modal-ov';
+    var ov = document.createElement('div'); ov.id = 'em_modal'; ov.className = 'em-modal-ov'; ov.setAttribute('data-open-msg', id);
     ov.innerHTML = '<div class="em-modal"><div class="em-modal-head"><div style="flex:1;min-width:0;"><div class="em-modal-subj">' + esc(msg.subject) + '</div><div class="em-modal-from" id="em_m_from">' + esc(msg.fromName || msg.from || '') + '</div></div><button class="btn btn-ghost" id="em_m_close" type="button" style="font-size:18px;min-height:34px;width:38px;">×</button></div>' +
       '<div class="em-modal-actions" id="em_m_actions"></div>' +
       '<div id="em_m_body" class="em-modal-body"><div style="color:var(--muted);padding:20px;">Loading message…</div></div>' +
       '<div id="em_m_reply"></div></div>';
     emWireModal(ov);
     document.getElementById('em_m_close').onclick = emCloseModal;
-    // mark read by me + render the action bar from current meta
-    emMetaOp(id, 'read').then(function () { renderEmailActions(id); });
+    // mark read by me + render the action bar from current meta. Guarded: the
+    // reader can be closed (or reopened on a different message) before this
+    // resolves — without the check, the stale callback repaints #em_m_actions
+    // with the WRONG message's id wired into every button (reply/archive/assign).
+    emMetaOp(id, 'read').then(function () {
+      var m = document.getElementById('em_modal');
+      if (m && m.getAttribute('data-open-msg') === id) renderEmailActions(id);
+    });
     renderEmailActions(id);
     var rid = mailboxActive() ? ('?realmId=' + encodeURIComponent(currentRealm)) : '';
     fetch('/api/integrations/msgraph/message/' + encodeURIComponent(id) + rid, { credentials: 'include' })
       .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
       .then(function (resp) {
         if (currentRealm !== realmAt) return; // user switched clients mid-load — drop stale response
+        var modalNow = document.getElementById('em_modal');
+        if (!modalNow || modalNow.getAttribute('data-open-msg') !== id) return; // reader closed or reopened on a different message — don't paint id's body into it
         var bodyEl = document.getElementById('em_m_body'); if (!bodyEl) return;
         if (!resp || !resp.ok) { bodyEl.innerHTML = '<div style="color:var(--burgundy);padding:20px;">Could not load this message.</div>'; return; }
         var m = resp.message;
@@ -4377,9 +4401,14 @@
         var att = (m.attachments && m.attachments.length) ? '<div class="em-att">📎 ' + m.attachments.map(function (a) {
           var kb = a.size ? (' <span style="color:var(--muted);font-size:11px;">(' + Math.max(1, Math.round(a.size / 1024)) + ' KB)</span>') : '';
           return '<a class="fs-file" href="' + attDl(a) + '" data-pvname="' + esc(a.name) + '" data-pvmime="' + esc(a.contentType || '') + '">' + esc(a.name) + '</a>' + kb;
-        }).join(' &nbsp;&middot;&nbsp; ') + '</div>' : '';
+        }).join(' &nbsp;&middot;&nbsp; ') + '</div>'
+          // hasAttachments true but the list came back empty AND the server flagged
+          // why — Graph's attachment listing failed, this is NOT "no attachments".
+          : (m.hasAttachments && m.attachmentsError) ? '<div class="em-att" style="color:var(--burgundy);">⚠ Could not load this email’s attachment(s) — <a href="#" data-att-retry="1">try again</a>.</div>' : '';
         bodyEl.innerHTML = att;
         if (att) wirePreviews(bodyEl, '&');
+        var retryLink = bodyEl.querySelector('[data-att-retry]');
+        if (retryLink) retryLink.onclick = function (e) { e.preventDefault(); openEmail(id); };
         var ifr = document.createElement('iframe');
         ifr.className = 'em-body-frame';
         ifr.setAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox'); // NO allow-scripts: neutralizes any JS in the email
@@ -4526,6 +4555,7 @@
     document.getElementById('em_files').disabled = true; if (filesBtn) filesBtn.style.pointerEvents = 'none';
     var usingMailbox = mailboxActive();
     var realmAt = currentRealm; // capture at Send-click time — a client switch during the async encode/send below must not misattribute this email
+    var mailboxAt = _clientMailbox; // same reason — _clientMailbox is reloaded on every client switch
     Promise.all(_emAttachments.map(emFileToAttachment))
       .then(function (attachments) {
         var payload = { to: to, subject: subject, bodyHtml: html }; if (cc.length) payload.cc = cc;
@@ -4543,7 +4573,7 @@
         // _emAttachments here — by now that array may already hold files staged
         // after the send started.
         var attNames = result.attachments.map(function (a) { return a.name; });
-        localStorage.setItem(id, JSON.stringify({ id: id, tenantId: 'blue-collar-coach', docType: 'client-email', realmId: realmAt, from: (usingMailbox && _clientMailbox ? _clientMailbox.mailbox : myUpn()), to: to, cc: cc, subject: subject, bodyText: bodyText, attachmentNames: attNames, sentAt: nowIso(), sentBy: myUpn(), status: 'sent' }));
+        localStorage.setItem(id, JSON.stringify({ id: id, tenantId: 'blue-collar-coach', docType: 'client-email', realmId: realmAt, from: (usingMailbox && mailboxAt ? mailboxAt.mailbox : myUpn()), to: to, cc: cc, subject: subject, bodyText: bodyText, attachmentNames: attNames, sentAt: nowIso(), sentBy: myUpn(), status: 'sent' }));
         if (window.bccAudit) window.bccAudit('client-email-send', { key: id, path: '/bookkeeping.html', meta: { realmId: realmAt, recipients: to.length, attachments: attNames.length } });
         if (window.bccNotifySaved) window.bccNotifySaved('Email sent' + (attNames.length ? ' with ' + attNames.length + ' attachment' + (attNames.length === 1 ? '' : 's') : '') + '.');
         btn.disabled = false; btn.textContent = ot;
