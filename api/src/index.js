@@ -1779,6 +1779,26 @@ function companyPrivateBlocked(comp, p) {
   const who = String((p && (p.userDetails || p.userId)) || '').toLowerCase();
   return who !== owner;
 }
+/* Bookkeeping's per-app permission tier (appPermissions.bookkeeping: 'tasks'|'view'|
+ * 'edit'|'admin'). App admins are always full access. Mirrors the exact lookup the
+ * qbo-companies listing already uses to decide the tasks-only-tier company list, but
+ * exposed here so every OTHER bookkeeping endpoint can enforce the same tier — the
+ * listing alone only hides UI; it can't stop a direct call to a realmId the caller
+ * otherwise has company access to. Returns null when no tier is recorded (the
+ * pre-existing default: regular access, gated only by allowedUserUpns). */
+async function bookkeepingTierFor(p) {
+  if (await isAppAdmin(p)) return 'admin';
+  try {
+    const cfg = await getAdminCfg();
+    const who = String((p && (p.userDetails || p.userId)) || '').toLowerCase();
+    const rec = (cfg && Array.isArray(cfg.users) ? cfg.users : []).find(u => String(u.upn || u.email || '').toLowerCase() === who);
+    const active = !rec || (rec.status !== 'inactive' && rec.status !== 'hidden');
+    if (active && rec && rec.appPermissions && rec.appPermissions.bookkeeping) return String(rec.appPermissions.bookkeeping);
+  } catch (_) {}
+  return null;
+}
+function bookkeepingNoFinancials(tier) { return tier === 'tasks'; }
+function bookkeepingReadOnly(tier) { return tier === 'tasks' || tier === 'view'; }
 async function driveClientAccess(p, realmId) {
   const c = container();
   const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
@@ -2425,6 +2445,8 @@ app.http('audit-client', {
       // Access gate: admins see all; others only enabled companies assigned to
       // them (or open to all) — mirrors the company-list scoping.
       const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      // Owner-only lock is checked BEFORE the admin short-circuit — it is NOT bypassed by the admin check.
+      if (companyPrivateBlocked(comp, p)) return { status: 403, jsonBody: { ok: false, error: 'no access to this client' } };
       // Fail CLOSED for non-admins: require a company doc they can actually see
       // (audit rows exist independently of the company doc, so a missing doc must
       // not fall through to returning activity).
@@ -2746,6 +2768,7 @@ app.http('integrations-qbo-sync', {
       const admin = await isAppAdmin(p);
       const who = String(p.userDetails || p.userId || '').toLowerCase();
       const callerCanSee = (comp) => {
+        if (companyPrivateBlocked(comp, p)) return false; // owner-only lock — checked BEFORE the admin short-circuit
         if (admin) return true;
         if (!comp || comp.enabled === false) return false;
         const allow = (comp.allowedUserUpns || []).map(u => String(u).toLowerCase());
@@ -2961,11 +2984,12 @@ app.http('qbo-periods', {
       const admin = await isAppAdmin(p);
       const who = String(p.userDetails || p.userId || '').toLowerCase();
       const { resources: comps } = await c.items.query({
-        query: 'SELECT c.realmId, c.enabled, c.allowedUserUpns FROM c WHERE c.tenantId=@t AND c.docType="qbo-company"',
+        query: 'SELECT c.realmId, c.enabled, c.allowedUserUpns, c.privateToUpn FROM c WHERE c.tenantId=@t AND c.docType="qbo-company"',
         parameters: [{ name: '@t', value: BCC_TENANT_ID }]
       }).fetchAll();
       const canSee = new Set();
       comps.forEach(co => {
+        if (companyPrivateBlocked(co, p)) return; // owner-only lock — checked BEFORE the admin short-circuit
         if (admin) { canSee.add(String(co.realmId)); return; }
         if (co.enabled === false) return;
         const allow = (co.allowedUserUpns || []).map(u => String(u).toLowerCase());
@@ -3827,13 +3851,23 @@ app.http('qbo-callback', {
       // changes to the shared connector field.
       const env = st.env === 'production' ? 'production' : 'sandbox';
       const apiBase = env === 'production' ? 'https://quickbooks.api.intuit.com' : 'https://sandbox-quickbooks.api.intuit.com';
-      // Best-effort: fetch the company's display name so the UI lists it nicely.
+      // realmId comes from the query string Intuit redirects back with — it is NOT
+      // bound to the signed state (Intuit only decides it after the user picks a
+      // company, so it can't be pre-signed). Trusting it blindly would let a caller
+      // overwrite an UNRELATED, already-working client's stored refresh token by
+      // pairing their own valid code/state with someone else's realmId. This
+      // companyinfo call is the authoritative check: it only succeeds if the token
+      // Intuit just issued is actually scoped to THIS realmId, so a failure here
+      // means realmId doesn't match what was really authorized — abort, don't store.
       let companyName = '';
       try {
         const ci = await fetch(apiBase + '/v3/company/' + encodeURIComponent(realmId) + '/companyinfo/' + encodeURIComponent(realmId) + '?minorversion=70',
           { headers: { Authorization: 'Bearer ' + tok.access_token, Accept: 'application/json' } });
-        if (ci.ok) { const cj = await ci.json(); companyName = (cj.CompanyInfo && (cj.CompanyInfo.CompanyName || cj.CompanyInfo.LegalName)) || ''; }
-      } catch (_) {}
+        if (!ci.ok) throw new Error('companyinfo ' + ci.status + ' — the authorized token is not valid for realmId ' + realmId);
+        const cj = await ci.json(); companyName = (cj.CompanyInfo && (cj.CompanyInfo.CompanyName || cj.CompanyInfo.LegalName)) || '';
+      } catch (e) {
+        return { status: 302, headers: { Location: '/bookkeeping.html?qbo=error&detail=' + encodeURIComponent('Could not verify the QuickBooks company — please try connecting again.') } };
+      }
 
       const c = container();
       // MULTI-COMPANY: one connection doc per QBO company (realmId). Connecting
@@ -4316,6 +4350,11 @@ app.http('qbo-report', {
       const c = container();
       const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
       if (!comp) return { status: 404, jsonBody: { error: 'company not connected' } };
+      // Owner-only lock is checked BEFORE the admin short-circuit — it is NOT bypassed by the admin check.
+      if (companyPrivateBlocked(comp, p)) return { status: 403, jsonBody: { error: 'no access to this company' } };
+      // The 'tasks' tier's documented "no financials" guarantee was only enforced by
+      // hiding this in the qbo-companies listing — a direct call bypassed it entirely.
+      if (bookkeepingNoFinancials(await bookkeepingTierFor(p))) return { status: 403, jsonBody: { error: 'Your bookkeeping access level does not include financial reports.' } };
       // Visibility gate (admins see all; users need access).
       if (!(await isAppAdmin(p))) {
         const who = String(p.userDetails || p.userId || '').toLowerCase();
@@ -4494,6 +4533,13 @@ async function qboResolveAccess(request, realmId) {
     const allow = (comp.allowedUserUpns || []).map(u => u.toLowerCase());
     if (comp.enabled === false || (allow.length && allow.indexOf(who) < 0)) return { err: { status: 403, jsonBody: { error: 'no access to this company' } } };
   }
+  // Shared by qbo-refs (read-only)/qbo-entity (read+write)/qbo-write (write): the
+  // 'tasks' tier gets NO financials at all (matches its documented guarantee, which
+  // was previously only enforced by hiding it in the qbo-companies listing — a direct
+  // call here bypassed it entirely); the 'view' tier can read but not write.
+  const tier = await bookkeepingTierFor(p);
+  if (bookkeepingNoFinancials(tier)) return { err: { status: 403, jsonBody: { error: 'Your bookkeeping access level does not include financial data.' } } };
+  if (request.method !== 'GET' && bookkeepingReadOnly(tier)) return { err: { status: 403, jsonBody: { error: 'Your bookkeeping access level is view-only.' } } };
   const fields = await getIntegrationFields('qbo');
   const { accessToken, base } = await qboAccessForCompany(comp, fields);
   const apiGet = async (path) => {
@@ -5197,6 +5243,9 @@ app.http('qbo-kpis', {
       const c = container();
       const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
       if (!comp) return { status: 404, jsonBody: { error: 'company not connected' } };
+      // "Admin-only" above is not the same as "owner-only" — a privateToUpn lock must still
+      // block every OTHER admin, so it's checked here regardless of the isAppAdmin result.
+      if (companyPrivateBlocked(comp, p)) return { status: 403, jsonBody: { error: 'no access to this company' } };
       const fields = await getIntegrationFields('qbo');
       const { accessToken, base } = await qboAccessForCompany(comp, fields);
       const apiGet = async (path) => {
@@ -5983,6 +6032,7 @@ app.http('qbo-companyinfo', {
       const c = container();
       const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
       if (!comp) return { status: 404, jsonBody: { ok: false, error: 'company not connected' } };
+      if (companyPrivateBlocked(comp, p)) return { status: 403, jsonBody: { ok: false, error: 'no access to this company' } };
       if (!(await isAppAdmin(p))) {
         const who = String(p.userDetails || p.userId || '').toLowerCase();
         const allow = (comp.allowedUserUpns || []).map(u => u.toLowerCase());
@@ -6030,6 +6080,9 @@ app.http('qbo-cashflow', {
   handler: withAccessLog(async (request, context) => {
     const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
     try {
+      // The 'tasks' tier's documented "no financials" guarantee was only enforced by
+      // hiding this in the qbo-companies listing — a direct call bypassed it entirely.
+      if (bookkeepingNoFinancials(await bookkeepingTierFor(p))) return { status: 403, jsonBody: { ok: false, error: 'Your bookkeeping access level does not include financial data.' } };
       const c = container();
       const { resources: comps } = await c.items.query({ query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="qbo-company" ORDER BY c.companyName', parameters: [{ name: '@t', value: BCC_TENANT_ID }] }).fetchAll();
       const admin = await isAppAdmin(p);
@@ -6037,6 +6090,7 @@ app.http('qbo-cashflow', {
       const wantRealm = String((new URL(request.url)).searchParams.get('realmId') || ''); // one company (e.g. the monthly report)
       const visible = comps.filter(co => {
         if (wantRealm && String(co.realmId) !== wantRealm) return false;
+        if (companyPrivateBlocked(co, p)) return false; // owner-only lock — checked BEFORE the admin short-circuit
         if (admin) return true;
         if (co.enabled === false) return false;
         const allow = (co.allowedUserUpns || []).map(u => String(u).toLowerCase());
