@@ -3477,6 +3477,38 @@ app.http('msgraph-message-get', {
 });
 
 /**
+ * GET /api/integrations/msgraph/message/{id}/attachment/{attId}/download
+ * Streams a received message's attachment bytes through the app (same access gate as
+ * msgraph-message-get). Mirrors drive-download's inline/attachment convention exactly.
+ */
+app.http('msgraph-attachment-download', {
+  methods: ['GET'], authLevel: 'anonymous', route: 'integrations/msgraph/message/{id}/attachment/{attId}/download',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    try {
+      const u = new URL(request.url); const realmId = u.searchParams.get('realmId');
+      let upn;
+      if (realmId) {
+        const rc = await resolveClientMailbox(p, realmId); if (rc.err) return rc.err;
+        if (!rc.cfg || !rc.cfg.mailbox || rc.cfg.enabled === false) return badRequest('no client mailbox configured');
+        upn = encodeURIComponent(rc.cfg.mailbox);
+      } else { upn = encodeURIComponent(p.userDetails || p.userId); }
+      const access = await getGraphToken();
+      const msgId = encodeURIComponent(request.params.id);
+      const attId = encodeURIComponent(request.params.attId);
+      const wantInlineReq = u.searchParams.get('inline') === '1';
+      const name = (u.searchParams.get('name') || 'attachment').replace(/[^a-zA-Z0-9._ -]+/g, '_').slice(0, 150);
+      const r = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + msgId + '/attachments/' + attId + '/$value', { headers: { Authorization: 'Bearer ' + access } });
+      if (!r.ok) { const detail = (await r.text()).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')', detail } }; }
+      const buf = Buffer.from(await r.arrayBuffer());
+      const ct = r.headers.get('content-type') || 'application/octet-stream';
+      const wantInline = wantInlineReq && inlineOk(ct);
+      return { status: 200, headers: { 'Content-Type': ct, 'Content-Disposition': (wantInline ? 'inline' : 'attachment') + '; filename="' + name + '"', 'X-Content-Type-Options': 'nosniff' }, body: buf };
+    } catch (e) { context.error('msgraph-attachment-download', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+
+/**
  * POST /api/integrations/msgraph/reply  { realmId, messageId, body, replyAll }
  * Replies in-thread from the client mailbox (no Outlook needed). Access-gated.
  */

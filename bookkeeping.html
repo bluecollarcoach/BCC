@@ -4346,8 +4346,16 @@
         var m = resp.message;
         var fromEl = document.getElementById('em_m_from');
         if (fromEl) fromEl.innerHTML = esc(m.fromName ? (m.fromName + ' <' + m.from + '>') : m.from) + '<br><span style="color:var(--muted);">To: ' + esc((m.to || []).join(', ')) + (m.cc && m.cc.length ? ' · Cc: ' + esc(m.cc.join(', ')) : '') + '</span>';
-        var att = (m.attachments && m.attachments.length) ? '<div class="em-att">📎 ' + m.attachments.map(function (a) { return esc(a.name); }).join(', ') + '</div>' : '';
+        var attDl = function (a) {
+          return '/api/integrations/msgraph/message/' + encodeURIComponent(id) + '/attachment/' + encodeURIComponent(a.id) +
+            '/download?name=' + encodeURIComponent(a.name) + (mailboxActive() ? '&realmId=' + encodeURIComponent(currentRealm) : '');
+        };
+        var att = (m.attachments && m.attachments.length) ? '<div class="em-att">📎 ' + m.attachments.map(function (a) {
+          var kb = a.size ? (' <span style="color:var(--muted);font-size:11px;">(' + Math.max(1, Math.round(a.size / 1024)) + ' KB)</span>') : '';
+          return '<a class="fs-file" href="' + attDl(a) + '" data-pvname="' + esc(a.name) + '" data-pvmime="' + esc(a.contentType || '') + '">' + esc(a.name) + '</a>' + kb;
+        }).join(' &nbsp;&middot;&nbsp; ') + '</div>' : '';
         bodyEl.innerHTML = att;
+        if (att) wirePreviews(bodyEl, '&');
         var ifr = document.createElement('iframe');
         ifr.className = 'em-body-frame';
         ifr.setAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox'); // NO allow-scripts: neutralizes any JS in the email
