@@ -1403,11 +1403,24 @@
    * SWA session has expired (a routine mid-day occurrence), so surface that clearly
    * and just once per page load rather than once per refused key. */
   var _sessionExpiredNotified = false;
+  var _lastPermissionToastAt = 0;
   window.addEventListener('bcc-sync-error', function (ev) {
     var status = ev && ev.detail && ev.detail.status;
-    if (status !== 401 || _sessionExpiredNotified) return;
-    _sessionExpiredNotified = true;
-    if (window.bccNotify) window.bccNotify('Your sign-in has expired — please sign back in to keep saving your work.', 'error', 0);
+    if (status === 401) {
+      if (_sessionExpiredNotified) return;
+      _sessionExpiredNotified = true;
+      if (window.bccNotify) window.bccNotify('Your sign-in has expired — please sign back in to keep saving your work.', 'error', 0);
+    } else if (status === 403) {
+      // A permission-tier rejection (e.g. CRM/Engagements/Marketing/Rate Sheet set
+      // to View or None): the local edit LOOKS saved (optimistic write), but the
+      // server refused it and it will never reach anyone else. Without this, that
+      // failure was completely silent. Debounced so a batch of refused writes
+      // (e.g. a CSV import) shows one toast, not one per row.
+      var now = Date.now();
+      if (now - _lastPermissionToastAt < 4000) return;
+      _lastPermissionToastAt = now;
+      if (window.bccNotify) window.bccNotify('That change wasn’t saved — you don’t have permission to edit this.', 'warn', 7000);
+    }
   });
 
   /* ---------- Offline-aware save toast ----------

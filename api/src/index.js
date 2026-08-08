@@ -454,6 +454,9 @@ app.http('data', {
           // app, client info, notary) — only someone with access to THAT company.
           const clientRealm = dataKeyClientRealm(key);
           if (clientRealm && (await driveClientAccess(p, clientRealm)).err) return { jsonBody: { key, data: null } };
+          // CRM/Engagements/Marketing/Rate-Sheet records — only someone with at
+          // least 'view' on the owning app (bcc-contact- checks all sharing apps).
+          if ((await appAccessForKey(p, key, 'view')) === false) return { jsonBody: { key, data: null } };
           // Personal docs (tasks, daily time log, email signature) — owner only.
           if (!ownsPersonalKey(key)) return { jsonBody: { key, data: null } };
           // Integration docs hold OAuth client secrets / tokens — redact for non-admins.
@@ -516,14 +519,22 @@ app.http('data', {
         // Integration docs hold secrets — redact credential fields for non-admins
         // (status flags stay so connection badges keep working).
         const dataAdmin = await isAppAdmin(p);
-        const items = gated.map(r => {
+        // CRM/Engagements/Marketing/Rate-Sheet records — the four apps with no
+        // per-app tier enforced server-side until now (their picker in Admin >
+        // Users & Roles was purely client-side/decorative). Without this, every
+        // signed-in user's routine sync shipped every contact, company, deal,
+        // marketing campaign, and client rate sheet in the tenant regardless of
+        // that person's assigned tier for those apps.
+        const items = [];
+        for (const r of gated) {
+          if ((await appAccessForKey(p, r.id, 'view')) === false) continue;
           const isInt = String(r.id).startsWith('bcc-integration-');
           const isAdminCfg = ADMIN_KEYS.has(r.id);
           const data = isInt ? (dataAdmin ? r.data : redactIntegrationData(r.data))
             : isAdminCfg ? redactAdminConfigData(r.data, dataAdmin)
             : r.data;
-          return { key: r.id, data, updatedAt: r.updatedAt, updatedBy: r.updatedBy };
-        });
+          items.push({ key: r.id, data, updatedAt: r.updatedAt, updatedBy: r.updatedBy });
+        }
         return { jsonBody: { items } };
       }
 
@@ -555,6 +566,9 @@ app.http('data', {
             if (!realmAccessCache.has(clientRealm)) realmAccessCache.set(clientRealm, await driveClientAccess(p, clientRealm));
             if (realmAccessCache.get(clientRealm).err) return forbidden('no access to this client');
           }
+          // CRM/Engagements/Marketing/Rate-Sheet records — only someone with 'edit'+
+          // on the owning app (bcc-contact- requires it on at least one sharing app).
+          if ((await appAccessForKey(p, it.key, 'edit')) === false) return forbidden('you do not have edit access for this');
           if (ADMIN_KEYS.has(it.key)) touchesAdminKey = true;
           if (it.key.startsWith('bcc-integration-')) touchesIntegration = true;
         }
@@ -594,6 +608,7 @@ app.http('data', {
         if (!ownsPersonalKey(key)) return forbidden('you can only delete your own personal records');
         const delRealm = dataKeyClientRealm(key);
         if (delRealm && (await driveClientAccess(p, delRealm)).err) return forbidden('no access to this client');
+        if ((await appAccessForKey(p, key, 'edit')) === false) return forbidden('you do not have edit access for this');
         if (ADMIN_KEYS.has(key) && !(await isAppAdmin(p))) return forbidden();
         if (key.startsWith('bcc-integration-') && !(await isAppAdmin(p))) return forbidden('only administrators may delete integration credentials');
         try { await c.item(key, BCC_TENANT_ID).delete(); } catch (e) { if (e.code !== 404) throw e; }
@@ -1929,6 +1944,69 @@ async function bookkeepingTierFor(p) {
 }
 function bookkeepingNoFinancials(tier) { return tier === 'tasks'; }
 function bookkeepingReadOnly(tier) { return tier === 'tasks' || tier === 'view'; }
+
+/* Generic per-app permission tier (CRM, Engagements/Jobs, Marketing, Rate Sheet).
+ * admin.html lets an admin set Admin/Edit/View/None for these apps, and bcc-api.js
+ * enforces the client-side page gate + button visibility from the exact same
+ * lookup this mirrors (bccGetAppPermission / BCC_MEMBER_DEFAULT_APPS) — but until
+ * now nothing on the SERVER ever consulted it: the shared /api/data endpoint these
+ * four apps' data flows through (they have no dedicated backend of their own)
+ * accepted every read/write from any signed-in tenant user regardless of tier,
+ * making the picker in Admin > Users & Roles purely decorative for anyone willing
+ * to open devtools. MEMBER_DEFAULT_EDIT_APPS must stay in sync with
+ * bcc-api.js's BCC_MEMBER_DEFAULT_APPS so a plain member's default access matches
+ * what the client UI already promises them. */
+const MEMBER_DEFAULT_EDIT_APPS = new Set(['home', 'myday', 'sessions', 'dashboard', 'scheduler', 'bookkeeping', 'documents', 'chat', 'training', 'events', 'kb']);
+async function appTierFor(p, appKey) {
+  if (await isAppAdmin(p)) return 'admin';
+  try {
+    const cfg = await getAdminCfg();
+    const who = String((p && (p.userDetails || p.userId)) || '').toLowerCase();
+    const rec = (cfg && Array.isArray(cfg.users) ? cfg.users : []).find(u => String(u.upn || u.email || '').toLowerCase() === who);
+    if (rec && (rec.status === 'inactive' || rec.status === 'hidden')) return 'none';
+    const perm = rec && rec.appPermissions && rec.appPermissions[appKey];
+    if (perm && ['none', 'tasks', 'view', 'edit', 'admin'].includes(String(perm))) return String(perm);
+    if (rec && rec.role === 'admin') return 'admin';
+  } catch (_) {}
+  return MEMBER_DEFAULT_EDIT_APPS.has(appKey) ? 'edit' : 'none';
+}
+const APP_TIER_RANK = { none: 0, tasks: 1, view: 1, edit: 2, admin: 3 };
+function tierAtLeast(tier, min) { return (APP_TIER_RANK[tier] || 0) >= (APP_TIER_RANK[min] || 0); }
+// Doc-id prefixes exclusively owned (write-wise) by ONE app — confirmed by reading
+// every page that touches each prefix: bcc-company- is written only by
+// crm-companies.html (jobs.html/dashboard.html only read it for cross-references);
+// bcc-engagement- only by jobs.html (crm-companies.html/documents.html only read
+// it); bcc-campaign- only by marketing.html; bcc-rate-signature- and the singleton
+// bcc-rate-sheet-v1 only by rates.html.
+const SINGLE_APP_KEY_PREFIXES = [
+  { re: /^bcc-company-/, app: 'crm' },
+  { re: /^bcc-engagement-/, app: 'jobs' },
+  { re: /^bcc-campaign-/, app: 'marketing' },
+  { re: /^bcc-rate-signature-/, app: 'rates' },
+];
+const SINGLE_APP_EXACT_KEYS = { 'bcc-rate-sheet-v1': 'rates' };
+// bcc-contact- is genuinely SHARED — read/written by crm.html, jobs.html,
+// scheduler.html, sessions.html, events.html, documents.html, and myday.html, each
+// with its own independent app tier. Gating it by any ONE app's tier would break
+// every other app's legitimate use of contacts (e.g. booking a session for a new
+// client). Require the caller to meet the bar on AT LEAST ONE of these apps —
+// closes the real gap (someone with no qualifying access at all) without breaking
+// any app that currently works.
+const CONTACT_APPS = ['crm', 'jobs', 'scheduler', 'sessions', 'events', 'documents', 'myday'];
+// Returns true/false when `id` is a tier-gated doc type, or null when it isn't
+// (i.e. this check doesn't apply and the caller should fall through to whatever
+// other rules govern that key).
+async function appAccessForKey(p, id, minTier) {
+  id = String(id || '');
+  const exactApp = SINGLE_APP_EXACT_KEYS[id];
+  if (exactApp) return tierAtLeast(await appTierFor(p, exactApp), minTier);
+  for (const { re, app } of SINGLE_APP_KEY_PREFIXES) if (re.test(id)) return tierAtLeast(await appTierFor(p, app), minTier);
+  if (id.startsWith('bcc-contact-')) {
+    for (const app of CONTACT_APPS) if (tierAtLeast(await appTierFor(p, app), minTier)) return true;
+    return false;
+  }
+  return null;
+}
 async function driveClientAccess(p, realmId) {
   const c = container();
   const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
