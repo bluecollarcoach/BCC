@@ -493,6 +493,10 @@
     localStorage.removeItem(id);
     // also remove this contact's convos
     convosFor(id).forEach(function (cv) { localStorage.removeItem(cv.id); });
+    // ...and its weekly coaching notes — the delete confirm says "and all its
+    // conversations", but weekly notes were left behind as orphaned, unreachable
+    // localStorage entries (nothing can look them up once the contact is gone).
+    weeklyNotesFor(id).forEach(function (w) { localStorage.removeItem(w.id); });
   }
 
   function convosFor(contactId) {
@@ -980,6 +984,12 @@
 
     var panel = document.getElementById('panel');
     var FORM_IDS = ['f-first','f-last','f-email','f-phone','f-title','f-company','f-website','f-street','f-city','f-state','f-zip','f-industry','f-years','f-size','f-tags','f-notes'];
+    // Bumped every time the New-contact form is reset/reused. The card scan and
+    // website-enrichment calls below can take several seconds; without this, a
+    // response that arrives after the user has cancelled and started a different
+    // entry would force-overwrite whatever they've since typed (STALE-RESPONSE
+    // REPAINT — the same bug class fixed elsewhere in this app via realm guards).
+    var _formGen = 0;
     document.getElementById('newBtn').addEventListener('click', function () {
       resetForm();
       document.getElementById('panelTitle').textContent = 'New contact';
@@ -990,6 +1000,7 @@
       panel.classList.remove('open'); resetForm();
     });
     function resetForm() {
+      _formGen++; // invalidate any scan/enrichment fetch still in flight for the old form
       FORM_IDS.forEach(function (id) { document.getElementById(id).value = ''; });
       document.getElementById('f-stage').value = 'lead';
       var types = loadTypes(); if (types[0]) document.getElementById('f-type').value = types[0].id;
@@ -1025,9 +1036,24 @@
         needs:     [],
         ownerId:   (window.bccUser && window.bccUser.userDetails) || ''
       };
+      // This panel only ever creates NEW contacts (no separate edit-existing flow
+      // reuses it) — so with no id set, saveContact() always minted a fresh one,
+      // even when the typed/scanned email matched a contact already in the CRM
+      // (a plausible re-scan of the same card, or re-typing someone already
+      // entered). CSV import already dedupes by email; do the same here.
+      var emailLc = c.email && c.email.toLowerCase();
+      var existingRec = emailLc && allContacts().find(function (x) { return x.email && x.email.toLowerCase() === emailLc; });
+      var isUpdate = false;
+      if (existingRec) {
+        c.id = existingRec.id;
+        c.createdAt = existingRec.createdAt;
+        c.needs = existingRec.needs || [];
+        c.tags = Array.from(new Set((existingRec.tags || []).concat(c.tags)));
+        isUpdate = true;
+      }
       saveContact(c);
-      if (window.bccAudit) window.bccAudit('contact-create', { key: c.id, path: '/crm.html' });
-      if (window.bccNotifySaved) window.bccNotifySaved('Contact saved.');
+      if (window.bccAudit) window.bccAudit(isUpdate ? 'contact-update' : 'contact-create', { key: c.id, path: '/crm.html' });
+      if (window.bccNotifySaved) window.bccNotifySaved(isUpdate ? 'Updated the existing contact with this email instead of creating a duplicate.' : 'Contact saved.');
       else (window.bccNotify || alert)('Saved.', 'success');
       panel.classList.remove('open');
       resetForm();
@@ -1066,6 +1092,7 @@
       for (var i = 0; i < files.length; i++) { if (files[i].size > 12 * 1024 * 1024) { (window.bccNotify || alert)('Each image must be under 12 MB.', 'warn'); return; } total += files[i].size; }
       if (total > 30 * 1024 * 1024) { (window.bccNotify || alert)('Those images total over 30 MB — pick fewer.', 'warn'); return; }
       resetForm();
+      var myGen = _formGen; // this scan belongs to the form as of right now
       document.getElementById('panelTitle').textContent = 'New contact — from card';
       panel.classList.add('open');
       setScan('📇 Reading ' + (files.length > 1 ? files.length + ' images' : 'the card') + '…', '');
@@ -1073,6 +1100,7 @@
       fetch('/api/ai/scan-card', { method: 'POST', credentials: 'include', body: fd })
         .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
         .then(function (j) {
+          if (myGen !== _formGen) return; // the user reset/repurposed the form while this was in flight
           if (j && j.needsKey) { setScan('AI scanning isn’t configured yet — an admin needs to add ANTHROPIC_API_KEY in the app settings.', 'err'); return; }
           if (!j || !j.ok) { setScan('Could not read the card(s): ' + ((j && j.error) || 'error'), 'err'); return; }
           var contacts = j.contacts || [];
@@ -1087,7 +1115,7 @@
             openBatchReview(contacts);
           }
         })
-        .catch(function () { setScan('Scan failed — please try again.', 'err'); });
+        .catch(function () { if (myGen === _formGen) setScan('Scan failed — please try again.', 'err'); });
     });
 
     // ---- Website enrichment (Claude reads the company site) ----
@@ -1100,10 +1128,12 @@
       if (!website && !hasEmail) { if (!auto) { es.style.color = 'var(--burgundy)'; es.textContent = 'Add a website or work email first.'; } return; }
       es.style.color = 'var(--muted)'; es.textContent = '🔎 Searching the website…';
       var btn = document.getElementById('enrichBtn'); btn.disabled = true;
+      var myGen = _formGen; // this enrichment belongs to the form as of right now
       fetch('/api/ai/enrich-company', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ website: website, email: email, company: company }) })
         .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
         .then(function (j) {
-          btn.disabled = false;
+          btn.disabled = false; // always safe to re-enable, regardless of staleness
+          if (myGen !== _formGen) return; // the user reset/repurposed the form while this was in flight
           if (j && j.needsKey) { es.style.color = 'var(--burgundy)'; es.textContent = 'AI isn’t configured — add ANTHROPIC_API_KEY in the app settings.'; return; }
           if (!j || !j.ok) { es.style.color = auto ? 'var(--muted)' : 'var(--burgundy)'; es.textContent = (j && j.error) || 'Could not search the website.'; return; }
           var d = j.data || {};
@@ -1121,7 +1151,7 @@
           if (bits.length) appendNote(bits.join('\n'));
           es.style.color = 'var(--green)'; es.textContent = '✓ Enriched from ' + (j.website || website);
         })
-        .catch(function () { btn.disabled = false; es.style.color = 'var(--burgundy)'; es.textContent = 'Enrichment failed.'; });
+        .catch(function () { btn.disabled = false; if (myGen === _formGen) { es.style.color = 'var(--burgundy)'; es.textContent = 'Enrichment failed.'; } });
     }
     document.getElementById('enrichBtn').addEventListener('click', function () { enrichCompany(false); });
 
@@ -1208,14 +1238,23 @@
       document.getElementById('batch_save').onclick = function () {
         var sel = batch.filter(function (b) { return b.sel && (b.firstName || b.company || b.email); });
         if (!sel.length) { status.textContent = 'Nothing to save — each card needs at least a name, company, or email.'; return; }
+        var byEmailNow = {};
+        allContacts().forEach(function (x) { if (x.email) byEmailNow[x.email.toLowerCase()] = x; });
         sel.forEach(function (b) {
           var c = { firstName: (b.firstName || '').trim(), lastName: (b.lastName || '').trim(), email: (b.email || '').trim(), phone: (b.phone || '').trim(),
             title: (b.title || '').trim(), company: (b.company || '').trim(), website: cleanWeb(b.website), street: (b.street || '').trim(),
             city: (b.city || '').trim(), state: (b.state || '').trim(), zip: (b.zip || '').trim(), industry: (b.industry || '').trim(),
             yearsInBusiness: String(b.yearsInBusiness || '').trim(), companySize: (b.companySize || '').trim(),
             customerType: defType, stage: 'lead', tags: [], notes: (b.notes || '').trim(), needs: [], ownerId: (window.bccUser && window.bccUser.userDetails) || '' };
+          // Same email-dedup as the single-card save path — batch-scanning a card
+          // for someone already in the CRM would otherwise create a duplicate.
+          var emailLc = c.email && c.email.toLowerCase();
+          var existingRec = emailLc && byEmailNow[emailLc];
+          var isUpdate = false;
+          if (existingRec) { c.id = existingRec.id; c.createdAt = existingRec.createdAt; c.needs = existingRec.needs || []; c.tags = existingRec.tags || []; isUpdate = true; }
           saveContact(c);
-          if (window.bccAudit) window.bccAudit('contact-create', { key: c.id, path: '/crm.html', meta: { batch: true } });
+          if (existingRec) byEmailNow[emailLc] = c; // keep subsequent rows in this same batch from re-duplicating each other
+          if (window.bccAudit) window.bccAudit(isUpdate ? 'contact-update' : 'contact-create', { key: c.id, path: '/crm.html', meta: { batch: true } });
         });
         if (window.bccNotifySaved) window.bccNotifySaved('Saved ' + sel.length + ' contacts.'); else (window.bccNotify || alert)('Saved ' + sel.length + ' contacts.', 'success');
         close(); renderList();
@@ -1322,7 +1361,13 @@
         }
       }
       if (!rec.firstName && !rec.email) { skipped++; continue; }
-      // Normalize customerType / stage to ids the rest of the app expects
+      var emailLc = rec.email && rec.email.toLowerCase();
+      var existingRec = emailLc && byEmail[emailLc];
+      // Normalize customerType / stage to ids the rest of the app expects. A
+      // default ("other"/"lead") is only appropriate for a brand-new contact —
+      // for an update-match, a column absent from THIS row must leave the
+      // existing value alone rather than resetting a real customer back to
+      // "other"/"lead" just because a phone-number-refresh CSV didn't include it.
       if (rec.customerType) {
         var ct = rec.customerType.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
         if (typeIds.indexOf(ct) >= 0) rec.customerType = ct;
@@ -1331,8 +1376,10 @@
           var match = types.find(function (t) { return t.label.toLowerCase() === rec.customerType.toLowerCase(); });
           rec.customerType = match ? match.id : 'other';
         }
-      } else {
+      } else if (!existingRec) {
         rec.customerType = 'other';
+      } else {
+        delete rec.customerType;
       }
       if (rec.stage) {
         var st = rec.stage.toLowerCase();
@@ -1341,21 +1388,26 @@
         else if (st === 'won' || st === 'active') rec.stage = 'customer';
         else if (st === 'lost' || st === 'churned') rec.stage = 'inactive';
         else rec.stage = 'lead';
-      } else {
+      } else if (!existingRec) {
         rec.stage = 'lead';
+      } else {
+        delete rec.stage;
       }
-      if (!rec.ownerId) rec.ownerId = (window.bccUser && window.bccUser.userDetails) || '';
+      if (!rec.ownerId) { if (!existingRec) rec.ownerId = (window.bccUser && window.bccUser.userDetails) || ''; else delete rec.ownerId; }
 
-      var emailLc = rec.email && rec.email.toLowerCase();
-      if (emailLc && byEmail[emailLc]) {
-        // Update — merge tags, keep existing id/createdAt/needs/convos
-        var existingRec = byEmail[emailLc];
-        rec.id = existingRec.id;
-        rec.createdAt = existingRec.createdAt;
-        rec.needs = existingRec.needs || [];
-        var existingTags = (existingRec.tags || []);
-        rec.tags = Array.from(new Set(existingTags.concat(rec.tags)));
-        saveContact(rec);
+      if (existingRec) {
+        // Update — MERGE onto a full copy of the existing record. Building a
+        // fresh object from only this row's columns and saving THAT (the old
+        // behavior) silently wiped every field the CSV didn't happen to
+        // include — company, industry, website, address, notes, linked
+        // company, everything — because saveContact() is a full overwrite,
+        // not a per-field patch.
+        var merged = Object.assign({}, existingRec, rec);
+        merged.id = existingRec.id;
+        merged.createdAt = existingRec.createdAt;
+        merged.needs = existingRec.needs || [];
+        merged.tags = Array.from(new Set((existingRec.tags || []).concat(rec.tags)));
+        saveContact(merged);
         updated++;
       } else {
         saveContact(rec);
