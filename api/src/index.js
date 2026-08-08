@@ -209,7 +209,15 @@ function domainBlocked() { return { status: 403, jsonBody: { error: 'domain_not_
 // keeping non-secret status flags (e.g. status:'connected') so UI badges still work.
 const SECRET_FIELD_RE = /secret|token|password|connection|webhook|privatekey|apikey|(^|[^a-z])key([^a-z]|$)/i;
 function redactIntegrationData(data) {
-  if (!data || typeof data !== 'object') return data;
+  if (data == null) return data;
+  // Fail CLOSED, not open: getAdminCfg() already documents a real incident where a
+  // direct DB write left .data as a JSON string instead of an object. The old
+  // `typeof data !== 'object' → return data` here would have shipped that raw,
+  // un-redacted string (client secret / webhook URL / API key, verbatim) straight
+  // to a non-admin. Parse a string first; if it still isn't a redactable object,
+  // withhold it entirely rather than guess it's safe.
+  if (typeof data === 'string') { try { data = JSON.parse(data); } catch (_) { return null; } }
+  if (typeof data !== 'object') return null;
   const out = Object.assign({}, data);
   if (out.fields && typeof out.fields === 'object') {
     const f = {};
@@ -225,7 +233,11 @@ function redactIntegrationData(data) {
 // integration redaction uses), both at the top level (auditPassword) and per-user
 // (msGraphRefreshToken), and leave everything else intact.
 function redactAdminConfigData(data, isAdmin) {
-  if (isAdmin || !data || typeof data !== 'object') return data;
+  if (isAdmin || data == null) return data;
+  // Same fail-closed fix as redactIntegrationData — a stringified .data blob must
+  // never be shipped to a non-admin unredacted just because typeof isn't 'object'.
+  if (typeof data === 'string') { try { data = JSON.parse(data); } catch (_) { return null; } }
+  if (typeof data !== 'object') return null;
   const stripSecrets = (obj) => {
     const out = Object.assign({}, obj);
     for (const k of Object.keys(out)) if (SECRET_FIELD_RE.test(k)) delete out[k];
@@ -274,12 +286,37 @@ function publicOrigin(req) {
  * We skip our own access-log writes to /api/audit GET so the activity
  * log isn't constantly logging itself.
  */
+// Per-instance, best-effort throttle on access-log WRITES (not on serving the
+// request itself). Not a global rate limit — each Function instance has its own
+// memory — but it collapses a tight-loop flood from one IP+path into periodic
+// samples instead of one brand-new Cosmos document per request, which matters on
+// a Free Tier account (1000 RU/s + 25 GB, one shared partition for every client's
+// data). Only applied to successful ANONYMOUS hits (see logAccess below) — any
+// authenticated request or any failed/error response is always logged in full.
+const _accessLogThrottle = new Map();
+const ACCESS_LOG_THROTTLE_MS = 5000;
+function shouldLogAccess(ip, path) {
+  const key = (ip || '?') + '|' + path;
+  const now = Date.now();
+  const last = _accessLogThrottle.get(key);
+  if (last && now - last < ACCESS_LOG_THROTTLE_MS) return false;
+  _accessLogThrottle.set(key, now);
+  // Bound the map itself so a flood across many distinct paths/IPs can't grow this
+  // unbounded either — sweep stale entries once it gets large.
+  if (_accessLogThrottle.size > 5000) {
+    const cutoff = now - ACCESS_LOG_THROTTLE_MS;
+    for (const [k, t] of _accessLogThrottle) if (t < cutoff) _accessLogThrottle.delete(k);
+  }
+  return true;
+}
 function logAccess(request, response, p) {
   try {
     const url = new URL(request.url);
     const path = url.pathname;
     if (request.method === 'GET' && path === '/api/audit') return; // don't log the log
     const status = (response && response.status) || (response && response.jsonBody ? 200 : 200);
+    const ip = getClientIp(request);
+    if (!p && status < 400 && !shouldLogAccess(ip, path)) return;
     const c = container();
     const ts = new Date().toISOString();
     const id = 'access-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
@@ -292,7 +329,7 @@ function logAccess(request, response, p) {
       path,
       status,
       user: (p && (p.userDetails || p.userId)) || null,
-      ip: getClientIp(request),
+      ip,
       userAgent: String(request.headers.get('user-agent') || '').slice(0, 200)
     };
     // Fire-and-forget; if Cosmos write fails, swallow.
@@ -3116,6 +3153,45 @@ app.http('cron-qbo-sync', {
 });
 
 /**
+ * POST /api/cron/cleanup — purge old access-log documents (docType:"access").
+ * Called headless by the scheduler (GitHub Actions) with the CRON_SECRET header.
+ * logAccess() writes a brand-new document on nearly every API hit with no TTL and
+ * no upper bound — on a Cosmos Free Tier account (1000 RU/s + 25 GB, one shared
+ * partition for every client's data) that grows without end. Capped per run so a
+ * large backlog cleans up incrementally over a few nights instead of risking a
+ * timeout or an RU spike that competes with live bookkeeper traffic.
+ */
+app.http('cron-cleanup', {
+  methods: ['POST', 'GET'],
+  authLevel: 'anonymous',
+  route: 'cron/cleanup',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    const given = request.headers.get('x-bcc-cron-secret') || '';
+    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    const RETENTION_DAYS = 30;
+    const MAX_DELETES_PER_RUN = 3000;
+    try {
+      const c = container();
+      const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+      const { resources } = await c.items.query({
+        query: 'SELECT TOP ' + MAX_DELETES_PER_RUN + ' c.id FROM c WHERE c.tenantId=@t AND c.docType="access" AND c.ts < @cutoff',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@cutoff', value: cutoff }]
+      }).fetchAll();
+      let deleted = 0;
+      for (const r of resources) {
+        try { await c.item(r.id, BCC_TENANT_ID).delete(); deleted++; } catch (e) { if (e.code !== 404) throw e; }
+      }
+      context.log('cron-cleanup: deleted ' + deleted + ' access-log docs older than ' + RETENTION_DAYS + 'd (scanned ' + resources.length + ')');
+      return { jsonBody: { ok: true, deleted, scanned: resources.length, retentionDays: RETENTION_DAYS, hitCap: resources.length >= MAX_DELETES_PER_RUN } };
+    } catch (err) {
+      context.error('cron-cleanup error', err);
+      return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } };
+    }
+  }
+});
+
+/**
  * GET /api/integrations/qbo/periods  — financial-period history from Cosmos,
  * scoped to the companies the caller can see (admin = all; others = enabled +
  * shared). Lets the UI load fresh (nightly-synced) periods without a manual sync
@@ -3926,6 +4002,14 @@ app.http('qbo-connect', {
     const p = principal(request);
     if (!p) return unauthorized();
     if (!domainAllowed(p)) return domainBlocked();
+    // Unlike Drive connect (initiated from a specific client's workspace, so it can
+    // check access to THAT realm up front), QBO connect doesn't know which company
+    // until the user picks one inside Intuit's UI — so the only gate available here
+    // is "may this person connect/reconnect a QBO company at all", same admin-only
+    // rule the app's own UI already applies (the button is admin-hidden client-side;
+    // this makes the server actually enforce it) and the same rule every marketing
+    // connector in this file (googleads/linkedin/meta/mailchimp) already requires.
+    if (!(await isAppAdmin(p))) return forbidden('only administrators may connect a QuickBooks company');
     try {
       const fields = await getIntegrationFields('qbo');
       if (!fields.clientId) {
@@ -4032,6 +4116,16 @@ app.http('qbo-callback', {
       // another company just adds another doc — nothing is overwritten.
       const compId = 'bcc-qbo-company-' + realmId;
       const existing = await c.item(compId, BCC_TENANT_ID).read().then(rr => rr.resource).catch(() => null);
+      // Reconnecting/refreshing an EXISTING company's token must still respect that
+      // company's own access controls — most importantly companyPrivateBlocked,
+      // which (per every other per-client gate in this file) is NOT bypassed by
+      // admin status. Without this, completing the connect flow (admin-gated at
+      // qbo-connect above) could still silently take over the refresh token for a
+      // privateToUpn-locked company — e.g. the firm's own books — that even an
+      // admin must specifically not see.
+      if (existing && companyPrivateBlocked(existing, { userDetails: st.upn })) {
+        return { status: 302, headers: { Location: '/bookkeeping.html?qbo=error&detail=' + encodeURIComponent('you do not have access to reconnect this company') } };
+      }
       const comp = existing || { id: compId, tenantId: BCC_TENANT_ID, docType: 'qbo-company', realmId };
       comp.refreshToken = tok.refresh_token;
       comp.environment = env;

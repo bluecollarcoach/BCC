@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sign in &middot; BCC Connect</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing:border-box; }
+  body {
+    font-family:'Inter', system-ui, -apple-system, Segoe UI, Arial, sans-serif;
+    background: radial-gradient(circle at top, #2b2b2b 0%, #1a1a1a 80%);
+    color:#f6f6f4;
+    min-height:100vh; margin:0;
+    display:flex; align-items:center; justify-content:center; padding:24px;
+  }
+  .card {
+    background:#1f1f1f; border:1px solid #2e2c27; border-radius:14px;
+    padding:36px 30px; box-shadow:0 24px 60px rgba(0,0,0,0.45);
+    max-width:480px; width:100%; text-align:center;
+  }
+  .card img { height:60px; margin-bottom:18px; }
+  .card h1 {
+    font-family:'Source Serif 4', Georgia, serif; color:#a8884a;
+    font-size:26px; font-weight:700; letter-spacing:0.5px; margin:0 0 8px;
+  }
+  .card .lead { color:#e8e6e0; font-size:14px; line-height:1.6; margin:0 0 20px; }
+  .btn {
+    display:block; width:100%;
+    padding:14px 18px; border-radius:9px;
+    text-decoration:none; font-weight:700; font-size:14px; letter-spacing:0.3px;
+    border:none; cursor:pointer; font-family:inherit;
+    background:#c5a55a; color:#1a1a1a;
+  }
+  .btn:hover, .btn:active { background:#c2a05c; }
+</style>
+</head>
+<body>
+<div class="card">
+  <img src="bcc-logo.png" alt="Blue Collar Coach" />
+  <h1>Please sign in</h1>
+  <p class="lead" id="lead">Your session has ended. Redirecting you to sign-in&hellip;</p>
+  <a class="btn" id="signInBtn" href="#">Sign in</a>
+</div>
+<script>
+(function () {
+  // Same-origin content swap (staticwebapp.config.json rewrites 401 responses
+  // here while KEEPING the real 401 status code, so fetch()/bcc-api.js still see
+  // a normal 401 and don't retry forever). For an actual browser page load —
+  // the case this file is really for — bounce straight to sign-in, returning to
+  // wherever the user was headed. Mirrors bccSignIn() in bcc-api.js.
+  var redir = encodeURIComponent(location.pathname + location.search + location.hash);
+  var loginUrl = '/.auth/login/aad?prompt=select_account&domain_hint=bluecollarcoach.us&post_login_redirect_uri=' + redir;
+  document.getElementById('signInBtn').onclick = function (e) { e.preventDefault(); location.href = loginUrl; };
+  // Only auto-redirect for a real navigation, not when this page's HTML happens
+  // to be the (ignored) body of a background fetch() — the top window check
+  // avoids bouncing an <iframe> or a fetch that merely downloaded this markup.
+  if (window.top === window.self) {
+    setTimeout(function () { location.href = loginUrl; }, 600);
+  }
+})();
+</script>
+</body>
+</html>

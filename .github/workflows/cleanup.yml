@@ -1,0 +1,24 @@
+name: Nightly access-log cleanup
+
+# Purges access-log documents (docType:"access") older than 30 days. logAccess()
+# writes a new document on nearly every API hit with no TTL and no upper bound;
+# on a Cosmos Free Tier account (1000 RU/s + 25 GB, one shared partition for
+# every client's data) that grows without end. Capped per run server-side, so a
+# large backlog cleans up incrementally over a few nights rather than in one go.
+on:
+  schedule:
+    - cron: '30 9 * * *'   # 09:30 UTC daily — 30 min after the QBO sync, before the workday
+  workflow_dispatch: {}    # allow manual "Run workflow" for testing
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger access-log cleanup
+        run: |
+          code=$(curl -sS -o /tmp/out.json -w '%{http_code}' --max-time 120 \
+            -X POST 'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/cron/cleanup' \
+            -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}")
+          echo "HTTP $code"
+          cat /tmp/out.json || true; echo
+          test "$code" = "200"

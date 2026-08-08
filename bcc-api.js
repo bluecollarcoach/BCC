@@ -1397,6 +1397,19 @@
     return dismiss;
   };
 
+  /* flush() dispatches 'bcc-sync-error' for every key in a refused PUT batch, but
+   * nothing ever listened for it — a save silently stopped syncing with only a tiny
+   * color change on the auth chip as any indication. A 401 specifically means the
+   * SWA session has expired (a routine mid-day occurrence), so surface that clearly
+   * and just once per page load rather than once per refused key. */
+  var _sessionExpiredNotified = false;
+  window.addEventListener('bcc-sync-error', function (ev) {
+    var status = ev && ev.detail && ev.detail.status;
+    if (status !== 401 || _sessionExpiredNotified) return;
+    _sessionExpiredNotified = true;
+    if (window.bccNotify) window.bccNotify('Your sign-in has expired — please sign back in to keep saving your work.', 'error', 0);
+  });
+
   /* ---------- Offline-aware save toast ----------
    * window.bccNotifySaved(onlineMsg)
    *   Online  → success toast with onlineMsg

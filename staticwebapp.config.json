@@ -18,6 +18,8 @@
     { "route": "/.auth/complete", "redirect": "/" },
 
     { "route": "/403.html",      "allowedRoles": ["anonymous", "authenticated"] },
+    { "route": "/401.html",      "allowedRoles": ["anonymous", "authenticated"] },
+    { "route": "/robots.txt",    "allowedRoles": ["anonymous", "authenticated"] },
     { "route": "/manifest.json", "allowedRoles": ["anonymous", "authenticated"] },
     { "route": "/sw.js",         "allowedRoles": ["anonymous", "authenticated"] },
     { "route": "/bcc-brand.css", "allowedRoles": ["anonymous", "authenticated"] },
@@ -46,14 +48,17 @@
 
     { "route": "/api/cron/reminders", "allowedRoles": ["anonymous", "authenticated"] },
     { "route": "/api/cron/qbo-sync", "allowedRoles": ["anonymous", "authenticated"] },
+    { "route": "/api/cron/cleanup", "allowedRoles": ["anonymous", "authenticated"] },
 
     { "route": "/api/*",  "allowedRoles": ["authenticated"] },
     { "route": "/*.html", "allowedRoles": ["authenticated"] },
-    { "route": "/",       "allowedRoles": ["authenticated"], "rewrite": "/index.html" }
+    { "route": "/",       "allowedRoles": ["authenticated"], "rewrite": "/index.html" },
+
+    { "route": "/*", "allowedRoles": ["authenticated"] }
   ],
 
   "responseOverrides": {
-    "401": { "redirect": "/login", "statusCode": 302 },
+    "401": { "rewrite": "/401.html", "statusCode": 401 },
     "403": { "rewrite": "/403.html", "statusCode": 403 }
   },
 
@@ -74,5 +79,5 @@
     "apiRuntime": "node:20"
   },
 
-  "_comment": "81acb8ef-0b0b-4299-882c-ff07373e8cc7 is replaced by the deploy script. AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, COSMOS_ENDPOINT, COSMOS_KEY, BCC_TENANT_ID are configured as Static Web App application settings — see DEPLOY.md."
+  "_comment": "81acb8ef-0b0b-4299-882c-ff07373e8cc7 is replaced by the deploy script. AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, COSMOS_ENDPOINT, COSMOS_KEY, BCC_TENANT_ID are configured as Static Web App application settings — see DEPLOY.md. The trailing '/*' route is a catch-all (2026-08-08 security fix): without it, any static file not individually listed here (docs/, forms/, README.md, DEPLOY.md, etc.) fell through with NO role restriction at all and was served to anonymous internet visitors — Azure SWA's documented default for an unmatched route is 'anonymous'. Keep this rule LAST; SWA evaluates routes in array order and the first match wins, so everything above it (login, OAuth callbacks, brand assets) still resolves correctly first. The 401 responseOverride was changed from redirect to rewrite the same day: SWA applies responseOverrides to EVERY response leaving the edge, including /api/* — a `redirect` sends the client through /login -> /.auth/login/aad -> a CROSS-ORIGIN hop to login.microsoftonline.com, which fetch() can't follow, so instead of resolving with status 401 it threw a network error. bcc-api.js's flush() already treats a real 401 correctly (permanent failure, don't retry) — the redirect was hiding that from it entirely, so a write failing after a session expiry retried forever every 5s with no visible error. `rewrite` instead serves 401.html's markup while KEEPING the real 401 status code (same-origin, no redirect chain), so fetch() still sees status 401 correctly, while an actual browser navigation gets 401.html's own client-side bounce to sign-in — same UX as before, without breaking the API case. Do not change this back to `redirect`."
 }
