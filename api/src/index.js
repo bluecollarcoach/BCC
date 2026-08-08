@@ -45,7 +45,7 @@ const ADMIN_KEYS      = new Set(['bcc-admin-config-v1']); // writable only by us
 // tokens (bcc-qbo-company-*, bcc-clientdrive-*), per-client mailbox config, and
 // server-only time. The generic /api/data path must NEVER create, overwrite, or
 // delete these (they each have an admin/allow-list-gated endpoint of their own).
-const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-bkentry-', 'bcc-emailmeta-', 'bcc-financial-period-', 'bcc-usernotif-', 'bcc-feedback-', 'bcc-errorlog-', 'bcc-report-'];
+const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-bkentry-', 'bcc-emailmeta-', 'bcc-financial-period-', 'bcc-usernotif-', 'bcc-feedback-', 'bcc-errorlog-', 'bcc-report-', 'bcc-cprsig-', 'bcc-document-'];
 // Sentinel allowedUserUpns value meaning "admins only" — a non-matching UPN, so
 // every existing access check (allow.length && who not in allow → deny) denies
 // non-admins automatically, while admins bypass the allow-list. New companies
@@ -190,6 +190,23 @@ function redactIntegrationData(data) {
     for (const k of Object.keys(out.fields)) f[k] = SECRET_FIELD_RE.test(k) ? '' : out.fields[k];
     out.fields = f;
   }
+  return out;
+}
+// bcc-admin-config-v1 is write-protected (ADMIN_KEYS) but every signed-in user's normal
+// /api/data sync still needs to READ parts of it (their own appPermissions tier,
+// display-name/active-user lookups) — so it can't be blocked outright like an
+// integration doc. Strip anything secret-shaped instead (same SECRET_FIELD_RE the
+// integration redaction uses), both at the top level (auditPassword) and per-user
+// (msGraphRefreshToken), and leave everything else intact.
+function redactAdminConfigData(data, isAdmin) {
+  if (isAdmin || !data || typeof data !== 'object') return data;
+  const stripSecrets = (obj) => {
+    const out = Object.assign({}, obj);
+    for (const k of Object.keys(out)) if (SECRET_FIELD_RE.test(k)) delete out[k];
+    return out;
+  };
+  const out = stripSecrets(data);
+  if (Array.isArray(out.users)) out.users = out.users.map(stripSecrets);
   return out;
 }
 
@@ -364,13 +381,22 @@ app.http('data', {
           // client. Note the prefix deliberately does NOT catch bcc-emailsig- or
           // bcc-emailmeta-, which must keep syncing.
           if (/^bcc-(financial-period|usernotif|feedback|errorlog|bkentry|report|cpr-sends|email)-/.test(String(key))) return { jsonBody: { key, data: null } };
+          // Same rule PUT/DELETE already enforce (isProtectedServerKey) — these are
+          // server-owned records with their own access-gated endpoints (client
+          // mailbox/drive tokens, QBO company connections, certified-payroll
+          // signatures, uploaded-file metadata, etc.); a direct GET here bypassed
+          // that gate entirely, since only the write side checked it.
+          if (isProtectedServerKey(key)) return { jsonBody: { key, data: null } };
           // Personal docs (tasks, daily time log, email signature) — owner only.
           if (!ownsPersonalKey(key)) return { jsonBody: { key, data: null } };
           // Integration docs hold OAuth client secrets / tokens — redact for non-admins.
           const keyRedact = key.startsWith('bcc-integration-') && !(await isAppAdmin(p));
+          const adminCfgRedact = ADMIN_KEYS.has(key) && !(await isAppAdmin(p));
           try {
             const { resource } = await c.item(key, BCC_TENANT_ID).read();
-            const data = resource ? (keyRedact ? redactIntegrationData(resource.data) : resource.data) : null;
+            const data = resource
+              ? (keyRedact ? redactIntegrationData(resource.data) : adminCfgRedact ? redactAdminConfigData(resource.data, false) : resource.data)
+              : null;
             return { jsonBody: { key, data, updatedAt: resource && resource.updatedAt, updatedBy: resource && resource.updatedBy } };
           } catch (e) {
             if (e.code === 404) return { jsonBody: { key, data: null } };
@@ -399,13 +425,26 @@ app.http('data', {
             ? [{ name: '@t', value: BCC_TENANT_ID }, { name: '@me', value: me }, { name: '@since', value: sinceD }]
             : [{ name: '@t', value: BCC_TENANT_ID }, { name: '@me', value: me }]
         };
-        const { resources } = await c.items.query(q).fetchAll();
+        const { resources: rawResources } = await c.items.query(q).fetchAll();
+        // Belt-and-suspenders on top of the SQL exclusions above: the SQL list and
+        // PROTECTED_KEY_PREFIXES are maintained separately and had drifted apart
+        // (bcc-qbo-company-/bcc-client-mailbox-/bcc-clientdrive-/bcc-emailmeta- were
+        // in PROTECTED_KEY_PREFIXES — write-blocked — but NOT excluded here, so every
+        // signed-in user's routine full sync shipped every client's QBO refresh token
+        // and mailbox config to their browser). Filtering by the single source of
+        // truth here means a future addition to PROTECTED_KEY_PREFIXES is
+        // automatically read-protected too, not just write-protected.
+        const resources = rawResources.filter(r => !isProtectedServerKey(r.id));
         // Integration docs hold secrets — redact credential fields for non-admins
         // (status flags stay so connection badges keep working).
         const dataAdmin = await isAppAdmin(p);
         const items = resources.map(r => {
           const isInt = String(r.id).startsWith('bcc-integration-');
-          return { key: r.id, data: (isInt && !dataAdmin) ? redactIntegrationData(r.data) : r.data, updatedAt: r.updatedAt, updatedBy: r.updatedBy };
+          const isAdminCfg = ADMIN_KEYS.has(r.id);
+          const data = isInt ? (dataAdmin ? r.data : redactIntegrationData(r.data))
+            : isAdminCfg ? redactAdminConfigData(r.data, dataAdmin)
+            : r.data;
+          return { key: r.id, data, updatedAt: r.updatedAt, updatedBy: r.updatedBy };
         });
         return { jsonBody: { items } };
       }
@@ -3078,19 +3117,26 @@ async function loadMsGraphTokensFor(upn) {
 async function saveMsGraphTokensFor(upn, refreshToken, displayName) {
   const c = container();
   const id = 'bcc-admin-config-v1';
-  let cfg = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-  if (!cfg) cfg = { id, tenantId: BCC_TENANT_ID, docType: 'admin-config', users: [], updatedAt: new Date().toISOString() };
-  if (!Array.isArray(cfg.users)) cfg.users = [];
+  // Every other reader/writer of this doc (getAdminCfg, the generic /api/data PUT
+  // handler, admin.html's loadCfg/saveCfg) treats it as {id, tenantId, data: {users:
+  // [...]}, ...} — the users array lives under .data, not top-level. This used to
+  // read/write cfg.users directly on the raw Cosmos item, which silently created a
+  // phantom, never-read top-level array: "Connect Outlook" appeared to succeed but
+  // the token landed nowhere getAdminCfg()/isAppAdmin()/anything else ever looks.
+  const resource = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+  let data = resource && resource.data;
+  if (typeof data === 'string') { try { data = JSON.parse(data); } catch (_) { data = null; } }
+  if (!data || typeof data !== 'object') data = { users: [] };
+  if (!Array.isArray(data.users)) data.users = [];
   const lc = String(upn || '').toLowerCase();
-  let u = cfg.users.find(x => (x.upn || '').toLowerCase() === lc);
+  let u = data.users.find(x => (x.upn || '').toLowerCase() === lc);
   if (!u) {
     u = { upn, displayName: displayName || upn, role: 'member', status: 'active' };
-    cfg.users.push(u);
+    data.users.push(u);
   }
   u.msGraphRefreshToken = refreshToken;
   u.msGraphConnectedAt = new Date().toISOString();
-  cfg.updatedAt = new Date().toISOString();
-  await c.items.upsert(cfg);
+  await c.items.upsert({ id, tenantId: BCC_TENANT_ID, docType: 'admin-config', data, updatedAt: new Date().toISOString(), updatedBy: 'msgraph-callback' });
   invalidateAdminCfgCache();
 }
 
