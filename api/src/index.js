@@ -154,6 +154,14 @@ function hasRole(p, role) {
  * bcc-admin-config-v1.
  */
 let _adminCfgCache = null;
+// True when the admin-config DOCUMENT EXISTS but carries no usable config — i.e. it
+// was corrupted or overwritten, as opposed to genuinely never created. isAppAdmin's
+// bootstrap ("no config yet → anyone may make the first save") must NOT fire in that
+// case: a destroyed config would otherwise promote every authenticated user to app
+// admin. Distinguishing the two keeps first-deploy bootstrap working while failing
+// CLOSED on corruption.
+let _adminCfgCorrupt = false;
+function adminCfgCorrupt() { return _adminCfgCorrupt; }
 async function getAdminCfg() {
   if (_adminCfgCache && Date.now() < _adminCfgCache.expires) return _adminCfgCache.data;
   try {
@@ -164,10 +172,13 @@ async function getAdminCfg() {
     // check (isAppAdmin, tasks-only tier, notify recipient gate…), and a string
     // here makes cfg.users undefined — silently breaking all of them. Parse it.
     if (typeof data === 'string') { try { data = JSON.parse(data); } catch (_) { data = null; } }
+    // Document present but unusable => corrupted/overwritten, not un-created.
+    _adminCfgCorrupt = !!resource && !(data && typeof data === 'object');
     _adminCfgCache = { data: data || null, expires: Date.now() + 15000 };
     return _adminCfgCache.data;
   } catch (e) {
     if (e.code === 404) {
+      _adminCfgCorrupt = false; // genuinely absent — real first-deploy bootstrap
       _adminCfgCache = { data: null, expires: Date.now() + 15000 };
       return null;
     }
@@ -198,6 +209,12 @@ async function isAppAdmin(p) {
   //    everyone is admin" loophole. Recovery is via BCC_OWNER_UPNS or the
   //    SWA 'administrator' role above.
   const cfg = await getAdminCfg();
+  // The doc EXISTS but holds no usable config => corrupted or overwritten, NOT a
+  // fresh install. Fail closed: promoting everyone to admin because the config was
+  // destroyed turns any write to that id into full privilege escalation. The two
+  // recovery paths above (BCC_OWNER_UPNS, the SWA 'administrator' role) still work,
+  // which is exactly what they exist for.
+  if (adminCfgCorrupt()) return false;
   if (!cfg) return true;                         // no doc yet → first save wins
   const users = Array.isArray(cfg.users) ? cfg.users : [];
   if (!users.length) return true;                // truly empty → bootstrap
@@ -7101,7 +7118,17 @@ app.http('documents-list-create', {
         if (um) { const uacc = await driveClientAccess(p, um[1]); if (uacc.err) return { status: 403, jsonBody: { error: 'no access to this client' } }; }
       }
       const tags = String(form.get('tags') || '').trim();
+      // docId is CALLER-SUPPLIED (documents.html sends it on every upload so an edit
+      // replaces the same metadata doc). It is used verbatim as the Cosmos item id in
+      // the upsert below, and a Cosmos upsert REPLACES the whole document — so without
+      // this check any signed-in user could overwrite ANY doc sharing the tenantId
+      // partition key. Overwriting bcc-admin-config-v1 with a document-metadata blob
+      // (which has no .data) makes getAdminCfg() return null, and isAppAdmin()'s
+      // bootstrap then treats every authenticated user as an app admin. Both sibling
+      // handlers (document-one, document-download) already validate this prefix; the
+      // upload path did not.
       const docId = String(form.get('docId') || (DOC_DOC_PREFIX + Date.now().toString(36) + Math.random().toString(36).slice(2, 9)));
+      if (docId.indexOf(DOC_DOC_PREFIX) !== 0) return badRequest('bad docId');
       const linkedContactId    = String(form.get('linkedContactId') || '').trim() || null;
       const linkedEngagementId = String(form.get('linkedEngagementId') || '').trim() || null;
 
