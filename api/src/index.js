@@ -2282,7 +2282,24 @@ function driveCallbackHandler(provider) {
         else { const me = await fetch('https://graph.microsoft.com/v1.0/me', { headers: { Authorization: 'Bearer ' + tok.access_token } }).then(r => r.json()); account = me.userPrincipalName || me.mail || ''; }
       } catch (_) {}
       const connectedBy = String((p && (p.userDetails || p.userId)) || st.uid || '').toLowerCase();
-      await container().items.upsert({ id: 'bcc-clientdrive-' + realmId, tenantId: BCC_TENANT_ID, docType: 'client-drive', realmId, provider, account, refreshToken: tok.refresh_token, connectedAt: new Date().toISOString(), connectedBy });
+      // MERGE onto the existing connection doc. drive-set-root stores the client's
+      // landing folder on this same document (`dt.doc.root = root`), so upserting a
+      // brand-new object literal here silently discarded it on every reconnect —
+      // after which the browser listed, and uploads landed in, the drive ROOT instead
+      // of the client's folder. Keep root (and the original connectedAt) intact; a
+      // reconnect is a new token, not a new configuration.
+      const driveDocId = 'bcc-clientdrive-' + realmId;
+      const priorDrive = await container().item(driveDocId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      const nextDrive = Object.assign({}, priorDrive || {}, {
+        id: driveDocId, tenantId: BCC_TENANT_ID, docType: 'client-drive', realmId,
+        provider, account, refreshToken: tok.refresh_token,
+        connectedAt: (priorDrive && priorDrive.connectedAt) || new Date().toISOString(),
+        reconnectedAt: priorDrive ? new Date().toISOString() : undefined,
+        connectedBy
+      });
+      // A reconnect that SWITCHES provider must not keep the other provider's folder.
+      if (priorDrive && priorDrive.provider && priorDrive.provider !== provider) delete nextDrive.root;
+      await container().items.upsert(nextDrive);
       return driveBack(realmId, null);
     } catch (e) { context.error('drive-callback', e); return driveBack(null, String(e && e.message || e)); }
   };
@@ -4204,7 +4221,11 @@ app.http('msgraph-pull-events', {
       const url = 'https://graph.microsoft.com/v1.0/users/' + upn + '/calendarView?' + new URLSearchParams({
         startDateTime: rangeStart,
         endDateTime: rangeEnd,
-        $select: 'id,subject,start,end,location,bodyPreview,isAllDay,showAs,categories',
+        // `sensitivity` is fetched so Private/Confidential entries can be excluded
+        // below — these events are written into the FIRM-WIDE session store, not a
+        // personal calendar, so anything the owner marked private must never make
+        // the trip.
+        $select: 'id,subject,start,end,location,bodyPreview,isAllDay,showAs,categories,sensitivity',
         $top: '250',
         $orderby: 'start/dateTime'
       }).toString();
@@ -4217,20 +4238,30 @@ app.http('msgraph-pull-events', {
       //  - skip those whose msGraphId is already present (idempotent merge)
       //  - skip those whose start is in the past beyond the user's lookback
       //  - create new bcc-session-* docs for the rest.
-      const out = events.map(function (e) {
-        return {
-          msGraphId: e.id,
-          title: e.subject || '(untitled event)',
-          startAt: e.start && e.start.dateTime ? new Date(e.start.dateTime + 'Z').toISOString() : null,
-          endAt:   e.end   && e.end.dateTime   ? new Date(e.end.dateTime + 'Z').toISOString() : null,
-          location: (e.location && e.location.displayName) || '',
-          prepNotes: e.bodyPreview || '',
-          allDay: !!e.isAllDay,
-          showAs: e.showAs,
-          categories: e.categories || [],
-          source: 'msgraph'
-        };
-      }).filter(function (s) { return s.startAt; });
+      const out = events
+        // Private/Confidential calendar entries are excluded outright. Pulled events
+        // become bcc-session-* docs, which sync to the WHOLE FIRM — a coach clicking
+        // a button labelled "Pull from Outlook" is not consenting to publish their
+        // private appointments (medical, personal, interviews) to every colleague.
+        .filter(function (e) { const s = String(e.sensitivity || 'normal').toLowerCase(); return s !== 'private' && s !== 'confidential'; })
+        .map(function (e) {
+          return {
+            msGraphId: e.id,
+            title: e.subject || '(untitled event)',
+            startAt: e.start && e.start.dateTime ? new Date(e.start.dateTime + 'Z').toISOString() : null,
+            endAt:   e.end   && e.end.dateTime   ? new Date(e.end.dateTime + 'Z').toISOString() : null,
+            location: (e.location && e.location.displayName) || '',
+            // The event BODY is deliberately not carried over. It routinely contains
+            // meeting links, dial-in PINs, attendee notes and client detail, and it
+            // would land in a firm-wide record. The coach can add prep notes
+            // themselves; importing the body wholesale is not theirs to share.
+            prepNotes: '',
+            allDay: !!e.isAllDay,
+            showAs: e.showAs,
+            categories: e.categories || [],
+            source: 'msgraph'
+          };
+        }).filter(function (s) { return s.startAt; });
 
       return { jsonBody: { ok: true, events: out, range: { start: rangeStart, end: rangeEnd } } };
     } catch (e) {

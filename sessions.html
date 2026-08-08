@@ -142,7 +142,7 @@
     </div>
     <span class="label" id="weekLabel"></span>
     <button class="btn btn-primary" id="newBtn" type="button">+ New session</button>
-    <button class="btn btn-ghost" id="pullBtn" type="button" title="Pull events from your Outlook calendar">Pull from Outlook</button>
+    <button class="btn btn-ghost" id="pullBtn" type="button" title="Import your Outlook calendar into the SHARED firm sessions calendar. Private/Confidential events are skipped and descriptions are not imported.">Pull from Outlook</button>
     <button class="btn btn-ghost" id="printBtn" type="button">Print week</button>
   </div>
 
@@ -333,6 +333,11 @@
       (window.bccNotify || alert)('Connect Outlook first (Admin → Integrations).', 'warn');
       return;
     }
+    // Pulled events become bcc-session-* docs, which sync to the WHOLE FIRM. The
+    // button reads like a personal import, so say plainly what it actually does
+    // before anything is published. (Private/Confidential entries are excluded
+    // server-side, and event bodies are never imported.)
+    if (!confirm('Import your Outlook calendar into the shared Sessions calendar?\n\nImported events become visible to everyone at the firm. Appointments you marked Private or Confidential are skipped, and event descriptions are not imported.')) return;
     var btn = this; btn.disabled = true; btn.textContent = 'Pulling…';
     // Default range = the current week +/- a couple weeks, so the pull
     // populates whatever the user is looking at without dragging in
