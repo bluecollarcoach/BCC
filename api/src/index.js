@@ -550,9 +550,13 @@ app.http('data', {
         // signed-in user's routine sync shipped every contact, company, deal,
         // marketing campaign, and client rate sheet in the tenant regardless of
         // that person's assigned tier for those apps.
+        // Resolve every app tier ONCE, then filter synchronously — an await per
+        // document here would add thousands of event-loop yields to the hottest
+        // request in the app (this is the routine full sync every page load runs).
+        const appCheck = await appAccessChecker(p);
         const items = [];
         for (const r of gated) {
-          if ((await appAccessForKey(p, r.id, 'view')) === false) continue;
+          if (appCheck(r.id, 'view') === false) continue;
           const isInt = String(r.id).startsWith('bcc-integration-');
           const isAdminCfg = ADMIN_KEYS.has(r.id);
           const data = isInt ? (dataAdmin ? r.data : redactIntegrationData(r.data))
@@ -574,6 +578,7 @@ app.http('data', {
         let touchesAdminKey = false;
         let touchesIntegration = false;
         const realmAccessCache = new Map();
+        const putAppCheck = await appAccessChecker(p); // resolve tiers once, not per item
         for (const it of items) {
           if (!isPcKey(it.key)) return badRequest('invalid key: ' + it.key);
           if (isProtectedServerKey(it.key)) return forbidden('this record is managed by a secure endpoint and cannot be written here');
@@ -593,7 +598,7 @@ app.http('data', {
           }
           // CRM/Engagements/Marketing/Rate-Sheet records — only someone with 'edit'+
           // on the owning app (bcc-contact- requires it on at least one sharing app).
-          if ((await appAccessForKey(p, it.key, 'edit')) === false) return forbidden('you do not have edit access for this');
+          if (putAppCheck(it.key, 'edit') === false) return forbidden('you do not have edit access for this');
           if (ADMIN_KEYS.has(it.key)) touchesAdminKey = true;
           if (it.key.startsWith('bcc-integration-')) touchesIntegration = true;
         }
@@ -2058,15 +2063,32 @@ const CONTACT_APPS = ['crm', 'jobs', 'scheduler', 'sessions', 'events', 'documen
 // (i.e. this check doesn't apply and the caller should fall through to whatever
 // other rules govern that key).
 async function appAccessForKey(p, id, minTier) {
-  id = String(id || '');
-  const exactApp = SINGLE_APP_EXACT_KEYS[id];
-  if (exactApp) return tierAtLeast(await appTierFor(p, exactApp), minTier);
-  for (const { re, app } of SINGLE_APP_KEY_PREFIXES) if (re.test(id)) return tierAtLeast(await appTierFor(p, app), minTier);
-  if (id.startsWith('bcc-contact-')) {
-    for (const app of CONTACT_APPS) if (tierAtLeast(await appTierFor(p, app), minTier)) return true;
-    return false;
-  }
-  return null;
+  const check = await appAccessChecker(p);
+  return check(id, minTier);
+}
+// Batched counterpart to appAccessForKey: resolves every app tier this caller could
+// need ONCE, then returns a PURE SYNCHRONOUS predicate. The bulk /api/data sync
+// filters every doc in the tenant through this, so an `await` per document there
+// would add thousands of event-loop yields to the single hottest request in the app
+// (and re-enter isAppAdmin/getAdminCfg for each one). There are only a handful of
+// distinct app keys, so resolving them up front is strictly cheaper and identical
+// in behavior.
+const ALL_TIERED_APPS = Array.from(new Set([
+  ...SINGLE_APP_KEY_PREFIXES.map(x => x.app),
+  ...Object.values(SINGLE_APP_EXACT_KEYS),
+  ...CONTACT_APPS,
+]));
+async function appAccessChecker(p) {
+  const tiers = {};
+  for (const app of ALL_TIERED_APPS) tiers[app] = await appTierFor(p, app);
+  return function (id, minTier) {
+    id = String(id || '');
+    const exactApp = SINGLE_APP_EXACT_KEYS[id];
+    if (exactApp) return tierAtLeast(tiers[exactApp], minTier);
+    for (const { re, app } of SINGLE_APP_KEY_PREFIXES) if (re.test(id)) return tierAtLeast(tiers[app], minTier);
+    if (id.startsWith('bcc-contact-')) return CONTACT_APPS.some(app => tierAtLeast(tiers[app], minTier));
+    return null;
+  };
 }
 async function driveClientAccess(p, realmId) {
   const c = container();
