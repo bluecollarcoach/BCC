@@ -462,9 +462,15 @@
     var t = loadTypes().find(function (x) { return x.id === id; });
     return t ? t.label : '';
   }
+  // typeColor()'s result is interpolated directly into inline style="" attributes
+  // (unescaped — color values aren't HTML text, esc() wouldn't help there) at
+  // every call site, so it must never return anything but a genuine hex color: a
+  // stored value like 'red;" onmouseover="...' would break out of the attribute.
+  // Whitelisting the shape here protects every consumer at once.
+  function safeColor(c) { return /^#[0-9a-f]{3,8}$/i.test(String(c || '')) ? c : '#8a877e'; }
   function typeColor(id) {
     var t = loadTypes().find(function (x) { return x.id === id; });
-    return t ? t.color : '#8a877e';
+    return safeColor(t && t.color);
   }
 
   function allContacts() {

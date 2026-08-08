@@ -240,23 +240,36 @@ function redactIntegrationData(data) {
 }
 // bcc-admin-config-v1 is write-protected (ADMIN_KEYS) but every signed-in user's normal
 // /api/data sync still needs to READ parts of it (their own appPermissions tier,
-// display-name/active-user lookups) — so it can't be blocked outright like an
-// integration doc. Strip anything secret-shaped instead (same SECRET_FIELD_RE the
-// integration redaction uses), both at the top level (auditPassword) and per-user
-// (msGraphRefreshToken), and leave everything else intact.
-function redactAdminConfigData(data, isAdmin) {
+// display-name/active-user lookups for team-directory-style features) — so it can't
+// be blocked outright like an integration doc. Strip anything secret-shaped
+// (same SECRET_FIELD_RE the integration redaction uses), both at the top level
+// (auditPassword) and per-user (msGraphRefreshToken). ALSO strip role/appPermissions
+// for every user EXCEPT the caller themself — those aren't secret-shaped, but the
+// full roster (who's an admin, everyone's exact per-app grants) is still real
+// information disclosure to a non-admin: a ready-made phishing target list plus the
+// entire internal permission map. upn/displayName/status stay visible for everyone
+// (assignee pickers, "who read this" avatars, active-user filtering all need them).
+function redactAdminConfigData(data, isAdmin, callerUpn) {
   if (isAdmin || data == null) return data;
   // Same fail-closed fix as redactIntegrationData — a stringified .data blob must
   // never be shipped to a non-admin unredacted just because typeof isn't 'object'.
   if (typeof data === 'string') { try { data = JSON.parse(data); } catch (_) { return null; } }
   if (typeof data !== 'object') return null;
+  const who = String(callerUpn || '').toLowerCase();
   const stripSecrets = (obj) => {
     const out = Object.assign({}, obj);
     for (const k of Object.keys(out)) if (SECRET_FIELD_RE.test(k)) delete out[k];
     return out;
   };
   const out = stripSecrets(data);
-  if (Array.isArray(out.users)) out.users = out.users.map(stripSecrets);
+  if (Array.isArray(out.users)) {
+    out.users = out.users.map(u => {
+      const stripped = stripSecrets(u);
+      const isSelf = who && String(stripped.upn || stripped.email || '').toLowerCase() === who;
+      if (!isSelf) { delete stripped.role; delete stripped.appPermissions; }
+      return stripped;
+    });
+  }
   return out;
 }
 
@@ -477,7 +490,7 @@ app.http('data', {
           try {
             const { resource } = await c.item(key, BCC_TENANT_ID).read();
             const data = resource
-              ? (keyRedact ? redactIntegrationData(resource.data) : adminCfgRedact ? redactAdminConfigData(resource.data, false) : resource.data)
+              ? (keyRedact ? redactIntegrationData(resource.data) : adminCfgRedact ? redactAdminConfigData(resource.data, false, me) : resource.data)
               : null;
             return { jsonBody: { key, data, updatedAt: resource && resource.updatedAt, updatedBy: resource && resource.updatedBy } };
           } catch (e) {
@@ -543,7 +556,7 @@ app.http('data', {
           const isInt = String(r.id).startsWith('bcc-integration-');
           const isAdminCfg = ADMIN_KEYS.has(r.id);
           const data = isInt ? (dataAdmin ? r.data : redactIntegrationData(r.data))
-            : isAdminCfg ? redactAdminConfigData(r.data, dataAdmin)
+            : isAdminCfg ? redactAdminConfigData(r.data, dataAdmin, me)
             : r.data;
           items.push({ key: r.id, data, updatedAt: r.updatedAt, updatedBy: r.updatedBy });
         }
@@ -1470,7 +1483,16 @@ app.http('notify-user', {
       const toUpn = String(body.toUpn || '').trim().toLowerCase();
       const title = String(body.title || '').trim().slice(0, 140);
       const msg = String(body.body || '').trim().slice(0, 300);
-      const url = String(body.url || '/').slice(0, 200);
+      // Same-origin relative path ONLY — never a full external URL. This value
+      // reaches sw.js's push handler, which opens it directly via
+      // self.clients.openWindow() with no allowlist of its own. Left
+      // unvalidated, any signed-in user (this endpoint requires no admin role)
+      // could push a native OS notification with an attacker-chosen title/body
+      // to a coworker that opens an external phishing site on tap — a ready-made
+      // internal spear-phishing primitive. "/path" is fine; "//host" (protocol-
+      // relative) and any absolute http(s)/javascript:/data: URL are not.
+      const rawUrl = String(body.url || '/').slice(0, 200);
+      const url = /^\/(?!\/)/.test(rawUrl) ? rawUrl : '/';
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(toUpn)) return badRequest('toUpn must be an email address');
       if (!title) return badRequest('title required');
       // Target must be an ACTIVE user of this app — no notifications to arbitrary
@@ -1875,12 +1897,12 @@ function driveRouteSeg(provider) { return provider === 'google' ? 'google-drive'
 function driveRedirect(request, provider) { return publicOrigin(request) + '/api/integrations/' + driveRouteSeg(provider) + '/callback'; }
 function driveStateSecret() { return process.env.CRON_SECRET || process.env.AZURE_CLIENT_SECRET || process.env.COSMOS_KEY || 'bcc-drive-state'; }
 // Sign the OAuth state so it carries the realmId + the initiating user, tamper-proof.
-function driveSignState(realmId, uid) {
-  const payload = String(realmId) + '.' + Buffer.from(String(uid || '')).toString('base64url') + '.' + Date.now();
+function driveSignState(realmId, uid, provider) {
+  const payload = String(realmId) + '.' + Buffer.from(String(uid || '')).toString('base64url') + '.' + Date.now() + '.' + String(provider || '');
   const sig = crypto.createHmac('sha256', driveStateSecret()).update(payload).digest('base64url').slice(0, 24);
   return Buffer.from(payload + '.' + sig).toString('base64url');
 }
-function driveVerifyState(state, uid) {
+function driveVerifyState(state, uid, provider) {
   try {
     const parts = Buffer.from(String(state || ''), 'base64url').toString().split('.');
     if (parts.length < 4) return null;
@@ -1891,10 +1913,37 @@ function driveVerifyState(state, uid) {
     const realmId = parts[0];
     const stateUid = Buffer.from(parts[1], 'base64url').toString();
     const ts = Number(parts[2]);
+    // Channel binding: a state minted for google-drive-connect must not be a
+    // structurally valid replay into onedrive-callback or vice versa. Older
+    // states (minted before this field existed) have parts[3] === undefined —
+    // treat that as "no provider recorded" rather than a hard mismatch so an
+    // in-flight connect isn't broken by this same deploy.
+    const stateProvider = parts[3] || '';
+    if (provider && stateProvider && stateProvider !== provider) return null;
     if (!realmId || !ts || (Date.now() - ts) > 15 * 60 * 1000) return null;
     if (uid && stateUid && String(uid).toLowerCase() !== stateUid.toLowerCase()) return null;
     return { realmId: realmId, uid: stateUid };
   } catch (e) { return null; }
+}
+// Single-use enforcement for OAuth state values (both driveVerifyState's and
+// signOAuthState/verifyOAuthState's). A signature-valid, non-expired state can
+// still be REPLAYED if it leaks — a Referer header sent to accounts.google.com /
+// login.microsoftonline.com during a legitimate connect, browser history, or a
+// shared screen mid-flow. None of that requires forging anything; it just requires
+// capturing a value the state's own signature was never meant to protect against
+// replay of. Consuming it via Cosmos `create` (never upsert) fails atomically on a
+// repeat of the SAME state — the database handles the race, no read-then-write gap
+// for two near-simultaneous callback hits to slip through. Returns true only the
+// FIRST time a given state is presented.
+async function consumeOAuthStateOnce(state) {
+  try {
+    const hash = crypto.createHash('sha256').update(String(state || '')).digest('base64url');
+    await container().items.create({ id: 'bcc-oauthstate-used-' + hash, tenantId: BCC_TENANT_ID, docType: 'oauthstate-used', at: new Date().toISOString() });
+    return true;
+  } catch (e) {
+    if (e && e.code === 409) return false; // already consumed — replay
+    return true; // don't hard-fail a legitimate connect over a transient Cosmos error
+  }
 }
 // Generic tamper-proof OAuth state for the QBO + MS Graph callbacks: HMAC-sign a
 // small JSON payload ({upn,env,t}) so a callback can't be forged or replayed and
@@ -2107,7 +2156,7 @@ function driveConnectHandler(provider) {
     const acc = await driveClientAccess(p, realmId); if (acc.err) return driveBack(realmId, 'no access to this client');
     const creds = await driveAppCreds(provider); if (!creds.ok) return driveBack(realmId, (provider === 'google' ? 'Google Drive' : 'OneDrive') + ' app not configured yet');
     const redirect = driveRedirect(request, provider);
-    const state = driveSignState(realmId, p.userDetails || p.userId || '');
+    const state = driveSignState(realmId, p.userDetails || p.userId || '', provider);
     let url;
     if (provider === 'google') url = 'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams({ client_id: creds.clientId, redirect_uri: redirect, response_type: 'code', scope: 'https://www.googleapis.com/auth/drive openid email', access_type: 'offline', prompt: 'consent', state }).toString();
     else url = 'https://login.microsoftonline.com/' + creds.tenant + '/oauth2/v2.0/authorize?' + new URLSearchParams({ client_id: creds.clientId, redirect_uri: redirect, response_type: 'code', response_mode: 'query', scope: MS_DRIVE_SCOPE, prompt: 'select_account', state }).toString();
@@ -2126,8 +2175,12 @@ function driveCallbackHandler(provider) {
       // gate: it can't be forged, expires in 15 min, and is only minted by the
       // /connect endpoint AFTER that endpoint verified the caller's access to the
       // client. If a principal IS present, we additionally bind it to the state.
-      const st = driveVerifyState(rawState, p ? (p.userDetails || p.userId || '') : '');
+      const st = driveVerifyState(rawState, p ? (p.userDetails || p.userId || '') : '', provider);
       if (!code || !st || !st.realmId) return driveBack(null, 'invalid or expired sign-in — start the connect again');
+      // Single-use: a leaked/replayed state (Referer to the OAuth provider, browser
+      // history, a shared screen) must not let a second caller exchange their OWN
+      // code against someone else's already-verified connect attempt.
+      if (!(await consumeOAuthStateOnce(rawState))) return driveBack(null, 'this sign-in link was already used — start the connect again');
       const realmId = st.realmId;
       const creds = await driveAppCreds(provider); if (!creds.ok) return driveBack(realmId, 'app not configured');
       const tok = await driveExchangeCode(creds, code, driveRedirect(request, provider));
@@ -3243,13 +3296,17 @@ app.http('cron-qbo-sync', {
 });
 
 /**
- * POST /api/cron/cleanup — purge old access-log documents (docType:"access").
+ * POST /api/cron/cleanup — purge old access-log documents (docType:"access") and
+ * consumed OAuth single-use state markers (docType:"oauthstate-used").
  * Called headless by the scheduler (GitHub Actions) with the CRON_SECRET header.
  * logAccess() writes a brand-new document on nearly every API hit with no TTL and
  * no upper bound — on a Cosmos Free Tier account (1000 RU/s + 25 GB, one shared
  * partition for every client's data) that grows without end. Capped per run so a
  * large backlog cleans up incrementally over a few nights instead of risking a
- * timeout or an RU spike that competes with live bookkeeper traffic.
+ * timeout or an RU spike that competes with live bookkeeper traffic. oauthstate-used
+ * markers only need to outlive the 15-minute state expiry window, so a much shorter
+ * retention is enough — they're low-volume (one per OAuth connect attempt) but
+ * there's no reason to keep them forever either.
  */
 app.http('cron-cleanup', {
   methods: ['POST', 'GET'],
@@ -3260,20 +3317,25 @@ app.http('cron-cleanup', {
     const given = request.headers.get('x-bcc-cron-secret') || '';
     if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
     const RETENTION_DAYS = 30;
+    const OAUTHSTATE_RETENTION_DAYS = 1;
     const MAX_DELETES_PER_RUN = 3000;
-    try {
+    async function purge(docType, cutoffIso) {
       const c = container();
-      const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
       const { resources } = await c.items.query({
-        query: 'SELECT TOP ' + MAX_DELETES_PER_RUN + ' c.id FROM c WHERE c.tenantId=@t AND c.docType="access" AND c.ts < @cutoff',
-        parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@cutoff', value: cutoff }]
+        query: 'SELECT TOP ' + MAX_DELETES_PER_RUN + ' c.id FROM c WHERE c.tenantId=@t AND c.docType=@dt AND (c.ts < @cutoff OR c.at < @cutoff)',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@dt', value: docType }, { name: '@cutoff', value: cutoffIso }]
       }).fetchAll();
       let deleted = 0;
       for (const r of resources) {
         try { await c.item(r.id, BCC_TENANT_ID).delete(); deleted++; } catch (e) { if (e.code !== 404) throw e; }
       }
-      context.log('cron-cleanup: deleted ' + deleted + ' access-log docs older than ' + RETENTION_DAYS + 'd (scanned ' + resources.length + ')');
-      return { jsonBody: { ok: true, deleted, scanned: resources.length, retentionDays: RETENTION_DAYS, hitCap: resources.length >= MAX_DELETES_PER_RUN } };
+      return { deleted, scanned: resources.length, hitCap: resources.length >= MAX_DELETES_PER_RUN };
+    }
+    try {
+      const access = await purge('access', new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString());
+      const oauthstate = await purge('oauthstate-used', new Date(Date.now() - OAUTHSTATE_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString());
+      context.log('cron-cleanup: access=' + JSON.stringify(access) + ' oauthstate-used=' + JSON.stringify(oauthstate));
+      return { jsonBody: { ok: true, access, oauthstate, retentionDays: RETENTION_DAYS, oauthstateRetentionDays: OAUTHSTATE_RETENTION_DAYS } };
     } catch (err) {
       context.error('cron-cleanup error', err);
       return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } };
@@ -3469,6 +3531,10 @@ app.http('msgraph-callback', {
       }
       if (p && (!domainAllowed(p) || String(st.upn).toLowerCase() !== String(p.userDetails || p.userId || '').toLowerCase())) {
         return { status: 302, headers: { Location: '/admin.html?msgraph=error&detail=' + encodeURIComponent('sign-in mismatch — start the connect again') } };
+      }
+      // Single-use — see consumeOAuthStateOnce's doc comment.
+      if (!(await consumeOAuthStateOnce(state))) {
+        return { status: 302, headers: { Location: '/admin.html?msgraph=error&detail=' + encodeURIComponent('this sign-in link was already used — start the connect again') } };
       }
       const upn = st.upn;
       const redirectUri = publicOrigin(request) + '/api/integrations/msgraph/callback';
@@ -4164,6 +4230,10 @@ app.http('qbo-callback', {
     if (!st || !st.upn) return { status: 302, headers: { Location: '/bookkeeping.html?qbo=error&detail=' + encodeURIComponent('invalid or expired sign-in — start the connect again') } };
     if (p && (!domainAllowed(p) || String(st.upn).toLowerCase() !== String(p.userDetails || p.userId || '').toLowerCase())) {
       return { status: 302, headers: { Location: '/bookkeeping.html?qbo=error&detail=' + encodeURIComponent('sign-in mismatch — start the connect again') } };
+    }
+    // Single-use — see consumeOAuthStateOnce's doc comment.
+    if (!(await consumeOAuthStateOnce(state))) {
+      return { status: 302, headers: { Location: '/bookkeeping.html?qbo=error&detail=' + encodeURIComponent('this sign-in link was already used — start the connect again') } };
     }
     try {
       const fields = await getIntegrationFields('qbo');
@@ -6624,7 +6694,9 @@ app.http('googleads-callback', {
     const err = url.searchParams.get('error');
     if (err) return { status: 302, headers: { Location: '/admin.html?google-ads=' + encodeURIComponent(err) + '#integrations' } };
     if (!code) return { status: 400, jsonBody: { error: 'missing code' } };
-    if (!verifyOAuthState(url.searchParams.get('state'), 'google-ads')) return { status: 302, headers: { Location: '/admin.html?google-ads=error&detail=' + encodeURIComponent('security check failed (invalid/expired request) — retry from Admin → Integrations') + '#integrations' } };
+    const gadsState = url.searchParams.get('state');
+    if (!verifyOAuthState(gadsState, 'google-ads')) return { status: 302, headers: { Location: '/admin.html?google-ads=error&detail=' + encodeURIComponent('security check failed (invalid/expired request) — retry from Admin → Integrations') + '#integrations' } };
+    if (!(await consumeOAuthStateOnce(gadsState))) return { status: 302, headers: { Location: '/admin.html?google-ads=error&detail=' + encodeURIComponent('this sign-in link was already used — retry from Admin → Integrations') + '#integrations' } };
     try {
       const fields = await getIntegrationFields('google-ads');
       const redirectUri = publicOrigin(request) + '/api/integrations/google-ads/callback';
@@ -6691,7 +6763,9 @@ app.http('linkedin-callback', {
     const err = url.searchParams.get('error');
     if (err) return { status: 302, headers: { Location: '/admin.html?linkedin=' + encodeURIComponent(err) + '#integrations' } };
     if (!code) return { status: 400, jsonBody: { error: 'missing code' } };
-    if (!verifyOAuthState(url.searchParams.get('state'), 'linkedin')) return { status: 302, headers: { Location: '/admin.html?linkedin=error&detail=' + encodeURIComponent('security check failed (invalid/expired request) — retry from Admin → Integrations') + '#integrations' } };
+    const liState = url.searchParams.get('state');
+    if (!verifyOAuthState(liState, 'linkedin')) return { status: 302, headers: { Location: '/admin.html?linkedin=error&detail=' + encodeURIComponent('security check failed (invalid/expired request) — retry from Admin → Integrations') + '#integrations' } };
+    if (!(await consumeOAuthStateOnce(liState))) return { status: 302, headers: { Location: '/admin.html?linkedin=error&detail=' + encodeURIComponent('this sign-in link was already used — retry from Admin → Integrations') + '#integrations' } };
     try {
       const fields = await getIntegrationFields('linkedin');
       const redirectUri = publicOrigin(request) + '/api/integrations/linkedin/callback';
@@ -6762,7 +6836,9 @@ app.http('meta-callback', {
     const err = url.searchParams.get('error');
     if (err) return { status: 302, headers: { Location: '/admin.html?meta=' + encodeURIComponent(err) + '#integrations' } };
     if (!code) return { status: 400, jsonBody: { error: 'missing code' } };
-    if (!verifyOAuthState(url.searchParams.get('state'), 'meta')) return { status: 302, headers: { Location: '/admin.html?meta=error&detail=' + encodeURIComponent('security check failed (invalid/expired request) — retry from Admin → Integrations') + '#integrations' } };
+    const metaState = url.searchParams.get('state');
+    if (!verifyOAuthState(metaState, 'meta')) return { status: 302, headers: { Location: '/admin.html?meta=error&detail=' + encodeURIComponent('security check failed (invalid/expired request) — retry from Admin → Integrations') + '#integrations' } };
+    if (!(await consumeOAuthStateOnce(metaState))) return { status: 302, headers: { Location: '/admin.html?meta=error&detail=' + encodeURIComponent('this sign-in link was already used — retry from Admin → Integrations') + '#integrations' } };
     try {
       const fields = await getIntegrationFields('meta');
       const redirectUri = publicOrigin(request) + '/api/integrations/meta/callback';
@@ -6833,7 +6909,9 @@ app.http('mailchimp-callback', {
     const err = url.searchParams.get('error');
     if (err) return { status: 302, headers: { Location: '/admin.html?mailchimp=' + encodeURIComponent(err) + '#integrations' } };
     if (!code) return { status: 400, jsonBody: { error: 'missing code' } };
-    if (!verifyOAuthState(url.searchParams.get('state'), 'mailchimp')) return { status: 302, headers: { Location: '/admin.html?mailchimp=error&detail=' + encodeURIComponent('security check failed (invalid/expired request) — retry from Admin → Integrations') + '#integrations' } };
+    const mcState = url.searchParams.get('state');
+    if (!verifyOAuthState(mcState, 'mailchimp')) return { status: 302, headers: { Location: '/admin.html?mailchimp=error&detail=' + encodeURIComponent('security check failed (invalid/expired request) — retry from Admin → Integrations') + '#integrations' } };
+    if (!(await consumeOAuthStateOnce(mcState))) return { status: 302, headers: { Location: '/admin.html?mailchimp=error&detail=' + encodeURIComponent('this sign-in link was already used — retry from Admin → Integrations') + '#integrations' } };
     try {
       const fields = await getIntegrationFields('mailchimp');
       const redirectUri = publicOrigin(request) + '/api/integrations/mailchimp/callback';
