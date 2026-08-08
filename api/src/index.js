@@ -2030,9 +2030,31 @@ async function spFolderFor(realmId) {
   return hit || null;
 }
 // Path inside the library for a client (optionally a subpath under their folder).
+// Rejects '..' / '.' segments outright — a bare slash-trim left them intact, and
+// Graph's colon-addressed path lookup (plus standard URL dot-segment normalization)
+// would otherwise walk a caller straight out of their own client's mapped folder
+// and into a sibling client's folder in the SAME shared SharePoint library.
 function spPathFor(folderName, sub) {
-  const clean = String(sub || '').replace(/^\/+|\/+$/g, '');
+  const clean = String(sub || '').split('/').map(s => s.trim()).filter(s => s && s !== '.' && s !== '..').join('/');
   return '/' + SP_ROOT_FOLDER + '/' + folderName + (clean ? '/' + clean : '');
+}
+// spDriveId() resolves ONE SharePoint drive shared by every client's folder — proving
+// access to `realmId` (driveClientAccess) does NOT prove a given itemId is actually
+// inside THAT client's folder, since every item id is globally addressable within the
+// shared drive. This confirms the item's real parent path is under the client's own
+// mapped folder before its bytes are served or imported.
+async function spItemBelongsToClient(access, driveId, itemId, folder) {
+  try {
+    const r = await fetch('https://graph.microsoft.com/v1.0/drives/' + driveId + '/items/' + encodeURIComponent(itemId) + '?$select=id,parentReference', { headers: { Authorization: 'Bearer ' + access } });
+    if (!r.ok) return false;
+    const j = await r.json();
+    const parentPath = (j.parentReference && j.parentReference.path) || '';
+    const marker = '/root:/' + SP_ROOT_FOLDER + '/' + folder;
+    const idx = parentPath.indexOf(marker);
+    if (idx < 0) return false;
+    const after = parentPath.slice(idx + marker.length);
+    return after === '' || after.charAt(0) === '/'; // exactly this folder, or a real subfolder — not a name-prefix collision
+  } catch (_) { return false; }
 }
 app.http('sharepoint-list', {
   methods: ['GET'], authLevel: 'anonymous', route: 'integrations/sharepoint/{realmId}',
@@ -2069,15 +2091,22 @@ app.http('sharepoint-download', {
     try {
       const access = await getGraphToken();
       const driveId = await spDriveId();
+      const folder = await spFolderFor(realmId);
+      if (!folder) return { status: 404, jsonBody: { ok: false, error: 'no SharePoint folder mapped to this client' } };
+      // realmId access alone doesn't prove itemId belongs to THIS client — verify it.
+      if (!(await spItemBelongsToClient(access, driveId, itemId, folder))) return { status: 403, jsonBody: { ok: false, error: 'This file does not belong to this client.' } };
       const uq = new URL(request.url).searchParams;
       const name = (uq.get('name') || 'download').replace(/[^a-zA-Z0-9._ -]+/g, '_').slice(0, 120);
-      const inline = uq.get('inline') === '1' && /\.(pdf|png|jpe?g|gif|webp|bmp|txt|csv)$/i.test(name);
       const r = await fetch('https://graph.microsoft.com/v1.0/drives/' + driveId + '/items/' + encodeURIComponent(itemId) + '/content', { headers: { Authorization: 'Bearer ' + access } });
       if (!r.ok) return { status: 502, jsonBody: { ok: false, error: 'SharePoint download failed (' + r.status + ')' } };
       const buf = Buffer.from(await r.arrayBuffer());
+      // inline must be gated on the REAL content-type (inlineOk), not a client-supplied
+      // filename's extension — every sibling download endpoint does this; this one didn't.
+      const ct = r.headers.get('content-type') || 'application/octet-stream';
+      const wantInline = uq.get('inline') === '1' && inlineOk(ct);
       return { status: 200, headers: {
-        'content-type': r.headers.get('content-type') || 'application/octet-stream',
-        'content-disposition': (inline ? 'inline' : 'attachment') + '; filename="' + name + '"',
+        'content-type': ct,
+        'content-disposition': (wantInline ? 'inline' : 'attachment') + '; filename="' + name + '"',
         'x-content-type-options': 'nosniff', 'cache-control': 'private, no-store'
       }, body: buf };
     } catch (e) { context.error('sharepoint-download', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
@@ -2102,6 +2131,8 @@ app.http('sharepoint-import', {
       const importTags = folderTags.concat(['SharePoint']).join(', ').slice(0, 200);
       const access = await getGraphToken();
       const driveId = await spDriveId();
+      const spFolder = await spFolderFor(realmId);
+      if (!spFolder) return { status: 404, jsonBody: { ok: false, error: 'no SharePoint folder mapped to this client' } };
       const cont = getBlobContainer();
       try { await cont.createIfNotExists(); } catch (_) {}
       const c = container();
@@ -2110,6 +2141,9 @@ app.http('sharepoint-import', {
       const out = [];
       for (const it of items) {
         try {
+          // realmId access alone doesn't prove this item belongs to THIS client's folder
+          // — every item id is addressable across the whole shared SharePoint drive.
+          if (!(await spItemBelongsToClient(access, driveId, it.id, spFolder))) { out.push({ name: it.name, ok: false, error: 'this file does not belong to this client' }); continue; }
           const r = await fetch('https://graph.microsoft.com/v1.0/drives/' + driveId + '/items/' + encodeURIComponent(it.id) + '/content', { headers: { Authorization: 'Bearer ' + access } });
           if (!r.ok) { out.push({ name: it.name, ok: false, error: 'download ' + r.status }); continue; }
           const buf = Buffer.from(await r.arrayBuffer());
