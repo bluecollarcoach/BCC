@@ -5866,7 +5866,23 @@
       d.projectNo = prior.projectNo; d.contractDate = prior.contractDate;
       d.contractSum = prior.contractSum; d.retPctWork = prior.retPctWork; d.retPctStored = prior.retPctStored;
       d.changeOrderRows = (prior.changeOrderRows || []).map(function (x) { return { desc: x.desc, additions: x.additions, deductions: x.deductions }; });
-      d.lines = (prior.lines || []).map(function (l, i) { return { item: l.item, desc: l.desc, scheduled: l.scheduled, previous: (pc.lines[i] ? (Math.round(pc.lines[i].total * 100) / 100) : '') || '', thisPeriod: '', stored: '' }; });
+      // AIA G703 continuation. Column D ("work completed from PREVIOUS applications")
+      // is completed work only = prior D + prior E. Column F ("materials presently
+      // STORED") is explicitly work NOT yet in place: it stays in F until the material
+      // is installed, at which point it moves into E. Rolling the prior line's
+      // total (D+E+F) into D therefore (a) counted stored materials as completed work,
+      // so they were billed again when installed, and (b) applied the WORK retainage
+      // percentage to them instead of the stored-materials percentage, since
+      // computePayLine retains (d+e) at retW but f at retS.
+      d.lines = (prior.lines || []).map(function (l, i) {
+        var pl = pc.lines[i];
+        return {
+          item: l.item, desc: l.desc, scheduled: l.scheduled,
+          previous: pl ? ((Math.round((pl.prev + pl.period) * 100) / 100) || '') : '',
+          thisPeriod: '',
+          stored: pl ? ((Math.round(pl.stored * 100) / 100) || '') : ''
+        };
+      });
       d.lessPrevious = Math.round(pc.line6 * 100) / 100; // this app's "previous certificates" = prior total earned less retainage
     }
     payappDraft = d; payappEditingId = d.id; renderPayApp();

@@ -2106,6 +2106,12 @@ const SINGLE_APP_KEY_PREFIXES = [
   { re: /^bcc-engagement-/, app: 'jobs' },
   { re: /^bcc-campaign-/, app: 'marketing' },
   { re: /^bcc-rate-signature-/, app: 'rates' },
+  // bcc-dashboard-<crmCompanyId> holds QuickBooks-derived financial ratios (current
+  // ratio, months of cash, net margin) plus the client's strategic-plan text. It is
+  // keyed by CRM company, not by QBO realm, so the per-client realm gate can't cover
+  // it — the dashboard app's own tier is the right lever, and without this entry the
+  // doc had no server-side gate of any kind.
+  { re: /^bcc-dashboard-/, app: 'dashboard' },
 ];
 const SINGLE_APP_EXACT_KEYS = { 'bcc-rate-sheet-v1': 'rates' };
 // bcc-contact- is genuinely SHARED — read/written by crm.html, jobs.html,
@@ -3170,6 +3176,13 @@ app.http('integrations-qbo-sync', {
       const c = container();
       const body = await request.json().catch(() => ({}));
 
+      // 'tasks' tier = per-client tasks only, explicitly NO financials. This endpoint
+      // both triggers a full QBO pull and RETURNS the resulting periods (revenue,
+      // COGS, expenses, net, cash) in its response, so the tier has to be enforced
+      // here too — company-level access alone would hand a tasks-only user every
+      // client's books.
+      if (bookkeepingNoFinancials(await bookkeepingTierFor(p))) return forbidden('your access level does not include financials');
+
       // Authorization: financial data is scoped per-company exactly like the
       // company list (admins see all; others only companies that are enabled
       // and either open to everyone or explicitly shared with them). This makes
@@ -3439,6 +3452,12 @@ app.http('qbo-periods', {
     if (!domainAllowed(p)) return domainBlocked();
     try {
       const c = container();
+      // The 'tasks' bookkeeping tier means "per-client tasks only, NO financials".
+      // This endpoint returns each client's revenue/COGS/expenses/net/cash straight
+      // from the synced financial-period docs, so it has to honour that tier the same
+      // way qbo-report/qbo-cashflow/qboResolveAccess already do — company access
+      // alone is not enough.
+      if (bookkeepingNoFinancials(await bookkeepingTierFor(p))) return { jsonBody: { ok: true, periods: [] } };
       const admin = await isAppAdmin(p);
       const who = String(p.userDetails || p.userId || '').toLowerCase();
       const { resources: comps } = await c.items.query({
@@ -4490,20 +4509,23 @@ app.http('qbo-companies', {
       // Owner-only companies (the firm's own books) never appear for anyone else —
       // not even other admins. Drop them before any other listing logic runs.
       for (let i = comps.length - 1; i >= 0; i--) { if (companyPrivateBlocked(comps[i], p)) comps.splice(i, 1); }
-      // Tasks-only tier (appPermissions.bookkeeping === 'tasks'): every enabled
-      // client, but ONLY id + name — no financials, sync info, or access lists.
-      // Decided here (server) so the client UI can't be talked into more.
+      // Per-app bookkeeping tier, decided here (server) so the client UI can't be
+      // talked into more. Uses the shared bookkeepingTierFor() helper rather than
+      // re-implementing the lookup — the old inline version only recognised the
+      // literal 'tasks' value, so a user set to 'none' fell straight through to the
+      // FULL listing below, receiving every client's latest revenue/cash/net plus
+      // the per-client access lists: strictly MORE than the tasks tier is allowed.
       if (!admin) {
-        try {
-          const cfgT = await getAdminCfg();
-          const rec = (cfgT && Array.isArray(cfgT.users) ? cfgT.users : []).find(u => String(u.upn || u.email || '').toLowerCase() === who);
-          const active = !rec || (rec.status !== 'inactive' && rec.status !== 'hidden');
-          if (active && rec && rec.appPermissions && rec.appPermissions.bookkeeping === 'tasks') {
-            const list = comps.filter(co => co.enabled !== false)
-              .map(co => ({ realmId: co.realmId, companyName: co.companyName, enabled: true }));
-            return { jsonBody: { isAdmin: false, taskOnly: true, companies: list } };
-          }
-        } catch (e) { /* fall through to the normal member path */ }
+        const tier = await bookkeepingTierFor(p);
+        // 'none' = no bookkeeping access at all. Return nothing, not everything.
+        if (tier === 'none') return { jsonBody: { isAdmin: false, taskOnly: false, companies: [] } };
+        // 'tasks' = every enabled client, but ONLY id + name — no financials, sync
+        // info, or access lists.
+        if (bookkeepingNoFinancials(tier)) {
+          const list = comps.filter(co => co.enabled !== false)
+            .map(co => ({ realmId: co.realmId, companyName: co.companyName, enabled: true }));
+          return { jsonBody: { isAdmin: false, taskOnly: true, companies: list } };
+        }
       }
       let companies = comps.map(co => ({
         realmId: co.realmId, companyName: co.companyName, environment: co.environment,
@@ -5108,6 +5130,25 @@ app.http('qbo-entity', {
   })
 });
 
+/* Parse a money field exactly the way the BROWSER does before it displays a total.
+ * Amounts arrive as whatever the bookkeeper typed, and the UI itself formats with
+ * thousands separators — so "1,250.00" is a completely ordinary value to receive.
+ * Number("1,250.00") is NaN, and the old `Number(x) || 0` therefore posted $0.00 to
+ * the client's LIVE QuickBooks while the on-screen total (computed with the
+ * frontend's cnum(), which strips separators) showed $1,250. A silently wrong
+ * dollar amount in real books is the worst possible failure here.
+ * Mirrors bookkeeping.html's cnum(): strip everything but digits/.- , and also
+ * accept accounting-style (1,250.00) negatives. */
+function qboAmount(v) {
+  if (typeof v === 'number') return isFinite(v) ? v : 0;
+  let s = String(v == null ? '' : v).trim();
+  if (!s) return 0;
+  const paren = /^\(.*\)$/.test(s);
+  if (paren) s = s.slice(1, -1);
+  const n = parseFloat(s.replace(/[^0-9.\-]/g, ''));
+  if (!isFinite(n)) return 0;
+  return paren ? -Math.abs(n) : n;
+}
 /** POST write — create or update an invoice / bill / payment in the client's QBO. */
 app.http('qbo-write', {
   methods: ['POST'], authLevel: 'anonymous', route: 'integrations/qbo/companies/{realmId}/write',
@@ -5123,7 +5164,7 @@ app.http('qbo-write', {
       let payload;
       if (entity === 'invoice') {
         const lines = (f.lines || []).filter(l => l && (l.amount || l.itemId)).map(l => ({
-          DetailType: 'SalesItemLineDetail', Amount: Number(l.amount) || 0, Description: l.desc || undefined,
+          DetailType: 'SalesItemLineDetail', Amount: qboAmount(l.amount), Description: l.desc || undefined,
           SalesItemLineDetail: Object.assign({ ItemRef: { value: String(l.itemId) } }, l.qty ? { Qty: Number(l.qty) } : {}, l.unitPrice ? { UnitPrice: Number(l.unitPrice) } : {})
         }));
         if (!f.customerId || !lines.length) return badRequest('customer and at least one line required');
@@ -5131,7 +5172,7 @@ app.http('qbo-write', {
         if (f.txnDate) payload.TxnDate = f.txnDate; if (f.dueDate) payload.DueDate = f.dueDate;
       } else if (entity === 'bill') {
         const lines = (f.lines || []).filter(l => l && (l.amount || l.accountId)).map(l => ({
-          DetailType: 'AccountBasedExpenseLineDetail', Amount: Number(l.amount) || 0, Description: l.desc || undefined,
+          DetailType: 'AccountBasedExpenseLineDetail', Amount: qboAmount(l.amount), Description: l.desc || undefined,
           // A job/customer on the line books the cost to that job (and makes it billable).
           AccountBasedExpenseLineDetail: Object.assign(
             { AccountRef: { value: String(l.accountId) } },
@@ -5146,7 +5187,7 @@ app.http('qbo-write', {
         // expense, paid FROM a bank/credit-card account. Unlike a Bill it creates no
         // A/P liability, which is the correct treatment for a paid point-of-sale receipt.
         const lines = (f.lines || []).filter(l => l && (l.amount || l.accountId)).map(l => ({
-          DetailType: 'AccountBasedExpenseLineDetail', Amount: Number(l.amount) || 0, Description: l.desc || undefined,
+          DetailType: 'AccountBasedExpenseLineDetail', Amount: qboAmount(l.amount), Description: l.desc || undefined,
           // A job/customer on the line books the cost to that job (and makes it billable),
           // same as a Bill.
           AccountBasedExpenseLineDetail: Object.assign(
@@ -5161,10 +5202,10 @@ app.http('qbo-write', {
         if (f.txnDate) payload.TxnDate = f.txnDate;
       } else if (entity === 'payment') {
         if (!f.customerId || !f.totalAmt) return badRequest('customer and amount required');
-        payload = { CustomerRef: { value: String(f.customerId) }, TotalAmt: Number(f.totalAmt) || 0 };
+        payload = { CustomerRef: { value: String(f.customerId) }, TotalAmt: qboAmount(f.totalAmt) };
         if (f.txnDate) payload.TxnDate = f.txnDate;
         if (f.depositAccountId) payload.DepositToAccountRef = { value: String(f.depositAccountId) };
-        if (f.invoiceId) payload.Line = [{ Amount: Number(f.totalAmt) || 0, LinkedTxn: [{ TxnId: String(f.invoiceId), TxnType: 'Invoice' }] }];
+        if (f.invoiceId) payload.Line = [{ Amount: qboAmount(f.totalAmt), LinkedTxn: [{ TxnId: String(f.invoiceId), TxnType: 'Invoice' }] }];
       } else if (entity === 'customer' || entity === 'vendor') {
         if (!f.displayName) return badRequest('name required');
         payload = { DisplayName: String(f.displayName) };
@@ -5189,11 +5230,11 @@ app.http('qbo-write', {
         // Adjusting/reclass entries. Each line is a Debit or Credit to an account;
         // QBO requires total debits == total credits (we validate before posting).
         const lines = (f.lines || [])
-          .filter(l => l && l.accountId && (Number(l.amount) || 0) > 0 && (l.postingType === 'Debit' || l.postingType === 'Credit'))
+          .filter(l => l && l.accountId && qboAmount(l.amount) > 0 && (l.postingType === 'Debit' || l.postingType === 'Credit'))
           .map(l => {
             const d = { PostingType: l.postingType === 'Credit' ? 'Credit' : 'Debit', AccountRef: { value: String(l.accountId) } };
             if (l.entityId && (l.entityType === 'Customer' || l.entityType === 'Vendor')) d.Entity = { Type: l.entityType, EntityRef: { value: String(l.entityId) } };
-            return { DetailType: 'JournalEntryLineDetail', Amount: Math.abs(Number(l.amount) || 0), Description: l.desc || undefined, JournalEntryLineDetail: d };
+            return { DetailType: 'JournalEntryLineDetail', Amount: Math.abs(qboAmount(l.amount)), Description: l.desc || undefined, JournalEntryLineDetail: d };
           });
         if (lines.length < 2) return badRequest('a journal entry needs at least two lines (one debit and one credit)');
         const dr = lines.filter(l => l.JournalEntryLineDetail.PostingType === 'Debit').reduce((s, l) => s + l.Amount, 0);
@@ -5930,7 +5971,25 @@ async function assembleMonthlyReport(apiGet, comp, per, method) {
   const bsInventory = (bs) => bs ? (findByLabel(bs, /total inventory|^inventory$|inventory asset/i) || 0) : 0;
   const bsLOC = (bs) => bs ? sumDataByLabel(bs, /line of credit/i) : 0;
   // Retainage / retention held (construction) — surfaced separately when the client tracks it.
-  const bsRetainage = (bs) => bs ? sumDataByLabel(bs, /retainage|retention receivable|retention held|contract retention/i) : 0;
+  // ASSET SIDE ONLY. sumDataByLabel matches on the row LABEL regardless of which
+  // section it sits in, and a contractor typically has BOTH "Retainage Receivable"
+  // (an asset — money the GC still owes them) and "Retainage/Retention Payable" (a
+  // liability — money they still owe their own subs). Summing the two produced a
+  // meaningless net figure, reported it as the client's Retainage KPI, and — when
+  // retainage is nested under A/R — SUBTRACTED that blended number from Accounts
+  // Receivable, understating A/R by the amount of an unrelated liability.
+  const RETAINAGE_RX = /retainage|retention receivable|retention held|contract retention/i;
+  const LIABILITY_ROW_RX = /payable|liabilit/i;
+  const bsRetainage = (bs) => {
+    if (!bs) return 0;
+    return (bs.rows || [])
+      .filter(x => x.type === 'data' && RETAINAGE_RX.test(String(x.label || '')))
+      // Drop anything that names itself a payable, or that sits in a
+      // liability/equity section of the balance sheet.
+      .filter(x => !LIABILITY_ROW_RX.test(String(x.label || '')))
+      .filter(x => !/liabilit|equity|payable|creditcard/i.test(String(x.group || '')))
+      .reduce((s, x) => s + reportNum((x.cells || [])[x.cells.length - 1]), 0);
+  };
 
   const cash = bsCash(bsCur), ap = bsAP(bsCur), cc = bsCC(bsCur);
   const currentAssets = bsCA(bsCur), currentLiabilities = bsCL(bsCur);
