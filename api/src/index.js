@@ -3769,7 +3769,7 @@ app.http('msgraph-send-mail', {
 
       let upn;
       if (body.realmId) {
-        const rc = await resolveClientMailbox(p, String(body.realmId));
+        const rc = await resolveClientMailbox(p, String(body.realmId), { mutating: true }); // sends AS the client's mailbox
         if (rc.err) return rc.err;
         if (!rc.cfg || !rc.cfg.mailbox || rc.cfg.enabled === false) return badRequest('no client mailbox configured for this client');
         upn = encodeURIComponent(rc.cfg.mailbox);
@@ -3854,7 +3854,16 @@ function graphMailboxMissing(status, detail) {
   if (status !== 404 && status !== 400) return false;
   return /Request_ResourceNotFound|ResourceNotFound|ErrorInvalidUser|MailboxNotEnabledForRESTAPI|ErrorNonExistentMailbox|ErrorInvalidMailbox|does not exist|user was not found/i.test(String(detail || ''));
 }
-async function resolveClientMailbox(p, realmId) {
+/* Shared gate for EVERY client-mailbox endpoint (messages, message-get,
+ * attachment-download, reply, send-mail, email-meta). Company access alone is not
+ * enough here: the bookkeeping tier has to apply too, exactly as qboResolveAccess
+ * applies it on the QBO side.
+ *   'tasks'  = per-client tasks only. Reading a client's entire shared mailbox —
+ *              and being able to SEND as that mailbox — is plainly outside that.
+ *   'view'   = read-only. Callers that mutate (send/reply) additionally check
+ *              mailboxReadOnly() below.
+ * Pass mutating:true from send/reply so one gate covers both cases. */
+async function resolveClientMailbox(p, realmId, opts) {
   const c = container();
   const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
   if (!comp) return { err: { status: 404, jsonBody: { ok: false, error: 'company not connected' } } };
@@ -3863,6 +3872,9 @@ async function resolveClientMailbox(p, realmId) {
     const who = String(p.userDetails || p.userId || '').toLowerCase();
     const allow = (comp.allowedUserUpns || []).map(u => u.toLowerCase());
     if (comp.enabled === false || (allow.length && allow.indexOf(who) < 0)) return { err: { status: 403, jsonBody: { ok: false, error: 'no access to this client' } } };
+    const tier = await bookkeepingTierFor(p);
+    if (bookkeepingNoFinancials(tier)) return { err: { status: 403, jsonBody: { ok: false, error: 'your access level does not include client email' } } };
+    if (opts && opts.mutating && bookkeepingReadOnly(tier)) return { err: { status: 403, jsonBody: { ok: false, error: 'your access level is read-only' } } };
   }
   const cfg = await c.item('bcc-client-mailbox-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
   return { comp, cfg };
@@ -4062,7 +4074,7 @@ app.http('msgraph-reply', {
       const messageId = String(b.messageId || ''); if (!messageId) return badRequest('messageId required');
       let upn;
       if (b.realmId) {
-        const rc = await resolveClientMailbox(p, String(b.realmId)); if (rc.err) return rc.err;
+        const rc = await resolveClientMailbox(p, String(b.realmId), { mutating: true }); if (rc.err) return rc.err; // replies AS the client's mailbox
         if (!rc.cfg || !rc.cfg.mailbox || rc.cfg.enabled === false) return badRequest('no client mailbox configured');
         upn = encodeURIComponent(rc.cfg.mailbox);
       } else { upn = encodeURIComponent(p.userDetails || p.userId); }

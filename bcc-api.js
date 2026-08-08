@@ -162,10 +162,29 @@
     }
   });
 
+  /* DEVICE preferences, not firm data. Each is written with the ordinary
+     localStorage API, so without this list the hook below would push it to Cosmos as
+     a single tenant-wide doc and every other user's delta poll would pull it back —
+     one person's choice silently becoming everyone's.
+       bcc-last-realm       the client you had open. bookkeeping.html's renderAll()
+                            rewrites it on EVERY render (about once a second of active
+                            use), so it was being PUT constantly, and every colleague
+                            was landed on whichever client someone else last opened.
+                            Now that per-client access is enforced, a user without
+                            access to that client sees empty panels everywhere — it
+                            reads as "my data is gone".
+       bcc-push-enabled     whether push notifications are on for THIS browser.
+       bcc-sync-since-v1 / bcc-sync-fullpull-at / bcc-field-who
+                            per-device sync bookkeeping + identity. Already written via
+                            _origSetItem elsewhere; listed so no other write path can
+                            reintroduce the push. */
+  var DEVICE_LOCAL_KEYS = ['bcc-last-realm', 'bcc-push-enabled', 'bcc-sync-since-v1', 'bcc-sync-fullpull-at', 'bcc-field-who'];
+
   /* ---------- hooks ---------- */
   Storage.prototype.setItem = function (key, value) {
     _origSetItem.call(this, key, value);
     if (this === window.localStorage && signedIn && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0) {
+      if (DEVICE_LOCAL_KEYS.indexOf(key) >= 0) return;
       // Financial periods are owned by the server (the QBO sync writes them to
       // Cosmos as flat, access-scoped docs). Don't push them back: it would
       // collide with the server doc AND expose every client's books through the
@@ -203,6 +222,7 @@
   Storage.prototype.removeItem = function (key) {
     _origRemoveItem.call(this, key);
     if (this === window.localStorage && signedIn && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0) {
+      if (DEVICE_LOCAL_KEYS.indexOf(key) >= 0) return; // device preference (see setItem)
       if (key.indexOf('bcc-financial-period-') === 0) return; // server-owned (see setItem)
       if (key.indexOf('bcc-cpr-sends-') === 0) return; // device-local (see setItem)
       if (key.indexOf('bcc-email-') === 0) return;     // device-local (see setItem)
@@ -369,6 +389,10 @@
           if (!it || !it.key || it.data === undefined) return;
           if (it.updatedAt && it.updatedAt > maxUpd) maxUpd = it.updatedAt;
           if (pending.has(it.key)) return; // an unsent local write is newer
+          // Never let a DEVICE preference arrive from the server. Older builds pushed
+          // these, so a tenant-wide copy may still exist in Cosmos; applying it would
+          // keep overwriting this browser's own value forever.
+          if (DEVICE_LOCAL_KEYS.indexOf(it.key) >= 0) return;
           var val = typeof it.data === 'string' ? it.data : JSON.stringify(it.data);
           if (localStorage.getItem(it.key) === val) return; // no real change
           _origSetItem.call(localStorage, it.key, val);
@@ -589,13 +613,19 @@
   function _adminCfg() {
     try { return JSON.parse(localStorage.getItem('bcc-admin-config-v1') || 'null'); } catch (e) { return null; }
   }
+  // Must match the SERVER's lookup byte-for-byte (api/src/index.js appTierFor /
+  // isAppAdmin, which both match on upn OR email). Matching on upn alone meant that
+  // for any admin-config row whose upn differs from the SWA userDetails, the client
+  // silently found no record and fell back to defaults while the server DID find it
+  // and applied the explicit appPermissions — so the UI showed one level of access
+  // and every request enforced another.
   function _findUserRec(upn) {
     var cfg = _adminCfg();
     if (!cfg || !cfg.users) return null;
     var lc = String(upn || '').toLowerCase();
     for (var i = 0; i < cfg.users.length; i++) {
       var u = cfg.users[i];
-      if ((u.upn || '').toLowerCase() === lc) return u;
+      if ((u.upn || '').toLowerCase() === lc || (u.email || '').toLowerCase() === lc) return u;
     }
     return null;
   }
@@ -605,8 +635,11 @@
     if (!who) return 'none'; // anonymous -> no app permission
     var cfg = _adminCfg();
     var rec = _findUserRec(who);
-    // Inactive users are blocked everywhere
-    if (rec && rec.status === 'inactive') return 'none';
+    // Inactive users are blocked everywhere. 'hidden' counts too — the SERVER's
+    // appTierFor() blocks both, so treating hidden as merely a dropdown-visibility
+    // flag here handed those users a fully working CRM/Jobs/Marketing/Rates UI whose
+    // every read came back filtered and every write 403'd.
+    if (rec && (rec.status === 'inactive' || rec.status === 'hidden')) return 'none';
     // Per-app override wins if explicitly set
     var perm = rec && rec.appPermissions && rec.appPermissions[appKey];
     if (perm && LEVEL_RANK[perm] != null) return perm;
@@ -771,6 +804,7 @@
             if (it && it.key && it.data !== undefined) {
               if (it.updatedAt && it.updatedAt > maxUpd) maxUpd = it.updatedAt;
               if (pending.has(it.key)) return; // user has a newer local write queued
+              if (DEVICE_LOCAL_KEYS.indexOf(it.key) >= 0) return; // device preference (see setItem)
               var val = typeof it.data === 'string' ? it.data : JSON.stringify(it.data);
               _origSetItem.call(localStorage, it.key, val);
             }
