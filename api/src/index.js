@@ -51,7 +51,26 @@ const ADMIN_KEYS      = new Set(['bcc-admin-config-v1', 'bcc-customer-types-v1']
 // delete these (they each have an admin/allow-list-gated endpoint of their own).
 // bcc-sharepoint-map-v1's own endpoint (integrations/sharepoint/map) is admin-only
 // for BOTH read and write, unlike admin-config — belongs here, not in ADMIN_KEYS.
-const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-bkentry-', 'bcc-emailmeta-', 'bcc-financial-period-', 'bcc-usernotif-', 'bcc-feedback-', 'bcc-errorlog-', 'bcc-report-', 'bcc-cprsig-', 'bcc-document-', 'bcc-sharepoint-map-v1'];
+// NOTE: 'bcc-cprsig-' and 'bcc-document-' were briefly listed here and had to be
+// removed — both are read AND written by the app through /api/data, so blocking the
+// prefix outright killed two features rather than securing them:
+//   * bcc-cprsig-<realm> is written server-side by /api/cpr/sign in the syncable
+//     {id,tenantId,data} shape SPECIFICALLY so the browser can pull it back
+//     (bookkeeping.html refreshSavedSig). Blocking it meant a remotely-collected
+//     signature could never reach the bookkeeper, and saving one locally 403'd.
+//     It is genuinely per-client, so it now lives in CLIENT_SCOPED_ID_RE instead —
+//     which is the access control that was actually wanted.
+//   * bcc-document- is documents.html's own record prefix; blocking it made that
+//     whole page device-local. The real leak was the SERVER-written flat file
+//     metadata sharing that prefix, which is excluded by docType in the bulk query
+//     and guarded per-key below — not by banning the prefix.
+const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-bkentry-', 'bcc-emailmeta-', 'bcc-financial-period-', 'bcc-usernotif-', 'bcc-feedback-', 'bcc-errorlog-', 'bcc-report-', 'bcc-sharepoint-map-v1'];
+// A SERVER-owned file-metadata doc (written by /api/documents) is FLAT: docType sits
+// at the top level. A documents.html record synced through /api/data is WRAPPED: its
+// docType lives under .data, so top-level docType is undefined. That difference is
+// the only reliable way to tell the two apart in the shared bcc-document- id space.
+function isServerOwnedDocMeta(resource) { return !!resource && resource.docType === 'document'; }
+const DOC_DOC_PREFIX = 'bcc-document-'; // shared by /api/documents and documents.html
 // Sentinel allowedUserUpns value meaning "admins only" — a non-matching UPN, so
 // every existing access check (allow.length && who not in allow → deny) denies
 // non-admins automatically, while admins bypass the allow-list. New companies
@@ -81,6 +100,10 @@ const CLIENT_SCOPED_ID_RE = [
   /^bcc-notary-([^-]+)-[0-9a-z]+$/,
   /^bcc-email-([^-]+)-[0-9a-z]+$/,
   /^bcc-cpr-sends-([^-]+)$/,
+  // The company's saved Statement-of-Compliance signature. Per-client, and BOTH the
+  // browser and /api/cpr/sign write it, so it must stay readable/writable here —
+  // gated by client access rather than blocked outright.
+  /^bcc-cprsig-([^-]+)$/,
 ];
 function dataKeyClientRealm(id) {
   id = String(id || '');
@@ -506,6 +529,11 @@ app.http('data', {
           const adminCfgRedact = ADMIN_KEYS.has(key) && !(await isAppAdmin(p));
           try {
             const { resource } = await c.item(key, BCC_TENANT_ID).read();
+            // A SERVER-owned file-metadata doc shares the bcc-document- id space with
+            // documents.html's own records. It has its own access-gated endpoints
+            // (/api/documents/{id} + /download, both behind docAccessFilter) and can
+            // name a /clients/<realm> folder, so never serve it from here.
+            if (isServerOwnedDocMeta(resource)) return { jsonBody: { key, data: null } };
             const data = resource
               ? (keyRedact ? redactIntegrationData(resource.data) : adminCfgRedact ? redactAdminConfigData(resource.data, false, me) : resource.data)
               : null;
@@ -532,7 +560,7 @@ app.http('data', {
           // are owner-scoped: only the caller's own rows come back, so one
           // person's tasks/hours/signature are never shipped to another
           // signed-in user.
-          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND NOT STARTSWITH(c.id, "bcc-bkentry-") AND NOT STARTSWITH(c.id, "bcc-report-") AND NOT STARTSWITH(c.id, "bcc-cpr-sends-") AND NOT STARTSWITH(c.id, "bcc-email-") AND (NOT STARTSWITH(c.id, "bcc-mytasks-") OR LOWER(c.data.upn) = @me) AND (NOT STARTSWITH(c.id, "bcc-daily-log-") OR LOWER(c.data.userUpn) = @me) AND (NOT STARTSWITH(c.id, "bcc-emailsig-") OR LOWER(c.data.upn) = @me) AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "bk-entry" AND c.docType != "monthly-report" AND c.docType != "client-drive"))' + (sinceOk ? ' AND c.updatedAt > @since' : ''),
+          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND NOT STARTSWITH(c.id, "bcc-bkentry-") AND NOT STARTSWITH(c.id, "bcc-report-") AND NOT STARTSWITH(c.id, "bcc-cpr-sends-") AND NOT STARTSWITH(c.id, "bcc-email-") AND (NOT STARTSWITH(c.id, "bcc-mytasks-") OR LOWER(c.data.upn) = @me) AND (NOT STARTSWITH(c.id, "bcc-daily-log-") OR LOWER(c.data.userUpn) = @me) AND (NOT STARTSWITH(c.id, "bcc-emailsig-") OR LOWER(c.data.upn) = @me) AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "bk-entry" AND c.docType != "monthly-report" AND c.docType != "client-drive" AND c.docType != "document" AND c.docType != "access" AND c.docType != "audit" AND c.docType != "oauthstate-used"))' + (sinceOk ? ' AND c.updatedAt > @since' : ''),
           parameters: sinceOk
             ? [{ name: '@t', value: BCC_TENANT_ID }, { name: '@me', value: me }, { name: '@since', value: sinceD }]
             : [{ name: '@t', value: BCC_TENANT_ID }, { name: '@me', value: me }]
@@ -616,6 +644,14 @@ app.http('data', {
           // CRM/Engagements/Marketing/Rate-Sheet records — only someone with 'edit'+
           // on the owning app (bcc-contact- requires it on at least one sharing app).
           if (putAppCheck(it.key, 'edit') === false) return forbidden('you do not have edit access for this');
+          // documents.html's own records and the SERVER's file metadata share the
+          // bcc-document- id space. Writing over a server-owned one here would
+          // orphan the uploaded blob and destroy that file's folder/access info,
+          // so only let this endpoint touch ids that aren't already server-owned.
+          if (it.key.startsWith(DOC_DOC_PREFIX)) {
+            const existingDoc = await c.item(it.key, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+            if (isServerOwnedDocMeta(existingDoc)) return forbidden('this file record is managed by the Documents API and cannot be written here');
+          }
           if (ADMIN_KEYS.has(it.key)) touchesAdminKey = true;
           if (it.key.startsWith('bcc-integration-')) touchesIntegration = true;
         }
@@ -656,6 +692,10 @@ app.http('data', {
         const delRealm = dataKeyClientRealm(key);
         if (delRealm && (await driveClientAccess(p, delRealm)).err) return forbidden('no access to this client');
         if ((await appAccessForKey(p, key, 'edit')) === false) return forbidden('you do not have edit access for this');
+        if (key.startsWith(DOC_DOC_PREFIX)) {
+          const existingDoc = await c.item(key, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+          if (isServerOwnedDocMeta(existingDoc)) return forbidden('this file record is managed by the Documents API and cannot be deleted here');
+        }
         if (ADMIN_KEYS.has(key) && !(await isAppAdmin(p))) return forbidden();
         if (key.startsWith('bcc-integration-') && !(await isAppAdmin(p))) return forbidden('only administrators may delete integration credentials');
         try { await c.item(key, BCC_TENANT_ID).delete(); } catch (e) { if (e.code !== 404) throw e; }
@@ -7032,7 +7072,9 @@ function safeFolder(folder) {
 }
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
-const DOC_DOC_PREFIX = 'bcc-document-';
+// DOC_DOC_PREFIX is declared up top with the other shared key constants — the
+// /api/data handler needs it to tell server-owned file metadata apart from
+// documents.html's own records.
 
 /**
  * POST /api/documents

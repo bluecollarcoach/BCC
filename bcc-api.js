@@ -228,10 +228,14 @@
 
     var puts = [];
     var deletes = [];
+    // Keep each key's ORIGINAL raw value so a re-queue after a transient failure
+    // restores exactly what was queued, rather than a JSON round-trip of it.
+    var rawByKey = {};
     entries.forEach(function (e) {
       if (permanentlyFailed.has(e[0])) return; // skip known-bad keys
       if (e[1] === null) deletes.push(e[0]);
       else {
+        rawByKey[e[0]] = e[1];
         try { puts.push({ key: e[0], data: JSON.parse(e[1]) }); }
         catch { puts.push({ key: e[0], data: e[1] }); } // non-JSON value, store raw
       }
@@ -254,22 +258,55 @@
         });
         putStatus = r.status;
         if (!r.ok) {
-          // 4xx = client / permission error — permanent. Don't retry.
-          // 5xx / network = transient — re-queue and retry.
+          // A 401/408/429 is TRANSIENT, not a permanent refusal: the session
+          // expired, the request timed out, or we're being throttled. Treating
+          // those as permanent (as this did) silently threw away the user's
+          // edit forever — signing back in would NOT recover it, because the key
+          // was already in permanentlyFailed. Re-queue and retry instead, and
+          // still surface the 401 so the user knows to sign back in.
+          if (r.status === 401 || r.status === 408 || r.status === 429) {
+            window.dispatchEvent(new CustomEvent('bcc-sync-error', {
+              detail: { key: null, status: r.status, transient: true }
+            }));
+            throw new Error('PUT failed ' + r.status);
+          }
           if (r.status >= 400 && r.status < 500) {
-            puts.forEach(function (p) {
-              permanentlyFailed.add(p.key);
-              console.warn('[bcc-api] push refused (' + r.status + '), dropping key:', p.key);
+            // The server validates a PUT batch ALL-OR-NOTHING, so a single refused
+            // key 4xxs the whole array. Blacklisting every key in the batch
+            // therefore discarded unrelated, perfectly legitimate edits — and
+            // permanentlyFailed persists for the session, so every later write to
+            // those keys was silently dropped too. Re-send each item on its own to
+            // find the actual offender(s) and blacklist only those.
+            for (var pi = 0; pi < puts.length; pi++) {
+              var p = puts[pi];
+              var ir = null;
+              try {
+                ir = await fetch(API_BASE + '/data/' + encodeURIComponent(p.key), {
+                  method: 'PUT',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ data: p.data })
+                });
+              } catch (netErr) {
+                pending.set(p.key, rawByKey[p.key]); // network blip — keep it queued
+                continue;
+              }
+              if (ir.ok) continue;                                   // this one was fine
+              if (ir.status === 401 || ir.status === 408 || ir.status === 429 || ir.status >= 500) {
+                pending.set(p.key, rawByKey[p.key]);                 // transient — retry later
+                continue;
+              }
+              permanentlyFailed.add(p.key);                          // genuinely refused
+              console.warn('[bcc-api] push refused (' + ir.status + '), dropping key:', p.key);
               window.dispatchEvent(new CustomEvent('bcc-sync-error', {
-                detail: { key: p.key, status: r.status }
+                detail: { key: p.key, status: ir.status }
               }));
-            });
-            // Deliberately NOT returning here. The server validates a PUT batch
-            // all-or-nothing, so one refused key 4xxs the whole array — but the
-            // queued DELETEs are a separate per-item request loop below and have
-            // nothing to do with it. Returning early skipped them silently: the
-            // row was already gone locally, so the UI looked right while the
-            // server copy survived and reappeared on the next pull.
+            }
+            if (pending.size) schedulePush();                        // anything re-queued above
+            // Deliberately NOT returning here. The queued DELETEs are a separate
+            // per-item request loop below and have nothing to do with a refused
+            // PUT. Returning early skipped them silently: the row was already gone
+            // locally, so the UI looked right while the server copy survived and
+            // reappeared on the next pull.
             putRefused = true;
           } else {
             throw new Error('PUT failed ' + r.status);
@@ -1414,7 +1451,9 @@
     if (status === 401) {
       if (_sessionExpiredNotified) return;
       _sessionExpiredNotified = true;
-      if (window.bccNotify) window.bccNotify('Your sign-in has expired — please sign back in to keep saving your work.', 'error', 0);
+      // The queued writes are NOT lost — flush() re-queues on a 401 and retries, so
+      // signing back in flushes them. Say so, or people re-type work they still have.
+      if (window.bccNotify) window.bccNotify('Your sign-in has expired. Your unsaved changes are still queued — sign back in and they’ll finish saving.', 'error', 0);
     } else if (status === 403) {
       // A permission-tier rejection (e.g. CRM/Engagements/Marketing/Rate Sheet set
       // to View or None): the local edit LOOKS saved (optimistic write), but the
