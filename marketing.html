@@ -292,17 +292,22 @@
     }
     return out.sort(function (a, b) { return (b.updatedAt || '').localeCompare(a.updatedAt || ''); });
   }
-  function getCampaign(id) { try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (e) { return null; } }
+  function getCampaign(id) { if (!isCampaignKey(id)) return null; try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (e) { return null; } }
+  // A campaign doc's `id` field is attacker-writable (these sync through the shared
+  // store), and it is used directly as the localStorage key — so a planted campaign
+  // whose id names another doc would let "Delete" remove that doc instead. Only ever
+  // touch keys inside this page's own namespace.
+  function isCampaignKey(id) { return typeof id === 'string' && id.indexOf(CAMP_PREFIX) === 0; }
   function saveCampaign(c) {
     c.updatedAt = nowIso();
     if (!c.createdAt) c.createdAt = c.updatedAt;
-    if (!c.id) c.id = CAMP_PREFIX + uid();
+    if (!isCampaignKey(c.id)) c.id = CAMP_PREFIX + uid();
     if (!c.tenantId) c.tenantId = 'blue-collar-coach';
     c.docType = 'campaign';
     localStorage.setItem(c.id, JSON.stringify(c));
     return c;
   }
-  function deleteCampaign(id) { localStorage.removeItem(id); }
+  function deleteCampaign(id) { if (!isCampaignKey(id)) return; localStorage.removeItem(id); }
 
   /* ===== List render ===== */
   var qInput, channelFilter, statusFilter, rowsEl, emptyEl, subline;

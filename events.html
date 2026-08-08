@@ -192,7 +192,7 @@
     }
     document.getElementById('grid').innerHTML = '<div class="ev-grid">' + all.map(function (e) {
       var booked = (e.bookings || []).length;
-      var cap = e.capacity || 0;
+      var cap = parseInt(e.capacity, 10) || 0; // synced field — coerce, never render raw into markup
       var open = e.registrationOpen !== false;
       return '<div class="ev-card" data-id="' + esc(e.id) + '">' +
         '<div class="when">' + esc(fmtWhen(e.startAt)) + '</div>' +
@@ -219,7 +219,7 @@
     var contactOpts = '<option value="">— Pick a contact or type name below —</option>' +
       contacts.map(function (c) { return '<option value="' + esc(c.id) + '">' + esc(contactName(c)) + '</option>'; }).join('');
     document.getElementById('bookings').innerHTML =
-      '<h4>Bookings <span style="font-family:Inter,sans-serif; font-weight:600; color:var(--muted); font-size:12px;">' + (ev.bookings || []).length + (ev.capacity ? ' / ' + ev.capacity : '') + '</span></h4>' +
+      '<h4>Bookings <span style="font-family:Inter,sans-serif; font-weight:600; color:var(--muted); font-size:12px;">' + (ev.bookings || []).length + ((parseInt(ev.capacity, 10) || 0) ? ' / ' + (parseInt(ev.capacity, 10) || 0) : '') + '</span></h4>' +
       '<ul id="booking-list">' + (ul || '<li style="color:var(--muted); font-style:italic;">No bookings yet.</li>') + '</ul>' +
       '<div class="add">' +
         '<select id="bk-contact">' + contactOpts + '</select>' +

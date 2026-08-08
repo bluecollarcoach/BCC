@@ -339,17 +339,22 @@
     }
     return out.sort(function (a, b) { return (b.updatedAt || '').localeCompare(a.updatedAt || ''); });
   }
-  function getCompany(id) { try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (_) { return null; } }
+  function getCompany(id) { if (!isCompanyKey(id)) return null; try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (_) { return null; } }
+  // A company doc's `id` field is attacker-writable (these sync through the shared
+  // store) and is used directly as the localStorage key, so a planted company whose
+  // id names another doc would make "Delete this company" remove that doc instead.
+  // Only ever touch keys inside this page's own namespace.
+  function isCompanyKey(id) { return typeof id === 'string' && id.indexOf(COMPANY_PREFIX) === 0; }
   function saveCompany(c) {
     c.updatedAt = nowIso();
     if (!c.createdAt) c.createdAt = c.updatedAt;
-    if (!c.id) c.id = COMPANY_PREFIX + uid();
+    if (!isCompanyKey(c.id)) c.id = COMPANY_PREFIX + uid();
     if (!c.tenantId) c.tenantId = 'blue-collar-coach';
     c.docType = 'company';
     localStorage.setItem(c.id, JSON.stringify(c));
     return c;
   }
-  function deleteCompany(id) { localStorage.removeItem(id); }
+  function deleteCompany(id) { if (!isCompanyKey(id)) return; localStorage.removeItem(id); }
 
   /* ===== Sync from Bookkeeping (QuickBooks companies → CRM companies) ===== */
   var _bkSyncRan = false;

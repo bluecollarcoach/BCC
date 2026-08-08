@@ -793,6 +793,26 @@
       '</tr>';
     }).join('');
 
+    // Guard against locking the whole firm out of Admin. Demoting, deactivating or
+    // removing the LAST active admin leaves nobody who can grant the role back — and
+    // there is no in-app recovery (only the BCC_OWNER_UPNS env var or the SWA
+    // 'administrator' role, both of which need the Azure portal). One unconfirmed
+    // click could do it, including to yourself.
+    function activeAdminUpns(cfg) {
+      return ((cfg && cfg.users) || [])
+        .filter(function (u) { return u && u.role === 'admin' && u.status !== 'inactive' && u.status !== 'hidden'; })
+        .map(function (u) { return (u.upn || '').toLowerCase(); });
+    }
+    function wouldOrphanAdmins(upnLc) {
+      var admins = activeAdminUpns(loadCfg());
+      return admins.length <= 1 && admins.indexOf(upnLc) >= 0;
+    }
+    function blockLastAdmin(upnLc, what) {
+      if (!wouldOrphanAdmins(upnLc)) return false;
+      (window.bccNotify || alert)('This is the only active administrator. ' + what +
+        ' would leave the firm with no one who can manage users, and it cannot be undone from inside the app. Give someone else the Admin role first.', 'warn', 9000);
+      return true;
+    }
     function persistAction(tr, mutator) {
       var upn = tr.dataset.upn.toLowerCase();
       var cfg = loadCfg(); cfg.users = cfg.users || [];
@@ -817,6 +837,7 @@
         if (act === 'remove') {
           var upnLc = (tr.dataset.upn || '').toLowerCase();
           var displayName = tr.querySelector('td[data-label="Name"]').textContent.trim();
+          if (blockLastAdmin(upnLc, 'Removing them')) return;
           if (!confirm('Remove ' + displayName + ' from the team? They lose access immediately. (Their docs and history stay.)')) return;
           var cfg = loadCfg(); cfg.users = cfg.users || [];
           cfg.users = cfg.users.filter(function (x) { return (x.upn || '').toLowerCase() !== upnLc; });
@@ -826,6 +847,8 @@
           renderUsers();
           return;
         }
+        if (act === 'demote' && blockLastAdmin((tr.dataset.upn || '').toLowerCase(), 'Demoting them')) return;
+        if (act === 'deactivate' && blockLastAdmin((tr.dataset.upn || '').toLowerCase(), 'Deactivating them')) return;
         persistAction(tr, function (rec) {
           if (act === 'promote') rec.role = 'admin';
           if (act === 'demote')  rec.role = 'member';

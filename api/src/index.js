@@ -7174,9 +7174,15 @@ app.http('documents-list-create', {
       const linkedContactId    = String(form.get('linkedContactId') || '').trim() || null;
       const linkedEngagementId = String(form.get('linkedEngagementId') || '').trim() || null;
 
+      // Timestamp is only second-precision, so two uploads of the same filename into
+      // the same folder within one second produced the SAME blob key — the second
+      // silently overwrote the first's bytes, and deleting either metadata row then
+      // destroyed the other's file. A batch upload hits that easily. The random
+      // suffix makes the key unique per upload.
       const stamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15);
       const filename = safeFilename(file.name || 'file');
-      const storageKey = (BCC_TENANT_ID + folder + '/' + stamp + '-' + filename).replace(/\/+/g, '/').replace(/^\//, '');
+      const uniq = Math.random().toString(36).slice(2, 8);
+      const storageKey = (BCC_TENANT_ID + folder + '/' + stamp + '-' + uniq + '-' + filename).replace(/\/+/g, '/').replace(/^\//, '');
 
       // Upload to Blob
       const cont = getBlobContainer();

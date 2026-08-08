@@ -255,6 +255,16 @@ function loadChans() {
 function saveChans(v) { localStorage.setItem(LS_CHANS, JSON.stringify(v)); }
 function loadMsgs() { try { return JSON.parse(localStorage.getItem(LS_MSGS)) || {}; } catch { return {}; } }
 function saveMsgs(v) { localStorage.setItem(LS_MSGS, JSON.stringify(v)); }
+/* Every message in every channel lives in ONE localStorage blob, so any write
+   rewrites the whole thing. Mutating the in-memory `msgs` snapshot and saving it
+   silently destroyed every message that had synced in from a teammate since our
+   last poll. Always re-read, apply the change to the FRESH map, then save. */
+function mutateMsgs(fn) {
+  msgs = loadMsgs();
+  const out = fn(msgs);
+  saveMsgs(msgs);
+  return out;
+}
 function loadRead() { try { return JSON.parse(localStorage.getItem(LS_READ)) || {}; } catch { return {}; } }
 function saveRead(v) { localStorage.setItem(LS_READ, JSON.stringify(v)); }
 
@@ -384,7 +394,7 @@ function renderThread() {
         <div class="body">
           <div class="head"><span class="author">${escapeHtml(m.author)}</span><span class="when">${d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span></div>
           <div class="text">${linkify(m.text)}</div>
-          ${m.photo ? `<div class="photo"><img src="${m.photo}" /></div>` : ''}
+          ${safePhoto(m.photo) ? `<div class="photo"><img src="${escapeHtml(safePhoto(m.photo))}" /></div>` : ''}
         </div>
         ${canDelete ? `<button class="del" title="Delete this message" data-mid="${escapeHtml(msgId(m))}">&#10005;</button>` : ''}
       </div>
@@ -432,9 +442,15 @@ function renderThread() {
       const m = arr[idx];
       const isMine = m.author === who;
       if (!confirm(`Delete this message from ${m.author}?` + (isMine ? '' : '\n\nIt will be removed for everyone.'))) return;
-      arr.splice(idx, 1);
-      msgs[active] = arr;
-      saveMsgs(msgs);
+      // Delete by message id against a freshly re-read map — splicing by the index we
+      // computed from a stale snapshot could remove the wrong message (or drop
+      // teammates' newer ones) once other messages have synced in.
+      mutateMsgs(mm => {
+        const fresh = mm[active] || [];
+        const fi = fresh.findIndex(x => msgId(x) === mid);
+        if (fi >= 0) fresh.splice(fi, 1);
+        mm[active] = fresh;
+      });
       window.bccAudit && window.bccAudit('chat-delete', {
         key: mid,
         meta: { channel: active, originalAuthor: m.author, preview: (m.text||'').slice(0, 80) }
@@ -453,8 +469,8 @@ function renderThread() {
     cb.onclick = () => {
       const count = (msgs[active] || []).length;
       if (!confirm(`Delete all ${count} messages in #${active}?\n\nThis cannot be undone.`)) return;
-      msgs[active] = [];
-      saveMsgs(msgs);
+      // Clearing THIS channel must not also revert other channels to our stale copy.
+      mutateMsgs(mm => { mm[active] = []; });
       window.bccAudit && window.bccAudit('chat-clear-channel', {
         key: active,
         meta: { channel: active, deletedCount: count }
@@ -467,16 +483,17 @@ function renderThread() {
 function send() {
   const t = document.getElementById('c_text').value.trim();
   if (!t && !pendingPhoto) return;
-  msgs[active] = msgs[active] || [];
   const at = Date.now();
   const newMsg = {
     id: 'm' + at + '-' + Math.random().toString(36).slice(2, 6),
     author: who, at, text: t, photo: pendingPhoto
   };
-  msgs[active].push(newMsg);
+  // Append to a FRESHLY re-read map so a teammate's message that arrived since our
+  // last poll isn't wiped out by this write (the whole map is saved as one blob).
+  mutateMsgs(m => { m[active] = m[active] || []; m[active].push(newMsg); });
   pendingPhoto = null;
   read[active] = Date.now();
-  saveMsgs(msgs); saveRead(read);
+  saveRead(read);
   // Activity log: capture channel + a short preview (no full text, for noise).
   window.bccAudit && window.bccAudit('chat-send', {
     key: newMsg.id,
@@ -559,7 +576,9 @@ function dayLabel(d) {
   return d.toLocaleDateString(undefined, { weekday:'long', month:'short', day:'numeric' });
 }
 function initials(name) {
-  return name.split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase();
+  // Escaped: this is rendered into markup and `name` comes from the shared chat blob,
+  // so it is attacker-writable like every other message field.
+  return escapeHtml(String(name || '').split(' ').map(w => w[0] || '').join('').slice(0, 2).toUpperCase());
 }
 function colorFor(name) {
   const palette = ['#2b2b2b','#a8884a','#1d4ed8','#374151','#1a1a1a','#876d3a','#1e40af','#7c3aed','#be185d','#a16207','#15803d','#9f1239'];
@@ -567,6 +586,15 @@ function colorFor(name) {
   return palette[h % palette.length];
 }
 function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+/* A message's photo is whatever was stored in the shared chat blob, which ANY signed-in
+   user can write. It was interpolated raw into an img src, so a crafted value could
+   break out of the attribute and run script in every teammate's session. Photos are
+   only ever produced by the file picker as a base64 image data URL, so accept exactly
+   that shape and nothing else — no http(s), no javascript:, no blob:. */
+function safePhoto(p) {
+  const s = String(p || '');
+  return /^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(s) ? s : '';
+}
 function linkify(s) {
   return escapeHtml(s).replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener" style="color:var(--p-orange);">$1</a>');
 }

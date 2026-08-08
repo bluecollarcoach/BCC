@@ -1051,10 +1051,27 @@
       var existingRec = emailLc && allContacts().find(function (x) { return x.email && x.email.toLowerCase() === emailLc; });
       var isUpdate = false;
       if (existingRec) {
+        // MERGE onto the existing record rather than replacing it. `c` is built from
+        // this panel's fields only, so saving it wholesale wiped everything the panel
+        // doesn't ask about (companyId, engagement links, etc.) and reset
+        // stage/customerType/ownerId to the form's defaults. Blank inputs must not
+        // blank a populated field either — this panel creates contacts, it isn't the
+        // edit-existing flow. Same hazard importCsv's merge was written to avoid.
+        var incoming = {};
+        Object.keys(c).forEach(function (k) {
+          var v = c[k];
+          if (k === 'id' || k === 'createdAt' || k === 'needs' || k === 'tags') return;
+          if (v === '' || v == null) return;              // don't overwrite with a blank
+          if (Array.isArray(v) && !v.length) return;
+          incoming[k] = v;
+        });
+        c = Object.assign({}, existingRec, incoming);
         c.id = existingRec.id;
         c.createdAt = existingRec.createdAt;
         c.needs = existingRec.needs || [];
-        c.tags = Array.from(new Set((existingRec.tags || []).concat(c.tags)));
+        c.tags = Array.from(new Set((existingRec.tags || []).concat(
+          document.getElementById('f-tags').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean)
+        )));
         isUpdate = true;
       }
       saveContact(c);
@@ -1257,7 +1274,24 @@
           var emailLc = c.email && c.email.toLowerCase();
           var existingRec = emailLc && byEmailNow[emailLc];
           var isUpdate = false;
-          if (existingRec) { c.id = existingRec.id; c.createdAt = existingRec.createdAt; c.needs = existingRec.needs || []; c.tags = existingRec.tags || []; isUpdate = true; }
+          if (existingRec) {
+            // MERGE, don't replace — a scanned card only carries what was printed on
+            // it, so saving it wholesale wiped every other field on the existing
+            // contact and reset customerType/stage/ownerId to this batch's defaults.
+            var incoming = {};
+            Object.keys(c).forEach(function (k) {
+              var v = c[k];
+              if (k === 'id' || k === 'createdAt' || k === 'needs' || k === 'tags') return;
+              if (k === 'customerType' || k === 'stage' || k === 'ownerId') return; // batch defaults, not card data
+              if (v === '' || v == null) return;
+              if (Array.isArray(v) && !v.length) return;
+              incoming[k] = v;
+            });
+            c = Object.assign({}, existingRec, incoming);
+            c.id = existingRec.id; c.createdAt = existingRec.createdAt;
+            c.needs = existingRec.needs || []; c.tags = existingRec.tags || [];
+            isUpdate = true;
+          }
           saveContact(c);
           if (existingRec) byEmailNow[emailLc] = c; // keep subsequent rows in this same batch from re-duplicating each other
           if (window.bccAudit) window.bccAudit(isUpdate ? 'contact-update' : 'contact-create', { key: c.id, path: '/crm.html', meta: { batch: true } });

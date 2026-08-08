@@ -389,21 +389,29 @@
     var realm = $('sel_qbo').value; if (!realm) { (window.bccNotify||alert)('Link a QuickBooks company first.', 'warn'); return; }
     var btn = $('btn_pull'); btn.disabled = true; var old = btn.textContent; btn.textContent = 'Pulling…';
     var asOf = new Date().toISOString().slice(0,10);
+    var clientAt = current; // pin the client this pull is FOR — switching mid-fetch must not write these KPIs into a different client's doc
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(realm) + '/kpis?method=accrual&asOf=' + asOf + '&burnMonths=3', { credentials:'include' })
-      .then(function (r){ return r.json().catch(function(){ return { ok:false }; }); })
-      .then(function (resp){
-        var k = (resp && resp.kpis) || {};
-        if (resp && resp.ok === false) { (window.bccNotify||alert)('Could not pull from QuickBooks.', 'error'); return; }
-        $('f_fin_cr').value = (k.currentRatio == null) ? '' : Number(k.currentRatio).toFixed(2);
-        $('f_fin_mc').value = (k.monthsOfCash == null) ? '' : String(k.monthsOfCash);
-        $('f_fin_nm').value = (k.netMargin == null) ? '' : (Number(k.netMargin) * 100).toFixed(1) + '%';
+      // Carry the HTTP status through: the old code only recognised an explicit
+      // ok:false, so any error body without that field (or a non-JSON 5xx) fell
+      // through to the success path and blanked the saved financials.
+      .then(function (r){ return r.json().catch(function(){ return { ok:false }; }).then(function (j){ return { httpOk: r.ok, body: j }; }); })
+      .then(function (res){
+        if (current !== clientAt) return; // user switched clients while this was in flight
+        var resp = res.body || {};
+        var k = resp.kpis || {};
+        if (!res.httpOk || resp.ok === false || !resp.kpis) { (window.bccNotify||alert)('Could not pull from QuickBooks.', 'error'); return; }
+        // Only overwrite a field the pull actually returned. Blanking on a missing
+        // value silently destroyed figures a bookkeeper had typed in by hand.
+        if (k.currentRatio != null) $('f_fin_cr').value = Number(k.currentRatio).toFixed(2);
+        if (k.monthsOfCash != null) $('f_fin_mc').value = String(k.monthsOfCash);
+        if (k.netMargin != null) $('f_fin_nm').value = (Number(k.netMargin) * 100).toFixed(1) + '%';
         current.financials = current.financials || {};
         current.financials.pulledAt = new Date().toISOString();
         $('finPulled').textContent = 'Pulled from QuickBooks ' + new Date().toLocaleString();
         doSave();
         if (window.bccNotifySaved) window.bccNotifySaved('Financials pulled from QuickBooks.');
       })
-      .catch(function (){ (window.bccNotify||alert)('Could not reach QuickBooks.', 'error'); })
+      .catch(function (){ if (current === clientAt) (window.bccNotify||alert)('Could not reach QuickBooks.', 'error'); })
       .finally(function (){ btn.textContent = old; updatePullState(); });
   }
 

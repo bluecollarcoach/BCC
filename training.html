@@ -324,7 +324,9 @@
       return '<div class="lesson-row" data-i="' + i + '">' +
         '<input type="text" data-k="title" value="' + esc(l.title || '') + '" placeholder="Lesson title" />' +
         '<input type="text" data-k="videoUrl" value="' + esc(l.videoUrl || '') + '" placeholder="Video URL (optional)" />' +
-        '<input type="number" data-k="durationMin" value="' + (l.durationMin || '') + '" min="0" placeholder="min" />' +
+        // Coerced to a number, not just escaped: durationMin comes from a synced course
+        // doc any signed-in user can write, and a raw string here breaks out of value="".
+        '<input type="number" data-k="durationMin" value="' + (parseInt(l.durationMin, 10) || '') + '" min="0" placeholder="min" />' +
         '<button class="x" type="button" title="Remove">&times;</button>' +
       '</div>';
     }).join('');
@@ -407,7 +409,8 @@
       ? '<p style="color:var(--muted); font-style:italic; padding:20px 4px;">This course has no lessons yet.</p>'
       : lessons.map(function (l) {
           var done = !!(enrollment && enrollment.progress && enrollment.progress[l.id] === 'complete');
-          var dur = l.durationMin ? l.durationMin + ' min' : 'duration unknown';
+          var durNum = parseInt(l.durationMin, 10) || 0; // synced field — never render it raw
+          var dur = durNum ? durNum + ' min' : 'duration unknown';
           var watch = l.videoUrl
             ? '<a class="watch" href="' + esc(l.videoUrl) + '" target="_blank" rel="noreferrer noopener">Open ↗</a>'
             : '';

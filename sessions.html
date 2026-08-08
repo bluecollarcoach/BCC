@@ -217,11 +217,17 @@
     }
     return out;
   }
-  function getSession(id) { try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (e) { return null; } }
+  // A session doc's `id` field is attacker-writable: these records sync through the
+  // shared store, so anyone can plant one whose id names a DIFFERENT doc (e.g.
+  // bcc-admin-config-v1). Since that id is used directly as the localStorage key,
+  // reading/writing/deleting a listed row would then hit the impersonated doc.
+  // Only ever touch keys that actually live in this page's own namespace.
+  function isSessionKey(id) { return typeof id === 'string' && id.indexOf(SESSION_PREFIX) === 0; }
+  function getSession(id) { if (!isSessionKey(id)) return null; try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (e) { return null; } }
   function saveSession(s) {
     s.updatedAt = nowIso();
     if (!s.createdAt) s.createdAt = s.updatedAt;
-    if (!s.id) s.id = SESSION_PREFIX + uid();
+    if (!isSessionKey(s.id)) s.id = SESSION_PREFIX + uid();
     if (!s.tenantId) s.tenantId = 'blue-collar-coach';
     s.docType = 'session';
     if (!s.source) s.source = 'local';
@@ -229,7 +235,7 @@
     localStorage.setItem(s.id, JSON.stringify(s));
     return s;
   }
-  function deleteSession(id) { localStorage.removeItem(id); }
+  function deleteSession(id) { if (!isSessionKey(id)) return; localStorage.removeItem(id); }
 
   function allContacts() {
     var out = [];
