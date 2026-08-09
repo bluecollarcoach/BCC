@@ -213,17 +213,24 @@
     }
     return out;
   }
-  function getEng(id) { try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (e) { return null; } }
+  // An engagement's `id` is also its localStorage key, and it reaches us from
+  // outside this page — the ?id= deep link, or the doc itself off the shared store.
+  // An id naming some other record would make Save overwrite that doc and Delete
+  // remove it (the Storage hook mirrors both straight to /api/data), so a single
+  // crafted link plus one click could destroy the rate sheet or the admin config.
+  // Only ever touch keys inside this page's own namespace.
+  function isEngKey(id) { return typeof id === 'string' && id.indexOf(ENG_PREFIX) === 0; }
+  function getEng(id) { if (!isEngKey(id)) return null; try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (e) { return null; } }
   function saveEng(e) {
     e.updatedAt = nowIso();
     if (!e.createdAt) e.createdAt = e.updatedAt;
-    if (!e.id) e.id = ENG_PREFIX + uid();
+    if (!isEngKey(e.id)) e.id = ENG_PREFIX + uid();
     if (!e.tenantId) e.tenantId = 'blue-collar-coach';
     e.docType = 'engagement';
     localStorage.setItem(e.id, JSON.stringify(e));
     return e;
   }
-  function delEng(id) { localStorage.removeItem(id); }
+  function delEng(id) { if (!isEngKey(id)) return; localStorage.removeItem(id); }
 
   function allContacts() {
     var out = [];
@@ -340,10 +347,20 @@
     var sel = document.getElementById('m-company');
     if (!sel) return;
     var companies = allCompanies();
-    sel.innerHTML = '<option value="">— None —</option>' +
+    var html = '<option value="">— None —</option>' +
       companies.map(function (c) {
         return '<option value="' + esc(c.id) + '"' + (c.id === selected ? ' selected' : '') + '>' + esc(c.name) + (c.industry ? ' · ' + esc(c.industry) : '') + '</option>';
       }).join('');
+    // The linked company may not be here: bcc-company- docs are tier-gated on the
+    // server, and even with access they only land in localStorage once bcc-api.js
+    // has hydrated. With no matching <option> the select silently falls back to
+    // "— None —", and Save reads that '' straight back into rec.companyId — one
+    // unrelated edit would drop the engagement's company link for everyone. Carry
+    // the stored id as its own option so a round-trip preserves it.
+    if (selected && !companies.some(function (c) { return c.id === selected; })) {
+      html += '<option value="' + esc(selected) + '" selected>— Linked company (unavailable) —</option>';
+    }
+    sel.innerHTML = html;
   }
   function populateTypeDropdown(selected) {
     var sel = document.getElementById('m-type');

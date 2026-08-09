@@ -1503,8 +1503,14 @@
     else if (per === 'qtd') { from = iso(new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1)); to = iso(now); }
     else if (per === 'last12') { from = iso(new Date(now.getFullYear(), now.getMonth() - 11, 1)); to = iso(now); }
     else { from = iso(new Date(now.getFullYear(), 0, 1)); to = iso(now); }
-    var fd = new Date(from), td = new Date(to);
-    var months = Math.max(1, Math.min(12, (td.getFullYear() - fd.getFullYear()) * 12 + (td.getMonth() - fd.getMonth()) + 1));
+    // from/to are date-only strings. new Date('YYYY-MM-DD') parses them as UTC
+    // midnight while getFullYear()/getMonth() read LOCAL fields, so in every US
+    // zone each boundary slides back into the previous month and `months` lands
+    // one too high — the KPI burn window (Months of cash, Monthly overhead) then
+    // averages an extra month of overhead. Read year/month off the string instead.
+    function ymOf(s) { var p = String(s || '').split('-'); return { y: +p[0], m: +p[1] - 1 }; }
+    var fd = ymOf(from), td = ymOf(to);
+    var months = Math.max(1, Math.min(12, ((td.y - fd.y) * 12 + (td.m - fd.m) + 1) || 1));
     return { from: from, to: to, method: ((document.getElementById('qboMethod') || {}).value || 'accrual'), months: months };
   }
   // Visibility of the QBO cards is owned by showSection(); this just keeps the
@@ -3509,18 +3515,27 @@
   // client drive too when one is connected for this client.
   function pdfSaveTargets() {
     var targets = [];
+    // Capture the client HERE, at editor-open time. These handlers are invoked by
+    // bcc-pdf.js only when the bookkeeper clicks Save — minutes later, after a
+    // client switch is entirely possible — so reading currentRealm live inside them
+    // (via clientFolder()) would file one client's PDF into another client's private
+    // folder. Same realm-race guard as saveMonthlyReportToFiles/cprSaveToFiles.
+    var realmAt = currentRealm;
     targets.push({ label: 'Save to internal files', icon: '🔒', handler: function (blob, filename) {
-      var fd = new FormData(); fd.append('file', blob, filename); fd.append('folder', clientFolder()); fd.append('tags', 'pdf-edit');
+      var fd = new FormData(); fd.append('file', blob, filename); fd.append('folder', '/clients/' + realmAt); fd.append('tags', 'pdf-edit');
       return fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
         .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })
-        .then(function () { if (window.bccAudit) window.bccAudit('client-file-upload', { path: '/bookkeeping.html', meta: { realmId: currentRealm, name: filename, via: 'pdf-tools' } }); if (typeof loadFiles === 'function') loadFiles(); });
+        .then(function () { if (window.bccAudit) window.bccAudit('client-file-upload', { path: '/bookkeeping.html', meta: { realmId: realmAt, name: filename, via: 'pdf-tools' } }); if (currentRealm === realmAt && typeof loadFiles === 'function') loadFiles(); });
     } });
     if (typeof _driveProvider !== 'undefined' && _driveProvider) {
+      // The folder the drive browser is sitting in belongs to THIS client's drive too,
+      // and loadDrive() resets it on every client change — capture it alongside the realm.
+      var driveFolderAt = _driveFolder;
       targets.push({ label: 'Save to shared drive', icon: '☁️', handler: function (blob, filename) {
-        var fd = new FormData(); fd.append('file', blob, filename); if (_driveFolder) fd.append('folderId', _driveFolder);
-        return fetch('/api/integrations/drive/' + encodeURIComponent(currentRealm) + '/upload', { method: 'POST', credentials: 'include', body: fd })
+        var fd = new FormData(); fd.append('file', blob, filename); if (driveFolderAt) fd.append('folderId', driveFolderAt);
+        return fetch('/api/integrations/drive/' + encodeURIComponent(realmAt) + '/upload', { method: 'POST', credentials: 'include', body: fd })
           .then(function (r) { return r.json().then(function (j) { if (!r.ok || j.ok === false) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })
-          .then(function () { if (typeof loadDriveFiles === 'function') loadDriveFiles(); });
+          .then(function () { if (currentRealm === realmAt && typeof loadDriveFiles === 'function') loadDriveFiles(); });
       } });
     }
     return targets;
@@ -5022,7 +5037,10 @@
     body.querySelectorAll('[data-emp][data-f="name"]').forEach(function (el) { el.addEventListener('change', function () { cprEmpAutofill(+el.getAttribute('data-emp')); }); });
     var addb = document.getElementById('cpr_addemp'); if (addb) addb.onclick = function () { cprDraft.employees.push(blankEmp()); renderPayroll(); };
     document.getElementById('cpr_back').onclick = document.getElementById('cpr_back2').onclick = function () { cprEditingId = null; cprDraft = null; renderPayroll(); };
-    document.getElementById('cpr_save').onclick = document.getElementById('cpr_save2').onclick = cprSave;
+    // Wrapped, never bound bare: as a raw handler the browser hands the MouseEvent in
+    // as `silent`, which is truthy — so Save shows no "saved & filed" confirmation and
+    // a report that fails to build is dropped with no warning and no file filed.
+    document.getElementById('cpr_save').onclick = document.getElementById('cpr_save2').onclick = function () { cprSave(false); };
     document.getElementById('cpr_print').onclick = function () { cprSave(true); printCpr(cprDraft); };
     document.getElementById('cpr_mndot').onclick = function () { cprSave(true); cprMndotDownload(cprDraft); };
     document.getElementById('cpr_email').onclick = function () { cprSave(true); cprEmailPanel(); };
@@ -6105,7 +6123,10 @@
     document.getElementById('pa_addco').onclick = function () { r.changeOrderRows.push({ desc: '', additions: '', deductions: '' }); renderPayApp(); };
     document.getElementById('pa_addline').onclick = function () { r.lines.push(blankPayLine()); renderPayApp(); };
     document.getElementById('pa_back').onclick = document.getElementById('pa_back2').onclick = function () { payappEditingId = null; payappDraft = null; renderPayApp(); };
-    document.getElementById('pa_save').onclick = document.getElementById('pa_save2').onclick = payappSave;
+    // Wrapped, never bound bare — same reason as cpr_save: a bare handler receives the
+    // MouseEvent as `silent`, suppressing both the save confirmation and the warning
+    // when the pay application can't be built.
+    document.getElementById('pa_save').onclick = document.getElementById('pa_save2').onclick = function () { payappSave(false); };
     document.getElementById('pa_print').onclick = function () { payappSave(true); printPayapp(payappDraft); };
     payappRecalc();
   }

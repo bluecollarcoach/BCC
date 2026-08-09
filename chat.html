@@ -223,14 +223,46 @@
 <script>
 const LS_CHANS = 'bcc-chat-channels-v1';
 const LS_MSGS = 'bcc-chat-messages-v1';
-const LS_READ = 'bcc-chat-last-read-v1';
 const LS_WHO = 'bcc-field-who';
+
+/* Read state used to be ONE tenant-wide doc ('bcc-chat-last-read-v1'). It is a plain
+   bcc- key, so it synced to Cosmos as a single firm-wide record: whoever opened a
+   channel first stamped it read for EVERYONE, clearing every colleague's unread badge
+   and leaving the notification bell nothing to report. It is personal state, so it
+   gets a per-user doc id — the same shape as the per-user My Day time logs.
+   The key is empty until Entra identity resolves (bcc-api.js is deferred and awaits
+   /.auth/me): better to skip a write entirely than to park one person's read marks
+   somewhere another person will load them. */
+function readKey() {
+  const u = whoUpn();
+  return u ? ('bcc-chat-last-read-' + u + '-v1') : '';
+}
 
 let PEOPLE = (window.bccPeople || []).slice();
 window.addEventListener('bcc-users-ready', function () {
   PEOPLE = (window.bccPeople || []).slice();
   if (typeof render === 'function') { try { render(); } catch (e) {} }
   if (typeof updateTabs === 'function') { try { updateTabs(); } catch (e) {} }
+});
+
+/* bcc-api.js's live poll drops teammates' messages straight into localStorage every
+   8s and fires ONE 'bcc-data-ready'. Nothing here listened for it, this page runs no
+   poll of its own, and the notification bell deliberately stays silent on chat.html
+   (ncScanChat returns early here because "they see messages live there") — so an open
+   thread showed nothing at all until the tab was reloaded. */
+window.addEventListener('bcc-data-ready', function (e) {
+  const keys = (e && e.detail && e.detail.keys) || null;
+  // Only our own docs. The event fires for ANY changed doc in the tenant, and a
+  // colleague saving a task shouldn't cost this page a redraw.
+  if (keys && keys.indexOf(LS_MSGS) < 0 && keys.indexOf(LS_CHANS) < 0 && keys.indexOf(readKey()) < 0) return;
+  if (typeof renderLive === 'function') { try { renderLive(); } catch (e2) {} }
+});
+
+/* Identity resolves late (bcc-api.js is deferred and awaits /.auth/me), and both the
+   per-user read key and `who` hang off it. Without a re-render here the badges stay
+   stuck on their pre-auth reading for the life of the tab. */
+window.addEventListener('bcc-auth-ready', function () {
+  if (typeof render === 'function') { try { render(); } catch (e) {} }
 });
 
 function defaultChans() {
@@ -265,8 +297,26 @@ function mutateMsgs(fn) {
   saveMsgs(msgs);
   return out;
 }
-function loadRead() { try { return JSON.parse(localStorage.getItem(LS_READ)) || {}; } catch { return {}; } }
-function saveRead(v) { localStorage.setItem(LS_READ, JSON.stringify(v)); }
+/* The channel list is one blob as well, and `chans` below is read exactly once during
+   parse — on a cold load that happens BEFORE bcc-api.js has hydrated localStorage from
+   Cosmos, so the snapshot is usually just defaultChans(). Saving that snapshot wrote a
+   pre-sync list back over the real one and deleted every channel anyone had created
+   elsewhere. Same rule as messages: re-read, mutate the FRESH list, then save. */
+function mutateChans(fn) {
+  chans = loadChans();
+  const out = fn(chans);
+  saveChans(chans);
+  return out;
+}
+// Falls back to the retired tenant-wide doc so the first load after this ships
+// doesn't show every existing conversation as unread. The next saveRead() writes the
+// per-user key, so the shared doc is simply left behind rather than migrated.
+function loadRead() {
+  const k = readKey(); if (!k) return {};
+  try { return JSON.parse(localStorage.getItem(k)) || JSON.parse(localStorage.getItem('bcc-chat-last-read-v1')) || {}; }
+  catch { return {}; }
+}
+function saveRead(v) { const k = readKey(); if (k) localStorage.setItem(k, JSON.stringify(v)); }
 
 // No seed messages — every chat starts empty so the first thing anyone
 // sees is real conversation, not demo content with hardcoded employee names.
@@ -287,12 +337,14 @@ function init() {
     const n = prompt('Channel name (no spaces):');
     if (!n) return;
     const id = n.toLowerCase().replace(/[^a-z0-9-]/g,'-');
-    if (chans.some(c => c.id === id)) { alert('Already exists.'); return; }
+    // The duplicate check has to run against the FRESH list too — a channel a
+    // teammate created since this tab loaded is already in localStorage but not
+    // in our snapshot, and re-creating it would blow away their members list.
+    if (loadChans().some(c => c.id === id)) { alert('Already exists.'); return; }
     // New channels are PRIVATE by default — created with just you as a member.
     // Use the "Members" button (opened automatically) to add people, or flip
     // it to "Open to everyone".
-    chans.push({ id, name:id, desc:'', members:[whoUpn()], createdBy: whoUpn() });
-    saveChans(chans);
+    mutateChans(cs => { cs.push({ id, name:id, desc:'', members:[whoUpn()], createdBy: whoUpn() }); });
     active = id;
     render();
     openMembersModal(id);
@@ -302,12 +354,54 @@ function init() {
 }
 
 function render() {
+  // Re-read everything the sync layer can change underneath us. `chans` was the
+  // gap: it was only ever read at parse time, so a long-lived tab kept rendering
+  // (and re-saving) a channel list from before the first Cosmos pull. `who` lands
+  // late for the same reason — bcc-api.js seeds it during its deferred bootstrap,
+  // and until it does your own messages count against your own unread badge.
+  chans = loadChans();
   msgs = loadMsgs(); read = loadRead();
+  who = localStorage.getItem(LS_WHO) || who;
   // Keep the active channel valid against what this user can actually see.
   var vis = visibleChans();
   if (!vis.some(function (c) { return c.id === active; })) active = vis.length ? vis[0].id : null;
   renderSidebar();
   renderThread();
+}
+
+/* renderThread() rebuilds the composer along with the thread, so a plain render()
+   throws away whatever is half-typed and snaps the scroller to the newest message.
+   That was invisible while render() only ran on an explicit user action; the live
+   listener above runs it whenever a teammate posts, so a message someone spent 8s
+   typing would vanish mid-sentence. Carry the draft (and the reader's place in the
+   scrollback) across the rebuild. */
+function renderLive() {
+  const ta = document.getElementById('c_text');
+  const draft = ta ? ta.value : '';
+  const selStart = ta ? ta.selectionStart : 0;
+  const selEnd = ta ? ta.selectionEnd : 0;
+  const focused = !!ta && document.activeElement === ta;
+  const box = document.getElementById('messages');
+  // Only follow the new message if they were already at the bottom — yanking the
+  // viewport away from someone reading history is worse than skipping the jump.
+  const wasAtBottom = !box || (box.scrollHeight - box.scrollTop - box.clientHeight) < 40;
+  const prevTop = box ? box.scrollTop : 0;
+  // The live poll only runs on a VISIBLE tab, so this channel is genuinely on
+  // screen — stamp it read off the fresh doc, or the sidebar would sprout an
+  // unread badge for the very thread the user is sitting in.
+  if (active) { const r = loadRead(); r[active] = Date.now(); saveRead(r); }
+  render();
+  const ta2 = document.getElementById('c_text');
+  if (ta2) {
+    if (draft) {
+      ta2.value = draft;
+      ta2.style.height = 'auto';
+      ta2.style.height = Math.min(120, ta2.scrollHeight) + 'px';
+    }
+    if (focused) { ta2.focus(); try { ta2.setSelectionRange(selStart, selEnd); } catch (e) {} }
+  }
+  const box2 = document.getElementById('messages');
+  if (box2 && !wasAtBottom) box2.scrollTop = prevTop;
 }
 
 function unreadCount(chId) {
@@ -319,8 +413,13 @@ function unreadCount(chId) {
 function renderSidebar() {
   document.getElementById('chanList').innerHTML = visibleChans().map(c => {
     const u = unreadCount(c.id);
+    // c.id is escaped like every other field here. The prompt-based creator
+    // sanitises ids, but bcc-chat-channels-v1 is a generic /api/data doc any
+    // signed-in user can PUT, so a crafted id closed the data-id attribute and
+    // ran script in every teammate's session. The browser un-escapes the value
+    // again while parsing, so el.dataset.id below still reads the original id.
     return `
-      <div class="chan ${c.id===active?'active':''}" data-id="${c.id}">
+      <div class="chan ${c.id===active?'active':''}" data-id="${escapeHtml(c.id)}">
         <span class="hash">#</span>
         <span class="cname">${escapeHtml(c.name)}</span>
         ${u ? `<span class="unread">${u}</span>` : ''}
@@ -426,7 +525,13 @@ function renderThread() {
   document.getElementById('c_send').onclick = send;
   document.getElementById('c_file').onchange = e => {
     const f = (e.target.files||[])[0]; if (!f) return;
-    const r = new FileReader(); r.onload = () => { pendingPhoto = r.result; render(); }; r.readAsDataURL(f);
+    const r = new FileReader();
+    // Never attach the raw capture — see shrinkPhoto() for why it has to be bounded.
+    r.onload = () => shrinkPhoto(r.result, (url, why) => {
+      if (!url) { alert(why || 'That image could not be read on this device.'); return; }
+      pendingPhoto = url; render();
+    });
+    r.readAsDataURL(f);
   };
   const rmp = document.getElementById('rmPhoto');
   if (rmp) rmp.onclick = () => { pendingPhoto = null; render(); };
@@ -490,7 +595,20 @@ function send() {
   };
   // Append to a FRESHLY re-read map so a teammate's message that arrived since our
   // last poll isn't wiped out by this write (the whole map is saved as one blob).
-  mutateMsgs(m => { m[active] = m[active] || []; m[active].push(newMsg); });
+  try {
+    mutateMsgs(m => { m[active] = m[active] || []; m[active].push(newMsg); });
+  } catch (err) {
+    // localStorage is a hard ~5 MB per origin shared with every other bcc- key. When
+    // the write busts it the throw used to escape send() untouched: nothing stored,
+    // nothing re-rendered, and the message simply disappeared while the Send button
+    // sat there looking inert. Roll the unsaved mutation back out of memory, leave
+    // their text and photo in the composer, and say what actually happened.
+    msgs = loadMsgs();
+    alert('Message not sent — this browser is out of local storage space.\n\n' +
+      (newMsg.photo ? 'Try sending the photo on its own, or pick a smaller one.'
+                    : 'Ask an admin to clear an old channel, then try again.'));
+    return;
+  }
   pendingPhoto = null;
   read[active] = Date.now();
   saveRead(read);
@@ -548,19 +666,27 @@ function openMembersModal(chId) {
     else { peopleBox.style.opacity = ''; peopleBox.style.pointerEvents = ''; }
   };
   ov.querySelector('#m-save').onclick = () => {
-    if (openChk.checked) {
-      delete c.members;
-    } else {
-      const sel = [meUpn];
+    const wantOpen = openChk.checked;
+    let sel = null;
+    if (!wantOpen) {
+      sel = [meUpn];
       ov.querySelectorAll('#m-people input[type=checkbox]').forEach(cb => {
         if (cb.checked && cb.dataset.upn && sel.indexOf(cb.dataset.upn) < 0) sel.push(cb.dataset.upn);
       });
-      c.members = sel;
-      if (!c.createdBy) c.createdBy = meUpn;
     }
-    saveChans(chans);
+    // Edit the freshly re-read list, not the snapshot this modal was built from:
+    // saving `chans` wholesale dropped every channel created elsewhere since the
+    // tab loaded. Re-checking canManageChan on the fresh record also means a
+    // channel whose ownership changed while the modal sat open can't be rewritten.
+    const saved = mutateChans(cs => {
+      const t = cs.find(x => x.id === chId);
+      if (!t || !canManageChan(t)) return null;
+      if (wantOpen) { delete t.members; }
+      else { t.members = sel; if (!t.createdBy) t.createdBy = meUpn; }
+      return t;
+    });
     window.bccAudit && window.bccAudit('chat-members-update', {
-      key: c.id, meta: { channel: c.id, open: !!openChk.checked, count: Array.isArray(c.members) ? c.members.length : null }
+      key: chId, meta: { channel: chId, open: !!wantOpen, count: (saved && Array.isArray(saved.members)) ? saved.members.length : null }
     });
     close();
     render();
@@ -594,6 +720,38 @@ function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&am
 function safePhoto(p) {
   const s = String(p || '');
   return /^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(s) ? s : '';
+}
+/* The attach control is capture="environment", so on a phone this is a full-resolution
+   camera frame — a 2-5 MB JPEG, roughly 7 MB once base64'd into a data URL. It gets
+   stored in the single bcc-chat-messages-v1 blob, which carries every prior message
+   and shares the ~5 MB origin quota with every other bcc- key, so attaching one
+   verbatim made the send() write throw and the message was lost. Re-encode down to
+   something a thread can actually carry BEFORE it is ever attached. The output is a
+   base64 JPEG data URL, which is exactly the shape safePhoto() will render. */
+const PHOTO_MAX_PX = 1280;
+const PHOTO_MAX_CHARS = 600 * 1024;
+function shrinkPhoto(dataUrl, cb) {
+  const img = new Image();
+  img.onerror = () => cb('');
+  img.onload = () => {
+    try {
+      const scale = Math.min(1, PHOTO_MAX_PX / Math.max(img.width, img.height, 1));
+      const cv = document.createElement('canvas');
+      cv.width = Math.max(1, Math.round(img.width * scale));
+      cv.height = Math.max(1, Math.round(img.height * scale));
+      cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+      // Step the quality down until it fits rather than rejecting a busy photo that
+      // just happens to compress badly at the first setting.
+      let out = '';
+      for (const q of [0.7, 0.55, 0.4, 0.3]) {
+        out = cv.toDataURL('image/jpeg', q);
+        if (out.length <= PHOTO_MAX_CHARS) break;
+      }
+      if (out.length <= PHOTO_MAX_CHARS) cb(out);
+      else cb('', 'That photo is too large to attach even after resizing.');
+    } catch (e) { cb(''); }
+  };
+  img.src = dataUrl;
 }
 function linkify(s) {
   return escapeHtml(s).replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener" style="color:var(--p-orange);">$1</a>');

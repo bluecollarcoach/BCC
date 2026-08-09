@@ -221,6 +221,8 @@
 
   var current = null;     // current dashboard doc
   var currentId = '';     // current company id
+  var dirty = false;      // user has edited since this client was opened (see resync)
+  var pulling = false;    // a QuickBooks pull is in flight (see resync/pullFinancials)
   var saveTimer = null;
   var qboCompanies = [];
 
@@ -300,6 +302,7 @@
     document.querySelectorAll('[data-people]').forEach(function (cb){ var i = +cb.getAttribute('data-people'); cb.checked = !!(people[i] && people[i].done); });
     document.querySelectorAll('[data-peoplenote]').forEach(function (inp){ var i = +inp.getAttribute('data-peoplenote'); inp.value = (people[i] && people[i].note) || ''; });
     // QBO link
+    ensureQboOption(d.qboRealmId);
     $('sel_qbo').value = d.qboRealmId || '';
     autosizeAll();
   }
@@ -335,6 +338,7 @@
   }
 
   function scheduleSave() {
+    dirty = true; // every user edit routes through here — resync() reads this
     setSaveState('Saving…', false);
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(doSave, 600);
@@ -344,18 +348,24 @@
     d.updatedAt = new Date().toISOString();
     d.updatedBy = (window.bccUser && window.bccUser.userDetails) || '';
     localStorage.setItem(d.id, JSON.stringify(d));
+    // The form now matches stored state again. Without this, `dirty` latched true on
+    // the first keystroke and never cleared, so resync() refused to pick up a
+    // teammate's synced change for the rest of the session — the stale-doc guard only
+    // ever covered the very first edit.
+    dirty = false;
     setSaveState('Saved', true);
     if (window.bccAudit) window.bccAudit('dashboard-update', { key: d.id, path:'/dashboard.html', meta:{ companyId: d.companyId } });
   }
   function setSaveState(txt, ok) { var el = $('saveState'); el.textContent = txt; el.classList.toggle('saved', !!ok); }
 
   /* ---- autosize textareas ---- */
-  function autosize(t) { t.style.height = 'auto'; t.style.height = Math.max(t.classList ? 0 : 0, t.scrollHeight) + 'px'; }
+  function autosize(t) { t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; }
   function autosizeAll() { document.querySelectorAll('.card textarea').forEach(function (t){ t.style.height='auto'; t.style.height = t.scrollHeight + 'px'; }); }
 
   /* ---- client selection ---- */
   function openClient(id) {
     currentId = id;
+    dirty = false; // the form is about to match stored state again
     if (!id) { current = null; $('grid').style.display='none'; $('emptyHint').style.display=''; setSaveState('', false); return; }
     current = loadDoc(id);
     $('emptyHint').style.display='none'; $('grid').style.display='';
@@ -366,6 +376,22 @@
   }
 
   /* ---- QuickBooks link + pull ---- */
+  // A realm already stored on the doc has to stay selectable even when it is
+  // absent from the fetched list — /api/integrations/qbo/companies is filtered
+  // per caller (enabled + allowedUserUpns) and only resolves after the first
+  // paint. A <select> holding a value with no matching <option> reports '',
+  // and collect() reads that '' straight back onto the doc on every keystroke,
+  // so without this the client's QuickBooks link is erased for everyone the
+  // moment a bookkeeper who can't see that company types in any card.
+  function ensureQboOption(realmId) {
+    if (!realmId) return;
+    var sel = $('sel_qbo');
+    for (var i = 0; i < sel.options.length; i++) { if (sel.options[i].value === realmId) return; }
+    var opt = document.createElement('option');
+    opt.value = realmId;
+    opt.textContent = 'Linked company · ' + realmId; // textContent, never innerHTML
+    sel.appendChild(opt);
+  }
   function loadQboCompanies() {
     fetch('/api/integrations/qbo/companies', { credentials:'include' })
       .then(function (r){ return r.ok ? r.json() : { companies:[] }; })
@@ -374,7 +400,8 @@
         var sel = $('sel_qbo');
         sel.innerHTML = '<option value="">— Not linked —</option>' +
           qboCompanies.map(function (c){ return '<option value="' + esc(c.realmId) + '">' + esc(c.companyName || ('Company ' + c.realmId)) + '</option>'; }).join('');
-        if (current) sel.value = current.qboRealmId || '';
+        // The rebuild just dropped any option fillForm added for an unlisted realm.
+        if (current) { ensureQboOption(current.qboRealmId); sel.value = current.qboRealmId || ''; }
         updatePullState();
       })
       .catch(function (){ qboCompanies = []; });
@@ -389,6 +416,7 @@
     var realm = $('sel_qbo').value; if (!realm) { (window.bccNotify||alert)('Link a QuickBooks company first.', 'warn'); return; }
     var btn = $('btn_pull'); btn.disabled = true; var old = btn.textContent; btn.textContent = 'Pulling…';
     var asOf = new Date().toISOString().slice(0,10);
+    pulling = true;
     var clientAt = current; // pin the client this pull is FOR — switching mid-fetch must not write these KPIs into a different client's doc
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(realm) + '/kpis?method=accrual&asOf=' + asOf + '&burnMonths=3', { credentials:'include' })
       // Carry the HTTP status through: the old code only recognised an explicit
@@ -412,7 +440,7 @@
         if (window.bccNotifySaved) window.bccNotifySaved('Financials pulled from QuickBooks.');
       })
       .catch(function (){ if (current === clientAt) (window.bccNotify||alert)('Could not reach QuickBooks.', 'error'); })
-      .finally(function (){ btn.textContent = old; updatePullState(); });
+      .finally(function (){ pulling = false; btn.textContent = old; updatePullState(); });
   }
 
   /* ---- wiring ---- */
@@ -440,10 +468,36 @@
     }
   }
 
-  // bcc-api.js may still be loading the synced docs when we first run; refresh
-  // the client list once auth/data settle.
-  window.addEventListener('bcc-auth-ready', function () { populateClients(); var v=$('sel_client').value; if (v) $('sel_client').value=v; });
-  window.addEventListener('bcc-users-ready', function () { populateClients(); var v=$('sel_client').value; if (v) $('sel_client').value=v; });
+  /* bcc-api.js may still be loading the synced docs when we first run; refresh
+   * the client list once auth/data settle.
+   * Re-reading the open doc matters as much as the list. init() paints during
+   * page parse, but bcc-api.js's bootstrap awaits /.auth/me before it pulls
+   * /api/data, so `current` can be a pre-sync snapshot — and because collect()
+   * mutates that object and doSave() writes it back whole, the first keystroke
+   * would push a stale copy over a newer version saved on another device.
+   * Repainting stops once the user has started typing, so a late sync can
+   * never swallow work in progress. */
+  function resync(docMayHaveChanged) {
+    populateClients();
+    if (!currentId) return;
+    // populateClients() rebuilt the list, clearing the selection. Only restore it if
+    // that client is still IN the list — assigning a value that has no matching option
+    // silently blanks the picker, which reads as "my client disappeared".
+    var sel = $('sel_client');
+    if (Array.prototype.some.call(sel.options, function (o) { return o.value === currentId; })) sel.value = currentId;
+    // Re-opening mid-pull would reassign `current`, and pullFinancials pins that by
+    // identity — the pull would then land, see a different doc, and silently discard
+    // the figures it just fetched.
+    if (docMayHaveChanged && !dirty && !pulling) openClient(currentId);
+  }
+  window.addEventListener('bcc-auth-ready', function () { resync(true); });
+  window.addEventListener('bcc-users-ready', function () { resync(false); });
+  // A live poll that lands a newer copy of the open dashboard leaves `current`
+  // just as stale as the pre-sync paint did, so it goes through the same guard.
+  window.addEventListener('bcc-data-ready', function (e) {
+    var keys = (e && e.detail && e.detail.keys) || [];
+    resync(keys.indexOf(DASH_PREFIX + currentId) >= 0);
+  });
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();

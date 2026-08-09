@@ -497,6 +497,10 @@ app.http('data', {
       // byte-for-byte (bookkeeping.html emSigKey) — saniTaskKey also trims and
       // truncates, so reusing it here would reject long or edge-shaped UPNs.
       if (/^bcc-emailsig-/.test(id)) return id === 'bcc-emailsig-' + me.replace(/[^a-z0-9]+/g, '-');
+      // Chat read marks. Per user since chat.html stopped using one tenant-wide doc
+      // (which let whoever opened a channel first clear EVERYONE's unread badge).
+      // The client builds this from a lowercased userDetails, so match that exactly.
+      if (/^bcc-chat-last-read-/.test(id)) return id === 'bcc-chat-last-read-' + me + '-v1';
       return true; // not a personal key → not restricted here
     };
 
@@ -563,10 +567,10 @@ app.http('data', {
           // are owner-scoped: only the caller's own rows come back, so one
           // person's tasks/hours/signature are never shipped to another
           // signed-in user.
-          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND NOT STARTSWITH(c.id, "bcc-bkentry-") AND NOT STARTSWITH(c.id, "bcc-report-") AND NOT STARTSWITH(c.id, "bcc-cpr-sends-") AND NOT STARTSWITH(c.id, "bcc-email-") AND (NOT STARTSWITH(c.id, "bcc-mytasks-") OR LOWER(c.data.upn) = @me) AND (NOT STARTSWITH(c.id, "bcc-daily-log-") OR LOWER(c.data.userUpn) = @me) AND (NOT STARTSWITH(c.id, "bcc-emailsig-") OR LOWER(c.data.upn) = @me) AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "bk-entry" AND c.docType != "monthly-report" AND c.docType != "client-drive" AND c.docType != "document" AND c.docType != "access" AND c.docType != "audit" AND c.docType != "oauthstate-used"))' + (sinceOk ? ' AND c.updatedAt > @since' : ''),
+          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND NOT STARTSWITH(c.id, "bcc-bkentry-") AND NOT STARTSWITH(c.id, "bcc-report-") AND NOT STARTSWITH(c.id, "bcc-cpr-sends-") AND NOT STARTSWITH(c.id, "bcc-email-") AND (NOT STARTSWITH(c.id, "bcc-mytasks-") OR LOWER(c.data.upn) = @me) AND (NOT STARTSWITH(c.id, "bcc-daily-log-") OR LOWER(c.data.userUpn) = @me) AND (NOT STARTSWITH(c.id, "bcc-emailsig-") OR LOWER(c.data.upn) = @me) AND (NOT STARTSWITH(c.id, "bcc-chat-last-read-") OR c.id = @myChatRead) AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "bk-entry" AND c.docType != "monthly-report" AND c.docType != "client-drive" AND c.docType != "document" AND c.docType != "access" AND c.docType != "audit" AND c.docType != "oauthstate-used"))' + (sinceOk ? ' AND c.updatedAt > @since' : ''),
           parameters: sinceOk
-            ? [{ name: '@t', value: BCC_TENANT_ID }, { name: '@me', value: me }, { name: '@since', value: sinceD }]
-            : [{ name: '@t', value: BCC_TENANT_ID }, { name: '@me', value: me }]
+            ? [{ name: '@t', value: BCC_TENANT_ID }, { name: '@me', value: me }, { name: '@myChatRead', value: 'bcc-chat-last-read-' + me + '-v1' }, { name: '@since', value: sinceD }]
+            : [{ name: '@t', value: BCC_TENANT_ID }, { name: '@me', value: me }, { name: '@myChatRead', value: 'bcc-chat-last-read-' + me + '-v1' }]
         };
         const { resources: rawResources } = await c.items.query(q).fetchAll();
         // Belt-and-suspenders on top of the SQL exclusions above: the SQL list and

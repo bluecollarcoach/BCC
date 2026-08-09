@@ -2321,7 +2321,17 @@
     var chans, msgs, read, seen;
     try { chans = JSON.parse(localStorage.getItem('bcc-chat-channels-v1')) || []; } catch (e) { return; }
     try { msgs  = JSON.parse(localStorage.getItem('bcc-chat-messages-v1')) || {}; } catch (e) { msgs = {}; }
-    try { read  = JSON.parse(localStorage.getItem('bcc-chat-last-read-v1')) || {}; } catch (e) { read = {}; }
+    // Chat read-state is PER USER now (chat.html readKey()) — it used to be one
+    // tenant-wide doc, so whoever opened a channel first cleared everyone's unread
+    // badge. Read the caller's own doc, falling back to the retired shared key so the
+    // bell doesn't announce every existing message as new on the first load after
+    // this ships.
+    var _ncReadKey = ncMyUpn() ? ('bcc-chat-last-read-' + ncMyUpn() + '-v1') : '';
+    try {
+      read = (_ncReadKey && JSON.parse(localStorage.getItem(_ncReadKey)))
+          || JSON.parse(localStorage.getItem('bcc-chat-last-read-v1'))
+          || {};
+    } catch (e) { read = {}; }
     try { seen  = JSON.parse(localStorage.getItem(NC_CHATSEEN)) || {}; } catch (e) { seen = {}; }
     var myUpn = ncMyUpn();
     var myName = ((window.bccDisplayName ? window.bccDisplayName(myUpn) : '') || '').toLowerCase();

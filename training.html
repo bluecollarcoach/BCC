@@ -334,9 +334,26 @@
     document.querySelectorAll('.lesson-row .x').forEach(function (b) {
       b.addEventListener('click', function () {
         var i = parseInt(b.closest('.lesson-row').dataset.i, 10);
+        // Sync before splicing: renderLessons repaints every row from the array, so edits
+        // still sitting in the other inputs are thrown away if we don't read them first.
+        currentLessons = readLessonRows();
         currentLessons.splice(i, 1);
         renderLessons(currentLessons);
       });
+    });
+  }
+
+  // Lesson text lives only in the DOM inputs between renders — currentLessons is not
+  // updated as the admin types. Anything that re-renders must pull the inputs back in.
+  function readLessonRows() {
+    return Array.prototype.map.call(document.querySelectorAll('.lesson-row'), function (row) {
+      var i = parseInt(row.dataset.i, 10);
+      return {
+        id: currentLessons[i] ? currentLessons[i].id : 'l' + uid(),
+        title:       row.querySelector('[data-k=title]').value.trim(),
+        videoUrl:    row.querySelector('[data-k=videoUrl]').value.trim(),
+        durationMin: parseInt(row.querySelector('[data-k=durationMin]').value || '0', 10) || 0
+      };
     });
   }
 
@@ -361,6 +378,9 @@
   document.getElementById('modalBg').addEventListener('click', function (e) { if (e.target.id === 'modalBg') closeModal(); });
 
   document.getElementById('addLessonBtn').addEventListener('click', function () {
+    // Same reason as the row-remove ×: the re-render below repaints from the array, so the
+    // rows already on screen have to be read back or a half-typed lesson disappears.
+    currentLessons = readLessonRows();
     currentLessons.push({ id: 'l' + uid(), title: '', videoUrl: '', durationMin: 0 });
     renderLessons(currentLessons);
   });
@@ -370,15 +390,9 @@
     var rec = id ? (getCourse(id) || {}) : {};
     rec.title = document.getElementById('m-title').value.trim() || '(untitled)';
     rec.blurb = document.getElementById('m-blurb').value.trim();
-    // Read current lesson edits from the DOM (overrides currentLessons array order/values)
-    rec.lessons = Array.prototype.map.call(document.querySelectorAll('.lesson-row'), function (row) {
-      return {
-        id: currentLessons[parseInt(row.dataset.i, 10)] ? currentLessons[parseInt(row.dataset.i, 10)].id : 'l' + uid(),
-        title:       row.querySelector('[data-k=title]').value.trim(),
-        videoUrl:    row.querySelector('[data-k=videoUrl]').value.trim(),
-        durationMin: parseInt(row.querySelector('[data-k=durationMin]').value || '0', 10) || 0
-      };
-    }).filter(function (l) { return l.title || l.videoUrl; });
+    // Read current lesson edits from the DOM (overrides currentLessons array order/values).
+    // Same reader the add/remove buttons use, so the two paths can't drift apart.
+    rec.lessons = readLessonRows().filter(function (l) { return l.title || l.videoUrl; });
     saveCourse(rec);
     if (window.bccAudit) window.bccAudit(id ? 'course-update' : 'course-create', { key: rec.id, path: '/training.html' });
     if (window.bccNotifySaved) window.bccNotifySaved('Course saved.');
@@ -436,7 +450,11 @@
       '<div class="lesson-list">' + lessonsHtml + '</div>';
 
     el.querySelectorAll('.lesson-row-l').forEach(function (row) {
-      row.addEventListener('click', function () {
+      // Named ev, not e: the saveEnrollment mutator below already binds e to the enrollment.
+      row.addEventListener('click', function (ev) {
+        // The "Open ↗" link sits inside the row, so its click bubbles here: without this
+        // guard re-watching a finished lesson flips it back to not-done and clears completedAt.
+        if (ev.target.closest('a.watch')) return;
         var lid = row.dataset.lesson;
         var nowDone = !row.classList.contains('done');
         saveEnrollment(c.id, function (e) {

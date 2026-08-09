@@ -55,6 +55,7 @@
   .hero button.start:hover { background:var(--gold-warm); }
   .hero button.stop  { background:#6a1c1c; color:#fff; }
   .hero button.stop:hover { background:#5c1a1a; }
+  .hero button:disabled { opacity:.55; cursor:default; }
 
   /* Card grid */
   .grid { display:grid; grid-template-columns:repeat(3, 1fr); gap:14px; margin-bottom:14px; }
@@ -169,7 +170,10 @@
     </div>
     <div class="clock">
       <div class="timer" id="timer">Off the clock</div>
-      <button class="start" id="clockBtn" type="button">Clock in</button>
+      <!-- Starts disabled on purpose. The upn that keys the time doc only arrives once
+           bcc-api.js (deferred + async) resolves, and a punch taken before then cannot
+           be saved. renderClock() enables this the moment the identity is known. -->
+      <button class="start" id="clockBtn" type="button" disabled>Clock in</button>
     </div>
   </section>
 
@@ -228,7 +232,19 @@
   function esc(s)   { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
   function ymd(d)   { var pad = function (n) { return String(n).padStart(2,'0'); }; return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
 
-  function meUpn() { return ((window.bccUser && window.bccUser.userDetails) || '').toLowerCase(); }
+  // Remember the signed-in upn on THIS device. The app is a PWA: the service worker
+  // serves My Day offline, but /.auth/me can't be reached, so window.bccUser never
+  // resolves and the clock would be permanently disabled out on a job site. Falling
+  // back to the last identity seen on this device keeps the punch working AND keeps
+  // it keyed to the right person — unlike the old 'anon' fallback, which wrote a doc
+  // the server refuses and that vanished the moment the real upn arrived.
+  // Deliberately NOT a bcc-* key: bcc-api.js pushes those to the shared store.
+  var LAST_UPN_KEY = 'myday-last-upn';
+  function meUpn() {
+    var live = ((window.bccUser && window.bccUser.userDetails) || '').toLowerCase();
+    if (live) { try { localStorage.setItem(LAST_UPN_KEY, live); } catch (e) {} return live; }
+    try { return (localStorage.getItem(LAST_UPN_KEY) || '').toLowerCase(); } catch (e) { return ''; }
+  }
   function myFirstName() {
     var who = (window.bccUser && window.bccUser.userDetails) || '';
     // bccFirstName handles people-list lookup + prettifies the email local-part
@@ -312,7 +328,13 @@
   }
 
   /* ===== Clock in / out ===== */
-  function logPrefix() { return 'bcc-daily-log-' + (meUpn() || 'anon') + '-'; }
+  // No 'anon' fallback any more. bcc-api.js is deferred and resolves window.bccUser long
+  // after this script binds its handlers, and a doc keyed bcc-daily-log-anon- is refused
+  // by the server (ownsPersonalKey demands bcc-daily-log-<your upn>-) *and* drops out of
+  // the list the instant the real upn lands — an early punch vanished with no error at
+  // all. saveLogDoc is the single write choke point, so it refuses until the upn is known.
+  var _authSettled = false; // bcc-auth-ready has fired (signed in OR confirmed anonymous)
+  function logPrefix() { return 'bcc-daily-log-' + meUpn() + '-'; }
   function logKeyForDay(day) { return logPrefix() + day; }
   function todayKey() { return logKeyForDay(ymd(new Date())); }
   function loadTodayLog() {
@@ -321,8 +343,11 @@
   function loadLogForDay(day) {
     try { return JSON.parse(localStorage.getItem(logKeyForDay(day)) || 'null'); } catch (e) { return null; }
   }
+  function warnNoIdentity() { (window.bccNotify || alert)('Still signing you in — give it a second and try again.', 'warn'); }
   // Save a daily-log for a specific day (defaults to today). Editing a past day keeps its date.
+  // Returns false — and writes nothing — while the signed-in upn is still unknown.
   function saveLogDoc(log) {
+    if (!meUpn()) return false;
     log.day = log.day || ymd(new Date());
     log.id = logKeyForDay(log.day);
     log.tenantId = 'blue-collar-coach';
@@ -331,15 +356,68 @@
     log.updatedAt = nowIso();
     if (!log.createdAt) log.createdAt = log.updatedAt;
     localStorage.setItem(log.id, JSON.stringify(log));
+    return true;
   }
-  function saveTodayLog(log) { log.day = ymd(new Date()); saveLogDoc(log); }
+  function saveTodayLog(log) { log.day = ymd(new Date()); return saveLogDoc(log); }
+
+  // A day doc carries ONE clockedInAt/clockedOutAt pair, but the button openly invites a
+  // second punch ("Clock in again" after lunch). Reusing those two fields wiped the
+  // morning's pair outright and the hours were gone for good. Park each finished pair in
+  // log.segments before the fields are reused; loggedMs() is the day total across the
+  // parked punches plus whatever is still sitting in the fields.
+  function logSegments(log) { return (log && Array.isArray(log.segments)) ? log.segments : []; }
+  function parkSegment(log) {
+    if (log.clockedInAt && log.clockedOutAt) {
+      log.segments = logSegments(log).concat([{ inAt: log.clockedInAt, outAt: log.clockedOutAt }]);
+    }
+    log.clockedInAt = null; log.clockedOutAt = null;
+  }
+  function loggedMs(log) {
+    var pairs = logSegments(log).concat(
+      (log && log.clockedInAt && log.clockedOutAt) ? [{ inAt: log.clockedInAt, outAt: log.clockedOutAt }] : []);
+    return pairs.reduce(function (ms, s) {
+      var d = new Date(s.outAt) - new Date(s.inAt);
+      return ms + (d > 0 ? d : 0);
+    }, 0);
+  }
+
+  // The punch you are standing in right now, whichever day's doc holds it. A shift that
+  // runs past midnight lives in YESTERDAY's doc, but the timer and the button only ever
+  // read today's — so at 00:00 the running clock disappeared and the next press opened a
+  // second punch on the new day, leaving the old one open forever. Reach back one day,
+  // but only while the punch could still plausibly be running: a clock-out someone forgot
+  // days ago must stay in the "no clock-out" warning below rather than be silently closed
+  // by this button at whatever time they next touch the page.
+  var OPEN_SHIFT_MAX_MS = 18 * 60 * 60 * 1000;
+  function activeLog() {
+    var today = loadTodayLog();
+    if (today && today.clockedInAt) return today.clockedOutAt ? null : today;
+    var y = new Date(); y.setDate(y.getDate() - 1);
+    var yday = ymd(y), prev = loadLogForDay(yday);
+    if (prev && prev.clockedInAt && !prev.clockedOutAt) {
+      var started = new Date(prev.clockedInAt).getTime();
+      // Pin the day so saveLogDoc keys it back to yesterday, not to today.
+      if (!isNaN(started) && Date.now() - started <= OPEN_SHIFT_MAX_MS) { prev.day = prev.day || yday; return prev; }
+    }
+    return null;
+  }
 
   var timerInt = null;
   function renderClock() {
-    var log = loadTodayLog() || {};
     var btn = document.getElementById('clockBtn');
     var timerEl = document.getElementById('timer');
-    if (log.clockedInAt && !log.clockedOutAt) {
+    // No upn yet — keep the control inert rather than take a punch saveLogDoc would
+    // have to throw away. init() re-runs on bcc-auth-ready, which re-enables it.
+    if (!meUpn()) {
+      btn.disabled = true; btn.textContent = 'Clock in'; btn.className = 'start';
+      timerEl.textContent = _authSettled ? 'Sign in to clock in' : 'Signing you in…';
+      if (timerInt) { clearInterval(timerInt); timerInt = null; }
+      return;
+    }
+    btn.disabled = false;
+    var open = activeLog();
+    var log = open || loadTodayLog() || {};
+    if (open) {
       btn.textContent = 'Clock out'; btn.className = 'stop';
       function tick() {
         var elapsed = Date.now() - new Date(log.clockedInAt).getTime();
@@ -351,9 +429,11 @@
       tick();
       if (timerInt) clearInterval(timerInt);
       timerInt = setInterval(tick, 1000);
-    } else if (log.clockedOutAt) {
+    } else if (log.clockedInAt && log.clockedOutAt) {
       btn.textContent = 'Clock in again'; btn.className = 'start';
-      var dur = new Date(log.clockedOutAt) - new Date(log.clockedInAt);
+      // Day total, not just the last pair — after a lunch break the morning's hours
+      // live in log.segments and would otherwise read as if they had never happened.
+      var dur = loggedMs(log);
       var h = Math.floor(dur / 3600000); var m = Math.floor((dur % 3600000) / 60000);
       timerEl.textContent = h + 'h ' + m + 'm worked';
       if (timerInt) { clearInterval(timerInt); timerInt = null; }
@@ -364,16 +444,20 @@
     }
   }
   document.getElementById('clockBtn').addEventListener('click', function () {
-    var log = loadTodayLog() || {};
-    if (log.clockedInAt && !log.clockedOutAt) {
-      log.clockedOutAt = nowIso();
-      saveTodayLog(log);
+    var open = activeLog();
+    if (open) {
+      open.clockedOutAt = nowIso();
+      // saveLogDoc keeps open.day, so a shift that began before midnight closes on the
+      // day it started instead of stranding it and opening a stray punch on the new day.
+      if (!saveLogDoc(open)) { warnNoIdentity(); return; }
       if (window.bccAudit) window.bccAudit('clock-out', { path: '/myday.html' });
       if (window.bccNotifySaved) window.bccNotifySaved('Clocked out.');
     } else {
+      var log = loadTodayLog() || {};
+      parkSegment(log); // banks a finished pair before the fields are reused
       log.clockedInAt = nowIso();
       log.clockedOutAt = null;
-      saveTodayLog(log);
+      if (!saveTodayLog(log)) { warnNoIdentity(); return; }
       if (window.bccAudit) window.bccAudit('clock-in', { path: '/myday.html' });
       if (window.bccNotifySaved) window.bccNotifySaved('Clocked in.');
     }
@@ -387,7 +471,9 @@
     var out = [], pre = logPrefix();
     for (var i = 0; i < localStorage.length; i++) {
       var k = localStorage.key(i); if (!k || k.indexOf(pre) !== 0) continue;
-      try { var d = JSON.parse(localStorage.getItem(k)); if (d && d.clockedInAt) out.push(d); } catch (e) {}
+      // A day whose only hours are parked segments still has time on it — list it, or
+      // those hours would be invisible here while sitting in the doc.
+      try { var d = JSON.parse(localStorage.getItem(k)); if (d && (d.clockedInAt || logSegments(d).length)) out.push(d); } catch (e) {}
     }
     return out.sort(function (a, b) { return String(b.day || '').localeCompare(String(a.day || '')); });
   }
@@ -415,7 +501,11 @@
     var logs = myLogs();
     var today = ymd(new Date());
     // Warn about any PAST day still open (forgot to clock out) — that is Jenna's case.
-    var openPast = logs.filter(function (l) { return l.clockedInAt && !l.clockedOutAt && l.day !== today; });
+    // A shift that crossed midnight is a past day too, but it is the punch the user is
+    // standing in right now — don't scold them for a clock-out that isn't due yet.
+    var active = activeLog();
+    var activeDay = active ? active.day : null;
+    var openPast = logs.filter(function (l) { return l.clockedInAt && !l.clockedOutAt && l.day !== today && l.day !== activeDay; });
     warnEl.innerHTML = openPast.length
       ? '<div style="background:#fff4e5;border:1px solid #f0c789;border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:13px;color:#8a5a12;">⚠️ ' +
         openPast.length + ' day' + (openPast.length === 1 ? '' : 's') + ' with no clock-out (' +
@@ -424,7 +514,11 @@
     if (!logs.length) { listEl.innerHTML = '<div class="empty-mini">No time logged yet. Use “Clock in” above to start.</div>'; return; }
     listEl.innerHTML = logs.map(function (l) {
       var open = l.clockedInAt && !l.clockedOutAt;
-      var dur = (l.clockedInAt && l.clockedOutAt) ? fmtDur(new Date(l.clockedOutAt) - new Date(l.clockedInAt)) : '';
+      var segs = logSegments(l);
+      // Total every punch on the day, not just the pair still in the fields, and spell
+      // the earlier ones out — a total that didn't match the In/Out shown would read
+      // as a bug and send people hunting for hours that are in fact recorded.
+      var dur = fmtDur(loggedMs(l));
       var rowStyle = 'display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;padding:9px 2px;border-bottom:1px solid var(--line,#eee);font-size:13px;';
       if (_editDay === l.day) {
         return '<div data-row="' + esc(l.day) + '" style="' + rowStyle + '">' +
@@ -442,6 +536,10 @@
         '<div style="color:var(--muted,#555);">In <strong>' + esc(fmtTime(l.clockedInAt)) + '</strong> · Out <strong>' + (l.clockedOutAt ? esc(fmtTime(l.clockedOutAt)) : '<span style="color:#c8721a;">not clocked out</span>') + '</strong>' +
           (dur ? ' · ' + dur : '') + '</div>' +
         '<button type="button" data-act="edit" data-day="' + esc(l.day) + '" style="margin-left:auto;padding:5px 12px;background:transparent;color:var(--ink,#0c1a4b);border:1px solid var(--line,#ccc);">' + (open ? 'Add clock-out' : 'Edit') + '</button>' +
+        (segs.length
+          ? '<div style="flex-basis:100%;padding-left:96px;color:var(--muted,#777);font-size:12px;">Earlier: ' +
+              segs.map(function (s) { return esc(fmtTime(s.inAt)) + '–' + esc(fmtTime(s.outAt)); }).join(' · ') + '</div>'
+          : '') +
       '</div>';
     }).join('');
   }
@@ -459,7 +557,7 @@
       if (outIso && new Date(outIso) <= new Date(inIso)) { (window.bccNotify || alert)('Clock-out must be after clock-in.', 'warn'); return; }
       var log = loadLogForDay(day) || { day: day };
       log.day = day; log.clockedInAt = inIso; log.clockedOutAt = outIso;
-      saveLogDoc(log);
+      if (!saveLogDoc(log)) { warnNoIdentity(); return; }
       if (window.bccAudit) window.bccAudit('clock-edit', { path: '/myday.html', meta: { day: day } });
       if (window.bccNotifySaved) window.bccNotifySaved('Time updated.');
       _editDay = null; renderMyTime(); renderClock();
@@ -467,7 +565,10 @@
     }
     if (act === 'clear') {
       if (!confirm('Remove the clock times for ' + fmtDay(day) + '? Your daily-log notes are kept.')) return;
-      var l2 = loadLogForDay(day); if (l2) { l2.day = day; l2.clockedInAt = null; l2.clockedOutAt = null; saveLogDoc(l2); }
+      // "Remove" means every punch on that day, parked segments included — leaving those
+      // behind would keep hours in the doc with no In/Out row left to show or edit them.
+      var l2 = loadLogForDay(day);
+      if (l2) { l2.day = day; l2.clockedInAt = null; l2.clockedOutAt = null; l2.segments = []; if (!saveLogDoc(l2)) { warnNoIdentity(); return; } }
       if (window.bccAudit) window.bccAudit('clock-edit', { path: '/myday.html', meta: { day: day, cleared: true } });
       _editDay = null; renderMyTime(); renderClock();
       return;
@@ -487,7 +588,7 @@
     log.wins     = document.getElementById('logWins').value.trim();
     log.blockers = document.getElementById('logBlockers').value.trim();
     log.tomorrow = document.getElementById('logTomorrow').value.trim();
-    saveTodayLog(log);
+    if (!saveTodayLog(log)) { warnNoIdentity(); return; }
     if (window.bccAudit) window.bccAudit('daily-log-save', { path: '/myday.html' });
     if (window.bccNotifySaved) window.bccNotifySaved('Daily log saved.');
     renderLog();
@@ -566,7 +667,7 @@
   }
   window.addEventListener('bcc-data-ready', liveRefresh);
   window.addEventListener('bcc-users-ready', renderHero);
-  window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
+  window.addEventListener('bcc-auth-ready', function () { _authSettled = true; document.body.dataset.didInit = '1'; init(); });
   setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
 })();
 </script>
