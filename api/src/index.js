@@ -64,7 +64,12 @@ const ADMIN_KEYS      = new Set(['bcc-admin-config-v1', 'bcc-customer-types-v1']
 //     whole page device-local. The real leak was the SERVER-written flat file
 //     metadata sharing that prefix, which is excluded by docType in the bulk query
 //     and guarded per-key below — not by banning the prefix.
-const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-bkentry-', 'bcc-emailmeta-', 'bcc-financial-period-', 'bcc-usernotif-', 'bcc-feedback-', 'bcc-errorlog-', 'bcc-report-', 'bcc-sharepoint-map-v1'];
+// bcc-oauthstate-used- is the single-use marker consumeOAuthStateOnce writes (see
+// its doc comment). It is server-owned but happens to be a plain bcc- doc that
+// isPcKey() accepts, so /api/data would let ANY signed-in user DELETE it — which
+// silently re-arms replay of the exact OAuth state that marker exists to burn.
+// The bulk GET already drops it by docType; this closes the write/delete side.
+const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-bkentry-', 'bcc-emailmeta-', 'bcc-financial-period-', 'bcc-usernotif-', 'bcc-feedback-', 'bcc-errorlog-', 'bcc-report-', 'bcc-oauthstate-used-', 'bcc-sharepoint-map-v1'];
 // A SERVER-owned file-metadata doc (written by /api/documents) is FLAT: docType sits
 // at the top level. A documents.html record synced through /api/data is WRAPPED: its
 // docType lives under .data, so top-level docType is undefined. That difference is
@@ -252,6 +257,16 @@ async function isAppAdmin(p) {
   );
 }
 
+/* Normalise a caller-supplied notification target to a SAME-ORIGIN path.
+ * The value reaches sw.js, which opens it with clients.openWindow(), so anything that
+ * resolves off-origin becomes an internal-phishing primitive. Fold the string the way
+ * a browser would FIRST (strip control characters, backslash -> slash), then test, so
+ * what we authorise is exactly what gets opened. "//host" is protocol-relative, so it
+ * has to fail closed as well. */
+function safeNotifyPath(v) {
+  const raw = String(v || '/').slice(0, 200).replace(/[\t\r\n]/g, '').replace(/\\/g, '/');
+  return /^\/(?!\/)/.test(raw) ? raw : '/';
+}
 function isPcKey(k) {
   return typeof k === 'string' && k.startsWith('bcc-') && k.length < 80;
 }
@@ -1371,7 +1386,11 @@ app.http('feedback', {
           const bodyText = note || (msg.length > 90 ? msg.slice(0, 90) + '…' : msg);
           await notifyUser(c, doc.userUpn, {
             title: isNewResolve ? '✅ Your feedback was addressed' : '💬 Reply to your feedback',
-            body: bodyText, url: doc.page || '/', tag: 'fbdone-' + doc.id
+            // Same normalisation /api/notify applies: this reaches sw.js, which opens
+            // it with clients.openWindow(). Accept only a same-origin path — "//host"
+            // is protocol-relative and a backslash can be folded to "/" by the browser,
+            // so both must fail closed rather than become an external destination.
+            body: bodyText, url: safeNotifyPath(doc.page), tag: 'fbdone-' + doc.id
           });
         }
         return { jsonBody: { ok: true, id: doc.id, status: doc.status, resolutionNote: doc.resolutionNote || '', resolutionBy: doc.resolutionBy || '', resolutionAt: doc.resolutionAt || '' } };
@@ -1563,8 +1582,14 @@ app.http('notify-user', {
       // to a coworker that opens an external phishing site on tap — a ready-made
       // internal spear-phishing primitive. "/path" is fine; "//host" (protocol-
       // relative) and any absolute http(s)/javascript:/data: URL are not.
-      const rawUrl = String(body.url || '/').slice(0, 200);
-      const url = /^\/(?!\/)/.test(rawUrl) ? rawUrl : '/';
+      // Testing the raw string for a single leading slash is not enough: browsers
+      // normalize before they resolve. For http(s) a BACKSLASH is treated as a
+      // slash, so "/\evil.com" parses to https://evil.com/, and tab/CR/LF are
+      // stripped outright, so "/<TAB>/evil.com" becomes "//evil.com" — both slip
+      // past a plain (?!\/) guard and hand the primitive straight back. Normalize
+      // the same way the browser will, decide on THAT, and pass the normalized
+      // value on so what we authorize is exactly what sw.js opens.
+      const url = safeNotifyPath(body.url);
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(toUpn)) return badRequest('toUpn must be an email address');
       if (!title) return badRequest('title required');
       // Target must be an ACTIVE user of this app — no notifications to arbitrary
@@ -1692,6 +1717,13 @@ app.http('cron-reminders', {
 
       for (const d of docs) {
         const data = d.data || {};
+        // A session the coach set to Canceled in sessions.html is still an ordinary
+        // future-dated doc, so it kept earning both the 24h and the 15-min push —
+        // nothing consumed that status field anywhere. Reminding people about a
+        // meeting that was called off is worse than not reminding them at all.
+        // Both spellings, since the value is free-form text from the client.
+        const remStatus = String(data.status || '').toLowerCase();
+        if (remStatus === 'canceled' || remStatus === 'cancelled') continue;
         const startAt = data.startAt;
         if (!startAt) continue;
         const t = Date.parse(startAt);
@@ -2131,6 +2163,38 @@ const SINGLE_APP_KEY_PREFIXES = [
   // it — the dashboard app's own tier is the right lever, and without this entry the
   // doc had no server-side gate of any kind.
   { re: /^bcc-dashboard-/, app: 'dashboard' },
+  // Sessions, Events, Training, Knowledge Base and Team Chat each have their own
+  // tier in Admin > Users & Roles and their own page gate in bcc-api.js, but no
+  // prefix mapped to them here — so appAccessChecker returned null ("no opinion"),
+  // every call site only blocks on === false, and the tier was enforced in the
+  // BROWSER only. An admin who set a contractor to None saw the access-denied
+  // overlay and reasonably assumed the data was out of reach, while the routine
+  // /api/data sync still shipped (and accepted writes/deletes for) all of it.
+  // Owners confirmed by reading every page that touches each prefix:
+  // bcc-session- is written only by sessions.html — scheduler.html and myday.html
+  // just scan it to render, so they are read-only referrers; bcc-event- only by
+  // events.html (scheduler.html likewise only reads it); bcc-course- only by
+  // training.html; bcc-kb-article- only by kb.html.
+  { re: /^bcc-session-/, app: 'sessions', readApps: ['scheduler', 'myday'] },
+  { re: /^bcc-event-/, app: 'events', readApps: ['scheduler'] },
+  { re: /^bcc-course-/, app: 'training' },
+  // Enrollment/progress records live alongside courses and were missed when the
+  // course gate went in — without this, someone set to training='none' still
+  // received every colleague's progress and could write or delete it.
+  { re: /^bcc-enrollment-/, app: 'training' },
+  { re: /^bcc-kb-article-/, app: 'kb' },
+  // Covers bcc-chat-channels-v1, bcc-chat-messages-v1 and the per-user
+  // bcc-chat-last-read- marks (those stay owner-scoped via ownsPersonalKey as
+  // well — both checks must pass). This gates the chat APP tier only: per-channel
+  // membership still lives in the client, because every channel's messages share
+  // the single bcc-chat-messages-v1 blob and splitting that is a data-model change.
+  // Channels and messages. Deliberately NOT bcc-chat-last-read-: opening a channel
+  // calls saveRead(), so treating a read mark as an 'edit' would 403 every click for
+  // a chat='view' user — who is explicitly allowed to read chat — and pop the
+  // "you don't have permission to edit this" toast at them. Those markers are
+  // already owner-scoped by ownsPersonalKey and by the bulk query, which is the
+  // protection they actually need.
+  { re: /^bcc-chat-(?!last-read-)/, app: 'chat' },
 ];
 const SINGLE_APP_EXACT_KEYS = { 'bcc-rate-sheet-v1': 'rates' };
 // bcc-contact- is genuinely SHARED — read/written by crm.html, jobs.html,

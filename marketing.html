@@ -340,7 +340,12 @@
       var spend = (c.budgetCents || 0) > 0
         ? dollars(c.spentCents || 0) + ' / ' + dollars(c.budgetCents || 0)
         : dollars(c.spentCents || 0);
-      var leads = (c.metrics && c.metrics.leads != null) ? c.metrics.leads : (c.leads || 0);
+      // `leads` was the one cell in this row built without esc(). Campaign docs sync
+      // through the shared store, so anyone holding Marketing = Edit could plant markup
+      // in metrics.leads and have it run in every viewer's session. It is a count, so
+      // pin it to a number the way the spend cell does, and still escape it on output.
+      var leads = Number((c.metrics && c.metrics.leads != null) ? c.metrics.leads : (c.leads || 0));
+      if (!isFinite(leads)) leads = 0;
       var ch = c.channel || 'other';
       return '<tr data-id="' + esc(c.id) + '">' +
         '<td data-label="Campaign"><div style="font-weight:700;">' + esc(c.name || '(unnamed)') + '</div>' + (c.notes ? '<div style="color:var(--muted);font-size:12px;margin-top:2px;">' + esc(c.notes.slice(0, 80)) + (c.notes.length > 80 ? '…' : '') + '</div>' : '') + '</td>' +
@@ -348,7 +353,7 @@
         '<td data-label="Status"><span class="st-chip st-' + esc(c.status || 'draft') + '">' + esc(c.status || 'draft') + '</span></td>' +
         '<td data-label="Window" style="color:var(--muted);font-size:12.5px;">' + esc(win || '—') + '</td>' +
         '<td data-label="Spend" class="num">' + esc(spend) + '</td>' +
-        '<td data-label="Leads" class="num">' + leads + '</td>' +
+        '<td data-label="Leads" class="num">' + esc(leads) + '</td>' +
         '<td><button class="icon-btn danger" data-act="delete" title="Delete">&times;</button></td>' +
       '</tr>';
     }).join('');

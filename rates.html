@@ -345,16 +345,51 @@
   /* ===== Signature pad ===== */
   var canvas = document.getElementById('sigPad');
   var ctx = canvas.getContext('2d');
+  // Assigning canvas.width/height blanks the bitmap, but hasMark stays true — so a resize
+  // mid-signing used to leave us saving a fully transparent PNG as the customer's signature.
+  // Mobile fires resize constantly for things that don't change our size (iOS URL bar
+  // collapsing on scroll, Android soft keyboard opening), so bail out when the backing store
+  // Declared ABOVE fitCanvas because it reads hasMark. It only worked before via var
+  // hoisting plus the accident that every caller is async; a synchronous call added
+  // above the old declaration would have read undefined and silently wiped the
+  // strokes it exists to preserve.
+  var drawing = false; var last = null; var hasMark = false;
+  // already matches; on a real change (rotation) snapshot the strokes and paint them back.
   function fitCanvas() {
     var rect = canvas.getBoundingClientRect();
-    canvas.width = rect.width * 2; canvas.height = rect.height * 2;
+    var w = Math.max(1, Math.round(rect.width * 2));
+    var h = Math.max(1, Math.round(rect.height * 2));
+    if (canvas.width === w && canvas.height === h) return;
+    var snap = null;
+    if (hasMark && canvas.width && canvas.height) {
+      snap = document.createElement('canvas');
+      snap.width = canvas.width; snap.height = canvas.height;
+      snap.getContext('2d').drawImage(canvas, 0, 0);
+    }
+    canvas.width = w; canvas.height = h;
     ctx.scale(2, 2);
     ctx.lineCap = 'round'; ctx.lineWidth = 2.2; ctx.strokeStyle = '#1a1a1a';
+    if (snap) {
+      // Restore at EXACTLY the original scale — never resample. What gets stored here
+      // is the customer's signature on a rate agreement, so a silently shrunken or
+      // re-blurred copy is not an acceptable record. (Scale-to-fit looks tidy but
+      // compounds: each narrowing shrinks the mark and a later widening clamps at 1x,
+      // so a few tablet rotations reduce it to a fraction of what was signed while
+      // sigIsBlank() still reports it as present.)
+      if (snap.width <= w && snap.height <= h) {
+        ctx.drawImage(snap, 0, 0, snap.width / 2, snap.height / 2);
+      } else {
+        // The pad genuinely got smaller than the mark. Rather than crop or distort a
+        // signature, drop it and say so — re-signing takes seconds; a doctored
+        // signature on file is a much worse outcome.
+        hasMark = false;
+        if (window.bccNotify) window.bccNotify('The signature pad resized — please have the customer sign again.', 'warn', 6000);
+      }
+    }
   }
   window.addEventListener('resize', fitCanvas);
   setTimeout(fitCanvas, 0);
 
-  var drawing = false; var last = null; var hasMark = false;
   function pt(e) {
     var rect = canvas.getBoundingClientRect();
     var x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
@@ -381,8 +416,21 @@
   document.getElementById('sigClear').addEventListener('click', function () {
     ctx.clearRect(0, 0, canvas.width, canvas.height); hasMark = false;
   });
+  // Last line of defence before we commit a signature record: whatever the flag says, refuse
+  // to store an all-transparent bitmap. A blank PNG on file is worse than no signature at all,
+  // because it looks signed in the audit trail.
+  function sigIsBlank() {
+    try {
+      var d = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      for (var i = 3; i < d.length; i += 4) { if (d[i] !== 0) return false; }
+      return true;
+    } catch (e) { return false; } // can't inspect it — don't block a legitimate save
+  }
   document.getElementById('sigSave').addEventListener('click', function () {
-    if (!hasMark) { (window.bccNotify || alert)('Have the customer draw a signature first.', 'warn'); return; }
+    if (!hasMark || sigIsBlank()) {
+      hasMark = false;
+      (window.bccNotify || alert)('Have the customer draw a signature first.', 'warn'); return;
+    }
     var name = document.getElementById('sig-name').value.trim();
     if (!name) { (window.bccNotify || alert)('Add the customer\'s name.', 'warn'); return; }
     var contactId = document.getElementById('sig-contact').value || '';
@@ -410,12 +458,19 @@
 
   function renderContactDropdown() {
     var sel = document.getElementById('sig-contact');
+    // Live sync fires bcc-data-ready every ~8s for ANY tenant change, and capturing a
+    // signature takes a lot longer than that. Rebuilding the options resets the picker to
+    // the first entry, so the signature would quietly save with contactId: null — keep the
+    // operator's pick across the refresh.
+    var prev = sel.value;
     var contacts = loadContacts();
     sel.innerHTML = '<option value="">— None / one-off —</option>' +
       contacts.map(function (c) {
         var name = ((c.firstName || '') + ' ' + (c.lastName || '')).trim() || c.email || c.company || '(no name)';
         return '<option value="' + esc(c.id) + '">' + esc(name) + (c.company ? ' (' + esc(c.company) + ')' : '') + '</option>';
       }).join('');
+    sel.value = prev;
+    if (sel.value !== prev) sel.selectedIndex = 0; // that contact is gone — fall back to "None"
   }
 
   /* ===== Send for review (via Graph mail) ===== */

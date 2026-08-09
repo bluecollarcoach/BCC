@@ -180,6 +180,31 @@
                             reintroduce the push. */
   var DEVICE_LOCAL_KEYS = ['bcc-last-realm', 'bcc-push-enabled', 'bcc-sync-since-v1', 'bcc-sync-fullpull-at', 'bcc-field-who'];
 
+  /* Doc families a FULL pull returns in their ENTIRETY to every signed-in user —
+     no per-client gate, no app tier, no owner scoping, and not on the server's
+     never-serve list. For THESE ONLY, a key that is in localStorage but absent
+     from a full pull genuinely means "someone else deleted it", so the local copy
+     is safe to drop (see the reconcile in bootstrap). kb.html / events.html /
+     training.html build their lists by enumerating localStorage, so without that
+     reconcile a deleted article, event or course stayed on every other browser
+     forever and any later write pushed it straight back up.
+     Deliberately NOT a generic "anything the server didn't send" sweep:
+       - bcc-email- / bcc-cpr-sends- / bcc-financial-period- are never served back
+         at all — localStorage is their only home, so absence means nothing;
+       - the access-gated families (client-scoped, app-tier, personal) are absent
+         merely because THIS user can't see them.
+     Pruning on absence would be silent, unrecoverable data loss in both cases.
+     Only add a prefix here after confirming /api/data's bulk GET returns it
+     unconditionally FOR A USER WHO HAS ACCESS.
+     These three are now ALSO app-tier gated server-side (kb / events / training), so
+     a user whose tier for that app is 'none' receives none of the family and this
+     reconcile clears their local copies. That is the intended outcome — they are not
+     supposed to hold that content — and it is recoverable: the prune uses
+     _origRemoveItem, so no DELETE is queued and the server copies are untouched; the
+     moment their access is restored the next pull brings everything back. Do not
+     extend this list to anything whose server copy could be destroyed by pruning. */
+  var PRUNABLE_PREFIXES = ['bcc-kb-article-', 'bcc-event-', 'bcc-course-'];
+
   /* ---------- hooks ---------- */
   Storage.prototype.setItem = function (key, value) {
     _origSetItem.call(this, key, value);
@@ -815,15 +840,46 @@
         if (r && r.ok) {
           var j = await r.json();
           var maxUpd = _since || '';
+          // Only a FULL pull is authoritative about what still EXISTS: a delta pull
+          // carries just the changed docs, so absence from it means nothing.
+          var seenKeys = useDelta ? null : new Set();
           (j.items || []).forEach(function (it) {
-            if (it && it.key && it.data !== undefined) {
-              if (it.updatedAt && it.updatedAt > maxUpd) maxUpd = it.updatedAt;
-              if (pending.has(it.key)) return; // user has a newer local write queued
-              if (DEVICE_LOCAL_KEYS.indexOf(it.key) >= 0) return; // device preference (see setItem)
-              var val = typeof it.data === 'string' ? it.data : JSON.stringify(it.data);
-              _origSetItem.call(localStorage, it.key, val);
-            }
+            if (!it || !it.key) return;
+            if (seenKeys) seenKeys.add(it.key); // server still has this doc
+            if (it.data === undefined) return;
+            if (it.updatedAt && it.updatedAt > maxUpd) maxUpd = it.updatedAt;
+            if (pending.has(it.key)) return; // user has a newer local write queued
+            if (DEVICE_LOCAL_KEYS.indexOf(it.key) >= 0) return; // device preference (see setItem)
+            var val = typeof it.data === 'string' ? it.data : JSON.stringify(it.data);
+            _origSetItem.call(localStorage, it.key, val);
           });
+          // DELETIONS: the loop above only ever WRITES keys, so a record another
+          // user deleted lived on in this browser indefinitely — the page still
+          // listed it, and the next local write re-uploaded it and resurrected it
+          // for everyone. The server hard-deletes with no tombstone, so "missing
+          // from a full pull" is the only signal we get. Restricted to
+          // PRUNABLE_PREFIXES, because for every other family absence has an
+          // innocent explanation (see that list).
+          // Guarded on a NON-EMPTY response: an empty full pull is far more likely
+          // a server fault or a session that just lost its access than "the firm
+          // deleted everything", and acting on it would be unrecoverable.
+          if (seenKeys && seenKeys.size) {
+            var gone = [];
+            for (var pi = 0; pi < localStorage.length; pi++) {
+              var pk = localStorage.key(pi);
+              if (!pk || seenKeys.has(pk) || pending.has(pk)) continue; // queued local write wins
+              for (var px = 0; px < PRUNABLE_PREFIXES.length; px++) {
+                if (pk.indexOf(PRUNABLE_PREFIXES[px]) === 0) { gone.push(pk); break; }
+              }
+            }
+            // Collect first, remove second — removing mid-scan reindexes localStorage
+            // and would skip keys. _origRemoveItem, NOT removeItem: the doc is already
+            // gone server-side, so the hooked version would queue a pointless DELETE,
+            // and a refused key poisons the whole push batch (same reasoning as the
+            // signature purge below).
+            gone.forEach(function (k) { _origRemoveItem.call(localStorage, k); });
+            if (gone.length) console.info('[bcc-api] dropped ' + gone.length + ' record(s) deleted by someone else');
+          }
           try {
             if (maxUpd) _origSetItem.call(localStorage, SYNC_SINCE_KEY, maxUpd);
             if (!useDelta) _origSetItem.call(localStorage, SYNC_FULL_KEY, String(Date.now()));
@@ -2306,7 +2362,14 @@
       var kind, ntitle, body;
       if (remaining <= MIN15_MS) { kind = '15m'; ntitle = 'Starting soon: ' + title; body = 'Begins ' + ncFmtTime(t) + loc; }
       else                       { kind = 'day'; ntitle = 'Upcoming: ' + title;     body = 'Starts ' + ncFmtTime(t) + loc; }
-      var fkey = key + ':' + kind;
+      // Marker carries the START TIME, not just doc id + kind. It is pruned three
+      // days after it fires, so an id-only key meant a session moved inside that
+      // window kept the marker from its OLD time and its reminders were silently
+      // suppressed at the new one. Keying on the parsed start makes a reschedule a
+      // different marker, so it re-fires as it should — and because this is also
+      // the ncAdd tag, the new time gets its own notification instead of being
+      // collapsed into the stale one.
+      var fkey = key + ':' + kind + ':' + t;
       if (fired[fkey]) continue;
       fired[fkey] = now; changed = true;
       ncAdd({ type: 'reminder', title: ntitle, body: body, url: (isSession ? '/sessions.html' : '/events.html'), tag: fkey });

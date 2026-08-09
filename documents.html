@@ -284,6 +284,10 @@
     return d;
   }
   function deleteDoc(d) { localStorage.removeItem(d.id); }
+  // Put a record back exactly as it was after the server refuses a delete.
+  // saveDoc() would stamp a fresh updatedAt, which would be a lie for a row
+  // that never actually changed.
+  function restoreDoc(d) { localStorage.setItem(d.id, JSON.stringify(d)); }
 
   /* ===== Render ===== */
   var qInput, folderFilter, contactFilter, engagementFilter, rowsEl, emptyEl, sublineEl;
@@ -481,10 +485,29 @@
       if (btn.dataset.act === 'delete') {
         if (!confirm('Delete this document?\n\n"' + doc.name + '"\n\nThe metadata is removed; if the file was uploaded, the Azure Blob entry is also deleted when the API supports it.')) return;
         deleteDoc(doc);
-        if (window.bccAudit) window.bccAudit('document-delete', { key: doc.id, path: '/documents.html' });
-        // Best-effort backend delete (tolerates not-wired-yet)
-        fetch('/api/documents/' + encodeURIComponent(doc.id), { method: 'DELETE', credentials: 'include' }).catch(function () {});
         renderList();
+        // Backend delete (tolerates not-wired-yet). fetch() RESOLVES on 4xx/5xx,
+        // so a `.catch()`-only handler never saw a refusal: the server's
+        // per-client file gate can answer 403, or Cosmos/Blob can 500, and the
+        // row still vanished here while the blob and metadata survived — plus we
+        // logged a 'document-delete' that never happened. Inspect the status:
+        // put the row back if the server said no, and only audit a real delete.
+        fetch('/api/documents/' + encodeURIComponent(doc.id), { method: 'DELETE', credentials: 'include' })
+          // 404 = nothing server-side to remove (metadata-only row) or the
+          // endpoint isn't deployed yet; the local-only delete still stands.
+          .then(function (r) { return (r.ok || r.status === 404) ? null : r.status; })
+          // Network/offline error: same local-first fallback as the rest of the
+          // app — the local removal stands and gets audited.
+          .catch(function () { return null; })
+          .then(function (refusedStatus) {
+            if (refusedStatus === null) {
+              if (window.bccAudit) window.bccAudit('document-delete', { key: doc.id, path: '/documents.html' });
+              return;
+            }
+            restoreDoc(doc);
+            renderList();
+            (window.bccNotify || alert)('Server refused the delete (HTTP ' + refusedStatus + '); "' + doc.name + '" was not removed.', 'warn');
+          });
       } else if (btn.dataset.act === 'download') {
         location.href = '/api/documents/' + encodeURIComponent(doc.id) + '/download';
       }

@@ -363,13 +363,21 @@
 
     subline.textContent = matched.length + ' of ' + rows.length + ' event' + (rows.length === 1 ? '' : 's') + (q || cat || user ? ' shown' : '');
 
-    if (matched.length === 0) {
-      feedEl.innerHTML = '<div class="empty"><div class="big">Nothing here yet.</div><div>Activity from every module shows up the moment it happens.</div></div>';
-      return;
-    }
-
     var RENDER_CAP = 5000;
     var html = '';
+
+    // The empty state used to `return` here, which skipped the footer built below —
+    // and with it the "Load older activity" button. load() only pulls the newest PAGE
+    // rows, and /api/audit mixes 'access' rows in with 'audit' ones, so that page can
+    // cover only a few hours of a working day. A filter matching nothing in what's
+    // loaded is exactly when you need to reach further back. Fall through instead:
+    // `matched` is empty so the render loop below is a no-op, but the footer still runs.
+    if (matched.length === 0) {
+      html = rows.length === 0
+        ? '<div class="empty"><div class="big">Nothing here yet.</div><div>Activity from every module shows up the moment it happens.</div></div>'
+        : '<div class="empty"><div class="big">No matches.</div><div>Nothing in the activity loaded so far matches. Try loading older activity, or widen the search and filters.</div></div>';
+    }
+
     matched.slice(0, RENDER_CAP).forEach(function (r) {
       var ts = r.ts || r._ts || r.createdAt;
       if (typeof ts === 'number' && ts < 1e12) ts = ts * 1000;

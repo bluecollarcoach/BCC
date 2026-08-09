@@ -419,7 +419,60 @@
   function esc(s) { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
   function uid(){ return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2,9); }
 
+  /* The admin-config doc is written back WHOLE: bcc-api.js pushes whatever we put in
+   * localStorage and PUT /api/data upserts it straight over the Cosmos item. But the
+   * localStorage copy is not always the whole document — api/src/index.js redacts
+   * bcc-admin-config-v1 for anyone it doesn't currently see as an admin, stripping
+   * every other user's role + appPermissions, the top-level auditPassword and each
+   * user's msGraphRefreshToken. A tab can hold that redacted copy indefinitely: the
+   * server caches the roster ~15s per instance, being made admin through
+   * BCC_OWNER_UPNS or the SWA 'administrator' role never touches the doc at all, and
+   * the sync cursor has already moved past its updatedAt so no delta pull re-fetches
+   * it. Saving anything from this page would push that redacted roster back over the
+   * real one — demoting every other admin, dropping every per-app override, resetting
+   * the activity-log password. So admin.html reads the document from the server before
+   * it edits it (as an admin the GET comes back whole) and refuses to save one it has
+   * never read.
+   */
+  var _cfgDoc = null;    // authoritative server copy (null = nothing stored yet)
+  var _cfgFresh = false; // true once an UNREDACTED server read has answered
+  // The read can come back redacted too — the roster cache is per Function instance,
+  // so right after a promotion the GET can hit a stale instance while a later PUT hits
+  // a fresh one. Every user record this page (or saveMsGraphTokensFor) ever writes
+  // carries a role, and redaction deletes role from everyone except the caller: a
+  // roster with two or more users but at most one role is the redacted shape.
+  // EXACTLY one role, not "at most one": redaction keeps the caller's own role and
+  // strips everyone else's, so the redacted shape always has precisely one. A roster
+  // where NO user carries a role isn't redaction — it's just an unusual document, and
+  // treating it as redacted would leave saveCfg() permanently refusing to save with
+  // "still loading", locking admins out of their own settings page.
+  function looksRedacted(d) {
+    var users = (d && d.users) || [];
+    if (!Array.isArray(users) || users.length < 2) return false;
+    var withRole = users.filter(function (u) { return u && u.role; }).length;
+    return withRole === 1;
+  }
+  function primeCfg() {
+    return fetch('/api/data?key=' + encodeURIComponent(CFG_KEY), { credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j) return false;
+        var d = j.data;
+        if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { d = null; } }
+        if (d && typeof d === 'object' && looksRedacted(d)) return false; // stay unprimed
+        // data:null is a legitimate answer on first run — the defaults below are then
+        // the whole document, so there is nothing a save could drop.
+        _cfgDoc = (d && typeof d === 'object') ? d : null;
+        _cfgFresh = true;
+        return true;
+      })
+      .catch(function () { return false; });
+  }
+
   function loadCfg() {
+    // Prefer the server copy. Clone it so callers keep the existing contract of
+    // "mutate the object you get back, then hand it to saveCfg".
+    if (_cfgFresh && _cfgDoc) { try { return JSON.parse(JSON.stringify(_cfgDoc)); } catch (e) {} }
     try { var raw = localStorage.getItem(CFG_KEY); if (raw) return JSON.parse(raw); } catch (e) {}
     return {
       id: CFG_KEY, tenantId: 'blue-collar-coach', docType: 'admin-config',
@@ -439,11 +492,22 @@
       updatedAt: nowIso()
     };
   }
+  // Returns false when the save was refused — every caller bails out on that, so the
+  // page never reports "Saved." for a write that didn't happen.
   function saveCfg(cfg) {
+    if (!_cfgFresh) {
+      // Never replace the server document with a copy we have not read: it may be the
+      // redacted projection described above, and the PUT is a full replace.
+      primeCfg();
+      (window.bccNotify || alert)('Still loading the current admin settings — try that again in a second.', 'warn', 6000);
+      return false;
+    }
     cfg.updatedAt = nowIso();
     cfg.id = CFG_KEY; cfg.tenantId = 'blue-collar-coach'; cfg.docType = 'admin-config';
+    try { _cfgDoc = JSON.parse(JSON.stringify(cfg)); } catch (e) { _cfgDoc = cfg; }
     localStorage.setItem(CFG_KEY, JSON.stringify(cfg));
     if (window.bccAudit) window.bccAudit('admin-config-save', { key: CFG_KEY, path: '/admin.html' });
+    return true;
   }
 
   function loadTypesDoc() {
@@ -823,7 +887,7 @@
         cfg.users.push(rec);
       }
       mutator(rec);
-      saveCfg(cfg);
+      return saveCfg(cfg); // false when the save was refused — callers skip the toast
     }
 
     tbody.querySelectorAll('button[data-act]').forEach(function (btn) {
@@ -841,7 +905,7 @@
           if (!confirm('Remove ' + displayName + ' from the team? They lose access immediately. (Their docs and history stay.)')) return;
           var cfg = loadCfg(); cfg.users = cfg.users || [];
           cfg.users = cfg.users.filter(function (x) { return (x.upn || '').toLowerCase() !== upnLc; });
-          saveCfg(cfg);
+          if (!saveCfg(cfg)) return;
           if (window.bccAudit) window.bccAudit('user-remove', { key: 'bcc-admin-config-v1', path: '/admin.html', meta: { upn: tr.dataset.upn } });
           if (window.bccNotifySaved) window.bccNotifySaved(displayName + ' removed.');
           renderUsers();
@@ -849,12 +913,12 @@
         }
         if (act === 'demote' && blockLastAdmin((tr.dataset.upn || '').toLowerCase(), 'Demoting them')) return;
         if (act === 'deactivate' && blockLastAdmin((tr.dataset.upn || '').toLowerCase(), 'Deactivating them')) return;
-        persistAction(tr, function (rec) {
+        if (!persistAction(tr, function (rec) {
           if (act === 'promote') rec.role = 'admin';
           if (act === 'demote')  rec.role = 'member';
           if (act === 'activate')   rec.status = 'active';
           if (act === 'deactivate') rec.status = 'inactive';
-        });
+        })) return;
         renderUsers();
       });
     });
@@ -862,7 +926,7 @@
       sel.addEventListener('change', function () {
         var tr = sel.closest('tr'); if (!tr) return;
         var value = sel.value;
-        persistAction(tr, function (rec) { rec.landingPage = value; });
+        if (!persistAction(tr, function (rec) { rec.landingPage = value; })) return;
         if (window.bccNotifySaved) window.bccNotifySaved('Landing page updated.');
         else if (window.bccNotify) window.bccNotify('Saved.', 'success');
       });
@@ -901,7 +965,7 @@
       return;
     }
     cfg.users.push({ upn: upn, displayName: name, role: role, status: 'active' });
-    saveCfg(cfg);
+    if (!saveCfg(cfg)) return;
     if (window.bccAudit) window.bccAudit('user-add', { key: 'bcc-admin-config-v1', path: '/admin.html', meta: { upn: upn, role: role } });
     if (window.bccNotifySaved) window.bccNotifySaved(name + ' added to the team.');
     else if (window.bccNotify) window.bccNotify(name + ' added.', 'success');
@@ -1005,7 +1069,7 @@
     var rec = cfg.users.find(function (x) { return (x.upn || '').toLowerCase() === _permsOpenUpn.toLowerCase(); });
     if (rec) {
       delete rec.appPermissions;
-      saveCfg(cfg);
+      if (!saveCfg(cfg)) return;
     }
     openPermissionsModal(_permsOpenUpn); // re-render with defaults
     if (window.bccNotifySaved) window.bccNotifySaved('Permissions reset to default.');
@@ -1036,7 +1100,7 @@
     });
     if (Object.keys(minimal).length === 0) delete rec.appPermissions;
     else rec.appPermissions = minimal;
-    saveCfg(cfg);
+    if (!saveCfg(cfg)) return;
     if (window.bccAudit) window.bccAudit('permissions-update', { key: rec.upn, path: '/admin.html', meta: minimal });
     if (window.bccNotifySaved) window.bccNotifySaved('Permissions updated for ' + (window.bccDisplayName ? window.bccDisplayName(_permsOpenUpn) : _permsOpenUpn) + '.');
     else if (window.bccNotify) window.bccNotify('Permissions saved.', 'success');
@@ -1140,7 +1204,7 @@
     ['legalName','displayName','phone','afterHours','email','website','address','tagline'].forEach(function (k) {
       var el = document.getElementById('co-' + k); if (el) cfg.company[k] = el.value.trim();
     });
-    saveCfg(cfg);
+    if (!saveCfg(cfg)) return;
     if (window.bccNotifySaved) window.bccNotifySaved('Company info saved.');
     else (window.bccNotify || alert)('Saved.', 'success');
   });
@@ -1165,7 +1229,7 @@
     var v = document.getElementById('auditPw').value.trim();
     if (!v) { (window.bccNotify || alert)('Enter a new password to change it — blank keeps the current one.', 'warn'); return; }
     if (v.length < 4) { (window.bccNotify || alert)('Use at least 4 characters.', 'warn'); return; }
-    var cfg = loadCfg(); cfg.auditPassword = v; saveCfg(cfg);
+    var cfg = loadCfg(); cfg.auditPassword = v; if (!saveCfg(cfg)) return;
     document.getElementById('auditPw').value = '';
     document.getElementById('auditPw').type = 'password';
     document.getElementById('auditPwShow').textContent = 'Show';
@@ -1174,7 +1238,7 @@
   });
   document.getElementById('saveAllowedDomainsBtn').addEventListener('click', function () {
     var v = document.getElementById('allowedDomains').value.split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
-    var cfg = loadCfg(); cfg.allowedDomains = v; saveCfg(cfg);
+    var cfg = loadCfg(); cfg.allowedDomains = v; if (!saveCfg(cfg)) return;
     if (window.bccNotifySaved) window.bccNotifySaved('Allow-list saved.');
     else (window.bccNotify || alert)('Saved.', 'success');
   });
@@ -1215,6 +1279,9 @@
    * handler is wired. Status badge reflects last "Test connection" result.
    */
   var INT_PREFIX = 'bcc-integration-';
+  // Connect results reported by an OAuth callback on THIS page load, keyed by channel.
+  // Display-only, never persisted — see the ?<channel>=connected handler in init().
+  var _oauthStatus = {};
   var CONNECTORS = [
     {
       channel: 'msgraph',
@@ -1417,7 +1484,7 @@
 
       // msgraph is tenant-wide app-only (admin-consented) — always connected,
       // no per-user secret to "save", so don't show the misleading status.
-      var dispStatus = (conn.channel === 'msgraph') ? 'connected' : rec.status;
+      var dispStatus = (conn.channel === 'msgraph') ? 'connected' : (_oauthStatus[conn.channel] || rec.status);
       var lastSync = rec.updatedAt ? new Date(rec.updatedAt).toLocaleString() : 'never saved';
       return '<div class="int-card" data-channel="' + esc(conn.channel) + '">' +
         '<div class="int-head">' +
@@ -1595,6 +1662,14 @@
     });
   }
 
+  // True while the admin has a field of this panel focused. Re-rendering a panel
+  // rebuilds its inputs from stored values, so anything half-typed in it — a pasted
+  // client secret, a new activity-log password — would silently revert.
+  function panelHasFocus(panelId) {
+    var ae = document.activeElement, p = document.getElementById(panelId);
+    return !!(ae && p && p.contains(ae) && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName));
+  }
+
   /* ===== Init ===== */
   function init() {
     document.getElementById('syncMeta').textContent = 'Synced via bcc-api.js';
@@ -1605,6 +1680,15 @@
     renderSecurity();
     renderDataPanel();
     renderColorPicker(document.getElementById('newTypeColor'), '#a8884a');
+    // Read the authoritative admin-config before any edit is possible (see primeCfg),
+    // then repaint the panels that read it — the first paint above may have come from
+    // a redacted localStorage copy that hides everyone else's role.
+    primeCfg().then(function (ok) {
+      if (!ok) return;
+      renderUsers();
+      if (!panelHasFocus('panel-company'))  renderCompany();
+      if (!panelHasFocus('panel-security')) renderSecurity();
+    });
 
     // Handle ?qbo=connected|error landing from the QBO OAuth callback
     var qs = new URLSearchParams(location.search);
@@ -1664,12 +1748,15 @@
       document.getElementById('panel-integrations').classList.add('active');
       var label = ({ 'google-ads':'Google Ads', linkedin:'LinkedIn', meta:'Meta', mailchimp:'Mailchimp' })[ch];
       if (v === 'connected') {
-        // Server wrote tokens; we just need to refresh the doc from server.
-        // The Cosmos round-trip via /api/data is debounced — re-pull the
-        // integration record on next render. For an instant green dot:
-        var rec = loadIntegration(ch);
-        rec.status = 'connected';
-        saveIntegration(rec);
+        // Do NOT write the integration record here. saveOAuthTokens() put the
+        // freshly minted refresh/access token on the TOP level of the Cosmos doc
+        // (rec.fields), which /api/data never returns — it only ships the doc's
+        // `data` sub-object — so our local copy has never seen it. Saving that copy
+        // back would PUT a full document replace and delete the token, leaving a
+        // green dot on a connector with no credentials and no way to recover it
+        // short of re-consenting (which would wipe it again). The server already
+        // marked the doc connected, so just show that from memory.
+        _oauthStatus[ch] = 'connected';
         renderIntegrations();
         if (window.bccNotifySaved) window.bccNotifySaved(label + ' connected.');
         else if (window.bccNotify) window.bccNotify(label + ' connected.', 'success');
@@ -1680,7 +1767,31 @@
       history.replaceState({}, '', location.pathname + (location.hash || ''));
     });
   }
-  window.addEventListener('bcc-data-ready', function () { renderUsers(); renderTypes(); renderIntegrations(); renderCompany(); renderSecurity(); renderDataPanel(); });
+  // Live sync (~8s, plus on focus) fires bcc-data-ready whenever ANY doc in the tenant
+  // changed — a bookkeeper saving a task on another machine is enough. Rebuilding every
+  // panel on that would throw away whatever the admin is part-way through typing:
+  // renderIntegrations() replaces the whole card list (a half-pasted QBO client secret
+  // reverts to the stored value, and clicking Save then re-persists the OLD secret while
+  // the admin believes they rotated it), renderCompany() reassigns all eight inputs,
+  // renderSecurity() blanks the new-password box. So repaint only the panels whose own
+  // document actually changed, and never one the admin is editing.
+  window.addEventListener('bcc-data-ready', function (ev) {
+    var keys = (ev && ev.detail && ev.detail.keys) || null; // absent = no key list, assume all
+    var touched = function (k) { return !keys || keys.indexOf(k) >= 0; };
+    var intTouched = !keys || keys.some(function (k) { return String(k).indexOf(INT_PREFIX) === 0; });
+    if (touched(CFG_KEY)) {
+      // What just landed may be the REDACTED projection of the admin-config (see
+      // primeCfg) — re-read the authoritative copy before anything renders from it.
+      primeCfg().then(function () {
+        if (!panelHasFocus('panel-users'))    renderUsers();
+        if (!panelHasFocus('panel-company'))  renderCompany();
+        if (!panelHasFocus('panel-security')) renderSecurity();
+      });
+    }
+    if (touched(TYPES_KEY) && !panelHasFocus('panel-types')) renderTypes();
+    if (intTouched && !panelHasFocus('panel-integrations')) renderIntegrations();
+    renderDataPanel(); // read-only key counts — nothing here to clobber
+  });
   window.addEventListener('bcc-users-ready', renderUsers);
   window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
   setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
