@@ -862,6 +862,9 @@ const ALLOWED_AUDIT_ACTIONS = new Set([
   'issue-report',
   // Bookkeeping client workspace (were being rejected → not recorded)
   'qbo-write', 'qbo-attach', 'qbo-sync',
+  // Refused pushes are audited too (server-side), so the QuickBooks log shows an
+  // attempt that was rejected rather than silently showing nothing.
+  'qbo-write-failed', 'qbo-attach-failed',
   'client-info-update', 'client-mailbox-set',
   'client-task-create', 'client-task-delete',
   'time-punch-in', 'time-punch-out', 'time-entry-add', 'time-entry-delete',
@@ -2918,6 +2921,100 @@ app.http('audit-client', {
       }).fetchAll();
       return { jsonBody: { ok: true, realmId, days, rows: resources } };
     } catch (e) { context.error('audit-client', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
+
+/**
+ * GET /api/audit/qbo?days=30&realmId=&outcome=&user=&format=csv
+ * The QuickBooks push log, for BOOKKEEPERS — every write this app sent to a client's
+ * live books, successful or refused, across every client the caller is allowed to see.
+ *
+ * Deliberately separate from /api/audit (firm-wide, admin-only) and from
+ * /api/audit/client/{realmId} (one client, all activity types):
+ *   - scoped by the SAME per-company rules as everything else (owner-only lock first,
+ *     then enabled + allowedUserUpns), so a bookkeeper sees exactly their own clients;
+ *   - filtered to the QBO push actions, so it answers "what did we send to
+ *     QuickBooks?" without the noise of every unrelated event;
+ *   - CSV export, because reconciling against QBO is the actual job this serves.
+ * Rows are server-written at the moment of the push, so this is authoritative even if
+ * the browser's own audit call was lost.
+ */
+const QBO_PUSH_ACTIONS = ['qbo-write', 'qbo-write-failed', 'qbo-attach', 'qbo-attach-failed'];
+app.http('audit-qbo', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'audit/qbo',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    try {
+      // Same tier rule the rest of bookkeeping uses: 'tasks' means no financials, and
+      // what was posted to a client's books is financial.
+      if (bookkeepingNoFinancials(await bookkeepingTierFor(p))) return forbidden('your access level does not include financials');
+      const c = container();
+      const access = await companyAccessMap(p);
+      const u = new URL(request.url);
+      let days = parseInt(u.searchParams.get('days') || '30', 10) || 30;
+      if (days < 1) days = 1; if (days > 365) days = 365;
+      const wantRealm = String(u.searchParams.get('realmId') || '').trim();
+      const wantOutcome = String(u.searchParams.get('outcome') || '').trim(); // 'posted' | 'refused'
+      const wantUser = String(u.searchParams.get('user') || '').trim().toLowerCase();
+      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+      const actionList = QBO_PUSH_ACTIONS.map(a => '"' + a + '"').join(',');
+      const params = [{ name: '@t', value: BCC_TENANT_ID }, { name: '@s', value: since }];
+      let where = 'c.tenantId=@t AND c.docType="audit" AND c.ts>=@s AND c.action IN (' + actionList + ')';
+      if (wantRealm) { where += ' AND c.meta.realmId=@r'; params.push({ name: '@r', value: wantRealm }); }
+      const { resources } = await c.items.query({
+        query: 'SELECT TOP 2000 c.ts, c.action, c.user, c.meta FROM c WHERE ' + where + ' ORDER BY c.ts DESC',
+        parameters: params
+      }).fetchAll();
+      // Access filter happens HERE, after the query — a row for a client the caller
+      // can't see must never be returned, even if they asked for that realmId.
+      let rows = resources.filter(r => r && r.meta && access.allowed(r.meta.realmId));
+      if (wantOutcome) rows = rows.filter(r => String((r.meta && r.meta.outcome) || '') === wantOutcome);
+      if (wantUser) rows = rows.filter(r => String(r.user || '').toLowerCase() === wantUser);
+      // Company names so the log is readable without a second lookup client-side.
+      const names = {};
+      try {
+        const { resources: comps } = await c.items.query({
+          query: 'SELECT c.realmId, c.companyName FROM c WHERE c.tenantId=@t AND c.docType="qbo-company"',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+        }).fetchAll();
+        comps.forEach(co => { if (access.allowed(co.realmId)) names[String(co.realmId)] = co.companyName || ''; });
+      } catch (_) {}
+
+      if (String(u.searchParams.get('format') || '').toLowerCase() === 'csv') {
+        const esc = (v) => {
+          const s = v == null ? '' : String(v);
+          return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+        };
+        const head = ['When (UTC)', 'Client', 'Outcome', 'Entity', 'Operation', 'Doc #', 'QBO Id', 'Amount', 'Txn date', 'Lines', 'Memo', 'By', 'Error'];
+        const body = rows.map(r => {
+          const m = r.meta || {};
+          return [
+            r.ts, names[String(m.realmId)] || m.realmId || '',
+            m.outcome || (String(r.action).endsWith('-failed') ? 'refused' : 'posted'),
+            m.entity || (String(r.action).indexOf('attach') >= 0 ? 'attachment' : ''),
+            m.op || '', m.docNumber || '', m.id || '',
+            m.total != null ? m.total : '', m.txnDate || '', m.lineCount != null ? m.lineCount : '',
+            m.memo || m.name || m.fileName || '', r.user || '', m.error || ''
+          ].map(esc).join(',');
+        });
+        // ﻿ so Excel opens UTF-8 correctly; CRLF is what spreadsheet apps expect.
+        const csv = '﻿' + [head.map(esc).join(','), ...body].join('\r\n') + '\r\n';
+        return {
+          status: 200,
+          headers: {
+            'content-type': 'text/csv; charset=utf-8',
+            'content-disposition': 'attachment; filename="quickbooks-push-log-' + new Date().toISOString().slice(0, 10) + '.csv"',
+            'cache-control': 'no-store'
+          },
+          body: csv
+        };
+      }
+      return { jsonBody: { ok: true, days, count: rows.length, companies: names, rows } };
+    } catch (e) { context.error('audit-qbo', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
 
@@ -5212,16 +5309,58 @@ function qboAmount(v) {
   if (!isFinite(n)) return 0;
   return paren ? -Math.abs(n) : n;
 }
+/* Compact, human-meaningful description of a QBO write for the audit trail. Built
+ * purely from the inbound request — no extra QBO calls — so auditing can never slow
+ * down or fail the write it is recording. "total" is what we ATTEMPTED to post, which
+ * is the number that matters on a refused push (where QBO returns nothing). */
+function qboWriteSummary(entity, f, b) {
+  f = f || {}; b = b || {};
+  const lines = Array.isArray(f.lines) ? f.lines : [];
+  const sum = lines.reduce((s, l) => s + qboAmount(l && l.amount), 0);
+  const out = {
+    txnDate: f.txnDate ? String(f.txnDate).slice(0, 10) : undefined,
+    lineCount: lines.length || undefined,
+    // The party the money moves to/from. Ids (not names) — resolving names would mean
+    // another API call on the write path; the UI already has the refs to label them.
+    customerId: f.customerId ? String(f.customerId) : undefined,
+    vendorId: f.vendorId ? String(f.vendorId) : undefined,
+    jobCustomerId: f.jobCustomerId ? String(f.jobCustomerId) : undefined,
+    paymentAccountId: f.paymentAccountId ? String(f.paymentAccountId) : undefined,
+    memo: f.memo ? String(f.memo).slice(0, 200) : undefined,
+    // On an update, which revision we edited — lets an auditor line up a chain of edits.
+    editedId: b.op === 'update' && b.id ? String(b.id) : undefined,
+    syncToken: b.op === 'update' && b.syncToken ? String(b.syncToken) : undefined,
+  };
+  if (entity === 'payment') out.total = qboAmount(f.totalAmt);
+  else if (entity === 'journalentry') {
+    // A journal entry balances, so "total" is the debit side, not the sum of all lines.
+    out.total = lines.filter(l => l && l.postingType === 'Debit').reduce((s, l) => s + qboAmount(l.amount), 0);
+  } else if (lines.length) out.total = Math.round(sum * 100) / 100;
+  // Master records (customer/vendor/item/account/project) carry a name, not a total.
+  const nm = f.displayName || f.name;
+  if (nm) out.name = String(nm).slice(0, 160);
+  Object.keys(out).forEach(k => { if (out[k] === undefined) delete out[k]; });
+  return out;
+}
 /** POST write — create or update an invoice / bill / payment in the client's QBO. */
 app.http('qbo-write', {
   methods: ['POST'], authLevel: 'anonymous', route: 'integrations/qbo/companies/{realmId}/write',
   handler: withAccessLog(async (request, context) => {
+    // Declared OUTSIDE the try so the catch below can still describe what was being
+    // attempted. Every push to a client's live books — successful or refused — has to
+    // leave a trail the bookkeeper can find.
+    let auditEntity = '', auditOp = 'create', auditSummary = null;
     try {
       const ctx = await qboResolveAccess(request, request.params.realmId);
       if (ctx.err) return ctx.err;
       const b = await request.json().catch(() => ({}));
       const entity = String(b.entity || '').toLowerCase();
       const f = b.fields || {};
+      auditEntity = entity;
+      auditOp = b.op === 'update' ? 'update' : 'create';
+      // A compact description of WHAT was pushed, built from the request only — no
+      // extra QBO lookups, so auditing can never slow down or fail the write.
+      auditSummary = qboWriteSummary(entity, f, b);
       const cap = { invoice: 'Invoice', bill: 'Bill', purchase: 'Purchase', payment: 'Payment', customer: 'Customer', vendor: 'Vendor', item: 'Item', account: 'Account', journalentry: 'JournalEntry', project: 'Customer' }[entity];
       if (!cap) return badRequest('unsupported entity: ' + entity);
       let payload;
@@ -5331,9 +5470,24 @@ app.http('qbo-write', {
       const res = await ctx.apiPost('/' + (entity === 'project' ? 'customer' : entity), payload);
       const created = res[cap] || {};
       // Authoritative server-side audit at the moment it posted to live books.
-      logAudit('qbo-write', { user: auditUser(request), path: '/api/integrations/qbo/companies/' + request.params.realmId + '/write', meta: { realmId: request.params.realmId, entity, op: b.op === 'update' ? 'update' : 'create', id: created.Id, docNumber: created.DocNumber, total: created.TotalAmt } });
+      logAudit('qbo-write', { user: auditUser(request), path: '/api/integrations/qbo/companies/' + request.params.realmId + '/write', meta: Object.assign({
+        realmId: request.params.realmId, entity, op: auditOp, outcome: 'posted',
+        id: created.Id, docNumber: created.DocNumber,
+        // Prefer what QBO actually recorded; fall back to what we sent, so the row is
+        // still useful for entities QBO doesn't return a TotalAmt for.
+        total: created.TotalAmt != null ? created.TotalAmt : (auditSummary && auditSummary.total)
+      }, auditSummary || {}) });
       return { jsonBody: { ok: true, id: created.Id, docNumber: created.DocNumber, syncToken: created.SyncToken, total: created.TotalAmt } };
-    } catch (e) { context.error('qbo-write', e); return { status: 502, jsonBody: { ok: false, error: String(e.message || e) } }; }
+    } catch (e) {
+      context.error('qbo-write', e);
+      // A REFUSED push is exactly what a bookkeeper needs to see — previously it
+      // vanished, leaving no record that anyone had tried to touch the client's books.
+      logAudit('qbo-write-failed', { user: auditUser(request), path: '/api/integrations/qbo/companies/' + request.params.realmId + '/write', meta: Object.assign({
+        realmId: request.params.realmId, entity: auditEntity, op: auditOp, outcome: 'refused',
+        error: String((e && e.message) || e).slice(0, 400)
+      }, auditSummary || {}) });
+      return { status: 502, jsonBody: { ok: false, error: String(e.message || e) } };
+    }
   })
 });
 
@@ -5367,11 +5521,18 @@ app.http('qbo-attach', {
       fd.append('file_content_0', new Blob([buf], { type: contentType }), filename);
       const res = await ctx.apiUpload('/upload', fd);
       const item = (res && res.AttachableResponse && res.AttachableResponse[0]) || {};
-      if (item.Fault) return { status: 502, jsonBody: { ok: false, error: 'QBO attach fault', detail: JSON.stringify(item.Fault).slice(0, 300) } };
+      if (item.Fault) {
+        logAudit('qbo-attach-failed', { user: auditUser(request), path: '/api/integrations/qbo/companies/' + request.params.realmId + '/attach', meta: { realmId: request.params.realmId, entity: entityType, id: entityId, outcome: 'refused', error: JSON.stringify(item.Fault).slice(0, 300) } });
+        return { status: 502, jsonBody: { ok: false, error: 'QBO attach fault', detail: JSON.stringify(item.Fault).slice(0, 300) } };
+      }
       const att = item.Attachable || {};
-      logAudit('qbo-attach', { user: auditUser(request), path: '/api/integrations/qbo/companies/' + request.params.realmId + '/attach', meta: { realmId: request.params.realmId, entity: entityType, id: entityId, fileName: att.FileName } });
+      logAudit('qbo-attach', { user: auditUser(request), path: '/api/integrations/qbo/companies/' + request.params.realmId + '/attach', meta: { realmId: request.params.realmId, entity: entityType, id: entityId, outcome: 'posted', fileName: att.FileName } });
       return { jsonBody: { ok: true, id: att.Id, fileName: att.FileName } };
-    } catch (e) { context.error('qbo-attach', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+    } catch (e) {
+      context.error('qbo-attach', e);
+      logAudit('qbo-attach-failed', { user: auditUser(request), path: '/api/integrations/qbo/companies/' + request.params.realmId + '/attach', meta: { realmId: request.params.realmId, outcome: 'refused', error: String((e && e.message) || e).slice(0, 400) } });
+      return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } };
+    }
   })
 });
 

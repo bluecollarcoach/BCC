@@ -594,6 +594,12 @@
     <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Recent activity</h3>
     <div id="activity-body"></div>
   </div>
+
+  <div class="card" id="tab-qbolog" style="display:none; margin-top:14px;">
+    <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 4px;">QuickBooks push log</h3>
+    <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">Every transaction this app sent to the client&rsquo;s live QuickBooks &mdash; including any that QuickBooks <strong>refused</strong>. Recorded by the server at the moment of the push, so it&rsquo;s a complete record even if a browser dropped mid-save.</div>
+    <div id="qbolog-body"></div>
+  </div>
   <div class="card" id="tab-info" style="display:none; margin-top:14px;">
     <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Client information</h3>
     <div id="info-body"></div>
@@ -2784,6 +2790,7 @@
     { key: 'overview',     label: 'Overview',           ic: '📋' },
     { key: 'activity',     label: 'Activity',           ic: '🕑' },
     { key: 'transactions', label: 'New & transactions', ic: '🧾' },
+    { key: 'qbolog',       label: 'QuickBooks log',     ic: '📗' },
     { key: 'reports',      label: 'Reports & KPIs',     ic: '📊' },
     { key: 'close',        label: 'Month-end close',    ic: '✅' },
     { key: 'tasks',        label: 'Tasks',              ic: '☑️' },
@@ -2801,7 +2808,7 @@
   var SECTION_GROUPS = [
     { title: '',              keys: ['overview'] },
     { title: 'Communication', keys: ['email', 'tasks', 'activity'] },
-    { title: 'Bookkeeping',   keys: ['transactions', 'reports', 'close'] },
+    { title: 'Bookkeeping',   keys: ['transactions', 'qbolog', 'reports', 'close'] },
     { title: 'Documents',     keys: ['files', 'payroll', 'payapp', 'wip'] },
     { title: 'Setup',         keys: ['info', 'access'] }
   ];
@@ -2922,7 +2929,7 @@
   // ----- Section visibility -----
   function hideAllSections() {
     ['qboKpis', 'qboReports', 'qboWrite'].forEach(function (id) { var e = document.getElementById(id); if (e) e.style.display = 'none'; });
-    ['overview', 'activity', 'info', 'files', 'tasks', 'email', 'payroll', 'payapp', 'wip', 'close', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
+    ['overview', 'activity', 'qbolog', 'info', 'files', 'tasks', 'email', 'payroll', 'payapp', 'wip', 'close', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
   }
   function showSection(sec) {
     hideAllSections();
@@ -2980,6 +2987,7 @@
   function renderSectionContent(sec) {
     if (sec === 'overview') renderOverview();
     else if (sec === 'activity') renderActivity();
+    else if (sec === 'qbolog') renderQboLog();
     else if (sec === 'reports') loadQboKpis();
     else if (sec === 'transactions') { /* static card + Scan / + New select */ }
     else if (sec === 'info') renderInfo();
@@ -3157,6 +3165,93 @@
         }).join('');
       })
       .catch(function () { list.innerHTML = '<div style="color:var(--muted);padding:10px;">Could not load activity.</div>'; });
+  }
+
+  /* ---- QuickBooks push log ------------------------------------------------
+     A complete, bookkeeper-readable record of everything this app has written to
+     the client's LIVE QuickBooks, including pushes QuickBooks refused. The rows are
+     written server-side at the moment of the push (not by the browser), so a lost
+     tab or a dropped request can't leave a gap. Scoped by the same per-client access
+     rules as the rest of the app. */
+  var _qlDays = 30, _qlOutcome = '', _qlMine = false;
+  function renderQboLog() {
+    var body = document.getElementById('qbolog-body'); if (!body) return;
+    body.innerHTML =
+      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">' +
+      '<select id="ql_days" class="em-mini-sel">' +
+        [7, 30, 90, 365].map(function (d) { return '<option value="' + d + '"' + (d === _qlDays ? ' selected' : '') + '>Last ' + d + ' days</option>'; }).join('') + '</select>' +
+      '<select id="ql_outcome" class="em-mini-sel">' +
+        [['', 'Posted & refused'], ['posted', 'Posted only'], ['refused', 'Refused only']]
+          .map(function (o) { return '<option value="' + o[0] + '"' + (o[0] === _qlOutcome ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>' +
+      '<label style="font-size:13px;display:inline-flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="ql_mine"' + (_qlMine ? ' checked' : '') + ' /> Just me</label>' +
+      '<span style="flex:1;"></span>' +
+      '<button class="btn btn-ghost" id="ql_csv" type="button" style="font-size:12px;">⬇ Export CSV</button>' +
+      '<button class="btn btn-ghost" id="ql_refresh" type="button" style="font-size:12px;">Refresh</button></div>' +
+      '<div id="ql_list"></div>';
+    document.getElementById('ql_days').onchange = function () { _qlDays = +this.value; loadQboLog(); };
+    document.getElementById('ql_outcome').onchange = function () { _qlOutcome = this.value; loadQboLog(); };
+    document.getElementById('ql_mine').onchange = function () { _qlMine = this.checked; loadQboLog(); };
+    document.getElementById('ql_refresh').onclick = loadQboLog;
+    document.getElementById('ql_csv').onclick = function () {
+      // Same filters the table is showing, so the export matches what's on screen.
+      window.open('/api/audit/qbo?' + qboLogQuery() + '&format=csv', '_blank');
+    };
+    loadQboLog();
+  }
+  function qboLogQuery() {
+    var q = 'days=' + _qlDays + '&realmId=' + encodeURIComponent(currentRealm);
+    if (_qlOutcome) q += '&outcome=' + encodeURIComponent(_qlOutcome);
+    if (_qlMine) q += '&user=' + encodeURIComponent(myUpn());
+    return q;
+  }
+  function qlMoney(v) { return (Number(v) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function qlWhat(m, action) {
+    if (String(action).indexOf('attach') >= 0) return 'Attachment' + (m.fileName ? ' · ' + m.fileName : '');
+    var e = String(m.entity || '').toLowerCase();
+    var label = { invoice: 'Invoice', bill: 'Bill', purchase: 'Expense', payment: 'Payment', journalentry: 'Journal entry',
+                  customer: 'Customer', vendor: 'Vendor', item: 'Item', account: 'Account', project: 'Project / job' }[e] || (e || 'Record');
+    return label + (m.docNumber ? ' #' + m.docNumber : '') + (m.name ? ' · ' + m.name : '');
+  }
+  function loadQboLog() {
+    var list = document.getElementById('ql_list'); if (!list) return;
+    list.innerHTML = '<div style="color:var(--muted);padding:10px;">Loading…</div>';
+    var realmAt = currentRealm;
+    fetch('/api/audit/qbo?' + qboLogQuery(), { credentials: 'include' })
+      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+      .then(function (resp) {
+        if (currentRealm !== realmAt) return; // client switched mid-load
+        if (!resp || !resp.ok) { list.innerHTML = '<div style="color:var(--muted);padding:10px;">This log isn’t available for your access level.</div>'; return; }
+        var rows = resp.rows || [];
+        if (!rows.length) { list.innerHTML = '<div style="color:var(--muted);padding:14px;">Nothing has been pushed to QuickBooks for this client in this range.</div>'; return; }
+        var refused = rows.filter(function (r) { return (r.meta || {}).outcome === 'refused'; }).length;
+        var head = '<div style="font-size:12.5px;color:var(--muted);margin-bottom:8px;">' + rows.length + ' push' + (rows.length === 1 ? '' : 'es') +
+          (refused ? ' · <strong style="color:var(--burgundy);">' + refused + ' refused by QuickBooks</strong>' : '') + '</div>';
+        list.innerHTML = head +
+          '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:760px;">' +
+          '<thead><tr style="background:#f7f1e3;">' +
+          ['When', 'What', 'Amount', 'Txn date', 'By', 'Result'].map(function (h, i) {
+            return '<th style="text-align:' + (i === 2 ? 'right' : 'left') + ';padding:5px;font-size:10.5px;text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid #c5a55a;">' + h + '</th>';
+          }).join('') + '</tr></thead><tbody>' +
+          rows.map(function (r) {
+            var m = r.meta || {};
+            var bad = m.outcome === 'refused';
+            var when = new Date(r.ts);
+            var who = (window.bccDisplayName && window.bccDisplayName(r.user)) || r.user || '';
+            var result = bad
+              ? '<span style="color:var(--burgundy);font-weight:700;" title="' + esc(m.error || '') + '">✕ Refused</span>'
+              : '<span style="color:#1f8a4c;font-weight:700;">✓ Posted</span>';
+            var opLabel = m.op === 'update' ? ' <span style="color:var(--muted);">(edit)</span>' : '';
+            return '<tr' + (bad ? ' style="background:#fdf3f3;"' : '') + '>' +
+              '<td style="padding:4px 5px;white-space:nowrap;">' + esc(when.toLocaleDateString([], { month: 'short', day: 'numeric' })) + ' ' + esc(when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) + '</td>' +
+              '<td style="padding:4px 5px;">' + esc(qlWhat(m, r.action)) + opLabel +
+                (bad && m.error ? '<div style="font-size:11px;color:var(--burgundy);">' + esc(String(m.error).slice(0, 160)) + '</div>' : '') + '</td>' +
+              '<td class="num" style="text-align:right;padding:4px 5px;white-space:nowrap;">' + (m.total != null ? esc(qlMoney(m.total)) : '—') + '</td>' +
+              '<td style="padding:4px 5px;white-space:nowrap;">' + esc(m.txnDate || '—') + '</td>' +
+              '<td style="padding:4px 5px;">' + esc(who) + '</td>' +
+              '<td style="padding:4px 5px;white-space:nowrap;">' + result + '</td></tr>';
+          }).join('') + '</tbody></table></div>';
+      })
+      .catch(function () { if (currentRealm === realmAt) list.innerHTML = '<div style="color:var(--muted);padding:10px;">Could not load the QuickBooks log.</div>'; });
   }
 
   /* ---- Client info ---- */
