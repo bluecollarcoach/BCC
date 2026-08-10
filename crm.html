@@ -435,7 +435,26 @@
 
   function uid()    { return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 9); }
   function nowIso() { return new Date().toISOString(); }
-  function regionOf(s) { if (!s) return ''; var t = String(s).trim().toUpperCase().slice(0, 2); return REGION_BY_STATE[t] || ''; }
+  // Full state names are common in imported data, and slicing the first two letters put
+  // them in the wrong region wholesale — "MISSISSIPPI" read as MI (Midwest), "WASHINGTON"
+  // as WA only by luck, "NEW BRUNSWICK" as NE. Match the name first; only fall back to a
+  // 2-letter read when the value REALLY is two letters.
+  var STATE_BY_NAME = {
+    ALABAMA:'AL',ALASKA:'AK',ARIZONA:'AZ',ARKANSAS:'AR',CALIFORNIA:'CA',COLORADO:'CO',CONNECTICUT:'CT',
+    DELAWARE:'DE','DISTRICT OF COLUMBIA':'DC',FLORIDA:'FL',GEORGIA:'GA',HAWAII:'HI',IDAHO:'ID',ILLINOIS:'IL',
+    INDIANA:'IN',IOWA:'IA',KANSAS:'KS',KENTUCKY:'KY',LOUISIANA:'LA',MAINE:'ME',MARYLAND:'MD',MASSACHUSETTS:'MA',
+    MICHIGAN:'MI',MINNESOTA:'MN',MISSISSIPPI:'MS',MISSOURI:'MO',MONTANA:'MT',NEBRASKA:'NE',NEVADA:'NV',
+    'NEW HAMPSHIRE':'NH','NEW JERSEY':'NJ','NEW MEXICO':'NM','NEW YORK':'NY','NORTH CAROLINA':'NC',
+    'NORTH DAKOTA':'ND',OHIO:'OH',OKLAHOMA:'OK',OREGON:'OR',PENNSYLVANIA:'PA','RHODE ISLAND':'RI',
+    'SOUTH CAROLINA':'SC','SOUTH DAKOTA':'SD',TENNESSEE:'TN',TEXAS:'TX',UTAH:'UT',VERMONT:'VT',VIRGINIA:'VA',
+    WASHINGTON:'WA','WEST VIRGINIA':'WV',WISCONSIN:'WI',WYOMING:'WY'
+  };
+  function regionOf(s) {
+    if (!s) return '';
+    var raw = String(s).trim().toUpperCase().replace(/\s+/g, ' ').replace(/\.$/, '');
+    var code = STATE_BY_NAME[raw] || (raw.length === 2 ? raw : '');
+    return code ? (REGION_BY_STATE[code] || '') : '';
+  }
   function esc(s)   { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
   function fmtWhen(iso) {
     if (!iso) return '';
@@ -835,7 +854,12 @@
 
     document.getElementById('saveProfileBtn').onclick = function () {
       var props = ['firstName','lastName','email','phone','title','company','website','street','city','state','zip','industry','yearsInBusiness','companySize','notes'];
-      var updated = Object.assign({}, c);
+      // Start from the CURRENT stored record, not the snapshot this pane was painted
+      // from. `c` is minutes old by the time anyone clicks Save, so saving undid any
+      // need checkbox, stage or type change made since the paint. The `|| c` fallback
+      // is load-bearing: Object.assign({}, null) is {}, and saveContact would then mint
+      // a brand-new duplicate contact.
+      var updated = Object.assign({}, getContact(c.id) || c);
       props.forEach(function (p) {
         var el = document.querySelector('[data-prop="' + p + '"]');
         if (el) updated[p] = el.innerText.trim();
@@ -862,7 +886,16 @@
       var props = ['firstName','lastName','email','phone','title','company','website','street','city','state','zip','industry','yearsInBusiness','companySize','notes'];
       document.querySelectorAll('[data-prop]').forEach(function (el) {
         var k = el.getAttribute('data-prop');
-        if (props.indexOf(k) >= 0) u[k] = (el.textContent || '').trim();
+        // innerText, NOT textContent. These are contenteditable: pressing Enter inserts
+        // <div>/<br>, and textContent concatenates the lines with no separator — so a
+        // multi-line Notes field came back with its line breaks silently removed. Save
+        // changes already reads innerText; this has to agree with it or the two paths
+        // write different values for the same box.
+        var v = ((el.innerText != null ? el.innerText : el.textContent) || '').trim();
+        // Tags were skipped entirely, so linking a company (or changing stage/type)
+        // silently discarded whatever the user had just typed into the tags row.
+        if (k === 'tagsLine') u.tags = v.split(',').map(function (t) { return t.trim(); }).filter(Boolean);
+        else if (props.indexOf(k) >= 0) u[k] = v;
       });
       return u;
     }
@@ -1175,6 +1208,18 @@
           if (myGen !== _formGen) return; // the user reset/repurposed the form while this was in flight
           if (j && j.needsKey) { es.style.color = 'var(--burgundy)'; es.textContent = 'AI isn’t configured — add ANTHROPIC_API_KEY in the app settings.'; return; }
           if (!j || !j.ok) { es.style.color = auto ? 'var(--muted)' : 'var(--burgundy)'; es.textContent = (j && j.error) || 'Could not search the website.'; return; }
+          // Everything below was extracted from the host this request was FOR. If the
+          // user retargeted the Website field while it was in flight (auto-enrichment
+          // fires on blur, so this is the normal way a typo gets corrected), writing any
+          // of it back would fill the form with another company's details — including
+          // fillForce on the website itself, which would undo the correction.
+          var wEl = document.getElementById('f-website');
+          var normW = function (x) { return String(x || '').trim().toLowerCase().replace(/^https?:\/\//i, '').replace(/\/$/, ''); };
+          if (wEl && normW(wEl.value) !== normW(website)) {
+            es.style.color = 'var(--muted)';
+            es.textContent = 'Website changed — press “Search website” to run it again.';
+            return;
+          }
           var d = j.data || {};
           if (j.website) fillForce('f-website', j.website.replace(/^https?:\/\//i, '').replace(/\/$/, ''));
           fillIfEmpty('f-industry', d.businessType);
@@ -1246,15 +1291,24 @@
       document.getElementById('batch_enrich').onclick = function () {
         var idxs = batch.map(function (b, i) { return i; }).filter(function (i) { return batch[i].sel && !batch[i].enriched && (batch[i].website || (batch[i].email && batch[i].email.indexOf('@') > 0)); });
         if (!idxs.length) { status.textContent = 'Nothing to enrich (each card needs a website or work email).'; return; }
-        var btn = document.getElementById('batch_enrich'); btn.disabled = true; var total = idxs.length, done = 0;
+        // `done` is the progress counter the "Enriching 3/8" line depends on, so it has
+        // to keep counting attempts. Count the ones that actually worked separately —
+        // reporting attempts as successes told the user 8 cards were enriched when the
+        // lookups had failed and nothing had changed.
+        var btn = document.getElementById('batch_enrich'); btn.disabled = true; var total = idxs.length, done = 0, okCount = 0;
         (function next() {
-          if (!idxs.length) { btn.disabled = false; status.textContent = '✓ Enriched ' + done + ' of ' + total + ' cards.'; return; }
+          if (!idxs.length) {
+            btn.disabled = false;
+            status.textContent = (okCount === total ? '✓ Enriched ' : 'Enriched ') + okCount + ' of ' + total + ' card' + (total === 1 ? '' : 's') +
+              (okCount < total ? ' — ' + (total - okCount) + ' could not be looked up.' : '.');
+            return;
+          }
           var i = idxs.shift(); status.textContent = '🔎 Enriching ' + (done + 1) + '/' + total + '…';
           fetch('/api/ai/enrich-company', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ website: batch[i].website, email: batch[i].email, company: batch[i].company }) })
             .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
             .then(function (j) {
               if (j && j.ok) {
-                var d = j.data || {}; batch[i].enriched = true;
+                var d = j.data || {}; batch[i].enriched = true; okCount++;
                 if (j.website) { batch[i].website = cleanWeb(j.website); var wf = ov.querySelector('input[data-i="' + i + '"][data-f="website"]'); if (wf) wf.value = batch[i].website; }
                 if (!batch[i].industry) batch[i].industry = d.businessType || '';
                 if (!batch[i].yearsInBusiness) batch[i].yearsInBusiness = d.yearsInBusiness || (d.foundedYear ? (new Date().getFullYear() - d.foundedYear) : '');
@@ -1308,8 +1362,11 @@
             c.needs = existingRec.needs || []; c.tags = existingRec.tags || [];
             isUpdate = true;
           }
-          saveContact(c);
-          if (existingRec) byEmailNow[emailLc] = c; // keep subsequent rows in this same batch from re-duplicating each other
+          saveContact(c); // mutates c in place, assigning c.id
+          // Index CREATES too, not just matches. Two new cards with the same email both
+          // took the create branch and made two contacts — then each later write to that
+          // email clobbered whichever one it happened to find.
+          if (emailLc) byEmailNow[emailLc] = c;
           if (window.bccAudit) window.bccAudit(isUpdate ? 'contact-update' : 'contact-create', { key: c.id, path: '/crm.html', meta: { batch: true } });
         });
         if (window.bccNotifySaved) window.bccNotifySaved('Saved ' + sel.length + ' contacts.'); else (window.bccNotify || alert)('Saved ' + sel.length + ' contacts.', 'success');
@@ -1402,7 +1459,7 @@
     var types = loadTypes(); var typeIds = types.map(function (t) { return t.id; });
     var stages = ['lead','qualified','customer','inactive'];
 
-    var created = 0, updated = 0, skipped = 0;
+    var created = 0, updated = 0, skipped = 0, unmapped = {};
     for (var r = 1; r < rows.length; r++) {
       var raw = rows[r];
       var rec = { tags: [] };
@@ -1430,7 +1487,12 @@
         else {
           // try label-match against known labels
           var match = types.find(function (t) { return t.label.toLowerCase() === rec.customerType.toLowerCase(); });
-          rec.customerType = match ? match.id : 'other';
+          // An unrecognised type on an EXISTING contact must not overwrite what they
+          // already are. Falling back to 'other' silently downgraded real customers
+          // whenever a CSV used a label this tenant has not defined.
+          if (match) rec.customerType = match.id;
+          else if (!existingRec) rec.customerType = 'other';
+          else { unmapped[rec.customerType] = 1; delete rec.customerType; }
         }
       } else if (!existingRec) {
         rec.customerType = 'other';
@@ -1464,15 +1526,22 @@
         merged.needs = existingRec.needs || [];
         merged.tags = Array.from(new Set((existingRec.tags || []).concat(rec.tags)));
         saveContact(merged);
+        if (emailLc) byEmail[emailLc] = merged; // keep the dedupe index current within this file
         updated++;
       } else {
-        saveContact(rec);
+        saveContact(rec); // mutates rec in place, assigning its id
+        if (emailLc) byEmail[emailLc] = rec;   // a later row with the same email merges instead of duplicating
         created++;
       }
     }
 
     var msg = created + ' added, ' + updated + ' updated' + (skipped ? ', ' + skipped + ' skipped' : '');
     if (unknownCols.length) msg += '. Ignored columns: ' + unknownCols.join(', ');
+    // Say which customer types the file used that this tenant does not have. Those rows
+    // kept the type the contact already had rather than being downgraded — but silently
+    // ignoring the column would leave the importer thinking it applied.
+    var unmappedList = Object.keys(unmapped);
+    if (unmappedList.length) msg += '. Kept the existing customer type for rows using unknown type(s): ' + unmappedList.slice(0, 6).join(', ') + (unmappedList.length > 6 ? ', …' : '');
     if (window.bccAudit) window.bccAudit('contact-create', { path: '/crm.html', meta: { action: 'csv-import', created: created, updated: updated, skipped: skipped } });
     if (window.bccNotify) window.bccNotify(msg, 'success');
     else alert(msg);

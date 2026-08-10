@@ -567,7 +567,15 @@
 
   /* ===== Init ===== */
   function init() { wire(); renderList(); loadServerDocs().then(renderList); }
-  window.addEventListener('bcc-data-ready', function () { loadServerDocs().then(renderList); });
+  window.addEventListener('bcc-data-ready', function () {
+    // Rebuild the contact/engagement pickers too. They were built once at init, so a
+    // contact created in CRM (or by a colleague) never appeared here until a reload —
+    // the file just got uploaded with no link. Passing no prefill keeps whatever is
+    // currently selected, including a ?contact= / ?engagement= prefill.
+    populateLinkDropdowns('linkContact', 'linkEngagement');
+    populateLinkDropdowns('contactFilter', 'engagementFilter');
+    loadServerDocs().then(renderList);
+  });
   window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
   setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
 })();

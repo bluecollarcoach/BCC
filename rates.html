@@ -524,12 +524,18 @@
       (window.bccNotify || alert)('Add a contact in CRM first.', 'warn');
       return;
     }
-    // Build a simple inline picker (modal would be nicer; keeping scope tight)
-    var lines = contacts.slice(0, 50).map(function (c, i) {
+    // Build a simple inline picker (modal would be nicer; keeping scope tight).
+    // The list is capped, so SAY it is capped — silently showing the first 50 of 300
+    // reads to the user as "that contact isn't in the CRM".
+    var SHOW = 50;
+    var lines = contacts.slice(0, SHOW).map(function (c, i) {
       var name = ((c.firstName || '') + ' ' + (c.lastName || '')).trim() || c.email || c.company || '(no name)';
       return (i + 1) + '. ' + name + (c.email ? ' <' + c.email + '>' : ' (no email)');
     }).join('\n');
-    var idx = prompt('Send to which contact?\n\n' + lines + '\n\nEnter the number:', '1');
+    var more = contacts.length > SHOW
+      ? '\n\n…and ' + (contacts.length - SHOW) + ' more not shown. Open that contact in CRM and send from there.'
+      : '';
+    var idx = prompt('Send to which contact?\n\n' + lines + more + '\n\nEnter the number:', '1');
     if (!idx) return;
     var contact = contacts[parseInt(idx, 10) - 1];
     if (!contact) { (window.bccNotify || alert)('Invalid choice.', 'warn'); return; }
@@ -579,7 +585,37 @@
     renderContactDropdown();
     fitCanvas();
   }
-  window.addEventListener('bcc-data-ready', function () { renderHeader(); renderPackages(); renderContactDropdown(); });
+  /* The live poll fires on ANY tenant change — a colleague saving a time entry was
+     enough to rebuild the package editor and throw away whatever was being typed, along
+     with the caret. Filter to the three key families this page actually reads. When the
+     SHEET itself changed we must still rebuild (harvestPackages replaces s.packages
+     wholesale from the DOM, so skipping the rebuild would let the next commit delete a
+     package a colleague just added) — so commit what is on screen FIRST, then repaint
+     and put the caret back where it was. */
+  window.addEventListener('bcc-data-ready', function (e) {
+    var keys = (e && e.detail && e.detail.keys) || null;
+    if (!keys || keys.indexOf(ADMIN_KEY) >= 0) renderHeader();
+    if (!keys || keys.some(function (k) { return k.indexOf(CONTACT_PREFIX) === 0; })) renderContactDropdown();
+    if (keys && keys.indexOf(RATES_KEY) < 0) return;
+    var ae = document.activeElement;
+    var editing = !!(ae && ae.closest && ae.closest('#pkgList') && ae.hasAttribute('data-edit'));
+    var pkgEl = editing ? ae.closest('.pkg') : null;
+    var pkgId = pkgEl ? pkgEl.dataset.id : null;
+    var field = editing ? ae.getAttribute('data-edit') : null;
+    var selS = null, selE = null;
+    if (editing) {
+      try { selS = ae.selectionStart; selE = ae.selectionEnd; } catch (err) {} // number inputs/selects throw
+      commitNow(); // persist what is on screen so the rebuild below cannot lose a keystroke
+    }
+    renderPackages();
+    if (pkgId && field) {
+      var back = document.querySelector('.pkg[data-id="' + pkgId + '"] [data-edit="' + field + '"]');
+      if (back) {
+        back.focus();
+        if (selS != null) { try { back.setSelectionRange(selS, selE); } catch (err) {} }
+      }
+    }
+  });
   window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
   setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
 })();

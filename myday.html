@@ -582,7 +582,17 @@
   });
 
   /* ===== Daily log notes ===== */
+  // Tracks whether the three log boxes hold anything not yet saved. The live refresh used
+  // to skip them only while one was FOCUSED, so clicking anywhere else on the page — or
+  // the browser blurring the field — left the next 8s poll free to repaint stored values
+  // over half-written notes.
+  var _logDirty = false;
+  ['logWins', 'logBlockers', 'logTomorrow'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('input', function () { _logDirty = true; });
+  });
   function renderLog() {
+    _logDirty = false; // repainting from storage makes the boxes authoritative again
     var log = loadTodayLog() || {};
     document.getElementById('logWins').value = log.wins || '';
     document.getElementById('logBlockers').value = log.blockers || '';
@@ -677,7 +687,7 @@
     if (!_editDay) renderMyTime();
     var ae = document.activeElement;
     if (!(ae && ae.id === 'mt_new')) renderMyTasks();
-    if (!(ae && (ae.id === 'logWins' || ae.id === 'logBlockers' || ae.id === 'logTomorrow'))) renderLog();
+    if (!_logDirty && !(ae && (ae.id === 'logWins' || ae.id === 'logBlockers' || ae.id === 'logTomorrow'))) renderLog();
   }
   window.addEventListener('bcc-data-ready', liveRefresh);
   window.addEventListener('bcc-users-ready', renderHero);

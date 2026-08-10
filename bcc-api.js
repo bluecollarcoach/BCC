@@ -213,15 +213,27 @@
     var keys = Object.keys(o.items || {});
     if (!keys.length) return 0;
     var me = String((user && user.userDetails) || '').toLowerCase();
+    // A personal doc names its owner IN the key, so that — not the outbox's recorded upn —
+    // is the authority on whose it is. This matters for the offline case the outbox exists
+    // for: a write made before /.auth/me ever answered has NO recorded upn, so an
+    // upn-only check would happily replay one person's offline clock-out under whoever
+    // signs in next, where the server refuses it and THEY get the permission toast.
+    // 'bcc-mytasks-' carries a sanitised upn; the rest carry it raw.
+    var sane = function (x) { return String(x || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40); };
+    var keyOwnerOk = function (k) {
+      if (!me) return false; // no identity to check against — do not guess
+      if (k.indexOf('bcc-mytasks-') === 0) return k === 'bcc-mytasks-' + sane(me);
+      var m = /^(bcc-(?:daily-log|emailsig|chat-last-read)-)/.exec(k);
+      if (m) return k.indexOf(m[1] + me + '-') === 0 || k === m[1] + me;
+      return true; // not a personal key shape
+    };
     var kept = 0, drop = [];
     keys.forEach(function (k) {
       var e = o.items[k];
       var mine = !o.upn || !me || o.upn === me;
-      // A personal doc carries its owner in the key. Never replay someone else's onto
-      // this session — the server refuses it and the user gets a permission toast for a
-      // record they never touched.
       var personal = /^bcc-(daily-log|mytasks|emailsig|chat-last-read)-/.test(k);
       var owned = OFFLINE_OWNED_PREFIXES.some(function (p) { return k.indexOf(p) === 0; });
+      if (personal && !keyOwnerOk(k)) { drop.push(k); return; }
       if (!mine && (personal || !e.t)) { drop.push(k); return; }
       // Untrusted (pre-auth / offline) writes are replayable only for owner-only families.
       if (!e.t && !owned) { drop.push(k); return; }

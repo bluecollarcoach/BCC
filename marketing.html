@@ -253,6 +253,15 @@
   function nowIso() { return new Date().toISOString(); }
   function esc(s)   { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
   function dollars(c) { var n = Math.round((c || 0) / 100); return '$' + n.toLocaleString(); }
+  // Campaign start/end are bare 'YYYY-MM-DD', and new Date() parses that as UTC midnight
+  // — which renders as the previous day in any US timezone, so the Window column showed
+  // both ends of every campaign a day early. Slice to 10 first so a full ISO timestamp
+  // degrades to the same path instead of producing Invalid Date.
+  function fmtDay(s) {
+    var p = String(s || '').slice(0, 10).split('-');
+    var d = (p.length === 3) ? new Date(+p[0], +p[1] - 1, +p[2]) : new Date(s);
+    return isNaN(d) ? '' : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
 
   var CHANNEL_LABEL = {
     'google-ads': 'Google Ads', meta: 'Meta', linkedin: 'LinkedIn',
@@ -337,9 +346,7 @@
     }
     emptyEl.hidden = true;
     rowsEl.innerHTML = matched.map(function (c) {
-      var win = [c.startAt, c.endAt].filter(Boolean).map(function (d) {
-        return new Date(d).toLocaleDateString([], { month:'short', day:'numeric' });
-      }).join(' → ');
+      var win = [c.startAt, c.endAt].filter(Boolean).map(fmtDay).filter(Boolean).join(' → ');
       var spend = (c.budgetCents || 0) > 0
         ? dollars(c.spentCents || 0) + ' / ' + dollars(c.budgetCents || 0)
         : dollars(c.spentCents || 0);

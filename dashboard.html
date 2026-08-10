@@ -345,6 +345,21 @@
   }
   function doSave() {
     var d = collect(); if (!d) return;
+    // resync() deliberately refuses to repaint while the user is typing, so a teammate's
+    // change that arrived mid-edit is still sitting in storage — and this save is a whole
+    // document write, so it is about to go over the top of it. Overwriting is the right
+    // call (never destroy what is being typed), but doing it SILENTLY is not: say whose
+    // work was replaced so it can be recovered from Activity.
+    try {
+      var onDisk = loadDoc(d.id);
+      var mine = String((window.bccUser && window.bccUser.userDetails) || '').toLowerCase();
+      var theirs = String((onDisk && onDisk.updatedBy) || '').toLowerCase();
+      if (onDisk && theirs && theirs !== mine && onDisk.updatedAt && onDisk.updatedAt > (current && current.updatedAt || '')) {
+        (window.bccNotify || function () {})(
+          (onDisk.updatedBy || 'Someone else') + ' also edited this client while you were typing — your version is what was saved. Check Activity if you need theirs.',
+          'warn', 11000);
+      }
+    } catch (e) {}
     d.updatedAt = new Date().toISOString();
     d.updatedBy = (window.bccUser && window.bccUser.userDetails) || '';
     localStorage.setItem(d.id, JSON.stringify(d));
@@ -421,7 +436,13 @@
     if (!current) return;
     var realm = $('sel_qbo').value; if (!realm) { (window.bccNotify||alert)('Link a QuickBooks company first.', 'warn'); return; }
     var btn = $('btn_pull'); btn.disabled = true; var old = btn.textContent; btn.textContent = 'Pulling…';
-    var asOf = new Date().toISOString().slice(0,10);
+    // The firm's business day is America/Chicago — the server pins it that way in every
+    // period calculation, and toISOString() would send the UTC date, which on a US evening
+    // is already tomorrow (and on a month-end evening shifts the trailing P&L window by a
+    // whole month). Using the browser's own zone instead would still disagree with the
+    // server for anyone travelling, so pin the same zone the server uses. en-CA gives
+    // YYYY-MM-DD directly.
+    var asOf = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
     pulling = true;
     var clientAt = current; // pin the client this pull is FOR — switching mid-fetch must not write these KPIs into a different client's doc
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(realm) + '/kpis?method=accrual&asOf=' + asOf + '&burnMonths=3', { credentials:'include' })

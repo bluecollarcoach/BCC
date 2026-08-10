@@ -276,7 +276,16 @@
         items.forEach(function (e) {
           var c = e.contactId ? contactById(e.contactId) : null;
           var who = c ? contactName(c) : '';
-          var renew = e.renewAt ? new Date(e.renewAt).toLocaleDateString([], { month:'short', day:'numeric' }) : '';
+          // e.renewAt is a bare 'YYYY-MM-DD'. new Date() parses that as UTC midnight,
+          // which renders as the PREVIOUS day in every US timezone — a renewal due on
+          // the 1st showed as the 31st. Build it from the parts so it lands on the
+          // calendar day that was actually entered.
+          var renew = '';
+          if (e.renewAt) {
+            var rp = String(e.renewAt).slice(0, 10).split('-');
+            var rd = (rp.length === 3) ? new Date(+rp[0], +rp[1] - 1, +rp[2]) : new Date(e.renewAt);
+            renew = isNaN(rd) ? '' : rd.toLocaleDateString([], { month: 'short', day: 'numeric' });
+          }
           html += '<div class="card" draggable="true" data-id="' + esc(e.id) + '">' +
             '<div class="title">' + esc(e.title || '(untitled)') + '</div>' +
             (who ? '<div class="who">' + esc(who) + '</div>' : '') +

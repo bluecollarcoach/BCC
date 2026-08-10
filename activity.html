@@ -105,6 +105,8 @@
   .event.t-doc .ic       { background:#fff4d6; color:#92400e; }
   .event.t-rate .ic      { background:var(--gold-fade); color:var(--gold-deep); }
   .event.t-time .ic      { background:#ede9fe; color:#5b21b6; }
+  .event.t-bookkeeping .ic { background:#e8f0e4; color:#3f6212; }
+  .event.t-chat .ic      { background:#fde8ef; color:#9d174d; }
   .event.t-integration .ic { background:#cffafe; color:#0e7490; }
   .event.t-system .ic    { background:#f1efe9; color:var(--muted); }
   .event .body .what    { font-size:13.5px; color:var(--ink); font-weight:600; }
@@ -173,6 +175,8 @@
         <option value="doc">Documents</option>
         <option value="rate">Rates</option>
         <option value="time">My Day</option>
+        <option value="bookkeeping">Bookkeeping</option>
+        <option value="chat">Chat</option>
         <option value="integration">Integrations</option>
         <option value="system">System / access</option>
       </select>
@@ -259,7 +263,68 @@
     'client-email-send':   { label:'Sent a client email',         cat:'integration', ic:'&#9993;' },
     'client-file-upload':  { label:'Uploaded a client file',      cat:'doc', ic:'&#128206;' },
     'client-file-delete':  { label:'Deleted a client file',       cat:'doc', ic:'&#10005;' },
-    'document-upload':     { label:'Uploaded a document',         cat:'doc', ic:'&#128206;' }
+    'document-upload':     { label:'Uploaded a document',         cat:'doc', ic:'&#128206;' },
+    /* Everything below was emitted by the app but ABSENT from this table, so it fell
+       through to the catch-all: filed under "System / access" whatever it really was,
+       and labelled with a de-hyphenated action name. Filtering by CRM genuinely hid
+       company and engagement activity; filtering by Bookkeeping was impossible because
+       there was no such category at all. Every entry here uses a category that has both
+       a dropdown <option> and a .t-<cat> colour rule — minting one without those would
+       make its rows reachable from no filter value and fall back to the base gold chip. */
+    // CRM
+    'company-create':      { label:'Created company',             cat:'crm', ic:'&#43;' },
+    'company-update':      { label:'Updated company',             cat:'crm', ic:'&#9998;' },
+    'company-delete':      { label:'Deleted company',             cat:'crm', ic:'&#10005;' },
+    'engagement-stage':    { label:'Moved an engagement',         cat:'crm', ic:'&#8594;' },
+    'engagement-delete':   { label:'Deleted engagement',          cat:'crm', ic:'&#10005;' },
+    'campaign-delete':     { label:'Deleted campaign',            cat:'crm', ic:'&#10005;' },
+    'weekly-note-add':     { label:'Added a weekly note',         cat:'crm', ic:'&#128221;' },
+    // Sessions & events
+    'event-update':        { label:'Updated event',               cat:'session', ic:'&#9998;' },
+    'event-delete':        { label:'Deleted event',               cat:'session', ic:'&#10005;' },
+    'enrollment-update':   { label:'Updated an enrollment',       cat:'session', ic:'&#9998;' },
+    'course-update':       { label:'Updated a course',            cat:'session', ic:'&#9998;' },
+    // Bookkeeping
+    'client-task-create':  { label:'Created a client task',       cat:'bookkeeping', ic:'&#43;' },
+    'client-task-update':  { label:'Updated a client task',       cat:'bookkeeping', ic:'&#9998;' },
+    'client-task-delete':  { label:'Deleted a client task',       cat:'bookkeeping', ic:'&#10005;' },
+    'client-info-update':  { label:'Updated client info',         cat:'bookkeeping', ic:'&#9998;' },
+    'client-mail-add':     { label:'Logged incoming mail',        cat:'bookkeeping', ic:'&#128236;' },
+    'client-mail-done':    { label:'Handled incoming mail',       cat:'bookkeeping', ic:'&#9745;' },
+    'client-mail-reopen':  { label:'Reopened a mail item',        cat:'bookkeeping', ic:'&#8635;' },
+    'client-mail-del':     { label:'Removed a mail entry',        cat:'bookkeeping', ic:'&#10005;' },
+    'financial-period-save':   { label:'Saved a financial period',   cat:'bookkeeping', ic:'&#128200;' },
+    'financial-period-delete': { label:'Deleted a financial period', cat:'bookkeeping', ic:'&#10005;' },
+    'report-save':         { label:'Saved a monthly report',      cat:'bookkeeping', ic:'&#128202;' },
+    'report-freeze':       { label:'Froze a monthly report',      cat:'bookkeeping', ic:'&#128274;' },
+    'report-pdf':          { label:'Generated a report PDF',      cat:'bookkeeping', ic:'&#128196;' },
+    'report-goals-save':   { label:'Saved report goals',          cat:'bookkeeping', ic:'&#127919;' },
+    'cpr-save':            { label:'Saved certified payroll',     cat:'bookkeeping', ic:'&#129534;' },
+    'cpr-delete':          { label:'Deleted certified payroll',   cat:'bookkeeping', ic:'&#10005;' },
+    'cpr-print':           { label:'Printed certified payroll',   cat:'bookkeeping', ic:'&#128424;' },
+    'cpr-extract':         { label:'Auto-filled certified payroll', cat:'bookkeeping', ic:'&#10024;' },
+    'cpr-remote-sign':     { label:'Sent payroll for signature',  cat:'bookkeeping', ic:'&#9997;' },
+    'payapp-save':         { label:'Saved a pay application',     cat:'bookkeeping', ic:'&#128196;' },
+    'payapp-delete':       { label:'Deleted a pay application',   cat:'bookkeeping', ic:'&#10005;' },
+    'payapp-print':        { label:'Printed a pay application',   cat:'bookkeeping', ic:'&#128424;' },
+    'dashboard-update':    { label:'Updated the client dashboard', cat:'bookkeeping', ic:'&#9998;' },
+    // Documents / knowledge
+    'kb-article-delete':   { label:'Deleted a KB article',        cat:'doc', ic:'&#10005;' },
+    // Integrations
+    'qbo-write-failed':    { label:'QuickBooks REFUSED a post',   cat:'integration', ic:'&#9888;' },
+    'qbo-attach-failed':   { label:'QuickBooks refused a file',   cat:'integration', ic:'&#9888;' },
+    'client-mailbox-set':  { label:'Set the client mailbox',      cat:'integration', ic:'&#9993;' },
+    'monthend-notify':     { label:'Sent the month-end notice',   cat:'integration', ic:'&#128233;' },
+    'notify-user':         { label:'Sent a notification',         cat:'integration', ic:'&#128276;' },
+    // Chat
+    'chat-send':           { label:'Sent a chat message',         cat:'chat', ic:'&#128172;' },
+    'chat-delete':         { label:'Deleted a chat message',      cat:'chat', ic:'&#10005;' },
+    'chat-clear-channel':  { label:'Cleared a channel',           cat:'chat', ic:'&#128465;' },
+    'chat-members-update': { label:'Changed channel members',     cat:'chat', ic:'&#128101;' },
+    // Admin
+    'user-add':            { label:'Added a user',                cat:'admin', ic:'&#43;' },
+    'user-remove':         { label:'Removed a user',              cat:'admin', ic:'&#10005;' },
+    'permissions-update':  { label:'Changed permissions',         cat:'admin', ic:'&#128273;' }
   };
 
   function classifyAction(action) {

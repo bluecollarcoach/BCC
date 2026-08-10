@@ -345,6 +345,25 @@
   // id names another doc would make "Delete this company" remove that doc instead.
   // Only ever touch keys inside this page's own namespace.
   function isCompanyKey(id) { return typeof id === 'string' && id.indexOf(COMPANY_PREFIX) === 0; }
+  function isContactKey(id) { return typeof id === 'string' && id.indexOf(CONTACT_PREFIX) === 0; }
+  /* Unlink every contact pointing at a company that is about to be deleted. Contacts are
+     iterated by KEY prefix but the doc's own `id` field is what gets written back, and
+     that field is attacker-writable in the same way a company's is — so it is checked
+     against this page's namespace before it is ever used as a storage key. */
+  function unlinkContactsFrom(companyId) {
+    var n = 0;
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i); if (!k || k.indexOf(CONTACT_PREFIX) !== 0) continue;
+      try {
+        var ct = JSON.parse(localStorage.getItem(k));
+        if (!ct || ct.companyId !== companyId) continue;
+        ct.companyId = null;
+        localStorage.setItem(isContactKey(ct.id) ? ct.id : k, JSON.stringify(ct));
+        n++;
+      } catch (_) {}
+    }
+    return n;
+  }
   function saveCompany(c) {
     c.updatedAt = nowIso();
     if (!c.createdAt) c.createdAt = c.updatedAt;
@@ -366,6 +385,11 @@
       .replace(/\b(co|company|llc|l\.l\.c|inc|incorporated|corp|corporation|ltd|limited|pllc|pc|lp|llp|the)\b/g, '')
       .replace(/[^a-z0-9]+/g, '');
   }
+  // normName strips entity suffixes, so "Smith Roofing LLC" and "Smith Roofing Inc" —
+  // two genuinely different legal entities a client may well have both of — collapse to
+  // the same key. rawKey keeps them apart, so the importer can tell a real duplicate
+  // (same business, second contact record) from a suffix-only collision.
+  function rawKey(s) { return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
   function setSyncMeta(t) { var el = document.getElementById('syncMeta'); if (el) el.textContent = t || 'Synced via bcc-api.js'; }
   // Pull QBO companies, create any missing CRM company (linked by realmId), and
   // fill detail from CompanyInfo. opts.full = also refill existing un-detailed ones.
@@ -443,16 +467,30 @@
       .then(function (resp) {
         if (!resp || !resp.ok) throw new Error((resp && resp.error) || 'could not read customers');
         var existing = allCompanies();
-        var byQbo = {}, byName = {};
+        var byQbo = {}, byName = {}, byRaw = {};
         existing.forEach(function (c) {
           if (c.qboCustomerId) byQbo[String(c.qboCustomerId)] = c;
           byName[normName(c.name)] = c;
+          byRaw[rawKey(c.name)] = c;
         });
-        var created = 0, updated = 0, skipped = 0;
+        var created = 0, updated = 0, skipped = 0, unnamed = 0;
         (resp.customers || []).forEach(function (cu) {
           var nm = (cu.name || cu.displayName || '').trim();
-          if (!nm) { skipped++; return; }
-          var hit = byQbo[String(cu.qboId)] || byName[normName(nm)];
+          // A QuickBooks customer with no company name is usually an individual, whose
+          // name is on the contact fields instead. Dropping it into `skipped` reported it
+          // as "already current" — i.e. as if it had been considered and matched.
+          if (!nm) { nm = (cu.contactName || '').trim(); }
+          if (!nm) { unnamed++; return; }
+          // Prefer the QBO id, then an exact name match, and only THEN the fuzzy
+          // suffix-stripped match. Going straight to the fuzzy key merged two distinct
+          // entities into one record and reported the loser as "already current".
+          var hit = byQbo[String(cu.qboId)] || byRaw[rawKey(nm)];
+          if (!hit) {
+            var fuzzy = byName[normName(nm)];
+            // Only accept a fuzzy hit if it is not already claimed by a DIFFERENT QBO
+            // customer — otherwise this is a second legal entity and needs its own record.
+            if (fuzzy && (!fuzzy.qboCustomerId || String(fuzzy.qboCustomerId) === String(cu.qboId))) hit = fuzzy;
+          }
           if (hit) {
             // Link + backfill blanks only — never overwrite what someone typed.
             var changed = false;
@@ -470,12 +508,14 @@
             contactName: cu.contactName || '', qboCustomerId: String(cu.qboId),
             source: 'qbo-customer'
           });
-          byQbo[String(cu.qboId)] = nc; byName[normName(nm)] = nc; created++;
+          byQbo[String(cu.qboId)] = nc; byName[normName(nm)] = nc; byRaw[rawKey(nm)] = nc; created++;
         });
         setSyncMeta('');
         if (btn) btn.disabled = false;
         renderList();
-        var msg = 'Customers imported: ' + created + ' added, ' + updated + ' updated, ' + skipped + ' already current.';
+        var msg = 'Customers imported: ' + created + ' added, ' + updated + ' updated, ' + skipped + ' already current.'
+          + (unnamed ? ' ' + unnamed + ' had no company or contact name in QuickBooks and were not imported.' : '')
+          + (resp.truncated ? ' NOTE: QuickBooks returned more customers than could be read in one go — run this again to pick up the rest.' : '');
         if (window.bccNotifySaved) window.bccNotifySaved(msg); else (window.bccNotify || alert)(msg, 'success');
       })
       .catch(function (e) {
@@ -588,8 +628,13 @@
         var c = JSON.parse(localStorage.getItem(k));
         if (!c) continue;
         if (c.companyId === companyId) { out.push(c); continue; }
-        // Fall back to free-text company-name match (legacy contacts)
-        if (companyName && c.company && c.company.toLowerCase() === companyName.toLowerCase()) out.push(c);
+        // Fall back to a free-text company-name match, but ONLY for legacy contacts that
+        // are not linked anywhere — otherwise a contact explicitly linked to a DIFFERENT
+        // company still matched on its free-text name and was counted under both, so the
+        // contact totals on the list exceeded the real number of people. A dangling link
+        // (one pointing at a company that no longer exists) counts as unlinked.
+        if (companyName && c.company && c.company.toLowerCase() === companyName.toLowerCase()
+            && (!c.companyId || !getCompany(c.companyId))) out.push(c);
       } catch (_) {}
     }
     return out;
@@ -776,10 +821,7 @@
     };
     document.getElementById('delBtn').onclick = function () {
       if (!confirm('Delete this company? Linked contacts/engagements keep their data but lose the link.')) return;
-      // Unlink contacts that reference this companyId
-      contacts.forEach(function (ct) {
-        if (ct.companyId === c.id) { ct.companyId = null; localStorage.setItem(ct.id, JSON.stringify(ct)); }
-      });
+      unlinkContactsFrom(c.id);
       deleteCompany(c.id);
       if (window.bccAudit) window.bccAudit('company-delete', { key: c.id, path: '/crm-companies.html' });
       location.href = 'crm-companies.html';
@@ -866,7 +908,14 @@
       var id = tr.dataset.id;
       if (btn && btn.dataset.act === 'delete') {
         e.stopPropagation();
-        if (!confirm('Delete this company?')) return;
+        if (!confirm('Delete this company?
+
+Linked contacts and engagements keep their data but lose the link.')) return;
+        // The detail view unlinks referencing contacts before deleting; this row handler
+        // did not, so a company deleted from the list left its contacts pointing at an id
+        // that no longer resolves — they vanished from every company view and could not
+        // be re-linked without editing each one.
+        unlinkContactsFrom(id);
         deleteCompany(id);
         if (window.bccAudit) window.bccAudit('company-delete', { key: id, path: '/crm-companies.html' });
         renderList();

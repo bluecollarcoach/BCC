@@ -250,6 +250,15 @@ window.addEventListener('bcc-users-ready', function () {
    poll of its own, and the notification bell deliberately stays silent on chat.html
    (ncScanChat returns early here because "they see messages live there") — so an open
    thread showed nothing at all until the tab was reloaded. */
+// Coming BACK to the window clears the open channel. Without this, the stricter
+// read-stamp above leaves an unread badge on the very thread the user is sitting in
+// until they happen to click it. renderSidebar, not render — renderThread() rebuilds
+// the composer and would wipe a half-typed draft.
+window.addEventListener('focus', function () {
+  if (!active) return;
+  try { const r = loadRead(); r[active] = Date.now(); saveRead(r); } catch (e) {}
+  if (typeof renderSidebar === 'function') { try { renderSidebar(); } catch (e) {} }
+});
 window.addEventListener('bcc-data-ready', function (e) {
   const keys = (e && e.detail && e.detail.keys) || null;
   // Only our own docs. The event fires for ANY changed doc in the tenant, and a
@@ -390,10 +399,12 @@ function renderLive() {
   // viewport away from someone reading history is worse than skipping the jump.
   const wasAtBottom = !box || (box.scrollHeight - box.scrollTop - box.clientHeight) < 40;
   const prevTop = box ? box.scrollTop : 0;
-  // The live poll only runs on a VISIBLE tab, so this channel is genuinely on
-  // screen — stamp it read off the fresh doc, or the sidebar would sprout an
-  // unread badge for the very thread the user is sitting in.
-  if (active) { const r = loadRead(); r[active] = Date.now(); saveRead(r); }
+  // "Visible" is not "present". A background window, or a second monitor the user is not
+  // looking at, still counts as visible — so every 8s poll stamped the open channel read
+  // and the notification bell had nothing left to tell them about on any other page.
+  // Require real focus. The six local callers of renderLive() all run inside a click in
+  // the focused window, so their behaviour is unchanged.
+  if (active && document.hasFocus()) { const r = loadRead(); r[active] = Date.now(); saveRead(r); }
   render();
   const ta2 = document.getElementById('c_text');
   if (ta2) {
