@@ -4802,8 +4802,13 @@ app.http('qbo-customers', {
     try {
       const out = [];
       let start = 1;
-      for (let page = 0; page < 12; page++) {   // up to 1200 customers
-        const q = "select * from Customer where Active = true startposition " + start + " maxresults 100";
+      // Was 12 pages of 100 = 1200 customers, with no signal to the importer when it hit
+      // the wall — a larger client simply lost the rest and the import reported success.
+      // Page bigger and much further, and report truncation when it really is truncated.
+      let truncated = false;
+      for (let page = 0; ; page++) {
+        if (page >= 100) { truncated = true; break; }   // 100 x 1000 = 100k, a real ceiling
+        const q = "select * from Customer where Active = true startposition " + start + " maxresults 1000";
         const j = await acc.apiGet('/query?query=' + encodeURIComponent(q));
         const rows = (j.QueryResponse && j.QueryResponse.Customer) || [];
         rows.forEach(cu => {
@@ -4819,10 +4824,10 @@ app.http('qbo-customers', {
             address: [addr.Line1, addr.City, addr.CountrySubDivisionCode, addr.PostalCode].filter(Boolean).join(', ')
           });
         });
-        if (rows.length < 100) break;
-        start += 100;
+        if (rows.length < 1000) break;
+        start += 1000;
       }
-      return { jsonBody: { ok: true, customers: out, count: out.length } };
+      return { jsonBody: { ok: true, customers: out, count: out.length, truncated } };
     } catch (e) {
       context.error('qbo-customers', e);
       return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } };
@@ -5245,9 +5250,27 @@ app.http('qbo-report', {
         if (!r.ok) throw new Error('QBO ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 200));
         return r.json();
       };
+      /* Actually pages. This used to issue ONE request with MAXRESULTS 1000 and keep
+         whatever came back, with no STARTPOSITION loop and no truncation signal — so a
+         client with more than 1000 customers, vendors or open invoices silently saw a
+         subset, and the receipt matcher / vendor dropdowns could miss an existing record
+         and create a duplicate in the client's live books. Ceiling exists so a runaway
+         query can't hang the function; if it is ever reached, say so in the log rather
+         than pretending the list is complete. */
       const queryAll = async (sql) => {
-        const j = await apiGet('/query?query=' + encodeURIComponent(sql + ' MAXRESULTS 1000'));
-        const qr = j.QueryResponse || {}; const k = Object.keys(qr).find(x => Array.isArray(qr[x])); return k ? qr[k] : [];
+        const PAGE = 1000, CEILING = 20000;
+        let out = [], pos = 1;
+        for (;;) {
+          const j = await apiGet('/query?query=' + encodeURIComponent(sql + ' STARTPOSITION ' + pos + ' MAXRESULTS ' + PAGE));
+          const qr = j.QueryResponse || {};
+          const k = Object.keys(qr).find(x => Array.isArray(qr[x]));
+          const batch = k ? qr[k] : [];
+          out = out.concat(batch);
+          if (batch.length < PAGE) break;
+          pos += PAGE;
+          if (out.length >= CEILING) { context.log('qbo queryAll hit the ' + CEILING + '-row ceiling; list is truncated: ' + sql.slice(0, 120)); break; }
+        }
+        return out;
       };
       const today = new Date().toISOString().slice(0, 10);
       const yStart = today.slice(0, 4) + '-01-01';
@@ -5430,7 +5453,25 @@ async function qboResolveAccess(request, realmId) {
     if (!r.ok) throw new Error('QBO ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 300));
     return r.json();
   };
-  const queryAll = async (sql) => { const j = await apiGet('/query?query=' + encodeURIComponent(sql + ' MAXRESULTS 1000')); const qr = j.QueryResponse || {}; const k = Object.keys(qr).find(x => Array.isArray(qr[x])); return k ? qr[k] : []; };
+  // Pages through the whole result set — see the note on the copy in qbo-report. A
+  // single un-paged MAXRESULTS 1000 meant the vendor/customer dropdowns and the receipt
+  // matcher silently worked from a subset, which is how a duplicate vendor gets created
+  // in a client's live QuickBooks (and then splits that vendor's 1099-NEC total).
+  const queryAll = async (sql) => {
+    const PAGE = 1000, CEILING = 20000;
+    let out = [], pos = 1;
+    for (;;) {
+      const j = await apiGet('/query?query=' + encodeURIComponent(sql + ' STARTPOSITION ' + pos + ' MAXRESULTS ' + PAGE));
+      const qr = j.QueryResponse || {};
+      const k = Object.keys(qr).find(x => Array.isArray(qr[x]));
+      const batch = k ? qr[k] : [];
+      out = out.concat(batch);
+      if (batch.length < PAGE) break;
+      pos += PAGE;
+      if (out.length >= CEILING) break;
+    }
+    return out;
+  };
   const apiUpload = async (path, formData) => {
     // Multipart upload (e.g. QBO /upload). Let fetch set the multipart boundary;
     // do NOT set Content-Type manually.
