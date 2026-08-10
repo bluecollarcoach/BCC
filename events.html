@@ -157,22 +157,28 @@
     var out = [];
     for (var i = 0; i < localStorage.length; i++) {
       var k = localStorage.key(i); if (!k || k.indexOf(EV_PREFIX) !== 0) continue;
-      try { var e = JSON.parse(localStorage.getItem(k)); if (e && e.id) out.push(e); } catch (_) {}
+      // Trust the KEY it was found under, not the id the document claims to have.
+      try { var e = JSON.parse(localStorage.getItem(k)); if (e) { e.id = k; out.push(e); } } catch (_) {}
     }
     return out.sort(function (a, b) { return (a.startAt || '').localeCompare(b.startAt || ''); });
   }
-  function getEvent(id) { try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (_) { return null; } }
+  // An event doc is a firm-wide record any signed-in user can write, so its `id` FIELD is
+  // not trustworthy — and every read/write/delete below treats that field as a storage
+  // key. Without this, a doc carrying id:"bcc-admin-config-v1" would be read, overwritten
+  // or deleted from this page. sessions.html guards the same hazard the same way.
+  function isEventKey(id) { return typeof id === 'string' && id.indexOf(EV_PREFIX) === 0; }
+  function getEvent(id) { if (!isEventKey(id)) return null; try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (_) { return null; } }
   function saveEvent(e) {
     e.updatedAt = nowIso();
     if (!e.createdAt) e.createdAt = e.updatedAt;
-    if (!e.id) e.id = EV_PREFIX + uid();
+    if (!isEventKey(e.id)) e.id = EV_PREFIX + uid();
     if (!e.tenantId) e.tenantId = 'blue-collar-coach';
     e.docType = 'event';
     if (!Array.isArray(e.bookings)) e.bookings = [];
     localStorage.setItem(e.id, JSON.stringify(e));
     return e;
   }
-  function deleteEvent(id) { localStorage.removeItem(id); }
+  function deleteEvent(id) { if (!isEventKey(id)) return; localStorage.removeItem(id); }
 
   function allContacts() {
     var out = [];
@@ -263,6 +269,10 @@
   function openModal(id) {
     document.getElementById('m-id').value = id || '';
     var e = id ? getEvent(id) : null;
+    // getEvent can now legitimately return null (unknown or out-of-namespace id). Treat
+    // that as "new event" rather than opening a half-populated modal whose bookings pane
+    // throws on the null.
+    if (id && !e) { id = ''; document.getElementById('m-id').value = ''; }
     document.getElementById('modalTitle').textContent = id ? 'Edit event' : 'New event';
     document.getElementById('m-delete').style.display = id ? '' : 'none';
     document.getElementById('m-title').value = (e && e.title) || '';

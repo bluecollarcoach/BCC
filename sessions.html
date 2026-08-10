@@ -424,7 +424,13 @@
     } else {
       titleEl.textContent = 'New session';
       delBtn.style.display = 'none';
-      var start = defaultDayIso ? new Date(defaultDayIso) : new Date();
+      // "2026-08-15" is the date-only ISO form, which JS parses as UTC midnight — which
+      // is the 14th anywhere in the US. Anchor a bare date at local midday so it can't
+      // slide across a day boundary in either direction. The other caller passes a full
+      // toISOString() timestamp, which fails this test and is parsed exactly as before.
+      var start = defaultDayIso
+        ? new Date(/^\d{4}-\d{2}-\d{2}$/.test(defaultDayIso) ? defaultDayIso + 'T12:00:00' : defaultDayIso)
+        : new Date();
       start.setHours(10, 0, 0, 0); // default 10:00
       var end = new Date(start); end.setHours(11, 0, 0, 0);
       document.getElementById('m-title').value = '';

@@ -243,6 +243,12 @@
   function meUpn() {
     var live = ((window.bccUser && window.bccUser.userDetails) || '').toLowerCase();
     if (live) { try { localStorage.setItem(LAST_UPN_KEY, live); } catch (e) {} return live; }
+    // Only fall back once auth has actually SETTLED. Sign-in takes two awaited round
+    // trips and this page initialises at 600ms regardless, so during that window the
+    // fallback was handing the previous user's identity to whoever is sitting here now:
+    // their private tasks and daily log rendered, and anything typed was written under
+    // the wrong person before the real upn landed and swapped it all out.
+    if (!_authSettled) return '';
     try { return (localStorage.getItem(LAST_UPN_KEY) || '').toLowerCase(); } catch (e) { return ''; }
   }
   function myFirstName() {

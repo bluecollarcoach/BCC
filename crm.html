@@ -652,6 +652,9 @@
 
   /* ===== Detail render ===== */
   function renderDetail(id) {
+    // Every caller of this is a deliberate repaint (open, post-save, post-delete), so the
+    // pane is authoritative again from here.
+    _crmDirty = false;
     var c = getContact(id);
     var el = document.getElementById('detailMode');
     if (!c) {
@@ -1491,10 +1494,26 @@
     if (syncMetaEl) syncMetaEl.textContent = 'Synced via bcc-api.js';
   }
 
+  // The live poll fires bcc-data-ready every 8s on ANY tenant change — a colleague saving
+  // a time entry was enough. renderDetail() rewrites the whole pane's innerHTML, and the
+  // pane IS the edit surface here (contenteditable profile fields, the weekly note, the
+  // conversation boxes), so a repaint silently threw away whatever was half-typed.
+  // Track dirtiness on the pane and skip only the detail repaint; the list and the type
+  // dropdowns still refresh live.
+  var _crmDirty = false;
+  document.addEventListener('input', function (ev) {
+    var pane = document.getElementById('detailMode');
+    if (pane && pane.contains(ev.target)) _crmDirty = true;
+  }, true);
   window.addEventListener('bcc-data-ready', function () {
     populateTypeDropdowns();
     var id = getParam('id');
-    if (id) renderDetail(id); else if (rowsEl) renderList();
+    if (!id) { if (rowsEl) renderList(); return; }
+    var pane = document.getElementById('detailMode');
+    var ae = document.activeElement;
+    if (pane && ae && pane.contains(ae)) return; // caret is in the pane right now
+    if (_crmDirty) return;                       // typed, then clicked away — still unsaved
+    renderDetail(id);
   });
   window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
   setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);

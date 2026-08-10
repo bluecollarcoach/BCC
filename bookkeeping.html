@@ -850,7 +850,9 @@
       if (!(managementMode && canManage())) { ids.forEach(function (k) { document.getElementById(k).textContent = '—'; }); return; }
       // All companies: firm-wide totals from each company's latest CLOSED month.
       var map = latestClosedByCompany();
-      var realms = Object.keys(map);
+      // Drop the '' bucket: realm-less periods (orphans from the bug above, and any
+      // genuine legacy doc) are not a company and must not be counted as one.
+      var realms = Object.keys(map).filter(Boolean);
       if (realms.length === 0) { ids.forEach(function (k){ document.getElementById(k).textContent='—'; }); setDelta(document.getElementById('kpiRevD'),'no closed month yet'); return; }
       var rev=0, exp=0, net=0; realms.forEach(function(r){ rev += (map[r].revenueCents||0); exp += (map[r].expensesCents||0); net += netOf(map[r]); });
       document.getElementById('kpiRev').textContent = dollars(rev);
@@ -861,7 +863,7 @@
       setDelta(document.getElementById('kpiNetD'), net>=0?'profitable overall':'net loss', net>=0?'up':'down');
       // YTD net across all companies, current year.
       var year = (new Date()).getFullYear().toString();
-      var yNet=0; allPeriods().forEach(function(p){ if(p.period&&p.period.indexOf(year)===0&&!periodInProgress(p.period)){ yNet += netOf(p);} });
+      var yNet=0; allPeriods().forEach(function(p){ if(p.realmId&&p.period&&p.period.indexOf(year)===0&&!periodInProgress(p.period)){ yNet += netOf(p);} });
       document.getElementById('kpiYtd').textContent = dollars(yNet);
       setDelta(document.getElementById('kpiYtdD'), year + ' · closed months · all companies');
       return;
@@ -1244,11 +1246,15 @@
   document.getElementById('saveBtn').addEventListener('click', function () {
     var period = document.getElementById('p-period').value;
     if (!period) { (window.bccNotify || alert)('Period required (YYYY-MM).', 'warn'); return; }
+    // Without a realm, savePeriod mints an orphan key that no table renders and no
+    // Delete button can reach — while the firm-wide KPIs still count it.
+    if (!currentRealm) { (window.bccNotify || alert)('Open a company first — a period has to belong to one.', 'warn'); return; }
     var rev = parseFloat(document.getElementById('p-rev').value || '0') || 0;
     var cogs = parseFloat(document.getElementById('p-cogs').value || '0') || 0;
     var exp = parseFloat(document.getElementById('p-exp').value || '0') || 0;
     var p = {
       period: period,
+      realmId: currentRealm,
       revenueCents: Math.round(rev * 100),
       cogsCents: Math.round(cogs * 100),
       expensesCents: Math.round(exp * 100),
@@ -6763,7 +6769,13 @@
     }
     var cb = document.getElementById('connectBtn'); if (cb) cb.style.display = mgmt ? '' : 'none'; // adding companies lives in the Management dashboard, not the main work queue
     var sb = document.getElementById('syncBtn'); if (sb) sb.style.display = (mgmt || currentRealm) ? '' : 'none'; // Sync is useful per-client too
-    ['newBtn', 'printBtn'].forEach(function (id) { var b = document.getElementById(id); if (b) b.style.display = mgmt ? '' : 'none'; }); // manual entry + print are management-only
+    // Print stays management-only. Manual entry does NOT: it was shown only in
+    // management mode, where currentRealm is always '', so every period it saved was
+    // minted without a realm segment — invisible in every table and undeletable from the
+    // UI, yet still summed into the firm-wide KPI totals and the "across N companies"
+    // count. It belongs to a company, so show it when one is open.
+    var _pb = document.getElementById('printBtn'); if (_pb) _pb.style.display = mgmt ? '' : 'none';
+    var _nb = document.getElementById('newBtn'); if (_nb) _nb.style.display = currentRealm ? '' : 'none';
     var cf = document.getElementById('cashflowBtn'); if (cf) cf.style.display = (atRoot && canManage()) ? '' : 'none'; // cash flow: any manager, from the work queue or management view
     var nt = document.getElementById('notaryBtn'); if (nt) nt.style.display = atRoot ? '' : 'none'; // firm-wide notary: reachable at root without per-client access (Janice is the notary)
     var it = document.getElementById('importTasksBtn'); if (it) it.style.display = (mgmt && isAdmin) ? '' : 'none'; // firm-wide task seed: admin, from the management dashboard

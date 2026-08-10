@@ -7593,7 +7593,13 @@ app.http('documents-list-create', {
           if (m) {
             const acc = await driveClientAccess(p, m[1]); if (acc.err) return { status: 403, jsonBody: { error: 'no access to this client' } };
           } else if (!linkedContactId) {
-            return { status: 403, jsonBody: { error: 'a client folder or contact is required' } };
+            // No folder and no contact = "the general Documents library". This used to
+            // 403, which is why documents.html (which lists exactly that shape) could
+            // never show anyone a document someone else uploaded. It is safe to allow:
+            // docAccessFilter below runs on EVERY result and drops any client-folder doc
+            // this caller can't reach, leaving only the non-client docs that are
+            // team-visible by design. A bare '/clients/' with no realm is still refused
+            // above, so this cannot be used to enumerate client files.
           }
         }
         const params = [{ name: '@t', value: BCC_TENANT_ID }];

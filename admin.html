@@ -453,7 +453,11 @@
     return withRole === 1;
   }
   function primeCfg() {
-    return fetch('/api/data?key=' + encodeURIComponent(CFG_KEY), { credentials: 'include' })
+    // The route is data/{key?} — a QUERY param leaves key null, so this fell into the
+    // BULK branch and came back as { items: [...] } with no `data`. That made
+    // looksRedacted() dead code and _cfgDoc permanently null, while _cfgFresh was still
+    // set to true. Use the path form every other single-key read in the app uses.
+    return fetch('/api/data/' + encodeURIComponent(CFG_KEY), { credentials: 'include' })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (j) {
         if (!j) return false;

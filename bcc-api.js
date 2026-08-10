@@ -138,6 +138,86 @@
   var _origSetItem = Storage.prototype.setItem;
   var _origRemoveItem = Storage.prototype.removeItem;
 
+  /* ---------- durable outbox ----------
+     `pending` is an in-memory Map, so every queued write died with the page. Two real
+     failures came out of that:
+       - Reload or close the tab while offline (or mid-retry) and the queued write was
+         gone, while the toast had promised "Saved locally — will sync when reconnected".
+         The value still sat in localStorage, so nothing looked wrong until a later full
+         pull returned the server's older copy and quietly reverted it.
+       - A write made BEFORE /.auth/me resolves was never queued at all: the hooks are
+         gated on `signedIn`, and pages are interactive during that window. The bootstrap
+         pull then overwrote it. Nothing was logged and no sync error fired.
+     So mirror the queue to localStorage and rehydrate it at bootstrap.
+
+     Deliberately NOT a bcc-* key: the hooks' own test is key.indexOf('bcc-') === 0, so a
+     non-bcc- name can never be queued, pushed or pruned by this layer. Same reasoning as
+     myday.html's 'myday-last-upn'.
+
+     Entries are stamped with the upn that wrote them. Anything written while signed IN is
+     safe to replay — it was made against freshly pulled data. Anything written BEFORE auth
+     settled is derived from the previous session's snapshot, so replaying it against a
+     shared document could silently overwrite a colleague's newer change; those are limited
+     to families only their owner ever writes. */
+  var OUTBOX_KEY = 'bccOutboxV1';
+  var OUTBOX_MAX = 300;
+  /* Families whose docs only their owner writes, so an unauthenticated replay cannot
+     clobber anyone else. Anything not listed here is dropped rather than guessed at. */
+  var OFFLINE_OWNED_PREFIXES = ['bcc-daily-log-', 'bcc-mytasks-', 'bcc-timeentry-', 'bcc-fieldform-'];
+  function outboxRead() {
+    try { var o = JSON.parse(localStorage.getItem(OUTBOX_KEY) || 'null'); return (o && typeof o === 'object' && o.items) ? o : { upn: '', items: {} }; }
+    catch (e) { return { upn: '', items: {} }; }
+  }
+  function outboxWrite(o) {
+    try { _origSetItem.call(localStorage, OUTBOX_KEY, JSON.stringify(o)); }
+    catch (e) { /* quota — the in-memory queue still carries it for this page's life */ }
+  }
+  function outboxPut(key, value, trusted) {
+    var o = outboxRead();
+    var who = String((user && user.userDetails) || '').toLowerCase();
+    // A different person signed in on this device: start their outbox clean rather than
+    // inheriting writes that are not theirs to replay.
+    if (o.upn && who && o.upn !== who) o = { upn: who, items: {} };
+    if (who) o.upn = who;
+    if (!o.items[key] && Object.keys(o.items).length >= OUTBOX_MAX) return; // bounded
+    o.items[key] = { v: value, t: !!trusted };
+    outboxWrite(o);
+  }
+  function outboxDrop(keys) {
+    if (!keys || !keys.length) return;
+    var o = outboxRead(); var changed = false;
+    keys.forEach(function (k) { if (o.items[k] !== undefined) { delete o.items[k]; changed = true; } });
+    if (changed) outboxWrite(o);
+  }
+  /* Replayed at bootstrap, after identity is known and BEFORE the pull is applied — the
+     existing `pending.has(...)` guards at the pull and prune sites are what stop the
+     server's older copy from landing on top, and they only work if `pending` is seeded
+     first. Returns how many writes were recovered. */
+  function outboxRehydrate() {
+    var o = outboxRead();
+    var keys = Object.keys(o.items || {});
+    if (!keys.length) return 0;
+    var me = String((user && user.userDetails) || '').toLowerCase();
+    var kept = 0, drop = [];
+    keys.forEach(function (k) {
+      var e = o.items[k];
+      var mine = !o.upn || !me || o.upn === me;
+      // A personal doc carries its owner in the key. Never replay someone else's onto
+      // this session — the server refuses it and the user gets a permission toast for a
+      // record they never touched.
+      var personal = /^bcc-(daily-log|mytasks|emailsig|chat-last-read)-/.test(k);
+      var owned = OFFLINE_OWNED_PREFIXES.some(function (p) { return k.indexOf(p) === 0; });
+      if (!mine && (personal || !e.t)) { drop.push(k); return; }
+      // Untrusted (pre-auth / offline) writes are replayable only for owner-only families.
+      if (!e.t && !owned) { drop.push(k); return; }
+      pending.set(k, e.v);
+      kept++;
+    });
+    if (drop.length) outboxDrop(drop);
+    if (kept) schedulePush();
+    return kept;
+  }
+
   /* ---------- Service worker registration ----------
    * sw.js pre-caches the four field forms (T&M, Trucking, Hydrant,
    * Inspections) + bcc-api.js + logos so they work offline. Network-
@@ -178,7 +258,7 @@
                             per-device sync bookkeeping + identity. Already written via
                             _origSetItem elsewhere; listed so no other write path can
                             reintroduce the push. */
-  var DEVICE_LOCAL_KEYS = ['bcc-last-realm', 'bcc-push-enabled', 'bcc-sync-since-v1', 'bcc-sync-fullpull-at', 'bcc-field-who'];
+  var DEVICE_LOCAL_KEYS = ['bcc-last-realm', 'bcc-push-enabled', 'bcc-sync-since-v1', 'bcc-sync-fullpull-at', 'bcc-field-who', 'bcc-device-last-upn'];
 
   /* Doc families a FULL pull returns in their ENTIRETY to every signed-in user —
      no per-client gate, no app tier, no owner scoping, and not on the server's
@@ -208,6 +288,13 @@
   /* ---------- hooks ---------- */
   Storage.prototype.setItem = function (key, value) {
     _origSetItem.call(this, key, value);
+    // Writes made before auth settles used to fall straight through this guard and be
+    // lost. Capture the owner-only ones so bootstrap can replay them; outboxRehydrate
+    // decides what is safe to keep.
+    if (this === window.localStorage && !signedIn && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0
+        && OFFLINE_OWNED_PREFIXES.some(function (p) { return key.indexOf(p) === 0; })) {
+      outboxPut(key, value, false);
+    }
     if (this === window.localStorage && signedIn && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0) {
       if (DEVICE_LOCAL_KEYS.indexOf(key) >= 0) return;
       // Financial periods are owned by the server (the QBO sync writes them to
@@ -232,6 +319,7 @@
       // for these on the grounds that the gate now exists.
       if (key.indexOf('bcc-email-') === 0) return;
       pending.set(key, value);
+      outboxPut(key, value, true); // survives a reload or a tab close before the flush lands
       schedulePush();
       // Admin user list / status changed → re-filter bccPeople immediately so
       // every dropdown in the app reflects the new active/hidden/inactive
@@ -252,6 +340,7 @@
       if (key.indexOf('bcc-cpr-sends-') === 0) return; // device-local (see setItem)
       if (key.indexOf('bcc-email-') === 0) return;     // device-local (see setItem)
       pending.set(key, null); // null marks deletion
+      outboxPut(key, null, true);
       schedulePush();
     }
   };
@@ -407,6 +496,11 @@
       setSyncState('error');
       setTimeout(flush, 5000);
     }
+    // Anything no longer in `pending` is settled — it landed, or it was permanently
+    // refused (in which case the user has already been told and replaying it forever
+    // would just re-tell them). Whatever got re-queued above stays in the outbox so it
+    // still survives a reload. This single sweep covers every exit path above.
+    outboxDrop(entries.map(function (e) { return e[0]; }).filter(function (k) { return !pending.has(k); }));
   }
 
   // Manually clear the permanent-failure set (admins call this after granting
@@ -773,6 +867,37 @@
       }
     } catch (e) {
       // not deployed on SWA, or network issue — anon mode
+    }
+
+    // Recover writes this device queued but never got to send — a tab closed while
+    // offline, a reload mid-retry, or an edit made in the window before /.auth/me
+    // resolved. Must run BEFORE the pull is applied below: the `pending.has(...)`
+    // guards there are what keep the server's older copy from landing on top, and they
+    // can only see what is already in `pending`.
+    if (signedIn) {
+      // A different person on this device: their personal docs are not ours to replay,
+      // and the delta cursor is per-device, so keep it honest and force a full pull.
+      try {
+        var _nowWho = String((user && user.userDetails) || '').toLowerCase();
+        var _prevWho = localStorage.getItem('bcc-device-last-upn');
+        if (_nowWho && _prevWho && _prevWho !== _nowWho) {
+          var _stale = [];
+          for (var _si = 0; _si < localStorage.length; _si++) {
+            var _sk = localStorage.key(_si);
+            if (_sk && (_sk.indexOf('bcc-mytasks-') === 0 || _sk.indexOf('bcc-daily-log-') === 0)) _stale.push(_sk);
+          }
+          // _origRemoveItem queues nothing, so the previous user's SERVER copies are
+          // untouched — they come back on their next pull. This only clears this device.
+          _stale.forEach(function (k) { _origRemoveItem.call(localStorage, k); });
+          _origRemoveItem.call(localStorage, 'bcc-sync-since-v1');
+          _origRemoveItem.call(localStorage, 'bcc-sync-fullpull-at');
+        }
+        if (_nowWho) _origSetItem.call(localStorage, 'bcc-device-last-upn', _nowWho);
+      } catch (e) {}
+      try {
+        var _recovered = outboxRehydrate();
+        if (_recovered) console.info('[bcc-api] recovered ' + _recovered + ' unsent change(s) from the outbox');
+      } catch (e) {}
     }
 
     // 1b) Ask the server for its admin verdict (honors BCC_OWNER_UPNS and
@@ -1938,9 +2063,16 @@
     // signing out right after a save used to walk away from whatever was still in the
     // queue — the edit was simply gone on the next sign-in. Push it first, and if that
     // can't be done, let them decide rather than losing it silently.
-    if (pending.size) {
+    // flush() clears `pending` SYNCHRONOUSLY before its first await, so re-reading
+    // pending.size after calling it always saw 0 and the confirm never appeared —
+    // sign-out cancelled the in-flight PUT without asking. Count first.
+    var queued = pending.size;
+    if (queued) {
       try { flush(); } catch (e) {}
-      if (pending.size && !confirm(pending.size + ' change' + (pending.size === 1 ? '' : 's') + ' still saving. Sign out anyway and lose ' + (pending.size === 1 ? 'it' : 'them') + '?')) return;
+      // The outbox means these are recoverable on the next sign-in on this device, so
+      // this is a warning rather than a certain loss — but the request is still in
+      // flight and navigating away aborts it, so it is still worth asking.
+      if (!confirm(queued + ' change' + (queued === 1 ? '' : 's') + ' ' + (queued === 1 ? 'is' : 'are') + ' still saving. Sign out anyway?')) return;
     }
     window.bccAudit && window.bccAudit('signout');
     location.href = '/.auth/logout?post_logout_redirect_uri=' + encodeURIComponent(location.origin + '/');

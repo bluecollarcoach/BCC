@@ -266,28 +266,63 @@
     return '📎';
   }
 
+  /* Rows the SERVER owns. An uploaded document's metadata is written server-side with a
+     top-level docType:'document', and the /api/data pull explicitly excludes that docType
+     — so it never reaches any other browser. This page used to build its whole list by
+     enumerating localStorage, which meant an upload was visible only to the person who
+     made it, on the machine they made it on. Fetch the real list and merge it in.
+     Kept in memory only: writing these back through localStorage would re-queue a PUT
+     that the server refuses, blacklisting the key and toasting a permission error. */
+  var _serverDocs = [];
+  function loadServerDocs() {
+    return fetch('/api/documents', { credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) { _serverDocs = (j && Array.isArray(j.items)) ? j.items : []; })
+      // Endpoint not deployed, offline, or refused — fall back to exactly the old
+      // localStorage-only behaviour rather than breaking the page.
+      .catch(function () { _serverDocs = []; });
+  }
   function allDocs() {
-    var out = [];
+    var byId = {};
     for (var i = 0; i < localStorage.length; i++) {
       var k = localStorage.key(i); if (!k || k.indexOf(DOC_PREFIX) !== 0) continue;
-      try { var d = JSON.parse(localStorage.getItem(k)); if (d && d.id) out.push(d); } catch (e) {}
+      try { var d = JSON.parse(localStorage.getItem(k)); if (d && d.id) byId[d.id] = d; } catch (e) {}
     }
+    // Server copy wins: it carries the authoritative storageKey and folder.
+    _serverDocs.forEach(function (d) { if (d && d.id) { d._server = true; byId[d.id] = d; } });
+    var out = Object.keys(byId).map(function (k) { return byId[k]; });
     return out.sort(function (a, b) { return (b.createdAt || '').localeCompare(a.createdAt || ''); });
   }
-  function saveDoc(d) {
+  // Stamp a record without persisting it. saveDoc = newDoc + write.
+  function newDoc(d) {
     d.updatedAt = nowIso();
     if (!d.createdAt) d.createdAt = d.updatedAt;
     if (!d.id) d.id = DOC_PREFIX + uid();
     if (!d.tenantId) d.tenantId = 'blue-collar-coach';
     d.docType = 'document';
+    return d;
+  }
+  function saveDoc(d) {
+    newDoc(d);
     localStorage.setItem(d.id, JSON.stringify(d));
     return d;
   }
-  function deleteDoc(d) { localStorage.removeItem(d.id); }
+  // A server-owned row has no localStorage key to remove — drop it from the in-memory
+  // list instead, or the row would reappear on the next render as if nothing happened.
+  function deleteDoc(d) {
+    // removeItem is hooked and queues a DELETE to /api/data. For a server-owned row
+    // there is no local key and that DELETE is refused, so only touch localStorage when
+    // this browser actually holds a copy.
+    if (localStorage.getItem(d.id) !== null) localStorage.removeItem(d.id);
+    _serverDocs = _serverDocs.filter(function (x) { return x.id !== d.id; });
+  }
   // Put a record back exactly as it was after the server refuses a delete.
   // saveDoc() would stamp a fresh updatedAt, which would be a lie for a row
   // that never actually changed.
-  function restoreDoc(d) { localStorage.setItem(d.id, JSON.stringify(d)); }
+  function restoreDoc(d) {
+    if (d._server) { _serverDocs.push(d); return; }
+    localStorage.setItem(d.id, JSON.stringify(d));
+  }
 
   /* ===== Render ===== */
   var qInput, folderFilter, contactFilter, engagementFilter, rowsEl, emptyEl, sublineEl;
@@ -378,8 +413,11 @@
     var linkedContactId    = document.getElementById('linkContact').value || null;
     var linkedEngagementId = document.getElementById('linkEngagement').value || null;
 
-    // Try the backend; gracefully fall back to metadata-only if the endpoint isn't wired yet.
-    var meta = saveDoc({
+    // Build the row in memory only. Writing it to localStorage first meant the row went
+    // through /api/data — where the server owns this docType and refuses it — and it had
+    // to be deleted again on success, which queued a DELETE that is refused too. The
+    // local copy is now written ONLY on the fallback path below, where it is the point.
+    var meta = newDoc({
       name: f.name,
       folder: folder,
       tags: tags,
@@ -409,13 +447,19 @@
         return r.json();
       })
       .then(function (resp) {
-        // Server returns the persisted storage key + signed download URL.
+        // The server has written its OWN metadata doc at this id — that is now the
+        // authoritative row, and it reaches everyone else through /api/documents.
         meta.storageKey = resp.storageKey || null;
-        saveDoc(meta);
+        meta._server = true;
+        _serverDocs = _serverDocs.filter(function (x) { return x.id !== meta.id; }).concat([meta]);
         if (window.bccNotifySaved) window.bccNotifySaved('Uploaded.');
-        renderList();
+        loadServerDocs().then(renderList);
       })
       .catch(function (e) {
+        // Upload endpoint not wired, or offline: keep the metadata-only row locally, which
+        // is what this fallback has always done. It syncs through /api/data normally
+        // because no server-owned doc exists at this id.
+        saveDoc(meta);
         document.getElementById('blobNote').hidden = false;
         if (window.bccNotify) window.bccNotify('File metadata saved; binary upload pending (' + e.message + ').', 'warn');
         renderList();
@@ -522,8 +566,8 @@
   }
 
   /* ===== Init ===== */
-  function init() { wire(); renderList(); }
-  window.addEventListener('bcc-data-ready', renderList);
+  function init() { wire(); renderList(); loadServerDocs().then(renderList); }
+  window.addEventListener('bcc-data-ready', function () { loadServerDocs().then(renderList); });
   window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
   setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
 })();
