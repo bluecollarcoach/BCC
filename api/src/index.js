@@ -112,6 +112,9 @@ const CLIENT_SCOPED_ID_RE = [
   // browser and /api/cpr/sign write it, so it must stay readable/writable here —
   // gated by client access rather than blocked outright.
   /^bcc-cprsig-([^-]+)$/,
+  // Postal-mail log for a client: what arrived in the physical mail, who scanned it,
+  // and whether it has been dealt with. Per-client, so gate it by client access.
+  /^bcc-clientmail-([^-]+)$/,
 ];
 function dataKeyClientRealm(id) {
   id = String(id || '');

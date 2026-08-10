@@ -604,6 +604,10 @@
     <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Client information</h3>
     <div id="info-body"></div>
   </div>
+  <div class="card" id="tab-mail" style="display:none; margin-top:14px;">
+    <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Mail inbox <span style="color:var(--muted);font-weight:400;font-size:12px;">· what arrived in the post for this client</span></h3>
+    <div id="mail-body"></div>
+  </div>
   <div class="card" id="tab-files" style="display:none; margin-top:14px;">
     <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Files <span style="color:var(--muted);font-weight:400;font-size:12px;">· stored securely per client</span></h3>
     <div id="files-body"></div>
@@ -2874,6 +2878,7 @@
     { key: 'close',        label: 'Month-end close',    ic: '✅' },
     { key: 'tasks',        label: 'Tasks',              ic: '☑️' },
     { key: 'files',        label: 'Files',              ic: '📎' },
+    { key: 'mail',         label: 'Mail inbox',         ic: '📬' },
     { key: 'email',        label: 'Email',              ic: '✉️' },
     { key: 'payroll',      label: 'Certified payroll',  ic: '🧮' },
     { key: 'payapp',       label: 'Pay applications',   ic: '📄' },
@@ -2888,7 +2893,7 @@
     { title: '',              keys: ['overview'] },
     { title: 'Communication', keys: ['email', 'tasks', 'activity'] },
     { title: 'Bookkeeping',   keys: ['transactions', 'qbolog', 'reports', 'close'] },
-    { title: 'Documents',     keys: ['files', 'payroll', 'payapp', 'wip'] },
+    { title: 'Documents',     keys: ['files', 'mail', 'payroll', 'payapp', 'wip'] },
     { title: 'Setup',         keys: ['info', 'access'] }
   ];
   function sectionLabel(k) { var s = SECTIONS.find(function (x) { return x.key === k; }); return s ? s.label : 'Overview'; }
@@ -3008,7 +3013,7 @@
   // ----- Section visibility -----
   function hideAllSections() {
     ['qboKpis', 'qboReports', 'qboWrite'].forEach(function (id) { var e = document.getElementById(id); if (e) e.style.display = 'none'; });
-    ['overview', 'activity', 'qbolog', 'info', 'files', 'tasks', 'email', 'payroll', 'payapp', 'wip', 'close', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
+    ['overview', 'activity', 'qbolog', 'info', 'files', 'mail', 'tasks', 'email', 'payroll', 'payapp', 'wip', 'close', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
   }
   function showSection(sec) {
     hideAllSections();
@@ -3071,6 +3076,7 @@
     else if (sec === 'transactions') { /* static card + Scan / + New select */ }
     else if (sec === 'info') renderInfo();
     else if (sec === 'files') renderFiles();
+    else if (sec === 'mail') renderMail();
     else if (sec === 'tasks') renderTasks();
     else if (sec === 'email') renderEmail();
     else if (sec === 'payroll') renderPayroll();
@@ -3756,6 +3762,167 @@
   }
 
   function clientFolder() { return '/clients/' + currentRealm; }
+
+  /* ---- Mail inbox ----
+     Asked for by renee@: somewhere for Megan to put what arrives in the physical post
+     for a client, so the bookkeepers can see it without waiting to be told. The scan
+     itself goes through the SAME per-client document store as everything else (folder
+     /clients/<realm>/mail), so it inherits the existing access gate, preview and
+     download. What lives here on top of that is the log: when it arrived, who it is
+     from, what it is, and whether anyone has dealt with it yet. ---- */
+  function mailKey() { return 'bcc-clientmail-' + currentRealm; }
+  function mailFolder() { return clientFolder() + '/mail'; }
+  function loadMailDoc() {
+    try {
+      var d = JSON.parse(localStorage.getItem(mailKey()) || 'null');
+      if (d && Array.isArray(d.items)) return d;
+    } catch (e) {}
+    return { id: mailKey(), tenantId: 'blue-collar-coach', docType: 'client-mail', realmId: currentRealm, items: [] };
+  }
+  function saveMailDoc(d) {
+    d.id = mailKey(); d.realmId = currentRealm; d.docType = 'client-mail';
+    d.tenantId = 'blue-collar-coach'; d.updatedAt = nowIso(); d.updatedBy = myUpn();
+    try { localStorage.setItem(d.id, JSON.stringify(d)); return true; } catch (e) { return false; }
+  }
+  var _mailFiles = [];
+  function renderMail() {
+    var body = document.getElementById('mail-body'); if (!body) return;
+    body.innerHTML =
+      '<div class="ws-form" style="margin-bottom:14px;">' +
+        '<label>Date received<input type="date" id="ml_date" value="' + esc(new Date().toISOString().slice(0, 10)) + '" /></label>' +
+        '<label>From (sender)<input id="ml_from" placeholder="e.g. IRS, Chase Bank, State of Ohio" /></label>' +
+        '<label class="full">What is it?<input id="ml_what" placeholder="e.g. 941 notice, bank statement, insurance renewal" /></label>' +
+        '<label class="full">Scan / photo (optional)<input type="file" id="ml_file" accept="image/*,application/pdf" /></label>' +
+        '<div class="full" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">' +
+          '<button class="btn btn-primary" id="ml_add" type="button">Log this mail</button>' +
+          '<span id="ml_status" style="font-size:12px;color:var(--muted);"></span>' +
+        '</div>' +
+      '</div>' +
+      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">' +
+        '<select id="ml_filter" style="font-size:12.5px;"><option value="open">Needs attention</option><option value="all">All mail</option><option value="done">Handled</option></select>' +
+        '<span id="ml_count" style="font-size:12px;color:var(--muted);"></span>' +
+      '</div>' +
+      '<div id="ml_list"><div style="color:var(--muted);">Loading&hellip;</div></div>';
+    document.getElementById('ml_add').onclick = addMail;
+    document.getElementById('ml_filter').onchange = renderMailList;
+    loadMailFiles();
+  }
+  function loadMailFiles() {
+    var realmAt = currentRealm;
+    var folder = mailFolder();
+    fetch('/api/documents?folder=' + encodeURIComponent(folder), { credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : { items: [] }; })
+      .then(function (d) {
+        if (currentRealm !== realmAt) return; // client switched mid-load
+        _mailFiles = ((d && d.items) || []).filter(function (it) { return (it.folder || '') === folder; });
+        renderMailList();
+      })
+      .catch(function () { if (currentRealm === realmAt) { _mailFiles = []; renderMailList(); } });
+  }
+  function renderMailList() {
+    var list = document.getElementById('ml_list'); if (!list) return;
+    var mode = (document.getElementById('ml_filter') || {}).value || 'open';
+    var doc = loadMailDoc();
+    var rows = (doc.items || []).slice().sort(function (a, b) { return String(b.received || '').localeCompare(String(a.received || '')); });
+    var shown = rows.filter(function (m) { return mode === 'all' ? true : (mode === 'done' ? !!m.handled : !m.handled); });
+    var cnt = document.getElementById('ml_count');
+    if (cnt) cnt.textContent = shown.length + ' of ' + rows.length + ' item' + (rows.length === 1 ? '' : 's');
+    if (!shown.length) {
+      list.innerHTML = '<div style="color:var(--muted);padding:10px 0;">' +
+        (rows.length ? 'Nothing here with that filter.' : 'No mail logged for this client yet. Log the first piece above.') + '</div>';
+      return;
+    }
+    list.innerHTML = shown.map(function (m) {
+      var f = _mailFiles.filter(function (x) { return x.id === m.docId; })[0];
+      var link = f
+        ? '<a class="fs-file" href="/api/documents/' + encodeURIComponent(f.id) + '/download" data-pvname="' + esc(f.name) + '" data-pvmime="' + esc(f.mimeType || '') + '">' + esc(f.name) + '</a>'
+        : (m.docId ? '<span style="color:var(--muted);font-size:12px;">scan unavailable</span>' : '<span style="color:var(--muted);font-size:12px;">no scan</span>');
+      return '<div class="fl-row" data-mid="' + esc(m.id) + '" style="display:flex;gap:12px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--chrome-mute);' + (m.handled ? 'opacity:.62;' : '') + '">' +
+        '<div style="flex:1;min-width:0;">' +
+          '<div style="font-weight:700;font-size:13.5px;">' + esc(m.what || '(not described)') + '</div>' +
+          '<div style="font-size:12px;color:var(--muted);">' + esc(m.received || '') + (m.from ? ' &middot; from ' + esc(m.from) : '') +
+            (m.loggedBy ? ' &middot; logged by ' + esc(m.loggedBy) : '') +
+            (m.handled ? ' &middot; handled by ' + esc(m.handledBy || '') + ' ' + esc(String(m.handledAt || '').slice(0, 10)) : '') + '</div>' +
+          '<div style="margin-top:3px;">' + link + '</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:6px;flex-shrink:0;">' +
+          '<button class="btn btn-ghost" data-mlact="' + (m.handled ? 'reopen' : 'done') + '" type="button" style="font-size:11px;padding:0 10px;min-height:30px;">' + (m.handled ? 'Reopen' : 'Mark handled') + '</button>' +
+          '<button class="btn btn-ghost" data-mlact="del" type="button" style="font-size:11px;padding:0 10px;min-height:30px;color:var(--burgundy);">Delete</button>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+    wirePreviews(list, '?');
+    list.querySelectorAll('[data-mlact]').forEach(function (b) {
+      b.onclick = function () {
+        var row = b.closest('[data-mid]'); if (!row) return;
+        var act = b.getAttribute('data-mlact');
+        if (act === 'del' && !confirm('Remove this mail entry from the log?\n\nThe uploaded scan is kept — it stays in this client’s mail folder and can still be recovered by an admin.')) return;
+        mailOp(row.getAttribute('data-mid'), act);
+      };
+    });
+  }
+  function mailOp(id, act) {
+    var doc = loadMailDoc();
+    var m = (doc.items || []).filter(function (x) { return x.id === id; })[0];
+    if (!m) { (window.bccNotify || alert)('That entry is no longer in the log.', 'warn'); renderMailList(); return; }
+    if (act === 'del') doc.items = doc.items.filter(function (x) { return x.id !== id; });
+    else if (act === 'done') { m.handled = true; m.handledBy = myUpn(); m.handledAt = nowIso(); }
+    else if (act === 'reopen') { m.handled = false; m.handledBy = ''; m.handledAt = ''; }
+    // saveMailDoc REPORTS rather than swallowing: localStorage can be full, and the row
+    // would otherwise repaint as though the change had stuck.
+    if (!saveMailDoc(doc)) { (window.bccNotify || alert)('That change could not be saved. Free up some space and try again.', 'error', 9000); return; }
+    if (window.bccAudit) window.bccAudit('client-mail-' + act, { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } });
+    renderMailList();
+  }
+  function addMail() {
+    var st = document.getElementById('ml_status');
+    var received = (document.getElementById('ml_date') || {}).value || '';
+    var from = ((document.getElementById('ml_from') || {}).value || '').trim();
+    var what = ((document.getElementById('ml_what') || {}).value || '').trim();
+    if (!received) { (window.bccNotify || alert)('Put in the date it arrived.', 'warn'); return; }
+    if (!what && !from) { (window.bccNotify || alert)('Say who it is from, or what it is — otherwise nobody can tell what this entry means.', 'warn'); return; }
+    var realmAt = currentRealm;
+    var fi = document.getElementById('ml_file');
+    var f = fi && fi.files && fi.files[0];
+    if (f && f.size > 25 * 1024 * 1024) { (window.bccNotify || alert)('That scan is over 25 MB — send a smaller one.', 'warn'); return; }
+    var btn = document.getElementById('ml_add'); if (btn) btn.disabled = true;
+
+    var finish = function (docId) {
+      if (currentRealm !== realmAt) { if (btn) btn.disabled = false; return; } // client switched mid-upload
+      var doc = loadMailDoc();
+      doc.items = (doc.items || []).concat([{
+        id: 'ml' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        received: received, from: from, what: what, docId: docId || '',
+        loggedBy: myUpn(), loggedAt: nowIso(), handled: false
+      }]);
+      if (btn) btn.disabled = false;
+      if (!saveMailDoc(doc)) { if (st) st.textContent = ''; (window.bccNotify || alert)('That mail could not be logged — the scan uploaded, but the entry was not saved.', 'error', 9000); return; }
+      if (window.bccAudit) window.bccAudit('client-mail-add', { path: '/bookkeeping.html', meta: { realmId: currentRealm, from: from } });
+      if (st) st.textContent = '';
+      document.getElementById('ml_from').value = '';
+      document.getElementById('ml_what').value = '';
+      if (fi) fi.value = '';
+      if (window.bccNotifySaved) window.bccNotifySaved('Mail logged.');
+      loadMailFiles();
+    };
+
+    if (!f) { finish(''); return; }
+    if (st) st.textContent = 'Uploading the scan…';
+    var fd = new FormData();
+    fd.append('file', f);
+    fd.append('folder', mailFolder());
+    fd.append('tags', 'postal-mail');
+    fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
+      .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
+      .then(function (j) { finish((j && (j.docId || j.id)) || ''); })
+      .catch(function (e) {
+        if (btn) btn.disabled = false;
+        if (st) st.textContent = '';
+        // Do NOT log the entry when its scan failed to upload — an entry pointing at a
+        // scan that does not exist is worse than no entry at all.
+        (window.bccNotify || alert)('The scan could not be uploaded (' + e.message + '), so nothing was logged. Try again.', 'error', 9000);
+      });
+  }
   function renderFiles() {
     var body = document.getElementById('files-body'); if (!body) return;
     body.innerHTML =
