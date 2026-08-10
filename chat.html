@@ -529,12 +529,15 @@ function renderThread() {
     // Never attach the raw capture — see shrinkPhoto() for why it has to be bounded.
     r.onload = () => shrinkPhoto(r.result, (url, why) => {
       if (!url) { alert(why || 'That image could not be read on this device.'); return; }
-      pendingPhoto = url; render();
+      // renderLive(), not render(): renderThread() rebuilds the composer, so a plain
+      // render() here wiped the message the user had already typed before attaching.
+      pendingPhoto = url; renderLive();
     });
     r.readAsDataURL(f);
   };
   const rmp = document.getElementById('rmPhoto');
-  if (rmp) rmp.onclick = () => { pendingPhoto = null; render(); };
+  // renderLive() so removing the photo doesn't take the typed caption with it.
+  if (rmp) rmp.onclick = () => { pendingPhoto = null; renderLive(); };
 
   // Admin / author message-delete
   document.querySelectorAll('.msg .del').forEach(btn => {
@@ -560,7 +563,7 @@ function renderThread() {
         key: mid,
         meta: { channel: active, originalAuthor: m.author, preview: (m.text||'').slice(0, 80) }
       });
-      render();
+      renderLive(); // keep any half-typed message across the repaint
     };
   });
 
@@ -580,7 +583,7 @@ function renderThread() {
         key: active,
         meta: { channel: active, deletedCount: count }
       });
-      render();
+      renderLive(); // keep any half-typed message across the repaint
     };
   }
 }

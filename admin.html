@@ -1538,7 +1538,13 @@
         var act = b.dataset.intAct;
         if (act === 'save') {
           var rec = loadIntegration(channel);
-          rec.fields = {};
+          // MERGE onto the stored fields — never replace them. The OAuth callbacks
+          // write the connector's refresh/access tokens into this same `fields` object
+          // (saveOAuthTokens in api/src/index.js), and those are NOT rendered as inputs.
+          // Blanking `fields` first therefore deleted the connector's only credential
+          // and silently disconnected it, while still toasting "credentials saved".
+          // Use "Clear" to deliberately wipe a connector.
+          rec.fields = rec.fields || {};
           card.querySelectorAll('[data-int-key]').forEach(function (inp) {
             rec.fields[inp.getAttribute('data-int-key')] = (inp.value || '').trim();
           });
@@ -1595,7 +1601,10 @@
         }
         if (act === 'test') {
           // Save current values first, then call backend test endpoint (if wired).
-          var rec = loadIntegration(channel); rec.fields = {};
+          // Merge, don't replace — same reason as the Save branch above: the OAuth
+          // tokens live in this object and aren't rendered as inputs, so blanking it
+          // would destroy the very credential the test is about to exercise.
+          var rec = loadIntegration(channel); rec.fields = rec.fields || {};
           card.querySelectorAll('[data-int-key]').forEach(function (inp) {
             rec.fields[inp.getAttribute('data-int-key')] = (inp.value || '').trim();
           });

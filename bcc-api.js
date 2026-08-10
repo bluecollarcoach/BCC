@@ -265,6 +265,10 @@
   // retrying them so a single permission failure doesn't loop forever
   // hammering the API every 5s.
   var permanentlyFailed = new Set();
+  // Remembers the status that blacklisted each key, so a LATER edit to it can say
+  // why it isn't being saved instead of disappearing without a word.
+  var failedStatus = {};
+  var _skipNotifyAt = 0;
 
   async function flush() {
     if (!signedIn || pending.size === 0) return;
@@ -277,7 +281,17 @@
     // restores exactly what was queued, rather than a JSON round-trip of it.
     var rawByKey = {};
     entries.forEach(function (e) {
-      if (permanentlyFailed.has(e[0])) return; // skip known-bad keys
+      if (permanentlyFailed.has(e[0])) {
+        // The key was refused earlier this session, so nothing is sent — but the user
+        // has just edited it AGAIN and would otherwise get no hint that the change is
+        // going nowhere. Re-announce (debounced; one refused key can be touched a lot).
+        var nowT = Date.now();
+        if (nowT - _skipNotifyAt > 4000) {
+          _skipNotifyAt = nowT;
+          window.dispatchEvent(new CustomEvent('bcc-sync-error', { detail: { key: e[0], status: failedStatus[e[0]] || 403 } }));
+        }
+        return;
+      }
       if (e[1] === null) deletes.push(e[0]);
       else {
         rawByKey[e[0]] = e[1];
@@ -340,7 +354,7 @@
                 pending.set(p.key, rawByKey[p.key]);                 // transient — retry later
                 continue;
               }
-              permanentlyFailed.add(p.key);                          // genuinely refused
+              permanentlyFailed.add(p.key); failedStatus[p.key] = ir.status; // genuinely refused
               console.warn('[bcc-api] push refused (' + ir.status + '), dropping key:', p.key);
               window.dispatchEvent(new CustomEvent('bcc-sync-error', {
                 detail: { key: p.key, status: ir.status }
@@ -376,7 +390,7 @@
           // A genuine 4xx (e.g. no permission to delete this) is permanent — but it
           // used to be swallowed with no event at all, so the row vanished locally
           // while the server kept it and the user was never told.
-          permanentlyFailed.add(dkey);
+          permanentlyFailed.add(dkey); failedStatus[dkey] = dr.status;
           window.dispatchEvent(new CustomEvent('bcc-sync-error', { detail: { key: dkey, status: dr.status } }));
           continue;
         }

@@ -364,6 +364,12 @@
 
   /* ---- client selection ---- */
   function openClient(id) {
+    // Saving is debounced 600ms, so anything typed in the last moment before switching
+    // clients was still sitting in that timer — and this function used to reassign
+    // `current` and repaint over it, so the timer fired against the NEW client's form
+    // and the old client's last edits were gone with nothing said. Flush first, while
+    // `current` and the form still belong to the client being left.
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; if (current) doSave(); }
     currentId = id;
     dirty = false; // the form is about to match stored state again
     if (!id) { current = null; $('grid').style.display='none'; $('emptyHint').style.display=''; setSaveState('', false); return; }

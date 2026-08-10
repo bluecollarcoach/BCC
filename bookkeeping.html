@@ -2087,8 +2087,17 @@
     var d = _mr.data; if (!d) return Promise.resolve();
     return fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/monthly-report', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ period: d.period, observations: _mr.obs }) })
       .then(function (r) { return r.json(); })
-      .then(function (j) { if (notify) { if (j && j.ok) { if (window.bccNotifySaved) window.bccNotifySaved('Report notes saved.'); } else (window.bccNotify || alert)('Couldn’t save notes.', 'warn'); } })
-      .catch(function () { if (notify) (window.bccNotify || alert)('Couldn’t save notes.', 'warn'); });
+      // `notify` suppresses only the SUCCESS toast — it exists so the piggy-backed
+      // callers (Preview/Print PDF, Save to client Files) don't stack a redundant
+      // "notes saved" on top of their own message. A FAILURE is always announced:
+      // silencing it meant the month's written commentary could fail to persist while
+      // the PDF built fine from memory and the page said "filed to the client", and
+      // the notes were simply gone when the month was reopened.
+      .then(function (j) {
+        if (j && j.ok) { if (notify && window.bccNotifySaved) window.bccNotifySaved('Report notes saved.'); return; }
+        (window.bccNotify || alert)('Your observations could not be saved — press “Save notes” to try again. Everything else was unaffected.', 'warn', 9000);
+      })
+      .catch(function () { (window.bccNotify || alert)('Your observations could not be saved — press “Save notes” to try again. Everything else was unaffected.', 'warn', 9000); });
   }
   function mrStmtTable(stmt) {
     if (!stmt || !(stmt.rows || []).length) return '<div class="mr-empty">No data for this statement.</div>';
@@ -3491,7 +3500,15 @@
     renderTasks();
   }
   function toggleTask(id, done) {
-    var t; try { t = JSON.parse(localStorage.getItem(id)); } catch (e) {} if (!t) return;
+    var t; try { t = JSON.parse(localStorage.getItem(id)); } catch (e) {}
+    // Same shape as the saveTaskEdit bug: bailing here skipped BOTH the write and the
+    // re-render, so the checkbox stayed ticked on screen while nothing was recorded —
+    // and for a recurring task the roll-forward to the next due date never happened.
+    if (!t) {
+      (window.bccNotify || alert)('That task is no longer available — it may have been deleted or changed on another device.', 'warn', 8000);
+      renderTasks();
+      return;
+    }
     // Completing a RECURRING task rolls it forward to its next due date and reopens it —
     // it stays "upcoming" (not counted/flagged) until that date, instead of reappearing ready.
     if (done && t.recurrence && t.recurrence !== 'none' && t.dueDate) {
@@ -3988,7 +4005,20 @@
       loadFiles();
     }).catch(function (e) { st.textContent = 'Upload failed: ' + e.message; });
   }
-  function delFile(id) { if (!confirm('Delete this file?')) return; fetch('/api/documents/' + encodeURIComponent(id), { method: 'DELETE', credentials: 'include' }).then(function () { if (window.bccAudit) window.bccAudit('client-file-delete', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } }); loadFiles(); }).catch(function () { (window.bccNotify || alert)('Delete failed.', 'warn'); }); }
+  function delFile(id) {
+    if (!confirm('Delete this file?')) return;
+    // fetch() only REJECTS on a network error, so a 403 ("no access to this client's
+    // files") or a 500 used to run the success path: it wrote a client-file-delete
+    // audit row claiming the deletion happened, then quietly repainted the list with
+    // the file still in it. Check the response, like uploadFile alongside it does.
+    fetch('/api/documents/' + encodeURIComponent(id), { method: 'DELETE', credentials: 'include' })
+      .then(function (r) {
+        if (!r.ok) return r.json().catch(function () { return {}; }).then(function (j) { throw new Error(j.error || ('HTTP ' + r.status)); });
+        if (window.bccAudit) window.bccAudit('client-file-delete', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } });
+        loadFiles();
+      })
+      .catch(function (e) { (window.bccNotify || alert)('Delete failed: ' + e.message, 'warn', 8000); });
+  }
 
   /* ---- Online notarization workflow ----
      The app does NOT perform the notarial act — that is done by the commissioned
@@ -4073,7 +4103,11 @@
     var ntc = document.getElementById('nt_contact'); if (ntc) ntc.onchange = function () { setNotaryContact(ntc.value); };
     var create = document.getElementById('nt_create'); if (create) create.onclick = notaryCreate;
     body.querySelectorAll('[data-nt-savelink]').forEach(function (b) { b.onclick = function () {
-      var id = b.getAttribute('data-nt-savelink'); var inp = body.querySelector('[data-nt-link="' + id + '"]'); var r = loadNotaryReq(id); if (!r) return;
+      var id = b.getAttribute('data-nt-savelink'); var inp = body.querySelector('[data-nt-link="' + id + '"]'); var r = loadNotaryReq(id);
+      // The pasted link used to be dropped here with no message — the box kept showing
+      // it, so it read as saved until the next render, and "Email signer the link"
+      // then refused with "Paste the RON session link first" for no visible reason.
+      if (!r) { notaryMsg(id, 'This request is no longer available — the link was not saved.'); return; }
       // Same fix as clientAppUrl (normAppUrl): a link pasted without "https://" (e.g.
       // copied from a platform that displays it bare) renders as <a href="platform.com/...">,
       // which the browser treats as a path on THIS app's own domain — a silently broken link
@@ -4245,7 +4279,11 @@
   function mailboxActive() { return !!(_clientMailbox && _clientMailbox.mailbox && _clientMailbox.enabled !== false); }
   function emSigKey() { return 'bcc-emailsig-' + (myUpn().replace(/[^a-z0-9]+/g, '-') || 'x'); }
   function getSig() { try { var d = JSON.parse(localStorage.getItem(emSigKey()) || 'null'); return (d && d.sig) || ''; } catch (e) { return ''; } }
-  function setSig(sig) { try { localStorage.setItem(emSigKey(), JSON.stringify({ sig: sig, upn: myUpn(), updatedAt: nowIso() })); } catch (e) {} }
+  // Reports whether the write actually landed. It used to swallow a localStorage
+  // failure (the store fills up — see the photo/base64 note in bcc-api.js) while the
+  // Save handler went on to say "Signature saved", so the user was told the opposite
+  // of what happened and getSig() kept returning the old value.
+  function setSig(sig) { try { localStorage.setItem(emSigKey(), JSON.stringify({ sig: sig, upn: myUpn(), updatedAt: nowIso() })); return true; } catch (e) { return false; } }
   // Signature as it seeds a blank message body — leading blank lines so the
   // cursor starts above it. Empty (not two stray newlines) when unset.
   function sigBlock() { var s = getSig(); return s ? ('\n\n' + s) : ''; }
@@ -4428,7 +4466,26 @@
     var realmAt = currentRealm; // realm-race guard, matches loadEmailMeta() above — two clients sharing the bookkeeper's own inbox can show the same Graph messageId
     return fetch('/api/bookkeeping/email-meta/' + encodeURIComponent(currentRealm), { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ messageId: messageId, op: op, value: value }) })
       .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
-      .then(function (resp) { if (currentRealm === realmAt && resp && resp.ok && resp.msg) { _emMeta[messageId] = resp.msg; renderEmailList(); recomputeUnreadBadge(); } return resp; });
+      .then(function (resp) {
+        if (currentRealm !== realmAt) return resp; // client switched mid-flight
+        if (resp && resp.ok && resp.msg) { _emMeta[messageId] = resp.msg; renderEmailList(); recomputeUnreadBadge(); return resp; }
+        // The server really can refuse this: 409 on an etag conflict (two bookkeepers
+        // in one shared client mailbox) or 403 for a read-only access level. Silence
+        // meant archive/tag/assign appeared to work and simply didn't — and "Mark
+        // unread" closed the reader as if it had. Say so, and reject so callers that
+        // close the modal on success stop doing it on failure.
+        // 'read' is stamped automatically when a message is opened — the user didn't
+        // ask for it, so a failure there must not nag. Every other op is a deliberate
+        // click and does get told.
+        if (op !== 'read') (window.bccNotify || alert)('That change could not be saved — please try again.', 'warn', 7000);
+        throw new Error((resp && resp.error) || 'email-meta save failed');
+      })
+      .catch(function (e) {
+        if (op !== 'read' && currentRealm === realmAt && !/email-meta save failed/.test(String(e && e.message))) {
+          (window.bccNotify || alert)('That change could not be saved — please try again.', 'warn', 7000);
+        }
+        throw e;
+      });
   }
 
   function loadInbox(force) {
@@ -4515,7 +4572,7 @@
     emMetaOp(id, 'read').then(function () {
       var m = document.getElementById('em_modal');
       if (m && m.getAttribute('data-open-msg') === id) renderEmailActions(id);
-    });
+    }).catch(function () {}); // marking read is best-effort; don't nag on open
     renderEmailActions(id);
     var rid = mailboxActive() ? ('?realmId=' + encodeURIComponent(currentRealm)) : '';
     fetch('/api/integrations/msgraph/message/' + encodeURIComponent(id) + rid, { credentials: 'include' })
@@ -4568,11 +4625,11 @@
       (mt.tags && mt.tags.length ? '<div style="flex-basis:100%;margin-top:4px;">' + mt.tags.map(function (t) { return '<span class="fl-chip" style="cursor:pointer;" data-untag="' + esc(t) + '" title="Remove tag">' + esc(t) + ' ✕</span>'; }).join(' ') + '</div>' : '');
     document.getElementById('em_a_reply').onclick = function () { openReply(id, false); };
     document.getElementById('em_a_replyall').onclick = function () { openReply(id, true); };
-    document.getElementById('em_a_assign').onchange = function () { emMetaOp(id, 'assign', this.value).then(function () { renderEmailActions(id); }); };
-    document.getElementById('em_a_tag').onclick = function () { var t = prompt('Add a tag / category:'); if (t && t.trim()) emMetaOp(id, 'tagAdd', t.trim()).then(function () { renderEmailActions(id); }); };
-    document.getElementById('em_a_archive').onclick = function () { emMetaOp(id, 'archive', !mt.archived).then(function () { renderEmailActions(id); }); };
-    document.getElementById('em_a_unread').onclick = function () { emMetaOp(id, 'unread').then(emCloseModal); };
-    bar.querySelectorAll('[data-untag]').forEach(function (c) { c.onclick = function () { emMetaOp(id, 'tagRemove', c.getAttribute('data-untag')).then(function () { renderEmailActions(id); }); }; });
+    document.getElementById('em_a_assign').onchange = function () { emMetaOp(id, 'assign', this.value).then(function () { renderEmailActions(id); }).catch(function () {}); };
+    document.getElementById('em_a_tag').onclick = function () { var t = prompt('Add a tag / category:'); if (t && t.trim()) emMetaOp(id, 'tagAdd', t.trim()).then(function () { renderEmailActions(id); }).catch(function () {}); };
+    document.getElementById('em_a_archive').onclick = function () { emMetaOp(id, 'archive', !mt.archived).then(function () { renderEmailActions(id); }).catch(function () {}); };
+    document.getElementById('em_a_unread').onclick = function () { emMetaOp(id, 'unread').then(emCloseModal).catch(function () {}); };
+    bar.querySelectorAll('[data-untag]').forEach(function (c) { c.onclick = function () { emMetaOp(id, 'tagRemove', c.getAttribute('data-untag')).then(function () { renderEmailActions(id); }).catch(function () {}); }; });
   }
   function openReply(id, replyAll) {
     var box = document.getElementById('em_m_reply'); if (!box) return;
@@ -4627,7 +4684,7 @@
         .then(function (result) {
           var resp = result.resp;
           if (resp && resp.ok === false) throw new Error(resp.error || 'reply failed');
-          emMetaOp(id, 'replied');
+          emMetaOp(id, 'replied').catch(function () {}); // best-effort flag; the reply itself already succeeded
           // Counted from what was actually encoded and sent — not replyAtts.length,
           // which could have grown if a file was staged after Send was clicked.
           var sentCount = result.attachments.length;
@@ -4654,7 +4711,11 @@
     emWireModal(ov);
     document.getElementById('sig_close').onclick = emCloseModal;
     document.getElementById('sig_save').onclick = function () {
-      setSig(document.getElementById('sig_body').value);
+      if (!setSig(document.getElementById('sig_body').value)) {
+        var sf = document.getElementById('sig_status'); if (sf) sf.textContent = 'Not saved';
+        (window.bccNotify || alert)('Your signature could not be saved — this browser’s storage is full. Clear some space and try again.', 'error', 9000);
+        return;
+      }
       // Re-seed any message box the user hasn't started writing in, so the new
       // signature shows immediately. A box with real content is a draft — leave
       // it alone (same as Gmail/Outlook: changing your signature doesn't rewrite

@@ -365,21 +365,37 @@
   function populateTypeDropdown(selected) {
     var sel = document.getElementById('m-type');
     var types = loadServiceTypes();
-    sel.innerHTML = types.map(function (t) {
-      return '<option value="' + esc(t.id) + '"' + (t.id === selected ? ' selected' : '') + '>' + esc(t.label) + '</option>';
+    var has = false;
+    var html = types.map(function (t) {
+      var isSel = selected && t.id === selected; if (isSel) has = true;
+      return '<option value="' + esc(t.id) + '"' + (isSel ? ' selected' : '') + '>' + esc(t.label) + '</option>';
     }).join('');
+    // A service type that has since been renamed or removed from the admin list left
+    // NOTHING selected, so the browser fell back to the first option and Save silently
+    // rewrote the engagement's type to whatever happened to be at the top. Carry the
+    // stored value so saving an unrelated field can't change it.
+    if (selected && !has) html += '<option value="' + esc(selected) + '" selected>' + esc(selected) + ' (no longer offered)</option>';
+    sel.innerHTML = html;
   }
   function populateOwnerDropdown(selected) {
     var sel = document.getElementById('m-owner');
     var people = (window.bccFilterActive ? window.bccFilterActive(window.bccPeopleFull) : (window.bccPeopleFull || []));
     var me = (window.bccUser && window.bccUser.userDetails) || '';
     var meLabel = (window.bccDisplayName && me) ? (window.bccDisplayName(me) || me) : (me || 'signed-in user');
-    sel.innerHTML = '<option value="">— Me (' + esc(meLabel) + ') —</option>' +
-      people.map(function (p) {
-        var upn = p.upn || p.mail || '';
-        var label = p.displayName || (window.bccDisplayName ? window.bccDisplayName(upn) : upn) || upn;
-        return '<option value="' + esc(upn) + '"' + (upn === selected ? ' selected' : '') + '>' + esc(label) + '</option>';
-      }).join('');
+    var selLc = String(selected || '').toLowerCase(), has = false;
+    var html = people.map(function (p) {
+      var upn = p.upn || p.mail || '';
+      // Case-insensitive: UPNs arrive with different casing from Graph and from the
+      // stored doc, and an exact === meant the real owner often matched NOTHING.
+      var isSel = selLc && upn.toLowerCase() === selLc; if (isSel) has = true;
+      var label = p.displayName || (window.bccDisplayName ? window.bccDisplayName(upn) : upn) || upn;
+      return '<option value="' + esc(upn) + '"' + (isSel ? ' selected' : '') + '>' + esc(label) + '</option>';
+    }).join('');
+    // With nothing selected the browser falls back to the first option — "— Me —",
+    // whose value is '' — so saving an unrelated field silently handed the engagement
+    // to whoever was editing it. Keep an owner who is inactive or off the list.
+    if (selLc && !has) html += '<option value="' + esc(selected) + '" selected>' + esc((window.bccDisplayName && window.bccDisplayName(selected)) || selected) + ' (inactive)</option>';
+    sel.innerHTML = '<option value="">— Me (' + esc(meLabel) + ') —</option>' + html;
   }
 
   function openModal(id) {

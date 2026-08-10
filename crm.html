@@ -850,15 +850,28 @@
       renderDetail(updated.id);
     };
 
+    // The Profile fields are contenteditable and only persist when "Save changes" is
+    // pressed. Every handler below re-reads the STORED contact and (for the company
+    // dropdown) repaints the panel — so without this, picking a linked company threw
+    // away every field the user had typed and silently reverted them on screen.
+    // Fold whatever is currently on screen into the record first.
+    function withTypedProfile(u) {
+      var props = ['firstName','lastName','email','phone','title','company','website','street','city','state','zip','industry','yearsInBusiness','companySize','notes'];
+      document.querySelectorAll('[data-prop]').forEach(function (el) {
+        var k = el.getAttribute('data-prop');
+        if (props.indexOf(k) >= 0) u[k] = (el.textContent || '').trim();
+      });
+      return u;
+    }
     document.getElementById('d-stage').onchange = function () {
-      var u = getContact(c.id); u.stage = this.value; saveContact(u);
+      var u = withTypedProfile(getContact(c.id)); u.stage = this.value; saveContact(u);
     };
     document.getElementById('d-type').onchange = function () {
-      var u = getContact(c.id); u.customerType = this.value; saveContact(u);
+      var u = withTypedProfile(getContact(c.id)); u.customerType = this.value; saveContact(u);
     };
     var dCompanyEl = document.getElementById('d-companyId');
     if (dCompanyEl) dCompanyEl.onchange = function () {
-      var u = getContact(c.id); u.companyId = this.value || null;
+      var u = withTypedProfile(getContact(c.id)); u.companyId = this.value || null;
       // Convenience: if a company is linked and the free-text company field
       // is empty, mirror the company name into it so list views still read.
       if (u.companyId && !u.company) {
