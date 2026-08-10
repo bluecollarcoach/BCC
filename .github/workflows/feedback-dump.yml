@@ -1,0 +1,21 @@
+name: TEMP feedback dump
+
+# TEMPORARY. Manual-dispatch only. Prints the feedback queue so it can be triaged
+# without a browser session. Deleted again at the end of this maintenance pass,
+# along with the /api/cron/feedback endpoint it calls.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read feedback queue
+        run: |
+          code=$(curl -sS -o /tmp/fb.json -w '%{http_code}' --max-time 120 \
+            'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/cron/feedback' \
+            -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}")
+          echo "HTTP $code"
+          cat /tmp/fb.json
+          echo
+          test "$code" = "200"
