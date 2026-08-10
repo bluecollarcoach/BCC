@@ -681,6 +681,12 @@
           if (!note) { (window.bccNotify || alert)('Type a reply first.', 'warn'); return; }
           payload = { status: it.status || 'new', note: note, notify: true };
         } else {
+          // Only 'resolved' carries the note through, so typing a reply and then
+          // pressing "Mark reviewed" or "Reopen" silently binned it. Say so before
+          // discarding, and let them back out with the text still on screen.
+          if (note && act !== 'resolved') {
+            if (!confirm('You typed a reply, but “' + act + '” doesn’t send one. Use “Reply” to send it, or “Resolve” to save it with the resolution. Continue and discard the reply?')) return;
+          }
           payload = { status: act, note: (act === 'resolved' ? note : '') };
         }
         b.disabled = true;

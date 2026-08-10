@@ -392,7 +392,15 @@
     rec.blurb = document.getElementById('m-blurb').value.trim();
     // Read current lesson edits from the DOM (overrides currentLessons array order/values).
     // Same reader the add/remove buttons use, so the two paths can't drift apart.
-    rec.lessons = readLessonRows().filter(function (l) { return l.title || l.videoUrl; });
+    var allRows = readLessonRows();
+    rec.lessons = allRows.filter(function (l) { return l.title || l.videoUrl; });
+    // A row with only a duration filled in is discarded here. That is the right call
+    // (a lesson with no title or link isn't usable), but it used to happen in total
+    // silence — the row simply wasn't there when the course was reopened.
+    var droppedRows = allRows.length - rec.lessons.length;
+    if (droppedRows) {
+      (window.bccNotify || alert)(droppedRows + (droppedRows === 1 ? ' lesson was' : ' lessons were') + ' left out — a lesson needs a title or a video link to be saved.', 'warn', 8000);
+    }
     saveCourse(rec);
     if (window.bccAudit) window.bccAudit(id ? 'course-update' : 'course-create', { key: rec.id, path: '/training.html' });
     if (window.bccNotifySaved) window.bccNotifySaved('Course saved.');

@@ -172,7 +172,7 @@
       <label>Service type
         <select id="m-type"></select>
       </label>
-      <label>Value (USD)<input type="number" id="m-value" min="0" step="50" placeholder="2500" /></label>
+      <label>Value (USD)<input type="text" inputmode="decimal" id="m-value" placeholder="2500" /></label>
       <label>Start date<input type="date" id="m-start" /></label>
       <label>Renew / close date<input type="date" id="m-renew" /></label>
       <label class="full">Notes<textarea id="m-notes" rows="3" placeholder="Scope, milestones, anything to remember"></textarea></label>
@@ -431,7 +431,18 @@
     rec.contactId   = document.getElementById('m-contact').value || null;
     rec.companyId   = document.getElementById('m-company').value || null;
     rec.serviceType = document.getElementById('m-type').value;
-    rec.valueCents  = Math.round(parseFloat(document.getElementById('m-value').value || '0') * 100) || 0;
+    // This was <input type="number">: a bookkeeper pasting "$2,500" or "2,500" made
+    // .value read back as EMPTY, so the deal silently became $0 — wiping both what
+    // they typed and whatever was stored — and the card then showed "—". Parse the way
+    // the rest of the app takes money (bookkeeping.html cnum / the server's qboAmount):
+    // strip anything that isn't a digit, dot or minus.
+    var rawValue = String(document.getElementById('m-value').value || '').trim();
+    var parsedValue = parseFloat(rawValue.replace(/[^0-9.\-]/g, ''));
+    if (rawValue && !isFinite(parsedValue)) {
+      (window.bccNotify || alert)('That deal value isn’t a number — check the Value field. Nothing was saved.', 'warn', 7000);
+      return;
+    }
+    rec.valueCents  = rawValue ? Math.round(parsedValue * 100) : 0;
     rec.startAt     = document.getElementById('m-start').value || null;
     rec.renewAt     = document.getElementById('m-renew').value || null;
     rec.notes       = document.getElementById('m-notes').value.trim();

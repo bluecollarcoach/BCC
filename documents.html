@@ -440,7 +440,14 @@
   up.addEventListener('drop', function (e) {
     e.preventDefault();
     var f = e.dataTransfer.files && e.dataTransfer.files[0];
-    if (!f) return;
+    // The zone highlights on dragover, so the gesture looks accepted. Dropping
+    // something that isn't a real file (a folder, or text/a link dragged out of
+    // another app) yields no File and used to do absolutely nothing — the highlight
+    // just cleared. Say why instead.
+    if (!f) {
+      (window.bccNotify || alert)('That didn’t come through as a file — drop a single file, or use “Choose file”. Folders can’t be uploaded.', 'warn', 7000);
+      return;
+    }
     var dt = new DataTransfer(); dt.items.add(f);
     document.getElementById('fileInput').files = dt.files;
     tryUpload();

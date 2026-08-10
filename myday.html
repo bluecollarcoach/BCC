@@ -631,6 +631,14 @@
     document.getElementById('mt_toggle').onclick = function () { _myTasksOpen = !_myTasksOpen; renderMyTasks(); };
     var addFn = function () {
       var inp = document.getElementById('mt_new'); var txt = (inp.value || '').trim(); if (!txt) return;
+      // Without an identity the key is the orphan 'bcc-mytasks-', which the server
+      // refuses (ownsPersonalKey wants bcc-mytasks-<your upn>) and which vanishes the
+      // moment the real upn lands — the task looked added, then wasn't there. Keep
+      // what was typed on screen and say why rather than writing it into the void.
+      if (!meUpn()) {
+        (window.bccNotify || alert)('Still signing you in — give it a second and add that again.', 'warn', 6000);
+        return;
+      }
       var due = (document.getElementById('mt_due') || {}).value || '';
       var dd = loadMyTasks(); dd.items.unshift({ id: uid2(), text: txt.slice(0, 300), due: due, done: false, createdAt: nowIso() });
       saveMyTasks(dd); renderMyTasks(); var n = document.getElementById('mt_new'); if (n) n.focus();

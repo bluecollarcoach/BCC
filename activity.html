@@ -331,7 +331,11 @@
       var fresh = older.filter(function (x) { return !(x.id && seen[x.id]); });
       if (older.length < PAGE || !fresh.length) _exhausted = true;
       rows = rows.concat(fresh);
-    } catch (e) { /* keep what we already have */ }
+    } catch (e) {
+      // Keep what we already have — but SAY so. This used to fail completely
+      // silently, so the button just did nothing and read as "there is no more".
+      (window.bccNotify || alert)('Couldn’t load older activity — check your connection and try again.', 'warn', 7000);
+    }
     _loadingMore = false;
     populateUserFilter();
     render();

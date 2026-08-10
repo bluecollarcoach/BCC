@@ -410,7 +410,13 @@
           }
         });
       })
-      .catch(function () { if (btn) btn.disabled = false; setSyncMeta(''); });
+      .catch(function (e) {
+        // The button re-enabled and the status line blanked, which reads as "done" —
+        // when in fact nothing was created or linked. Say it failed.
+        if (btn) btn.disabled = false;
+        setSyncMeta('');
+        (window.bccNotify || alert)('Couldn’t sync from Bookkeeping — nothing was changed. Try again in a moment.', 'warn', 8000);
+      });
   }
   /* ===== Import OUR OWN customers (from the firm's own QuickBooks) =====
      The firm's own QBO company is flagged isOwnBooks and is locked to its owner,

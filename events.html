@@ -231,7 +231,10 @@
       b.addEventListener('click', function () {
         var bid = b.dataset.booking;
         var idVal = document.getElementById('m-id').value;
-        var rec = getEvent(idVal); if (!rec) return;
+        var rec = getEvent(idVal);
+        // Same shape as the saveTaskEdit bug: bailing here skipped the save AND the
+        // re-render, so the attendee stayed on screen as though nothing happened.
+        if (!rec) { (window.bccNotify || alert)('This event is no longer available — nothing was changed.', 'warn', 7000); return; }
         rec.bookings = (rec.bookings || []).filter(function (x) { return x.id !== bid; });
         saveEvent(rec);
         if (window.bccAudit) window.bccAudit('event-update', { key: rec.id, path: '/events.html', meta: { action: 'unbook' } });
@@ -240,7 +243,8 @@
     });
     document.getElementById('bk-add').addEventListener('click', function () {
       var idVal = document.getElementById('m-id').value;
-      var rec = getEvent(idVal); if (!rec) return;
+      var rec = getEvent(idVal);
+      if (!rec) { (window.bccNotify || alert)('This event is no longer available — the booking was not added.', 'warn', 7000); return; }
       var contactId = document.getElementById('bk-contact').value;
       var nameOverride = document.getElementById('bk-name').value.trim();
       var c = contactId ? (contacts.find(function (x) { return x.id === contactId; })) : null;

@@ -344,6 +344,10 @@ function init() {
     // New channels are PRIVATE by default — created with just you as a member.
     // Use the "Members" button (opened automatically) to add people, or flip
     // it to "Open to everyone".
+    // Pre-auth, whoUpn() is '' — the channel would be created with an empty member
+    // list and no creator, so canManageChan() would never grant its own author rights
+    // and (for a non-admin) it could never be edited again.
+    if (!whoUpn()) { alert('Still signing you in — give it a second and create that channel again.'); return; }
     mutateChans(cs => { cs.push({ id, name:id, desc:'', members:[whoUpn()], createdBy: whoUpn() }); });
     active = id;
     render();
@@ -533,6 +537,10 @@ function renderThread() {
       // render() here wiped the message the user had already typed before attaching.
       pendingPhoto = url; renderLive();
     });
+    // Without onerror an unreadable pick (an iCloud photo not downloaded locally, a
+    // revoked file handle) fired 'error', never 'load', and the whole attach silently
+    // did nothing — shrinkPhoto owns every user-facing message and never ran.
+    r.onerror = () => alert('That image could not be read from this device. Try picking it again, or download it locally first.');
     r.readAsDataURL(f);
   };
   const rmp = document.getElementById('rmPhoto');
@@ -688,11 +696,20 @@ function openMembersModal(chId) {
       else { t.members = sel; if (!t.createdBy) t.createdBy = meUpn; }
       return t;
     });
+    // mutateChans returns null when the channel is gone, or when this person can no
+    // longer manage it — in which case NOTHING was written. Closing the modal and
+    // auditing a change that didn't happen made the selection look saved.
+    if (!saved) {
+      alert('Those members were not saved — the channel was changed or removed while this was open.');
+      close();
+      renderLive();
+      return;
+    }
     window.bccAudit && window.bccAudit('chat-members-update', {
       key: chId, meta: { channel: chId, open: !!wantOpen, count: (saved && Array.isArray(saved.members)) ? saved.members.length : null }
     });
     close();
-    render();
+    renderLive();
   };
 }
 

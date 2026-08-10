@@ -1583,6 +1583,14 @@
       if (now - _lastPermissionToastAt < 4000) return;
       _lastPermissionToastAt = now;
       if (window.bccNotify) window.bccNotify('That change wasn’t saved — you don’t have permission to edit this.', 'warn', 7000);
+    } else if (status) {
+      // Anything else the server refused (400 bad shape, 404, 409 conflict, 413 too
+      // large…). There used to be no final branch here at all, so those failed exactly
+      // as silently as the bug this listener was added to fix.
+      var nowOther = Date.now();
+      if (nowOther - _lastPermissionToastAt < 4000) return;
+      _lastPermissionToastAt = nowOther;
+      if (window.bccNotify) window.bccNotify('That change wasn’t saved (error ' + status + ') — please try again, and let an admin know if it keeps happening.', 'warn', 8000);
     }
   });
 
@@ -1926,6 +1934,14 @@
     location.href = '/.auth/login/aad?prompt=select_account&domain_hint=bluecollarcoach.us&post_login_redirect_uri=' + redir;
   };
   window.bccSignOut = function () {
+    // Writes are debounced (PUSH_DEBOUNCE_MS) and re-queued on a transient failure, so
+    // signing out right after a save used to walk away from whatever was still in the
+    // queue — the edit was simply gone on the next sign-in. Push it first, and if that
+    // can't be done, let them decide rather than losing it silently.
+    if (pending.size) {
+      try { flush(); } catch (e) {}
+      if (pending.size && !confirm(pending.size + ' change' + (pending.size === 1 ? '' : 's') + ' still saving. Sign out anyway and lose ' + (pending.size === 1 ? 'it' : 'them') + '?')) return;
+    }
     window.bccAudit && window.bccAudit('signout');
     location.href = '/.auth/logout?post_logout_redirect_uri=' + encodeURIComponent(location.origin + '/');
   };

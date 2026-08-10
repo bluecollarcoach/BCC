@@ -307,7 +307,10 @@
     localStorage.setItem(c.id, JSON.stringify(c));
     return c;
   }
-  function deleteCampaign(id) { if (!isCampaignKey(id)) return; localStorage.removeItem(id); }
+  // Returns whether it actually deleted. Callers used to assume success, so a
+  // campaign whose id wasn't ours (or was already gone) left the row on screen with
+  // no explanation after the user had confirmed "Delete this campaign?".
+  function deleteCampaign(id) { if (!isCampaignKey(id)) return false; localStorage.removeItem(id); return true; }
 
   /* ===== List render ===== */
   var qInput, channelFilter, statusFilter, rowsEl, emptyEl, subline;
@@ -411,7 +414,7 @@
   document.getElementById('m-delete').addEventListener('click', function () {
     var id = document.getElementById('m-id').value; if (!id) return;
     if (!confirm('Delete this campaign?')) return;
-    deleteCampaign(id);
+    if (!deleteCampaign(id)) { (window.bccNotify || alert)('That campaign could not be deleted — it may already be gone. Refresh to see the current list.', 'warn', 7000); return; }
     if (window.bccAudit) window.bccAudit('campaign-delete', { key: id, path: '/marketing.html' });
     closeModal();
     renderList();
@@ -435,7 +438,7 @@
       if (btn && btn.dataset.act === 'delete') {
         e.stopPropagation();
         if (!confirm('Delete this campaign?')) return;
-        deleteCampaign(tr.dataset.id);
+        if (!deleteCampaign(tr.dataset.id)) { (window.bccNotify || alert)('That campaign could not be deleted — it may already be gone. Refresh to see the current list.', 'warn', 7000); return; }
         if (window.bccAudit) window.bccAudit('campaign-delete', { key: tr.dataset.id, path: '/marketing.html' });
         renderList();
         return;

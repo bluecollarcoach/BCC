@@ -1322,12 +1322,21 @@ async function createUserNotif(c, forUpn, o) {
     url: String(o.url || ''), tag: String(o.tag || ''),
     createdAt: new Date().toISOString(), read: false
   };
-  try { await c.items.upsert(doc); } catch (_) {}
+  // REPORTS success rather than throwing. Swallowing it outright meant /api/notify
+  // answered { ok: true } — and the month-end handler told the bookkeeper the
+  // scheduler had been notified — when nothing had been written. But two callers
+  // (cpr-sign, feedback-resolve) have ALREADY completed their real work by the time
+  // they notify, so throwing there would 500 a request that genuinely succeeded and
+  // make an external signer sign again. Let each caller decide.
+  try { await c.items.upsert(doc); return true; } catch (_) { return false; }
 }
 // Notify a user in-app AND via web push.
+// Returns whether the IN-APP notification was stored. Push delivery on top is
+// best-effort by design (a failed push must never fail the caller).
 async function notifyUser(c, upn, o) {
-  await createUserNotif(c, upn, o);
+  const stored = await createUserNotif(c, upn, o);
   await pushToUsers([upn], { title: o.title, body: o.body || '', url: o.url || '/', tag: o.tag || '' });
+  return stored;
 }
 // Who is notified when feedback lands — the owner(s). Configurable via
 // FEEDBACK_NOTIFY_UPNS / BCC_OWNER_UPNS; defaults to the account owner.
@@ -1599,7 +1608,10 @@ app.http('notify-user', {
       if (!recN || recN.status === 'inactive' || recN.status === 'hidden') return badRequest('recipient is not an active user');
       const c = container();
       const from = String(p.userDetails || p.userId || '').toLowerCase();
-      await notifyUser(c, toUpn, { title, body: msg, url, tag: String(body.tag || '').slice(0, 60) });
+      const delivered = await notifyUser(c, toUpn, { title, body: msg, url, tag: String(body.tag || '').slice(0, 60) });
+      // Here the notification is the whole point — reporting ok:true when nothing was
+      // stored is what let the month-end handler say "the scheduler was notified".
+      if (!delivered) return { status: 502, jsonBody: { ok: false, error: 'the notification could not be saved — please try again' } };
       logAudit('notify-user', { user: from, key: toUpn, path: url, meta: { title } });
       return { jsonBody: { ok: true } };
     } catch (e) { context.error('notify error', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }

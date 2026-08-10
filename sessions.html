@@ -442,6 +442,14 @@
   function closeModal() { document.getElementById('modalBg').classList.remove('open'); }
 
   document.getElementById('newBtn').addEventListener('click', function () { openModal(null); });
+  // Handoff from scheduler.html's "+ New session on this day": it stashes the chosen
+  // day here and navigates. Nothing read the key, so the day was silently dropped and
+  // the user landed on a generic New Session defaulted to today. Consume it once.
+  (function () {
+    var handoffDay = '';
+    try { handoffDay = sessionStorage.getItem('bcc-new-session-day') || ''; sessionStorage.removeItem('bcc-new-session-day'); } catch (e) {}
+    if (handoffDay) openModal(null, handoffDay);
+  })();
   document.getElementById('m-cancel').addEventListener('click', closeModal);
   document.getElementById('modalBg').addEventListener('click', function (e) {
     if (e.target.id === 'modalBg') closeModal();

@@ -292,7 +292,7 @@
       b.addEventListener('click', function () {
         if (!confirm('Remove this package?')) return;
         var pkg = b.closest('.pkg'); var id = pkg.dataset.id;
-        var s = loadSheet();
+        var s = commitNow(); // keep edits typed in the last moment before Remove
         s.packages = (s.packages || []).filter(function (p) { return p.id !== id; });
         saveSheet(s);
         renderPackages();
@@ -300,20 +300,30 @@
     });
   }
   var dirtyT;
+  // Reads the packages straight off the LIVE inputs. Split out of dirtyCommit's timer
+  // so anything that rewrites the sheet can fold in typing that hasn't been committed
+  // yet — edits sat in a ~250ms debounce, and Add/Remove/Save all used to start from
+  // loadSheet() (the PRE-edit copy), silently discarding those last keystrokes.
+  function harvestPackages(s) {
+    var pkgs = [];
+    document.querySelectorAll('#pkgList .pkg').forEach(function (el) {
+      var id = el.dataset.id;
+      var name = el.querySelector('input[data-edit=name]').value.trim() || 'Untitled package';
+      var dollars = parseFloat(el.querySelector('input[data-edit=priceDollars]').value || '0') || 0;
+      var cadence = el.querySelector('select[data-edit=cadence]').value;
+      var blurb = el.querySelector('textarea[data-edit=blurb]').value.trim();
+      pkgs.push({ id: id, name: name, priceCents: Math.round(dollars * 100), cadence: cadence, blurb: blurb });
+    });
+    s.packages = pkgs;
+    return s;
+  }
+  // Commit what's on screen RIGHT NOW, cancelling the pending debounce.
+  function commitNow() { clearTimeout(dirtyT); var s = harvestPackages(loadSheet()); saveSheet(s); return s; }
   function dirtyCommit() {
     clearTimeout(dirtyT);
     dirtyT = setTimeout(function () {
-      var s = loadSheet();
-      var pkgs = [];
-      document.querySelectorAll('#pkgList .pkg').forEach(function (el) {
-        var id = el.dataset.id;
-        var name = el.querySelector('input[data-edit=name]').value.trim() || 'Untitled package';
-        var dollars = parseFloat(el.querySelector('input[data-edit=priceDollars]').value || '0') || 0;
-        var cadence = el.querySelector('select[data-edit=cadence]').value;
-        var blurb = el.querySelector('textarea[data-edit=blurb]').value.trim();
-        pkgs.push({ id: id, name: name, priceCents: Math.round(dollars * 100), cadence: cadence, blurb: blurb });
-      });
-      s.packages = pkgs;
+      var s = harvestPackages(loadSheet());
+      var pkgs = s.packages;
       saveSheet(s);
       // Re-render only the price labels (avoid losing focus on the typed input)
       document.querySelectorAll('#pkgList .pkg').forEach(function (el) {
@@ -329,14 +339,15 @@
   function dollarsFmt(cents) { return '$' + (Math.round(cents) / 100).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 }); }
 
   document.getElementById('addPkgBtn').addEventListener('click', function () {
-    var s = loadSheet();
+    var s = commitNow(); // keep edits typed in the last moment before Add
     s.packages = s.packages || [];
     s.packages.push({ id: uid(), name: 'New package', priceCents: 0, cadence: 'monthly', blurb: '' });
     saveSheet(s);
     renderPackages();
   });
   document.getElementById('saveBtn').addEventListener('click', function () {
-    dirtyCommit(); // flush any pending edits immediately
+    commitNow(); // actually WRITE now — dirtyCommit only armed a timer, so the
+                 // "saved" toast below used to fire before anything was stored
     if (window.bccNotifySaved) window.bccNotifySaved('Rate sheet saved.');
     else (window.bccNotify || alert)('Saved.', 'success');
   });
