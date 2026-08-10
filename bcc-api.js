@@ -159,6 +159,21 @@
      settled is derived from the previous session's snapshot, so replaying it against a
      shared document could silently overwrite a colleague's newer change; those are limited
      to families only their owner ever writes. */
+  /* Keys currently being PUT, plus a short grace period after the request settles.
+     flush() clears `pending` BEFORE the network round trip, so `pending.has(key)` — the
+     only guard the pull sites had — was false for the whole duration of the request. A
+     delta poll landing in that window (they run every 8s) applied the server's OLD copy
+     straight over the value the user had just saved, and the page repainted it. The
+     grace period matters too: a poll GET whose read happened before the upsert can still
+     be PROCESSED after the PUT resolves. Map of key -> hold-until timestamp. */
+  var inFlight = new Map();
+  function heldInFlight(key) {
+    var until = inFlight.get(key);
+    if (until === undefined) return false;
+    if (until !== 0 && until < Date.now()) { inFlight.delete(key); return false; }
+    return true;
+  }
+
   var OUTBOX_KEY = 'bccOutboxV1';
   var OUTBOX_MAX = 300;
   /* Families whose docs only their owner writes, so an unauthenticated replay cannot
@@ -258,7 +273,12 @@
                             per-device sync bookkeeping + identity. Already written via
                             _origSetItem elsewhere; listed so no other write path can
                             reintroduce the push. */
-  var DEVICE_LOCAL_KEYS = ['bcc-last-realm', 'bcc-push-enabled', 'bcc-sync-since-v1', 'bcc-sync-fullpull-at', 'bcc-field-who', 'bcc-device-last-upn'];
+  var DEVICE_LOCAL_KEYS = ['bcc-last-realm', 'bcc-push-enabled', 'bcc-sync-since-v1', 'bcc-sync-fullpull-at', 'bcc-field-who', 'bcc-device-last-upn',
+    // Dismissing the "turn on notifications" prompt is a per-BROWSER choice. It was
+    // being pushed as a tenant-wide doc, so the first person to tap "Not now" turned the
+    // prompt off for everyone, permanently — and any tenant copy already in Cosmos would
+    // otherwise keep being re-applied over each browser's own value.
+    'bcc-push-banner-dismissed', 'bcc-field-who-upn'];
 
   /* Doc families a FULL pull returns in their ENTIRETY to every signed-in user —
      no per-client gate, no app tier, no owner scoping, and not on the server's
@@ -363,6 +383,9 @@
     if (!signedIn || pending.size === 0) return;
     var entries = Array.from(pending.entries());
     pending.clear();
+    // 0 = "no expiry yet, the request is still open"; a real timestamp is stamped when
+    // the flush settles, below.
+    entries.forEach(function (e) { inFlight.set(e[0], 0); });
 
     var puts = [];
     var deletes = [];
@@ -390,6 +413,10 @@
     });
 
     if (!puts.length && !deletes.length) {
+      // Nothing is actually going over the wire (every entry was already permanently
+      // refused), so release the hold immediately — leaving these at 0 would block the
+      // pull from ever updating those keys again for the life of the page.
+      entries.forEach(function (e) { inFlight.delete(e[0]); });
       setSyncState('idle');
       return;
     }
@@ -435,12 +462,14 @@
                   body: JSON.stringify({ data: p.data })
                 });
               } catch (netErr) {
-                pending.set(p.key, rawByKey[p.key]); // network blip — keep it queued
+                // ...unless the user has already typed something newer (see the catch
+                // block at the bottom of flush for why that can happen mid-PUT).
+                if (!pending.has(p.key)) pending.set(p.key, rawByKey[p.key]); // network blip — keep it queued
                 continue;
               }
               if (ir.ok) continue;                                   // this one was fine
               if (ir.status === 401 || ir.status === 408 || ir.status === 429 || ir.status >= 500) {
-                pending.set(p.key, rawByKey[p.key]);                 // transient — retry later
+                if (!pending.has(p.key)) pending.set(p.key, rawByKey[p.key]); // transient — retry later
                 continue;
               }
               permanentlyFailed.add(p.key); failedStatus[p.key] = ir.status; // genuinely refused
@@ -471,7 +500,7 @@
           // this browser, so dropping it here left the server copy alive to reappear
           // on the next pull. Re-queue the deletion instead of pretending it worked.
           if (dr.status === 401 || dr.status === 408 || dr.status === 429 || dr.status >= 500) {
-            pending.set(dkey, null);
+            if (!pending.has(dkey)) pending.set(dkey, null); // a newer write to this key wins over re-queuing the delete
             schedulePush();
             window.dispatchEvent(new CustomEvent('bcc-sync-error', { detail: { key: dkey, status: dr.status, transient: true } }));
             continue;
@@ -491,7 +520,13 @@
       console.warn('[bcc-api] push failed (transient), re-queuing in 5s:', err);
       // Only re-queue items that aren't permanently failed
       entries.forEach(function (e) {
-        if (!permanentlyFailed.has(e[0])) pending.set(e[0], e[1]);
+        if (permanentlyFailed.has(e[0])) return;
+        // Never clobber a NEWER local write. flush() clears `pending` up front, so the
+        // user can edit the same key again while the PUT is in flight; re-queuing the
+        // snapshot on failure then threw that newer edit away silently. This is the same
+        // "queued local write wins" invariant the pull and prune sites already assert.
+        if (pending.has(e[0])) return;
+        pending.set(e[0], e[1]);
       });
       setSyncState('error');
       setTimeout(flush, 5000);
@@ -501,6 +536,10 @@
     // would just re-tell them). Whatever got re-queued above stays in the outbox so it
     // still survives a reload. This single sweep covers every exit path above.
     outboxDrop(entries.map(function (e) { return e[0]; }).filter(function (k) { return !pending.has(k); }));
+    // Hold each key for one more poll interval so a response already in flight, built
+    // from a pre-write read, can't land on top of what we just saved.
+    var holdUntil = Date.now() + LIVE_POLL_MS + 2000;
+    entries.forEach(function (e) { if (inFlight.get(e[0]) === 0) inFlight.set(e[0], holdUntil); });
   }
 
   // Manually clear the permanent-failure set (admins call this after granting
@@ -536,7 +575,7 @@
         items.forEach(function (it) {
           if (!it || !it.key || it.data === undefined) return;
           if (it.updatedAt && it.updatedAt > maxUpd) maxUpd = it.updatedAt;
-          if (pending.has(it.key)) return; // an unsent local write is newer
+          if (pending.has(it.key) || heldInFlight(it.key)) return; // an unsent — or still-saving — local write is newer
           // Never let a DEVICE preference arrive from the server. Older builds pushed
           // these, so a tenant-wide copy may still exist in Cosmos; applying it would
           // keep overwriting this browser's own value forever.
@@ -987,7 +1026,7 @@
             if (seenKeys) seenKeys.add(it.key); // server still has this doc
             if (it.data === undefined) return;
             if (it.updatedAt && it.updatedAt > maxUpd) maxUpd = it.updatedAt;
-            if (pending.has(it.key)) return; // user has a newer local write queued
+            if (pending.has(it.key) || heldInFlight(it.key)) return; // user has a newer local write queued (or still saving)
             if (DEVICE_LOCAL_KEYS.indexOf(it.key) >= 0) return; // device preference (see setItem)
             var val = typeof it.data === 'string' ? it.data : JSON.stringify(it.data);
             _origSetItem.call(localStorage, it.key, val);
@@ -1050,9 +1089,19 @@
         }
       } catch (e) {}
 
-      // 3) Auto-populate bcc-field-who from the signed-in identity if not set
-      if (user && user.userDetails && !localStorage.getItem('bcc-field-who')) {
-        _origSetItem.call(localStorage, 'bcc-field-who', user.userDetails);
+      // 3) Seed bcc-field-who from the signed-in identity. The guard used to be
+      //    "only if absent", so on a shared browser the SECOND person to sign in kept
+      //    the first person's name — and that value is what stamps chat messages and
+      //    created records, so their work was attributed to someone else. Compare
+      //    against who it was seeded FOR, not merely whether it exists, so a genuine
+      //    manual override by the same user still survives.
+      if (user && user.userDetails) {
+        var seededFor = localStorage.getItem('bcc-field-who-upn');
+        var meNow = String(user.userDetails).toLowerCase();
+        if (seededFor !== meNow) {
+          _origSetItem.call(localStorage, 'bcc-field-who', user.userDetails);
+          _origSetItem.call(localStorage, 'bcc-field-who-upn', meNow);
+        }
       }
 
       // 4) Active Entra users, STALE-WHILE-REVALIDATE: apply the cached
@@ -2068,11 +2117,20 @@
     // sign-out cancelled the in-flight PUT without asking. Count first.
     var queued = pending.size;
     if (queued) {
-      try { flush(); } catch (e) {}
-      // The outbox means these are recoverable on the next sign-in on this device, so
-      // this is a warning rather than a certain loss — but the request is still in
-      // flight and navigating away aborts it, so it is still worth asking.
-      if (!confirm(queued + ' change' + (queued === 1 ? '' : 's') + ' ' + (queued === 1 ? 'is' : 'are') + ' still saving. Sign out anyway?')) return;
+      // Give the flush a real chance to land before navigating away, but never wait on
+      // it indefinitely — flush() can issue a batch PUT plus N per-key PUTs plus N
+      // DELETEs sequentially, so a slow server would wedge sign-out with no feedback.
+      if (pushTimer) clearTimeout(pushTimer);
+      var done = false;
+      var go = function () {
+        if (done) return; done = true;
+        if (pending.size && !confirm(pending.size + ' change' + (pending.size === 1 ? '' : 's') + ' could not be saved yet. They are stored on this device and will finish saving next time you sign in here. Sign out now?')) return;
+        window.bccAudit && window.bccAudit('signout');
+        location.href = '/.auth/logout?post_logout_redirect_uri=' + encodeURIComponent(location.origin + '/');
+      };
+      try { Promise.resolve(flush()).then(go, go); } catch (e) { go(); }
+      setTimeout(go, 2500);
+      return;
     }
     window.bccAudit && window.bccAudit('signout');
     location.href = '/.auth/logout?post_logout_redirect_uri=' + encodeURIComponent(location.origin + '/');

@@ -714,13 +714,28 @@ app.http('data', {
         const now = new Date().toISOString();
         const who = p.userDetails || p.userId || 'unknown';
         for (const it of items) {
-          await c.items.upsert({
+          const doc = {
             id: it.key,
             tenantId: BCC_TENANT_ID,
             data: it.data,
             updatedAt: now,
             updatedBy: who
-          });
+          };
+          // A PUT here is a whole-document REPLACE, but the OAuth callbacks write the
+          // connector's refresh/access token to the doc's TOP level — and the top level
+          // is never shipped to the browser (the pull ships only c.data). So a routine
+          // "Save credentials" or "Test connection" from Admin replaced the document
+          // with a copy that had no token, silently disconnecting the connector while
+          // toasting success, with no copy of that token anywhere else. Merge onto what
+          // is already stored — the same read-before-write this handler already does for
+          // server-owned document metadata above. Prefix-gated, so nothing else changes.
+          if (it.key.startsWith('bcc-integration-')) {
+            const exInt = await c.item(it.key, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+            if (exInt) await c.items.upsert(Object.assign({}, exInt, doc));
+            else await c.items.upsert(doc);
+            continue;
+          }
+          await c.items.upsert(doc);
         }
         // Whenever bcc-admin-config-v1 changes, drop our cache so the next
         // admin check sees the new user/role list immediately (otherwise an
@@ -2511,7 +2526,7 @@ app.http('drive-set-root', {
 // Short-lived per-realm access-token cache: fewer refresh calls means fewer
 // token rotations (and rotation races) against the providers. Tokens live
 // ~60 min at both providers; cache well inside that.
-const _driveATCache = new Map(); // realmId -> { at, exp }
+const _driveATCache = new Map(); // realmId|refreshTokenTail|provider -> { at, exp }
 /* ===== SharePoint (the firm's Bookkeeping Operations library) =====
  * Client working files live in SharePoint:
  *   Site "Bookkeeping Operations" → Documents → "Recurring Client Work" → <Client>
@@ -2839,13 +2854,21 @@ async function driveDocAndToken(realmId) {
   if (!doc) return { err: { status: 400, jsonBody: { ok: false, error: 'not connected' } } };
   const creds = await driveAppCreds(doc.provider);
   if (!creds.ok) return { err: { status: 400, jsonBody: { ok: false, error: 'app not configured' } } };
-  const hit = _driveATCache.get(realmId);
+  // Key the cache on the stored refresh token as well as the realm. Reconnecting to a
+  // DIFFERENT account writes a new refresh token, so the old entry can no longer be hit
+  // — previously the cache was keyed on realmId alone and a warm worker kept listing and
+  // UPLOADING client documents into the account the firm believed it had disconnected,
+  // for up to 40 minutes, while drive-upload still answered { ok: true }. Deleting the
+  // entry in the OAuth callback would not have worked: that runs on whichever worker
+  // handled the callback, not necessarily the one holding the warm entry.
+  const atKey = realmId + '|' + String(doc.refreshToken || '').slice(-24) + '|' + String(doc.provider || '');
+  const hit = _driveATCache.get(atKey);
   if (hit && hit.exp > Date.now()) return { doc, at: hit.at };
   let at;
   try {
     at = await driveAccessToken(doc, creds);
   } catch (e) {
-    _driveATCache.delete(realmId);
+    _driveATCache.delete(atKey);
     if (e && (e.status === 400 || e.status === 401)) {
       // Refresh token expired/revoked — tell the UI to offer Reconnect instead
       // of surfacing a raw "token refresh 400".
@@ -2857,7 +2880,7 @@ async function driveDocAndToken(realmId) {
     }
     throw e;
   }
-  _driveATCache.set(realmId, { at, exp: Date.now() + 40 * 60 * 1000 });
+  _driveATCache.set(atKey, { at, exp: Date.now() + 40 * 60 * 1000 });
   return { doc, at };
 }
 
@@ -3164,7 +3187,15 @@ async function getIntegrationFields(channel) {
     // credentials saved under .data.fields (an empty object is truthy).
     const top = resource && resource.fields;
     const nested = resource && resource.data && resource.data.fields;
-    const fields = (top && Object.keys(top).length ? top : null) || nested || top || {};
+    // MERGE the two layers rather than picking one. The OAuth callbacks write tokens to
+    // the TOP-level `fields`; the admin UI writes typed credentials to `.data.fields`.
+    // Picking whichever was non-empty meant that once a connector held a token at the
+    // top, every clientId/clientSecret an admin typed afterwards was invisible to the
+    // server — Connect would then 400 with "set clientId + clientSecret first" while
+    // both values sat on screen. Blanks are pruned so a UI-blanked '' can never beat a
+    // real server-held token; top wins a genuine conflict, being the live OAuth value.
+    const prune = o => Object.fromEntries(Object.entries(o || {}).filter(([, v]) => v !== '' && v != null));
+    const fields = Object.assign({}, prune(nested), prune(top));
     _intCache.byChannel.set(channel, fields);
     _intCache.until = Date.now() + 60 * 1000;
     return fields;
@@ -6487,7 +6518,11 @@ async function assembleMonthlyReport(apiGet, comp, per, method) {
     // that "months of cash" now depends on — e.g. a transient QBO rate-limit hit. A
     // past period should NOT be frozen off a degraded result (it would lock in missing
     // figures forever); the caller checks this before freezing.
-    degraded: !plPrior || !plYtd || !bsPrior || !plBurn,
+    // Every one of these fetches has a silent .catch(() => null), and a FROZEN report is
+    // permanent — so a transient QBO hiccup on the cash-flow statement or the A/R & A/P
+    // aging used to be locked in forever, with those sections simply missing and nothing
+    // to say why. The statements the report prints count as comparison-critical too.
+    degraded: !plPrior || !plYtd || !bsPrior || !plBurn || !cashFlow || !arAging || !apAging || !arSummary || !apSummary,
     company: { name: comp.companyName || realmId, legalName: comp.legalName || comp.companyName || '' },
     kpis: {
       cash, cashPrior: bsPrior ? bsCash(bsPrior) : null, monthsOfCash, monthlyBurn,
