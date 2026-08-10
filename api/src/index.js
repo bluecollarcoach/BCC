@@ -3601,6 +3601,25 @@ app.http('cron-qbo-sync', {
   }
 });
 
+/* TEMPORARY — read the feedback queue headlessly. Removed again at the end of this
+   maintenance pass; it exists only so the queue can be triaged without a browser
+   session. Same CRON_SECRET gate as every other headless endpoint, read-only. */
+app.http('cron-feedback', {
+  methods: ['GET'], authLevel: 'anonymous', route: 'cron/feedback',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    try {
+      const c = container();
+      const { resources } = await c.items.query({
+        query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+      }).fetchAll();
+      return { jsonBody: { ok: true, count: resources.length, items: resources } };
+    } catch (e) { context.error('cron-feedback', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  }
+});
+
 /**
  * POST /api/cron/cleanup — purge old access-log documents (docType:"access") and
  * consumed OAuth single-use state markers (docType:"oauthstate-used").
