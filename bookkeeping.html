@@ -3427,13 +3427,26 @@
     body.querySelectorAll('[data-tdel]').forEach(function (b) { b.onclick = function () { delTask(b.getAttribute('data-tdel')); }; });
     body.querySelectorAll('[data-tedit]').forEach(function (b) { b.onclick = function () { _taskEdit = b.getAttribute('data-tedit'); renderTasks(); var ti = document.getElementById('te_title'); if (ti) ti.focus(); }; });
     wireTaskExpand(body, renderTasks);
-    var teSave = document.getElementById('te_save'); if (teSave) teSave.onclick = function () { saveTaskEdit(_taskEdit); };
+    // Pin the id THIS form was rendered for. Reading the _taskEdit global at click
+    // time meant that if anything cleared it in between, saveTaskEdit(null) looked up
+    // localStorage[null], found nothing, and silently closed the editor — discarding
+    // whatever had just been typed.
+    var editingId = _taskEdit;
+    var teSave = document.getElementById('te_save'); if (teSave) teSave.onclick = function () { saveTaskEdit(editingId); };
     var teCancel = document.getElementById('te_cancel'); if (teCancel) teCancel.onclick = function () { _taskEdit = null; renderTasks(); };
-    var teTitle = document.getElementById('te_title'); if (teTitle) teTitle.addEventListener('keydown', function (e) { if (e.key === 'Enter') saveTaskEdit(_taskEdit); if (e.key === 'Escape') { _taskEdit = null; renderTasks(); } });
+    var teTitle = document.getElementById('te_title'); if (teTitle) teTitle.addEventListener('keydown', function (e) { if (e.key === 'Enter') saveTaskEdit(editingId); if (e.key === 'Escape') { _taskEdit = null; renderTasks(); } });
   }
   function saveTaskEdit(id) {
     var t; try { t = JSON.parse(localStorage.getItem(id)); } catch (e) {}
-    if (!t) { _taskEdit = null; renderTasks(); return; }
+    if (!t) {
+      // The task couldn't be read back — it was deleted or renamed on another device
+      // while this form was open. This used to just close the editor and throw the
+      // typed changes away with NO message, which reads as "I opened Edit and it
+      // vanished" (reported by a bookkeeper). Say what happened and leave the form up
+      // so nothing typed is lost; Cancel is the way out.
+      (window.bccNotify || alert)('This task is no longer available — it may have been deleted or changed on another device. Your changes were not saved. Copy anything you need, then press Cancel.', 'warn', 10000);
+      return;
+    }
     var title = (document.getElementById('te_title') || {}).value || ''; title = title.trim();
     if (!title) { (window.bccNotify || alert)('Task title required.', 'warn'); return; }
     var recur = (document.getElementById('te_recur') || {}).value || 'none';

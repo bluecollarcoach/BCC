@@ -3602,31 +3602,6 @@ app.http('cron-qbo-sync', {
  * retention is enough — they're low-volume (one per OAuth connect attempt) but
  * there's no reason to keep them forever either.
  */
-/* TEMPORARY — feedback queue reader for the maintenance sweep.
- * CRON_SECRET-gated exactly like the other cron routes (no Entra cookie is available
- * headless). Read-only: it never resolves, mutates, or notifies. REMOVED again as soon
- * as the sweep finishes — do not leave this deployed. */
-app.http('cron-feedback', {
-  methods: ['GET', 'POST'],
-  authLevel: 'anonymous',
-  route: 'cron/feedback',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    const given = request.headers.get('x-bcc-cron-secret') || '';
-    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
-    try {
-      const c = container();
-      const { resources } = await c.items.query({
-        query: 'SELECT c.id, c.type, c.message, c.rating, c.page, c.userUpn, c.userName, c.status, c.createdAt, c.resolutionNote, c.resolutionBy, c.resolutionAt, c.relocateTo FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC',
-        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
-      }).fetchAll();
-      const byStatus = {};
-      resources.forEach(r => { const s = r.status || 'new'; byStatus[s] = (byStatus[s] || 0) + 1; });
-      return { jsonBody: { ok: true, total: resources.length, byStatus, items: resources } };
-    } catch (e) { context.error('cron-feedback', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
-  }
-});
-
 app.http('cron-cleanup', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
