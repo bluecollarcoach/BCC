@@ -3600,7 +3600,38 @@
     inp.click();
   }
 
-  function openFilePreview(name, viewUrl, downloadUrl, mime) {
+  /* probe=true means viewUrl is a same-origin streaming endpoint of ours that answers
+     failures as JSON with a non-200. Without probing, those failures were rendered
+     literally: a broken-image glyph for a photo, or the raw {"ok":false,...} text inside
+     the PDF frame. Only the email-attachment call site sets it — the SharePoint, Drive
+     and internal-documents previews 302 to a cross-origin blob SAS that a credentialed
+     fetch() cannot follow, so probing those would break previews that work today. */
+  function openFilePreview(name, viewUrl, downloadUrl, mime, probe) {
+    if (probe) {
+      var ov0 = document.createElement('div'); ov0.id = 'fp_modal'; ov0.className = 'em-modal-ov';
+      ov0.innerHTML = '<div class="em-modal" style="max-width:920px;"><div class="em-modal-body"><div style="padding:34px 20px;text-align:center;color:var(--muted);font-size:13.5px;">Opening ' + esc(name) + '…</div></div></div>';
+      document.body.appendChild(ov0);
+      var drop = function () { var m = document.getElementById('fp_modal'); if (m) m.remove(); };
+      fetch(viewUrl, { credentials: 'include' }).then(function (r) {
+        if (!r.ok) {
+          return r.json().catch(function () { return null; }).then(function (j) {
+            throw new Error((j && j.error) || ('the server returned ' + r.status));
+          });
+        }
+        return r.blob();
+      }).then(function (blob) {
+        drop();
+        // Hand the preview a blob: URL so it isn't fetched a second time. Revoked on close.
+        var burl = URL.createObjectURL(blob);
+        openFilePreview(name, burl, downloadUrl, mime || blob.type, false);
+        var m = document.getElementById('fp_modal');
+        if (m) m.setAttribute('data-revoke', burl);
+      }).catch(function (e) {
+        drop();
+        (window.bccNotify || alert)('Couldn’t open ' + name + ': ' + (e && e.message ? e.message : 'network error'), 'error', 9000);
+      });
+      return;
+    }
     var ext = fileExt(name); var ct = (mime || '').toLowerCase();
     var isImg = /^(png|jpe?g|gif|webp|bmp|svg)$/.test(ext) || /^image\//.test(ct);
     var isPdf = ext === 'pdf' || ct === 'application/pdf';
@@ -3633,9 +3664,18 @@
       // drive download endpoint already streams and ignores the param.
       if (fpe) fpe.onclick = function () { fpClose(); openPdfFromUrl(downloadUrl + (downloadUrl.indexOf('?') < 0 ? '?' : '&') + 'bytes=1', name); };
     }
-    function fpClose() { var m = document.getElementById('fp_modal'); if (m) m.remove(); document.removeEventListener('keydown', fpKey); }
+    function fpClose() {
+      var m = document.getElementById('fp_modal');
+      if (m) { var b = m.getAttribute('data-revoke'); if (b) { try { URL.revokeObjectURL(b); } catch (e) {} } m.remove(); }
+      document.removeEventListener('keydown', fpKey);
+    }
     function fpKey(e) { if (e.key === 'Escape') fpClose(); }
     document.getElementById('fp_close').onclick = fpClose;
+    var pvImg = ov.querySelector('.em-modal-body img');
+    if (pvImg) pvImg.onerror = function () {
+      var box = ov.querySelector('.em-modal-body');
+      if (box) box.innerHTML = '<div style="padding:34px 20px;text-align:center;color:var(--burgundy);font-size:13.5px;">This image couldn’t be displayed. Use <strong>Download</strong> to save it instead.</div>';
+    };
     ov.addEventListener('click', function (e) { if (e.target === ov) fpClose(); });
     document.addEventListener('keydown', fpKey);
   }
@@ -3646,7 +3686,7 @@
         if (e.metaKey || e.ctrlKey || e.shiftKey) return; // let power-users download
         e.preventDefault();
         var dl = a.getAttribute('href');
-        openFilePreview(a.getAttribute('data-pvname'), dl + inlineSep + 'inline=1', dl, a.getAttribute('data-pvmime') || '');
+        openFilePreview(a.getAttribute('data-pvname'), dl + inlineSep + 'inline=1', dl, a.getAttribute('data-pvmime') || '', a.getAttribute('data-pvprobe') === '1');
       };
     });
   }
@@ -4493,7 +4533,15 @@
     if (!force && _emLoadedFor === currentRealm && _emMsgs.length) { renderEmailList(); return; }
     list.innerHTML = '<div style="color:var(--muted);">Loading mail…</div>';
     var realmAt = currentRealm;
-    var rid = mailboxActive() ? ('&realmId=' + encodeURIComponent(currentRealm)) : '';
+    // No mailbox for this client means there is no client mail — NOT "show me my own".
+    // Omitting realmId made the server fall back to the signed-in user's personal
+    // inbox, so the client's Email tab displayed the bookkeeper's own mail and
+    // emMetaOp then wrote those message ids into the shared per-client meta doc.
+    if (!mailboxActive()) {
+      list.innerHTML = '<div style="color:var(--muted);padding:10px 0;">No mailbox is set up for this client yet, so there’s no client mail to show. An admin can add one in the client’s settings.</div>';
+      _emMsgs = []; _emLoadedFor = currentRealm; _emUnread[currentRealm] = 0; updateWsNav(); return;
+    }
+    var rid = '&realmId=' + encodeURIComponent(currentRealm);
     fetch('/api/integrations/msgraph/messages?top=50' + rid, { credentials: 'include' })
       .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
       .then(function (resp) {
@@ -4552,10 +4600,20 @@
   function emWireModal(ov) {
     document.body.appendChild(ov);
     ov.addEventListener('click', function (e) { if (e.target === ov) emCloseModal(); });
-    _emEsc = function (e) { if (e.key === 'Escape') emCloseModal(); };
+    // Don't close the reader out from under whatever is stacked on top of it. Both
+    // overlays register their own document-level Escape handler, and this one was
+    // registered first, so a single press used to run emCloseModal() BEFORE the PDF
+    // editor's own "unsaved changes" confirm had even been shown.
+    _emEsc = function (e) { if (e.key === 'Escape' && !document.querySelector('#fp_modal, .bpdf-ov')) emCloseModal(); };
     document.addEventListener('keydown', _emEsc);
   }
   function openEmail(id) {
+    // Close any reader that is already up first. Reopening (which the attachment
+    // "try again" link does) used to append a SECOND element with id="em_modal":
+    // every later getElementById returned the first, hidden one, so the visible
+    // modal was inert — its X did nothing and the refetched message painted into
+    // the invisible copy.
+    emCloseModal();
     var realmAt = currentRealm;
     var msg = _emMsgs.filter(function (x) { return x.id === id; })[0] || { id: id, subject: '' };
     var ov = document.createElement('div'); ov.id = 'em_modal'; ov.className = 'em-modal-ov'; ov.setAttribute('data-open-msg', id);
@@ -4574,7 +4632,11 @@
       if (m && m.getAttribute('data-open-msg') === id) renderEmailActions(id);
     }).catch(function () {}); // marking read is best-effort; don't nag on open
     renderEmailActions(id);
-    var rid = mailboxActive() ? ('?realmId=' + encodeURIComponent(currentRealm)) : '';
+    // attDl below always scopes to this client's mailbox, so the message fetch must too —
+    // reading the message from one mailbox and its attachments from another is a
+    // guaranteed 404 on every attachment. loadInbox refuses to list anything without a
+    // mailbox, so this is belt-and-braces for any future caller.
+    var rid = '?realmId=' + encodeURIComponent(currentRealm);
     fetch('/api/integrations/msgraph/message/' + encodeURIComponent(id) + rid, { credentials: 'include' })
       .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
       .then(function (resp) {
@@ -4588,11 +4650,32 @@
         if (fromEl) fromEl.innerHTML = esc(m.fromName ? (m.fromName + ' <' + m.from + '>') : m.from) + '<br><span style="color:var(--muted);">To: ' + esc((m.to || []).join(', ')) + (m.cc && m.cc.length ? ' · Cc: ' + esc(m.cc.join(', ')) : '') + '</span>';
         var attDl = function (a) {
           return '/api/integrations/msgraph/message/' + encodeURIComponent(id) + '/attachment/' + encodeURIComponent(a.id) +
-            '/download?name=' + encodeURIComponent(a.name) + (mailboxActive() ? '&realmId=' + encodeURIComponent(currentRealm) : '');
+            '/download?name=' + encodeURIComponent(a.name) + '&realmId=' + encodeURIComponent(currentRealm);
         };
-        var att = (m.attachments && m.attachments.length) ? '<div class="em-att">📎 ' + m.attachments.map(function (a) {
+        // Only a 'file' attachment has bytes behind it. A 'reference' is a OneDrive /
+        // SharePoint link (Outlook makes one whenever the sender picks a cloud file, and
+        // whenever it converts a big attachment to a link) and an 'item' is an embedded
+        // Outlook message from a forwarded email. Rendering those as ordinary download
+        // links is why clicking an attachment could do nothing at all: the download
+        // endpoint has nothing to stream for them. Say what they are instead.
+        var attList = (m.attachments || []).filter(function (a) {
+          // Inline images are the sender's signature logo far more often than not. Keep
+          // any that carry a real filename-looking name and hide the rest, rather than
+          // dropping every inline attachment — phones legitimately send real photos
+          // with Content-Disposition: inline, and those are what Megan is sending.
+          return !(a.isInline && /^(image\d+|oledata|ole\d+)\./i.test(String(a.name || '')));
+        });
+        var att = attList.length ? '<div class="em-att">📎 ' + attList.map(function (a) {
           var kb = a.size ? (' <span style="color:var(--muted);font-size:11px;">(' + Math.max(1, Math.round(a.size / 1024)) + ' KB)</span>') : '';
-          return '<a class="fs-file" href="' + attDl(a) + '" data-pvname="' + esc(a.name) + '" data-pvmime="' + esc(a.contentType || '') + '">' + esc(a.name) + '</a>' + kb;
+          if (a.kind === 'reference') {
+            return '<span class="fs-file" style="cursor:default;border-bottom:none;" title="Stored in OneDrive/SharePoint — open the email in Outlook to reach it">☁ ' + esc(a.name) + '</span>' +
+              ' <span style="color:var(--muted);font-size:11px;">(cloud link' + (m.webLink ? ' — <a href="' + esc(m.webLink) + '" target="_blank" rel="noopener">open in Outlook</a>' : '') + ')</span>';
+          }
+          if (a.kind === 'item') {
+            return '<span class="fs-file" style="cursor:default;border-bottom:none;" title="An email attached to this email">✉ ' + esc(a.name) + '</span>' +
+              ' <span style="color:var(--muted);font-size:11px;">(attached email' + (m.webLink ? ' — <a href="' + esc(m.webLink) + '" target="_blank" rel="noopener">open in Outlook</a>' : '') + ')</span>';
+          }
+          return '<a class="fs-file" href="' + attDl(a) + '" data-pvname="' + esc(a.name) + '" data-pvmime="' + esc(a.contentType || '') + '" data-pvprobe="1">' + esc(a.name) + '</a>' + kb;
         }).join(' &nbsp;&middot;&nbsp; ') + '</div>'
           // hasAttachments true but the list came back empty AND the server flagged
           // why — Graph's attachment listing failed, this is NOT "no attachments".
@@ -4694,8 +4777,18 @@
           emCloseModal();
         })
         .catch(function (e) {
-          btn.disabled = false; st.textContent = 'Failed: ' + e.message;
-          document.getElementById('em_r_files').disabled = false; if (replyFilesBtn) replyFilesBtn.style.pointerEvents = '';
+          // The reader can be closed (Escape, or a click on the backdrop) while the send
+          // is still in flight, and closing removes #em_r_files with it. Touching it
+          // unguarded threw inside the catch, so the failure was swallowed entirely and
+          // the typed reply plus its staged files were gone with nothing said. Re-enable
+          // the controls only if they still exist; toast unconditionally so the message
+          // survives the modal being gone.
+          if (document.getElementById('em_modal')) {
+            btn.disabled = false; st.textContent = 'Failed: ' + e.message;
+            var fi = document.getElementById('em_r_files'); if (fi) fi.disabled = false;
+            if (replyFilesBtn) replyFilesBtn.style.pointerEvents = '';
+          }
+          (window.bccNotify || alert)('Reply not sent: ' + ((e && e.message) || 'network error') + ' — nothing went out.', 'error', 9000);
         });
     };
   }

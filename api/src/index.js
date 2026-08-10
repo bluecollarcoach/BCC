@@ -130,6 +130,29 @@ function inlineOk(ct) {
   return /^image\//.test(ct) || ct === 'application/pdf' || ct === 'text/plain' || ct === 'text/csv';
 }
 
+/* Mail clients label attachments badly. A PDF or a phone photo routinely arrives as
+   application/octet-stream, and every one of these endpoints sends X-Content-Type-Options:
+   nosniff — so the browser will NOT rescue it, and Content-Disposition:inline on an
+   octet-stream still downloads. That is why previewing an emailed PDF or photo showed a
+   blank frame (and quietly downloaded the file) instead of opening it.
+   Given the filename we already have, recover the real type. Never upgrade INTO an
+   active type: html/svg/xhtml/xml stay non-inline no matter what the extension says. */
+const EXT_CT = {
+  pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', heic: 'image/heic', tif: 'image/tiff', tiff: 'image/tiff',
+  txt: 'text/plain; charset=utf-8', log: 'text/plain; charset=utf-8', md: 'text/plain; charset=utf-8',
+  json: 'text/plain; charset=utf-8', csv: 'text/csv; charset=utf-8'
+};
+function effectiveContentType(ct, filename) {
+  const base = String(ct || '').toLowerCase().split(';')[0].trim();
+  const ext = String(filename || '').toLowerCase().split('.').pop();
+  // An explicit, non-generic type from the source always wins.
+  const vague = !base || base === 'application/octet-stream' || base === 'binary/octet-stream'
+    || base === 'application/download' || base === 'application/force-download';
+  if (!vague) return ct;
+  return EXT_CT[ext] || ct || 'application/octet-stream';
+}
+
 // Email-domain allowlist used by /api/users when filtering the Graph tenant
 // directory down to BCC employees (drops guests / external members so they
 // never reach an internal dropdown). Override with env BCC_ALLOWED_DOMAINS
@@ -271,9 +294,14 @@ function isPcKey(k) {
   return typeof k === 'string' && k.startsWith('bcc-') && k.length < 80;
 }
 
-function badRequest(msg) { return { status: 400, jsonBody: { error: msg } }; }
-function unauthorized()  { return { status: 401, jsonBody: { error: 'unauthenticated' } }; }
-function forbidden(msg)  { return { status: 403, jsonBody: { error: msg || 'forbidden' } }; }
+// ok:false matters. Callers all over the frontend test `if (resp && resp.ok === false)`
+// on a body they parsed with r.json() without ever looking at r.status. A body carrying
+// only { error } left resp.ok === undefined, which is not === false, so a rejected
+// request slid straight down the SUCCESS path — "Reply sent", an audit row, a stamped
+// email-meta doc, a stored certified-payroll send record — with nothing sent.
+function badRequest(msg) { return { status: 400, jsonBody: { ok: false, error: msg } }; }
+function unauthorized()  { return { status: 401, jsonBody: { ok: false, error: 'unauthenticated' } }; }
+function forbidden(msg)  { return { status: 403, jsonBody: { ok: false, error: msg || 'forbidden' } }; }
 function domainBlocked() { return { status: 403, jsonBody: { error: 'domain_not_allowed', detail: 'sign in with an @bluecollarcoach.us account' } }; }
 // Strip credential-looking fields from an integration doc for non-admins, while
 // keeping non-secret status flags (e.g. status:'connected') so UI badges still work.
@@ -2114,13 +2142,22 @@ async function bookkeepingTierFor(p) {
     const cfg = await getAdminCfg();
     const who = String((p && (p.userDetails || p.userId)) || '').toLowerCase();
     const rec = (cfg && Array.isArray(cfg.users) ? cfg.users : []).find(u => String(u.upn || u.email || '').toLowerCase() === who);
-    const active = !rec || (rec.status !== 'inactive' && rec.status !== 'hidden');
-    if (active && rec && rec.appPermissions && rec.appPermissions.bookkeeping) return String(rec.appPermissions.bookkeeping);
+    // Deactivating a user must TIGHTEN their access, not drop it. This used to compute
+    // `active` and skip the appPermissions lookup when false, falling through to the
+    // `return null` below — and null is the "no tier recorded = regular access" sentinel,
+    // so marking someone inactive silently PROMOTED a 'tasks' or 'view' bookkeeper to
+    // full access on any route that still accepted their live session cookie. appTierFor
+    // below already gets this right; mirror it exactly.
+    if (rec && (rec.status === 'inactive' || rec.status === 'hidden')) return 'none';
+    if (rec && rec.appPermissions && rec.appPermissions.bookkeeping) return String(rec.appPermissions.bookkeeping);
   } catch (_) {}
   return null;
 }
-function bookkeepingNoFinancials(tier) { return tier === 'tasks'; }
-function bookkeepingReadOnly(tier) { return tier === 'tasks' || tier === 'view'; }
+// 'none' is a tier an admin can actually pick in admin.html, and it is what an
+// inactive/hidden user now resolves to — both predicates have to deny it, or "None"
+// would read as full access. null stays permissive: it means no row exists yet.
+function bookkeepingNoFinancials(tier) { return tier === 'tasks' || tier === 'none'; }
+function bookkeepingReadOnly(tier) { return tier === 'tasks' || tier === 'view' || tier === 'none'; }
 
 /* Generic per-app permission tier (CRM, Engagements/Jobs, Marketing, Rate Sheet).
  * admin.html lets an admin set Admin/Edit/View/None for these apps, and bcc-api.js
@@ -4006,7 +4043,12 @@ app.http('msgraph-send-mail', {
       if (bccList.length) msg.bccRecipients = bccList.filter(Boolean).map(recip);
       // File attachments (base64). Graph's simple-attachment path tops out around
       // 3 MB per message, so cap and report rather than letting Graph 413.
-      const atts = Array.isArray(body.attachments) ? body.attachments.slice(0, 10) : [];
+      // No COUNT cap: there used to be a .slice(0, 10) here, which silently dropped
+      // everything past the tenth while the send still reported ok and the UI counted
+      // the files the USER picked. Neither Graph nor Outlook limits the number of
+      // attachments, only the total size — and the size gate below is now summing the
+      // real payload instead of the first ten items.
+      const atts = Array.isArray(body.attachments) ? body.attachments : [];
       if (atts.length) {
         let totalB = 0;
         msg.attachments = atts.map(a => {
@@ -4220,8 +4262,31 @@ app.http('msgraph-message-get', {
       let attachmentsError = null;
       if (m.hasAttachments) {
         try {
-          const ar = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + id + '/attachments?$select=id,name,contentType,size', { headers: { Authorization: 'Bearer ' + access } });
-          if (ar.ok) { const aj = await ar.json(); attachments = (aj.value || []).map(a => ({ id: a.id, name: a.name, contentType: a.contentType, size: a.size })); }
+          // isInline and contentId are properties of the BASE microsoft.graph.attachment
+          // type, so they are safe to $select on this polymorphic collection. sourceUrl is
+          // NOT — it lives on the referenceAttachment subtype and a bare mention of it
+          // makes Graph reject the whole query, which would surface as "could not load
+          // attachments" on every message that has any. @odata.type needs no $select: the
+          // subtype discriminator always comes back on a derived-type collection.
+          const ar = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + id + '/attachments?$select=id,name,contentType,size,isInline,contentId', { headers: { Authorization: 'Bearer ' + access } });
+          if (ar.ok) {
+            const aj = await ar.json();
+            attachments = (aj.value || []).map(a => {
+              const odata = String(a['@odata.type'] || '');
+              return {
+                id: a.id, name: a.name, contentType: a.contentType, size: a.size,
+                isInline: !!a.isInline, contentId: a.contentId || '',
+                // 'file' is the only kind with bytes behind /$value. 'reference' is a
+                // OneDrive/SharePoint pointer (what Outlook creates for a cloud attachment
+                // or any large file it converts to a link) and 'item' is an embedded
+                // Outlook message (a forwarded email-as-attachment). Asking Graph for
+                // $value on either returns an error, which is why clicking one of these
+                // has been doing nothing but produce a failed download.
+                kind: /referenceAttachment/i.test(odata) ? 'reference'
+                    : /itemAttachment/i.test(odata) ? 'item' : 'file'
+              };
+            });
+          }
           else attachmentsError = 'Graph rejected (' + ar.status + ')';
         } catch (e) { attachmentsError = String((e && e.message) || e); }
       }
@@ -4262,9 +4327,24 @@ app.http('msgraph-attachment-download', {
       const wantInlineReq = u.searchParams.get('inline') === '1';
       const name = (u.searchParams.get('name') || 'attachment').replace(/[^a-zA-Z0-9._ -]+/g, '_').slice(0, 150);
       const r = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + msgId + '/attachments/' + attId + '/$value', { headers: { Authorization: 'Bearer ' + access } });
-      if (!r.ok) { const detail = (await r.text()).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')', detail } }; }
+      if (!r.ok) {
+        const detail = (await r.text()).slice(0, 300);
+        // $value only exists for a fileAttachment. Say which case this is in plain
+        // language instead of leaking "Graph rejected (400)" into a preview pane —
+        // a cloud/reference attachment genuinely has no bytes to serve, and telling
+        // the bookkeeper to open it in Outlook is the only true answer.
+        if (/InvalidAttachmentType|attachment type|ErrorInvalidRequest/i.test(detail) || r.status === 400) {
+          return { status: 415, jsonBody: { ok: false, kind: 'not-a-file',
+            error: 'This is a link to a file stored in OneDrive/SharePoint, not an attached copy, so there is nothing to download here. Open the email in Outlook and follow the link.' } };
+        }
+        if (r.status === 404) return { status: 404, jsonBody: { ok: false, error: 'That attachment is no longer on the message — it may have been removed, or the email was moved or deleted.' } };
+        return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')', detail } };
+      }
       const buf = Buffer.from(await r.arrayBuffer());
-      const ct = r.headers.get('content-type') || 'application/octet-stream';
+      // Graph hands back application/octet-stream for a great many perfectly ordinary
+      // attachments. Under nosniff that guarantees a blank preview, so recover the real
+      // type from the filename before deciding whether it can be shown inline.
+      const ct = effectiveContentType(r.headers.get('content-type'), name);
       const wantInline = wantInlineReq && inlineOk(ct);
       return { status: 200, headers: { 'Content-Type': ct, 'Content-Disposition': (wantInline ? 'inline' : 'attachment') + '; filename="' + name + '"', 'X-Content-Type-Options': 'nosniff' }, body: buf };
     } catch (e) { context.error('msgraph-attachment-download', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
@@ -4314,7 +4394,9 @@ app.http('msgraph-reply', {
         catch (_) { /* best-effort only — nothing more we can do server-side */ }
       };
 
-      const atts = Array.isArray(b.attachments) ? b.attachments.slice(0, 10) : [];
+      // No count cap — see the note in msgraph-send-mail. Only the total size is capped,
+      // and that is the limit Graph actually enforces.
+      const atts = Array.isArray(b.attachments) ? b.attachments : [];
       if (!atts.length) {
         // No attachments — the one-call reply/replyAll action Graph provides for exactly this.
         const r = await gfetch(base + '/' + action, {
@@ -4392,15 +4474,23 @@ app.http('email-meta', {
   handler: withAccessLog(async (request, context) => {
     const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
     const realmId = request.params.realmId;
-    const rc = await resolveClientMailbox(p, realmId); if (rc.err) return rc.err;
+    // The body has to be read BEFORE the gate, because the gate's answer depends on which
+    // op this is — and in Functions v4 the body stream can only be consumed once.
+    const b = request.method === 'POST' ? await request.json().catch(() => ({})) : {};
+    const messageId = String(b.messageId || ''); const op = String(b.op || '');
+    // Tag / assign / archive / replied all edit state the whole team sees, so they are
+    // mutations and a read-only 'view' bookkeeper must not be able to make them. This
+    // call used to pass no opts at all, so `opts && opts.mutating` short-circuited and
+    // the read-only tier was never checked on any op. read/unread are per-person and
+    // stay allowed — they are how the reader marks your own copy.
+    const personalOp = (op === 'read' || op === 'unread');
+    const rc = await resolveClientMailbox(p, realmId, { mutating: request.method === 'POST' && !personalOp }); if (rc.err) return rc.err;
     const c = container(); const id = 'bcc-emailmeta-' + realmId;
     const who = String(p.userDetails || p.userId || '').toLowerCase();
     if (request.method === 'GET') {
       const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
       return { jsonBody: { ok: true, msgs: (doc && doc.msgs) || {} } };
     }
-    const b = await request.json().catch(() => ({}));
-    const messageId = String(b.messageId || ''); const op = String(b.op || '');
     if (!messageId || !op) return badRequest('messageId and op required');
     const now = new Date().toISOString();
     // read-modify-write with one optimistic retry on a concurrent change.
