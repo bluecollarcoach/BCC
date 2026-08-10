@@ -3673,12 +3673,37 @@ app.http('cron-qbo-sync', {
    maintenance pass; it exists only so the queue can be triaged without a browser
    session. Same CRON_SECRET gate as every other headless endpoint, read-only. */
 app.http('cron-feedback', {
-  methods: ['GET'], authLevel: 'anonymous', route: 'cron/feedback',
+  methods: ['GET', 'POST'], authLevel: 'anonymous', route: 'cron/feedback',
   handler: async (request, context) => {
     const secret = process.env.CRON_SECRET || '';
     if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
     try {
       const c = container();
+      if (request.method === 'POST') {
+        // Resolve one item and notify its submitter — the same thing the admin UI does,
+        // reachable headlessly for this maintenance pass only.
+        const b = await request.json().catch(() => ({}));
+        const id = String(b.id || '');
+        if (id.indexOf('bcc-feedback-') !== 0) return badRequest('bad id');
+        const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+        if (!doc) return { status: 404, jsonBody: { ok: false, error: 'not found' } };
+        const st = String(b.status || 'resolved').toLowerCase();
+        if (['new', 'reviewed', 'resolved'].indexOf(st) < 0) return badRequest('bad status');
+        const note = String(b.note || '').trim().slice(0, 2000);
+        const wasResolved = doc.status === 'resolved';
+        doc.status = st; doc.reviewedBy = String(b.by || 'lyle@bluecollarcoach.us').toLowerCase(); doc.updatedAt = new Date().toISOString();
+        if (note) { doc.resolutionNote = note; doc.resolutionBy = doc.reviewedBy; doc.resolutionAt = new Date().toISOString(); }
+        await c.items.upsert(doc);
+        let notified = false;
+        if (doc.userUpn && st === 'resolved' && !wasResolved) {
+          notified = await notifyUser(c, doc.userUpn, {
+            title: '✅ Your feedback was addressed',
+            body: note || String(doc.message || '').slice(0, 90),
+            url: safeNotifyPath(doc.page), tag: 'fbdone-' + doc.id
+          });
+        }
+        return { jsonBody: { ok: true, id: doc.id, status: doc.status, notified } };
+      }
       const { resources } = await c.items.query({
         query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC',
         parameters: [{ name: '@t', value: BCC_TENANT_ID }]
