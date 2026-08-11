@@ -1071,11 +1071,27 @@
           '<div style="color:var(--muted);font-size:11.5px;">' + esc(app.desc) + '</div>' +
         '</td>' +
         '<td style="padding:9px 8px;border-bottom:1px solid var(--chrome-mute);text-align:right;">' +
-          '<select data-perm style="min-width:110px;min-height:30px;padding:4px 8px;font-size:12.5px;border-radius:6px;border:1px solid var(--chrome-mute);background:#fff;">' + sel + '</select>' +
+          '<select data-perm' + (role === 'admin' ? ' disabled' : '') + ' style="min-width:110px;min-height:30px;padding:4px 8px;font-size:12.5px;border-radius:6px;border:1px solid var(--chrome-mute);background:' + (role === 'admin' ? 'var(--chrome)' : '#fff') + ';">' + sel + '</select>' +
         '</td>' +
       '</tr>';
     }).join('');
     document.getElementById('permsRows').innerHTML = rowsHtml;
+    // A global Admin short-circuits every server-side permission check, by design — the
+    // owner list and the SWA 'administrator' role are the only lockout-recovery paths, so
+    // an ordinary config row must never be able to strip them. That meant per-app tiers
+    // set on an admin were saved and displayed but silently never enforced. Disable the
+    // controls and say why, rather than showing a restriction that does not exist.
+    var pn = document.getElementById('permsAdminNote');
+    if (!pn) {
+      pn = document.createElement('div');
+      pn.id = 'permsAdminNote';
+      pn.style.cssText = 'background:var(--gold-fade);border-radius:8px;padding:9px 11px;margin-bottom:10px;font-size:12.5px;color:var(--ink);';
+      var rowsTable = document.getElementById('permsRows');
+      var host = rowsTable.closest('table') || rowsTable;
+      host.parentNode.insertBefore(pn, host);
+    }
+    pn.textContent = 'A global Admin has full access to every app — these per-app levels do not apply. Change their role to Member first if you need to restrict them.';
+    pn.style.display = (role === 'admin') ? '' : 'none';
     document.getElementById('permsModal').style.display = 'block';
   }
 

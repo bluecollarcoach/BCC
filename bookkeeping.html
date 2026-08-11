@@ -3267,15 +3267,18 @@
   function loadActivity() {
     var list = document.getElementById('act_list'); if (!list) return;
     list.innerHTML = '<div style="color:var(--muted);padding:10px;">Loading recent activity…</div>';
-    fetch('/api/audit/client/' + encodeURIComponent(currentRealm) + '?days=' + _actDays, { credentials: 'include' })
+    // Ask the SERVER to filter by user. Filtering here ran over a capped page, so on a
+    // busy client "Just me" hid your own older activity inside a range that had it.
+    fetch('/api/audit/client/' + encodeURIComponent(currentRealm) + '?days=' + _actDays + (_actMine ? '&user=' + encodeURIComponent(myUpn()) : ''), { credentials: 'include' })
       .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
       .then(function (resp) {
         if (!resp || !resp.ok) { list.innerHTML = '<div style="color:var(--muted);padding:10px;">Activity unavailable.</div>'; return; }
         var rows = resp.rows || [];
-        if (_actMine) { var me = myUpn(); rows = rows.filter(function (a) { return (a.user || '').toLowerCase() === me; }); }
         if (!rows.length) { list.innerHTML = '<div style="color:var(--muted);padding:14px;">No changes in this range.</div>'; return; }
+        // The server caps the page — without this, a capped list reads as the whole range.
+        var actCap = resp.capped ? '<div style="background:#fbf6ec;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12.5px;">Showing the most recent ' + rows.length + ' entries — shorten the date range to see further back.</div>' : '';
         var lastDay = '';
-        list.innerHTML = rows.map(function (a) {
+        list.innerHTML = actCap + rows.map(function (a) {
           var d = new Date(a.ts); var day = d.toDateString(); var h = '';
           if (day !== lastDay) { lastDay = day; h = '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 6px;">' + esc(actDayLabel(d)) + '</div>'; }
           var who = (window.bccDisplayName && window.bccDisplayName(a.user)) || a.user || '';

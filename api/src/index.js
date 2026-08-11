@@ -3121,11 +3121,21 @@ app.http('audit-client', {
       let days = parseInt(u.searchParams.get('days') || '7', 10) || 7;
       if (days < 1) days = 1; if (days > 90) days = 90;
       const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+      // "Just me" used to filter in the BROWSER over this capped page, so on a busy
+      // client your own older activity simply vanished from a range that clearly
+      // contained it. Filter in SQL, and LOWER() both sides: the two audit writers
+      // disagree on casing (browser rows keep userDetails as-is, server rows lowercase
+      // it), and every QBO push emits one of each — exact equality would drop half.
+      const wantUser = String(u.searchParams.get('user') || '').trim().toLowerCase();
+      const ACT_CAP = 300;
+      let where = 'c.tenantId=@t AND c.docType="audit" AND c.ts>=@s AND c.meta.realmId=@r';
+      const params = [{ name: '@t', value: BCC_TENANT_ID }, { name: '@s', value: since }, { name: '@r', value: realmId }];
+      if (wantUser) { where += ' AND LOWER(c.user)=@u'; params.push({ name: '@u', value: wantUser }); }
       const { resources } = await c.items.query({
-        query: 'SELECT TOP 300 c.ts, c.action, c.user, c.meta FROM c WHERE c.tenantId=@t AND c.docType="audit" AND c.ts>=@s AND c.meta.realmId=@r ORDER BY c.ts DESC',
-        parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@s', value: since }, { name: '@r', value: realmId }]
+        query: 'SELECT TOP ' + ACT_CAP + ' c.ts, c.action, c.user, c.meta FROM c WHERE ' + where + ' ORDER BY c.ts DESC',
+        parameters: params
       }).fetchAll();
-      return { jsonBody: { ok: true, realmId, days, rows: resources } };
+      return { jsonBody: { ok: true, realmId, days, rows: resources, capped: resources.length >= ACT_CAP } };
     } catch (e) { context.error('audit-client', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
