@@ -1154,6 +1154,21 @@
     injectAuthChip();
     finishProgress();
 
+    /* The once-per-tab flags below are scoped to the TAB, not the person. Signing out and
+       back in as someone else reuses the same sessionStorage, so the second user's
+       sign-in went unaudited and their configured landing page was ignored — they landed
+       wherever the first user's preference had put them. Key the flags to the identity
+       and clear them when it changes. */
+    try {
+      var _sessWho = String((user && user.userDetails) || '').toLowerCase();
+      if (_sessWho && sessionStorage.getItem('bcc-session-upn') !== _sessWho) {
+        sessionStorage.removeItem('bcc-landing-applied');
+        sessionStorage.removeItem('bcc-audit-signin');
+        sessionStorage.removeItem('bcc-audit-denied');
+        sessionStorage.setItem('bcc-session-upn', _sessWho);
+      }
+    } catch (e) {}
+
     // Per-user landing page redirect: if the signed-in user has a
     // landingPage configured in admin-config AND we landed on the home
     // page, send them straight to their preferred page. Only fires once

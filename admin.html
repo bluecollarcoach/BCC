@@ -614,7 +614,9 @@
     var fr = document.getElementById('fbRefresh'); if (fr) fr.onclick = renderFeedback;
     var ff = document.getElementById('fbFilter'); if (ff) ff.onchange = renderFbList;
     var er = document.getElementById('errRefresh'); if (er) er.onclick = renderErrors;
-    var es = document.getElementById('errSource'); if (es) es.onchange = renderErrList;
+    // Re-QUERY on a source change, don't just re-filter: the server caps the page, so
+    // filtering locally searched only the most recent 200 rows of ALL sources.
+    var es = document.getElementById('errSource'); if (es) es.onchange = renderErrors;
   })();
   // Deep-link support: e.g. admin.html#integrations opens that tab on load.
   (function () {
@@ -710,15 +712,21 @@
   function renderErrors() {
     var out = document.getElementById('errOut'); var status = document.getElementById('errStatus');
     if (!out) return; status.textContent = 'Loading…';
-    fetch('/api/errorlog', { credentials: 'include' })
+    var src = (document.getElementById('errSource') || {}).value || '';
+    fetch('/api/errorlog' + (src ? '?source=' + encodeURIComponent(src) : ''), { credentials: 'include' })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
-      .then(function (j) { window._errItems = (j && j.errors) || []; status.textContent = window._errItems.length + ' recent'; renderErrList(); })
+      .then(function (j) {
+        window._errItems = (j && j.errors) || [];
+        status.textContent = window._errItems.length + ' recent' + (j && j.capped ? ' (capped — there are more)' : '');
+        renderErrList();
+      })
       .catch(function (e) { status.textContent = ''; out.innerHTML = '<div style="color:var(--burgundy);">Could not load errors: ' + fbEsc(e.message) + '</div>'; });
   }
   function renderErrList() {
     var out = document.getElementById('errOut'); if (!out) return;
-    var src = (document.getElementById('errSource') || {}).value || '';
-    var items = (window._errItems || []).filter(function (x) { return !src || x.source === src; });
+    // The server already applied the source filter (see renderErrors) — filtering again
+    // here is what made "No errors 🎉" possible while hundreds existed beyond the cap.
+    var items = window._errItems || [];
     if (!items.length) { out.innerHTML = '<div style="color:var(--muted);padding:16px 0;">No errors 🎉</div>'; return; }
     out.innerHTML = items.map(function (x) {
       var badge = x.source === 'client' ? 'background:#eef2ff;color:#3538cd;' : 'background:#fdecea;color:#b3261e;';
@@ -748,13 +756,19 @@
     if (rb && !rb._wired) { rb._wired = true; rb.addEventListener('click', loadBkTime); }
     if (!_bkLoaded) { _bkLoaded = true; loadBkTime(); }
   }
+  var _bkGen = 0;
   function loadBkTime() {
+    // Changing the range re-fires this; without a generation guard a slower EARLIER
+    // request could land last and repaint the previous range's numbers under the new
+    // dates, which reads as the report being wrong.
+    var myGen = ++_bkGen;
     var out = document.getElementById('bkTimeOut'), st = document.getElementById('bkStatus');
     var from = (document.getElementById('bkFrom') || {}).value || '', to = (document.getElementById('bkTo') || {}).value || '';
     out.innerHTML = '<div style="color:var(--muted);padding:10px;">Loading…</div>'; if (st) st.textContent = '';
     fetch('/api/bookkeeping/time/report?from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to), { credentials: 'include' })
       .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
       .then(function (resp) {
+        if (myGen !== _bkGen) return; // a newer range was requested while this was in flight
         if (!resp.ok) throw new Error(resp.error || 'failed');
         var companies = resp.companies || [], users = resp.users || [];
         if (!companies.length) { out.innerHTML = '<div style="color:var(--muted);padding:14px;">No bookkeeping time recorded in this range.</div>'; return; }
@@ -776,7 +790,7 @@
           '<table style="width:100%;border-collapse:collapse;"><thead><tr><th style="text-align:left;">Bookkeeper</th><th style="text-align:right;">Logged</th><th style="text-align:right;">Active</th></tr></thead><tbody>' + userRows + '</tbody></table>';
         if (st) st.textContent = from + ' → ' + to;
       })
-      .catch(function (e) { out.innerHTML = '<div style="color:#6a1c1c;padding:10px;">Could not load: ' + esc(e.message) + '</div>'; });
+      .catch(function (e) { if (myGen === _bkGen) out.innerHTML = '<div style="color:#6a1c1c;padding:10px;">Could not load: ' + esc(e.message) + '</div>'; });
   }
 
   /* ===== USERS ===== */
@@ -802,7 +816,11 @@
       byUpn[me.toLowerCase()] = { upn: me, displayName: meName, role: 'admin', status: 'active', source: 'self' };
     }
     var rows = Object.values(byUpn).sort(function (a, b) {
-      if (a.role !== b.role) return a.role === 'admin' ? -1 : 1;
+      // Rank, then name. The old form returned 1 whenever the roles merely DIFFERED and
+      // neither was admin — so compare(a,b) and compare(b,a) both said "a after b", which
+      // is not a valid comparator and left the order up to the engine.
+      var rank = function (r) { return r === 'admin' ? 0 : 1; };
+      if (rank(a.role) !== rank(b.role)) return rank(a.role) - rank(b.role);
       return (a.displayName || '').localeCompare(b.displayName || '');
     });
     var tbody = document.getElementById('usersRows');
@@ -1091,7 +1109,11 @@
     var cfg = loadCfg(); cfg.users = cfg.users || [];
     var rec = cfg.users.find(function (x) { return (x.upn || '').toLowerCase() === _permsOpenUpn.toLowerCase(); });
     if (!rec) {
-      rec = { upn: _permsOpenUpn, displayName: _permsOpenUpn, role: 'member', status: 'active' };
+      // displayName defaulted to the raw email, and renderUsers shows displayName — so
+      // setting someone's permissions renamed them to their address in every dropdown.
+      // Resolve a real name the same way renderUsers does for the signed-in admin.
+      var newName = (window.bccDisplayName ? window.bccDisplayName(_permsOpenUpn) : '') || '';
+      rec = { upn: _permsOpenUpn, displayName: newName || _permsOpenUpn, role: 'member', status: 'active' };
       cfg.users.push(rec);
     }
     var perms = {};
@@ -1585,6 +1607,10 @@
           if (!confirm('Clear all stored credentials for this connector?')) return;
           var k = INT_PREFIX + channel;
           localStorage.removeItem(k);
+          // The OAuth status lives in a separate in-memory map, so clearing the stored
+          // credentials left the card still reading "Connected" until a reload — with
+          // nothing behind it.
+          delete _oauthStatus[channel];
           if (window.bccAudit) window.bccAudit('integration-clear', { key: k, path: '/admin.html', meta: { channel: channel } });
           renderIntegrations();
           return;

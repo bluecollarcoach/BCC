@@ -745,8 +745,14 @@
     accessEditRealm = null;
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(realm), { method: 'DELETE', credentials: 'include' })
       .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
-      .then(function () {
+      .then(function (j) {
         if (window.bccAudit) window.bccAudit('company-delete', { path: '/bookkeeping.html', meta: { realmId: realm } });
+        // The server keeps going when a sub-delete fails (so a company is never stranded
+        // half-removed) but it now says which ones it could not clear — a surviving Drive
+        // OAuth token or mailbox config is worth knowing about on a disconnect.
+        if (j && j.leftBehind && j.leftBehind.length) {
+          (window.bccNotify || alert)(name + ' was disconnected, but ' + j.leftBehind.length + ' stored record(s) could not be removed. Tell an admin to check the error log.', 'warn', 12000);
+        }
         // Drop the company's cached financial-period snapshots locally too.
         try { Object.keys(localStorage).forEach(function (k) { if (k.indexOf(PER_PREFIX + realm + '-') === 0) localStorage.removeItem(k); }); } catch (_) {}
         if (currentRealm === realm) currentRealm = '';
@@ -929,7 +935,7 @@
       if (t && t.status !== 'done') {
         // A rolled-forward recurring task whose next occurrence is in the FUTURE isn't
         // "ready" yet — don't count it (avoids the Planner "next one already assigned" problem).
-        var notYetDue = t.recurrence && t.recurrence !== 'none' && t.dueDate && t.dueDate > today;
+        var notYetDue = taskIsUpcoming(t, today);
         if (!notYetDue) { var info = map[realm] || (map[realm] = { count: 0, overdue: false }); info.count++; if (t.dueDate && t.dueDate < today) info.overdue = true; }
       }
     }
@@ -1455,7 +1461,7 @@
     var go = document.getElementById('pi_go'); if (go) go.disabled = total === 0;
   }
   function piCommit() {
-    var created = 0, byClient = {};
+    var created = 0, failed = 0, byClient = {};
     _pi.tasks.forEach(function (t) {
       var realms = [];
       (t.labels || []).forEach(function (l) { var rid = _pi.map[l]; if (rid && realms.indexOf(rid) < 0) realms.push(rid); });
@@ -1464,13 +1470,19 @@
         var id = 'bcc-task-' + rid + '-' + uid2();
         var doc = { id: id, tenantId: 'blue-collar-coach', docType: 'client-task', realmId: rid, title: t.title, status: t.completed ? 'done' : 'open', assigneeUpn: plannerUpnFor(t.assignee), dueDate: t.dueDate || '', note: t.notes || '', source: 'planner', createdAt: nowIso(), updatedAt: nowIso(), createdBy: myUpn() };
         if (t.completed) doc.doneAt = nowIso();
-        try { localStorage.setItem(id, JSON.stringify(doc)); created++; byClient[rid] = (byClient[rid] || 0) + 1; } catch (e) {}
+        // A quota failure here used to be swallowed, so the success screen counted only
+        // what landed and never mentioned the rest.
+        try { localStorage.setItem(id, JSON.stringify(doc)); created++; byClient[rid] = (byClient[rid] || 0) + 1; } catch (e) { failed++; }
       });
     });
     if (window.bccAudit) window.bccAudit('client-task-create', { path: '/bookkeeping.html', meta: { source: 'planner-import', count: created } });
     var parts = Object.keys(byClient).sort(function (a, b) { return byClient[b] - byClient[a]; }).map(function (k) { return '<li>' + esc(companyName(k)) + ' — <strong>' + byClient[k] + '</strong></li>'; }).join('');
     piBody().innerHTML =
-      '<div style="text-align:center;padding:10px 0 14px;"><div style="font-size:34px;">✅</div><div style="font-family:\'Source Serif 4\',Georgia,serif;font-size:17px;font-weight:700;margin-top:6px;">Imported ' + created + ' task' + (created === 1 ? '' : 's') + '</div></div>' +
+      // A write that failed used to be swallowed, so this screen counted only what landed
+      // and read as a clean import. Lead with the shortfall when there is one.
+      (failed
+        ? '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:12px;margin:8px 0;font-size:13px;">Imported <strong>' + created + '</strong> of ' + (created + failed) + ' task' + ((created + failed) === 1 ? '' : 's') + '. <strong>' + failed + '</strong> could not be saved — this browser’s storage is full. Free up space and import the rest again.</div>'
+        : '<div style="text-align:center;padding:10px 0 14px;"><div style="font-size:34px;">✅</div><div style="font-family:\'Source Serif 4\',Georgia,serif;font-size:17px;font-weight:700;margin-top:6px;">Imported ' + created + ' task' + (created === 1 ? '' : 's') + '</div></div>') +
       (parts ? '<ul style="max-height:240px;overflow:auto;margin:0 0 12px;padding-left:20px;font-size:13px;">' + parts + '</ul>' : '') +
       '<div style="font-size:12px;color:var(--muted);margin-bottom:12px;">They’re syncing to the cloud now and appear in each client’s <strong>Tasks</strong> tab and 🔔 to-do count.</div>' +
       '<div style="text-align:right;"><button class="btn btn-primary" id="pi_done" type="button">Done</button></div>';
@@ -2815,6 +2827,11 @@
   function scanReceipt(file) {
     if (file.size > 12 * 1024 * 1024) { (window.bccNotify || alert)('File too large (max 12 MB).', 'warn'); return; }
     gotoTransactions(); // make sure the write card is visible (scan can be triggered from Overview)
+    // AI extraction takes several seconds, and switching clients during it used to seed
+    // the NEW client's transaction form with the old client's receipt — and worse, the
+    // auto-create-vendor branch below would create that vendor in the new client's live
+    // QuickBooks. Pin the realm this scan belongs to.
+    var realmAt = currentRealm;
     var host = document.getElementById('qboWriteForm');
     if (host) host.innerHTML = '<div style="padding:14px;color:var(--muted);">📷 Reading “' + esc(file.name) + '” with AI…</div>';
     var reader = new FileReader();
@@ -2825,6 +2842,12 @@
       fetch('/api/ai/extract-receipt', { method: 'POST', credentials: 'include', body: fd })
         .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
         .then(function (resp) {
+          if (currentRealm !== realmAt) {
+            // Clear the "Reading …" placeholder too, or it sits on the new client's form.
+            if (host) host.innerHTML = '';
+            (window.bccNotify || alert)('Receipt scan dropped — you changed clients while it was being read.', 'warn', 7000);
+            return;
+          }
           if (resp && resp.needsKey) { if (host) host.innerHTML = '<div style="padding:12px;background:#fbf6ec;border-radius:8px;font-size:13px;">AI capture isn’t configured yet. An admin needs to add an <strong>ANTHROPIC_API_KEY</strong> in the app settings (Azure portal → Static Web App → Configuration). Once added, scanning auto-fills transactions.</div>'; return; }
           if (!resp || !resp.ok) throw new Error((resp && resp.error) || 'extraction failed');
           var d = resp.data || {};
@@ -2848,9 +2871,12 @@
             } else if (d.vendorName) {
               if (host) host.innerHTML = '<div style="padding:14px;color:var(--muted);">Creating vendor “' + esc(d.vendorName) + '”…</div>';
               createVendorAuto(d.vendorName, function (newId) {
+                // createVendorAuto is another round trip — check again before seeding.
+                if (currentRealm !== realmAt) return;
                 openTxnForm(txnEntity, null, Object.assign({ party: newId || '' }, seedBase));
                 if (window.bccNotifySaved) window.bccNotifySaved('Filled from receipt' + tot + '. Created vendor “' + d.vendorName + '”. ' + nextStep);
               }, function (err) {
+                if (currentRealm !== realmAt) return;
                 openTxnForm(txnEntity, null, seedBase);
                 (window.bccNotify || alert)('Filled from receipt' + tot + '. Couldn’t auto-create vendor (' + err + ') — pick one or use + Vendor.', 'warn', 8000);
               });
@@ -2920,7 +2946,15 @@
       var meta = (metaResp && metaResp.ok && metaResp.msgs) || {};
       if (!j || !j.ok) { _emUnread[realm] = 0; }
       else if (j.pendingMailbox) { _emUnread[realm] = 0; }   // mailbox not created yet
-      else { _emUnread[realm] = (j.messages || []).filter(function (m) { return !m.isRead && !(meta[m.id] && meta[m.id].archived); }).length; }
+      // Same correction as recomputeUnreadBadge: count what THIS person has not read,
+      // using the meta snapshot already fetched above — not the mailbox-wide isRead flag.
+      else {
+        var me = myUpn();
+        _emUnread[realm] = (j.messages || []).filter(function (m) {
+          var mm = meta[m.id];
+          return !(mm && mm.readBy && mm.readBy[me]) && !(mm && mm.archived);
+        }).length;
+      }
       if (realm === currentRealm) { updateWsNav(); if (currentTab === 'overview') { try { renderOverview(); } catch (e) {} } }
     }).catch(function () { _emUnread[realm] = 0; });
   }
@@ -3123,9 +3157,10 @@
       '<button class="ov-action" type="button" data-ov="tasks"><span class="ic" aria-hidden="true">➕</span><span>Tasks &amp; to-dos<span class="sub">track the work</span></span></button>' +
     '</div>';
     actions = emailBanner + actions;
-    var openAll = allTasks().filter(function (t) { return t.status !== 'done'; }).sort(function (a, b) { return (a.dueDate || '9999').localeCompare(b.dueDate || '9999') || (b.createdAt || '').localeCompare(a.createdAt || ''); });
-    var open = todoMineFilter(openAll);
     var today = new Date().toISOString().slice(0, 10);
+    // Exclude not-yet-due recurring occurrences, matching the nav badge and the Tasks tab.
+    var openAll = allTasks().filter(function (t) { return t.status !== 'done' && !taskIsUpcoming(t, today); }).sort(function (a, b) { return (a.dueDate || '9999').localeCompare(b.dueDate || '9999') || (b.createdAt || '').localeCompare(a.createdAt || ''); });
+    var open = todoMineFilter(openAll);
     var list = open.length ? open.map(function (t) {
       var who = t.assigneeUpn ? ((window.bccDisplayName && window.bccDisplayName(t.assigneeUpn)) || t.assigneeUpn) : '';
       var overdue = t.dueDate && t.dueDate < today;
@@ -3310,7 +3345,9 @@
         if (!rows.length) { list.innerHTML = '<div style="color:var(--muted);padding:14px;">Nothing has been pushed to QuickBooks for this client in this range.</div>'; return; }
         var refused = rows.filter(function (r) { return (r.meta || {}).outcome === 'refused'; }).length;
         var head = '<div style="font-size:12.5px;color:var(--muted);margin-bottom:8px;">' + rows.length + ' push' + (rows.length === 1 ? '' : 'es') +
-          (refused ? ' · <strong style="color:var(--burgundy);">' + refused + ' refused by QuickBooks</strong>' : '') + '</div>';
+          (refused ? ' · <strong style="color:var(--burgundy);">' + refused + ' refused by QuickBooks</strong>' : '') +
+          // The server caps the query; without this the capped page reads as the whole log.
+          (resp.capped ? ' · <strong style="color:var(--burgundy);">showing the most recent ' + rows.length + ' only — narrow the date range to see the rest</strong>' : '') + '</div>';
         list.innerHTML = head +
           '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:760px;">' +
           '<thead><tr style="background:#f7f1e3;">' +
@@ -3391,6 +3428,15 @@
   function taskPrefix() { return 'bcc-task-' + currentRealm + '-'; }
   function allTasks() { var out = []; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (!k || k.indexOf(taskPrefix()) !== 0) continue; try { var t = JSON.parse(localStorage.getItem(k)); if (t && t.id) out.push(t); } catch (e) {} } return out; }
   var RECUR_LABEL = { weekly: '🔁 Weekly', monthly: '🔁 Monthly', quarterly: '🔁 Quarterly', yearly: '🔁 Yearly' };
+  /* A rolled-forward recurring task whose next occurrence is in the FUTURE is not "ready"
+     yet. The nav badge and the Tasks tab both excluded those; the Overview "Open to-dos"
+     list did not — so the three disagreed, and worse, the Overview list gave each future
+     occurrence a done checkbox, so one click silently advanced the schedule past a period
+     that had not happened yet. One predicate, used by all three. */
+  function taskIsUpcoming(t, today) {
+    today = today || new Date().toISOString().slice(0, 10);
+    return t.status !== 'done' && t.recurrence && t.recurrence !== 'none' && t.dueDate && t.dueDate > today;
+  }
   // Next due date for a recurring task, advanced past today so a completed one doesn't
   // immediately reappear as "ready". Preserves day-of-month (clamped to the month length).
   function taskNextDue(dateStr, rec) {
@@ -3452,7 +3498,7 @@
     var today = new Date().toISOString().slice(0, 10);
     var all = allTasks();
     // A recurring task with a future due date is "upcoming" — scheduled, not yet active.
-    var isUpcoming = function (t) { return t.status !== 'done' && t.recurrence && t.recurrence !== 'none' && t.dueDate && t.dueDate > today; };
+    var isUpcoming = function (t) { return taskIsUpcoming(t, today); };
     var active = todoMineFilter(all.filter(function (t) { return !isUpcoming(t); })).sort(function (a, b) { return ((a.status === 'done') - (b.status === 'done')) || (a.dueDate || '9999').localeCompare(b.dueDate || '9999') || (b.createdAt || '').localeCompare(a.createdAt || ''); });
     var upcoming = todoMineFilter(all.filter(isUpcoming)).sort(function (a, b) { return (a.dueDate || '').localeCompare(b.dueDate || ''); });
     var add = '<div class="ws-form" style="margin-bottom:14px;">' +
@@ -3980,6 +4026,8 @@
           _spStack.map(function (s, i) { return '<span style="color:var(--muted);">/</span><button class="btn btn-ghost" data-spcrumb="' + i + '" type="button" style="font-size:11px;min-height:26px;">' + esc(s.name) + '</button>'; }).join('');
         var items = resp.items || [];
         var fileCount = items.filter(function (x) { return !x.folder; }).length;
+        // A capped listing rendered as the whole folder reads as "the file isn't there".
+        var spTrunc = resp.truncated ? '<div style="background:#fbf6ec;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12.5px;">This folder has more items than can be listed at once — only the first ' + items.length + ' are shown. Open a subfolder to narrow it down.</div>' : '';
         var rows = items.length ? '<table><tbody>' + items.map(function (it) {
           if (it.folder) return '<tr><td><button type="button" class="fs-folder" data-spfolder="' + esc(it.name) + '">📁 ' + esc(it.name) + '</button></td><td style="text-align:right;color:var(--muted);font-size:12px;white-space:nowrap;">' + (it.childCount || 0) + ' items</td></tr>';
           var kb = it.size ? (Math.max(1, Math.round(it.size / 1024)) + ' KB') : '';
@@ -3997,6 +4045,7 @@
               '<span style="color:var(--muted);">Copies this client\'s entire SharePoint folder — every subfolder — into Internal files. Files stay flat and each is tagged with its folder name.</span></div>' +
               '<button class="btn btn-primary" id="sp_migrate" type="button" style="font-size:12px;">⬇ Import ALL files for this client</button>' +
             '</div>' +
+            spTrunc +
             '<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:8px;">' + crumbs +
             (fileCount ? '<span style="flex:1;"></span><button class="btn btn-ghost" id="sp_importall" type="button" style="font-size:11px;min-height:26px;">⬇ Import ' + fileCount + ' file' + (fileCount === 1 ? '' : 's') + ' in this folder</button>' : '') +
             '</div>' +
@@ -4042,6 +4091,21 @@
       if (resp.alreadyHad) notes.push(resp.alreadyHad + ' already imported previously');
       if ((resp.oversized || []).length) notes.push((resp.oversized || []).length + ' skipped over 25 MB: ' + resp.oversized.map(function (o) { return o.name + ' (' + o.mb + ' MB)'; }).join(', '));
       if ((resp.failed || []).length) notes.push((resp.failed || []).length + ' failed');
+      // `done` is exactly "remaining === 0", so arriving here without it means the loop
+      // gave up on the stall guard (two rounds that imported nothing) — reporting that as
+      // "Done" hid however many files were never attempted. `remaining` understates it,
+      // because the server subtracts the whole batch even when every file in it failed.
+      // enumNote covers the other way this can fall short: the folder LISTING itself was
+      // cut off, so totalFiles was never the total in the first place.
+      if (resp.enumNote) (window.bccNotify || alert)(resp.enumNote, 'warn', 12000);
+      var stalled = !resp.done && !resp.enumTruncated;
+      var leftover = (resp.remaining || 0) + ((resp.failed || []).length);
+      if (stalled) {
+        say('Stopped early — ' + total + ' file' + (total === 1 ? '' : 's') + ' imported' + (notes.length ? ' (' + notes.join('; ') + ')' : '') +
+            '. About ' + leftover + ' file' + (leftover === 1 ? '' : 's') + ' could not be brought over; run the import again to retry them.');
+        (window.bccNotify || alert)('SharePoint import stopped early — roughly ' + leftover + ' file' + (leftover === 1 ? '' : 's') + ' were not imported. Run it again to retry.', 'warn', 10000);
+        return;
+      }
       say('Done — ' + total + ' file' + (total === 1 ? '' : 's') + ' imported into Internal files, tagged by folder.' + (notes.length ? ' (' + notes.join('; ') + ')' : ''));
       if (window.bccNotifySaved) window.bccNotifySaved(total + ' file' + (total === 1 ? '' : 's') + ' brought over from SharePoint.');
       loadFiles();
@@ -4723,7 +4787,10 @@
   // final number, regardless of which happened to finish first.
   function recomputeUnreadBadge() {
     if (_emLoadedFor !== currentRealm) return; // _emMsgs isn't for this realm yet
-    _emUnread[currentRealm] = _emMsgs.filter(function (m) { return !m.isRead && !metaFor(m.id).archived; }).length;
+    // m.isRead is the MAILBOX's flag, and nothing in this app ever sets it — reading a
+    // message here stamps our own per-person readBy instead. Counting isRead meant the
+    // badge never cleared no matter how much mail the bookkeeper worked through.
+    _emUnread[currentRealm] = _emMsgs.filter(function (m) { return !readByMe(m.id) && !metaFor(m.id).archived; }).length;
     updateWsNav();
   }
   function loadEmailMeta() {
@@ -4802,7 +4869,11 @@
       if (q) { var hay = (m.subject + ' ' + (m.fromName || '') + ' ' + (m.from || '') + ' ' + (m.preview || '') + ' ' + ((mt.tags || []).join(' '))).toLowerCase(); if (hay.indexOf(q) < 0) return false; }
       return true;
     });
-    if (cnt) cnt.textContent = rows.length + (rows.length === 1 ? ' message' : ' messages');
+    // The list is the 50 most recent the server returned, and the search box filters only
+    // those — so "no results" could mean "not in the last 50" and read as the email being
+    // missing entirely. Say so when the cap was hit.
+    if (cnt) cnt.textContent = rows.length + (rows.length === 1 ? ' message' : ' messages')
+      + (_emMsgs.length >= 50 ? ' (of the 50 most recent — older mail isn’t loaded, so search only covers these)' : '');
     if (!rows.length) { list.innerHTML = '<div style="color:var(--muted);padding:10px 0;">No messages' + (q || _emFilter !== 'all' ? ' match this view' : ' yet') + '.</div>'; return; }
     list.innerHTML = rows.map(function (m) {
       var mt = metaFor(m.id);
@@ -5868,15 +5939,18 @@
       fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
         .then(function (rr) { return rr.json().then(function (j) { return rr.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + rr.status))); }); })
         .then(function (j) {
+          // Retire the PREVIOUS filing only now that the replacement is stored. Deleting
+          // it first meant a failed upload left the client with neither copy.
+          var prev = r.docId;
           if (j && j.id) { r.docId = j.id; localStorage.setItem(r.id, JSON.stringify(r)); }
+          if (prev && j && j.id && prev !== j.id) fetch('/api/documents/' + encodeURIComponent(prev), { method: 'DELETE', credentials: 'include' }).catch(function () {});
           if (window.bccAudit) window.bccAudit('client-file-upload', { key: j && j.id, path: '/bookkeeping.html', meta: { realmId: realm, name: fname, source: 'certified-payroll' } });
           if (!silent && window.bccNotifySaved) window.bccNotifySaved('Payroll report saved & filed to the client (tag: Certified Payroll).');
           if (typeof loadFiles === 'function') loadFiles();
         })
         .catch(function (e) { (window.bccNotify || alert)('Saved locally, but couldn’t file it to the client: ' + e.message, 'warn', 8000); });
     }
-    if (r.docId) fetch('/api/documents/' + encodeURIComponent(r.docId), { method: 'DELETE', credentials: 'include' }).then(upload, upload);
-    else upload();
+    upload(); // the old copy is retired inside upload(), after the new one lands
   }
 
   function cprDocHtml(r, forPrint) {
@@ -6588,15 +6662,18 @@
       fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
         .then(function (rr) { return rr.json().then(function (j) { return rr.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + rr.status))); }); })
         .then(function (j) {
+          // Retire the PREVIOUS filing only now that the replacement is stored. Deleting
+          // it first meant a failed upload left the client with neither copy.
+          var prev = r.docId;
           if (j && j.id) { r.docId = j.id; localStorage.setItem(r.id, JSON.stringify(r)); }
+          if (prev && j && j.id && prev !== j.id) fetch('/api/documents/' + encodeURIComponent(prev), { method: 'DELETE', credentials: 'include' }).catch(function () {});
           if (window.bccAudit) window.bccAudit('client-file-upload', { key: j && j.id, path: '/bookkeeping.html', meta: { realmId: realm, name: fname, source: 'pay-application' } });
           if (!silent && window.bccNotifySaved) window.bccNotifySaved('Pay application saved & filed to the client (tag: Pay Application).');
           if (typeof loadFiles === 'function') loadFiles();
         })
         .catch(function (e) { (window.bccNotify || alert)('Saved locally, but couldn’t file it to the client: ' + e.message, 'warn', 8000); });
     }
-    if (r.docId) fetch('/api/documents/' + encodeURIComponent(r.docId), { method: 'DELETE', credentials: 'include' }).then(upload, upload);
-    else upload();
+    upload(); // the old copy is retired inside upload(), after the new one lands
   }
   function payappDocHtml(r) {
     var pc = computePayapp(r);

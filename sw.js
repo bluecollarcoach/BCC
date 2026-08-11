@@ -22,7 +22,12 @@
  *   toast instead of "Submitted to office".
  */
 
-const CACHE_NAME = 'bcc-offline-v1';
+/* Bump this whenever a cached ASSET changes. The activate handler deletes every cache
+   whose name differs, so a bump is what actually evicts the old copies — and the image
+   branch below is cache-first with no revalidation, so without a bump a replaced logo or
+   icon is served from this cache forever, on every device that ever loaded the old one.
+   Date-stamped rather than numbered so it is obvious when it was last rolled. */
+const CACHE_NAME = 'bcc-offline-2026-08-11';
 
 // Pages the user explicitly wants offline-capable. BCC doesn't have field
 // crews on remote sites, so this is light — just the dashboard + the
@@ -121,7 +126,15 @@ self.addEventListener('fetch', (event) => {
   if (req.destination === 'image') {
     event.respondWith((async () => {
       const cached = await caches.match(req);
-      if (cached) return cached;
+      // Serve the cached copy immediately, but refresh it in the background so a replaced
+      // image reaches this device on the NEXT load rather than never (the cache had no
+      // revalidation at all, and CACHE_NAME had never been bumped).
+      if (cached) {
+        fetch(req).then((r) => {
+          if (r && r.ok && r.type === 'basic') caches.open(CACHE_NAME).then((c) => c.put(req, r.clone())).catch(() => {});
+        }).catch(() => {});
+        return cached;
+      }
       try {
         const r = await fetch(req);
         if (r && r.ok && r.type === 'basic') {

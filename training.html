@@ -220,6 +220,10 @@
     return null;
   }
   function saveEnrollment(courseId, mutator) {
+    // Without an identity, userSlug() falls back to 'anon' and this writes progress to a
+    // single doc SHARED by everyone — which then syncs, so one person's ticks showed up
+    // as another's, and were reverted the moment the real upn arrived. Refuse instead.
+    if (!meUpn()) return null;
     var id = enrollmentIdFor(courseId);
     var e = loadEnrollment(courseId) || {
       id: id,
@@ -243,7 +247,10 @@
     var done = Object.keys(e.progress || {}).filter(function (k) {
       return (course.lessons || []).some(function (l) { return l.id === k; }) && e.progress[k] === 'complete';
     }).length;
-    return { pct: Math.round((done / total) * 100), done: done, total: total, completed: !!e.completedAt };
+    // Derive completion from the lessons, not from a latched completedAt stamp — adding
+    // a lesson to a finished course left it still reading "✓ Completed" while the
+    // progress bar showed 4/5.
+    return { pct: Math.round((done / total) * 100), done: done, total: total, completed: total > 0 && done === total };
   }
 
   function getParam(k) { return new URLSearchParams(location.search).get(k); }
@@ -463,6 +470,9 @@
         // The "Open ↗" link sits inside the row, so its click bubbles here: without this
         // guard re-watching a finished lesson flips it back to not-done and clears completedAt.
         if (ev.target.closest('a.watch')) return;
+        // Ticking before sign-in resolves would go nowhere (see saveEnrollment) — say so
+        // rather than flipping the row and having it revert a second later.
+        if (!meUpn()) { (window.bccNotify || alert)('Still signing you in — give it a second and tick that again.', 'warn'); return; }
         var lid = row.dataset.lesson;
         var nowDone = !row.classList.contains('done');
         saveEnrollment(c.id, function (e) {

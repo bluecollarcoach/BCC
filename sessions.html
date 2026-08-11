@@ -270,7 +270,11 @@
     for (var i = 0; i < 7; i++) {
       var d = new Date(currentWeekStart); d.setDate(d.getDate() + i);
       var dayStart = d.getTime();
-      var dayEnd = dayStart + 24*60*60*1000;
+      // NOT dayStart + 24h. On the two DST transition days a local day is 23 or 25 hours,
+      // so a fixed step put a session in two columns (spring) or none at all (fall).
+      // setDate recomputes from the local calendar, giving the true next local midnight.
+      var next = new Date(d); next.setDate(next.getDate() + 1);
+      var dayEnd = next.getTime();
       var dayEvents = sessions
         .filter(function (s) {
           var t = new Date(s.startAt).getTime();
@@ -355,8 +359,33 @@
         // Index existing sessions by msGraphId for idempotent merge
         var byGraphId = {};
         allSessions().forEach(function (s) { if (s.msGraphId) byGraphId[s.msGraphId] = s; });
+        /* An all-day Outlook event carries UTC midnight as its start and the EXCLUSIVE
+           next midnight as its end. Stored raw, an all-day event on the 21st landed at
+           7pm on the 20th in Central — wrong day in the week grid, the modal and My Day —
+           and read as running until 7pm the following day. Graph cannot know the coach's
+           timezone, and the Azure Function runs in UTC, so this has to be done here.
+           Rebuild both ends on the LOCAL calendar: midnight of the first day, to one
+           minute before midnight of the day after the last. */
+        var fixAllDay = function (ev) {
+          if (!ev.allDay || !ev.startAt) return ev;
+          var sp = String(ev.startAt).slice(0, 10).split('-');
+          if (sp.length !== 3) return ev;
+          var ls = new Date(+sp[0], +sp[1] - 1, +sp[2]);
+          if (isNaN(ls)) return ev;
+          ev.startAt = ls.toISOString();
+          var epRaw = ev.endAt ? String(ev.endAt).slice(0, 10).split('-') : null;
+          var le;
+          if (epRaw && epRaw.length === 3) {
+            le = new Date(+epRaw[0], +epRaw[1] - 1, +epRaw[2]); // the exclusive end date
+            if (isNaN(le) || le <= ls) le = null;
+          }
+          if (!le) { le = new Date(ls); le.setDate(le.getDate() + 1); }
+          le.setMinutes(le.getMinutes() - 1); // 23:59 on the last day it actually covers
+          ev.endAt = le.toISOString();
+          return ev;
+        };
         var created = 0, updated = 0;
-        (resp.events || []).forEach(function (ev) {
+        (resp.events || []).map(fixAllDay).forEach(function (ev) {
           if (byGraphId[ev.msGraphId]) {
             // Update existing record's mutable fields (don't wipe local notes)
             var existing = byGraphId[ev.msGraphId];
@@ -364,6 +393,7 @@
             existing.startAt  = ev.startAt;
             existing.endAt    = ev.endAt;
             existing.location = ev.location;
+            existing.allDay   = !!ev.allDay;
             existing.source   = 'msgraph';
             saveSession(existing);
             updated++;
@@ -373,6 +403,7 @@
               startAt: ev.startAt,
               endAt: ev.endAt,
               location: ev.location,
+              allDay: !!ev.allDay,
               prepNotes: ev.prepNotes || '',
               status: 'scheduled',
               msGraphId: ev.msGraphId,
@@ -381,7 +412,11 @@
             created++;
           }
         });
-        if (window.bccNotifySaved) window.bccNotifySaved('Pulled ' + (resp.events || []).length + ' event(s): ' + created + ' new, ' + updated + ' updated.');
+        var pulled = 'Pulled ' + (resp.events || []).length + ' event(s): ' + created + ' new, ' + updated + ' updated.';
+        // Graph paginates and this reads one page — presenting a truncated import as the
+        // whole calendar reads as "my events didn't come across".
+        if (resp.truncated) (window.bccNotify || alert)(pulled + ' There were MORE events than could be read in one go — narrow the date range and pull again to get the rest.', 'warn', 12000);
+        else if (window.bccNotifySaved) window.bccNotifySaved(pulled);
         if (window.bccAudit) window.bccAudit('session-update', { path: '/sessions.html', meta: { action: 'pull-from-outlook', created: created, updated: updated } });
         renderWeek();
       })
@@ -508,10 +543,17 @@
     // the local save UX.
     mirrorSessionToGraph(s).then(function (resp) {
       if (!resp) return; // not connected
-      if (resp.ok && resp.graphEventId && resp.graphEventId !== s.msGraphId) {
-        s.msGraphId = resp.graphEventId;
-        s.source = 'msgraph';
-        saveSession(s);
+      if (resp.ok && resp.graphEventId) {
+        // Re-read rather than writing `s` back. `s` is the snapshot as it was when the
+        // mirror was fired; saving it whole reverted anything edited in the meantime and,
+        // if the session had since been deleted, recreated it. Only the graph id is ours
+        // to add here.
+        var cur = getSession(s.id);
+        if (!cur) return;                              // deleted while in flight
+        if (cur.msGraphId === resp.graphEventId) return; // already recorded
+        cur.msGraphId = resp.graphEventId;
+        cur.source = 'msgraph';
+        saveSession(cur);
         renderWeek();
       } else if (!resp.ok) {
         if (window.bccNotify) window.bccNotify('Outlook mirror failed: ' + (resp.error || 'unknown'), 'warn');
@@ -526,18 +568,38 @@
     if (!id) return;
     if (!confirm('Delete this session?')) return;
     var s = getSession(id);
-    // Mirror the delete to Outlook if we have a Graph event id
-    if (s && s.msGraphId && isGraphConnected()) {
-      fetch('/api/integrations/msgraph/delete-event', {
-        method: 'POST', credentials: 'include',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ graphEventId: s.msGraphId })
-      }).catch(function () {});
-    }
-    deleteSession(id);
-    if (window.bccAudit) window.bccAudit('session-delete', { key: id, path: '/sessions.html' });
-    closeModal();
-    renderWeek();
+    var btn = this;
+    var finish = function () {
+      deleteSession(id);
+      if (window.bccAudit) window.bccAudit('session-delete', { key: id, path: '/sessions.html' });
+      closeModal();
+      renderWeek();
+    };
+    // Nothing mirrored to Outlook — delete straight away, exactly as before.
+    if (!(s && s.msGraphId && isGraphConnected())) { finish(); return; }
+    // Otherwise wait for the mirror. The failure used to be swallowed entirely: the row
+    // disappeared here while the calendar event survived, and the next "Pull from
+    // Outlook" imported it straight back — which reads as the delete not working.
+    btn.disabled = true;
+    fetch('/api/integrations/msgraph/delete-event', {
+      method: 'POST', credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ graphEventId: s.msGraphId })
+    })
+      .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
+      .then(function (j) {
+        btn.disabled = false;
+        if (j && j.ok !== false) { finish(); return; }
+        if (confirm('The Outlook calendar event could not be removed (' + ((j && j.error) || 'unknown error') + ').
+
+Delete the session here anyway? The calendar entry will remain, and a future Pull from Outlook may bring it back.')) finish();
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        if (confirm('Could not reach Outlook to remove the calendar event (' + ((e && e.message) || 'network error') + ').
+
+Delete the session here anyway? The calendar entry will remain.')) finish();
+      });
   });
 
   /* ===== Init ===== */

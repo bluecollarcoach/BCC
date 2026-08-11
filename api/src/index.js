@@ -1717,11 +1717,20 @@ app.http('errorlog', {
     const c = container();
     if (request.method === 'GET') {
       if (!(await isAppAdmin(p))) return { status: 403, jsonBody: { ok: false, error: 'admin only' } };
+      // The Source filter used to run in the BROWSER over this capped page, so with more
+      // than 200 errors on file, filtering to "server" could show none at all while
+      // hundreds existed. Filter in SQL, and report when the page is capped.
+      const ERR_CAP = 200;
+      const rawSrc = String(new URL(request.url).searchParams.get('source') || '').toLowerCase();
+      const src = (rawSrc === 'server' || rawSrc === 'client') ? rawSrc : '';
+      const errParams = [{ name: '@t', value: BCC_TENANT_ID }];
+      let errWhere = 'c.tenantId=@t AND c.docType="errorlog"';
+      if (src) { errWhere += ' AND c.source=@src'; errParams.push({ name: '@src', value: src }); }
       const { resources } = await c.items.query({
-        query: 'SELECT TOP 200 c.id, c.source, c.where, c.message, c.user, c.url, c.at FROM c WHERE c.tenantId=@t AND c.docType="errorlog" ORDER BY c.at DESC',
-        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+        query: 'SELECT TOP ' + (ERR_CAP + 1) + ' c.id, c.source, c.where, c.message, c.user, c.url, c.at FROM c WHERE ' + errWhere + ' ORDER BY c.at DESC',
+        parameters: errParams
       }).fetchAll();
-      return { jsonBody: { ok: true, errors: resources } };
+      return { jsonBody: { ok: true, errors: resources.slice(0, ERR_CAP), capped: resources.length > ERR_CAP, source: src } };
     }
     const body = await request.json().catch(() => ({}));
     await logError(String(body.where || 'client').slice(0, 200), { message: body.message, stack: body.stack }, { source: 'client', user: String(p.userDetails || '').toLowerCase(), url: String(body.url || '').slice(0, 200) });
@@ -1800,7 +1809,10 @@ app.http('cron-reminders', {
         }
         const marker = d.id + ':' + kind;
         if (sent[marker]) continue;
-        sent[marker] = now;
+        // The marker used to be written HERE, before anything was sent — so a reminder
+        // with no live subscription, or one whose send failed, was recorded as sent and
+        // never retried. It is written below, only for markers that actually got a push
+        // out to at least one device.
         dueCount++;
 
         // Recipients: a session with a coachUpn → just that coach; otherwise
@@ -1817,15 +1829,21 @@ app.http('cron-reminders', {
           url: isSession ? '/sessions.html' : '/events.html',
           tag: marker
         });
-        for (const s of targetSubs) toSend.push({ sub: s, payload });
+        for (const s of targetSubs) toSend.push({ sub: s, payload, marker });
       }
 
       // 4) Send + clean up dead subscriptions.
       let okCount = 0, deadCount = 0;
-      await Promise.allSettled(toSend.map(async ({ sub, payload }) => {
+      // A marker is per (doc, kind) while sends are per (doc, kind, subscription), so the
+      // rule is AT LEAST ONE success. Requiring every send to succeed would let a single
+      // permanently-erroring subscription (e.g. a 403 VAPID mismatch, which is never
+      // pruned because it is not 404/410) re-notify everyone else on every run.
+      const delivered = new Set();
+      await Promise.allSettled(toSend.map(async ({ sub, payload, marker }) => {
         try {
           await wp.sendNotification(sub.subscription, payload, { TTL: 60 * 60 });
           okCount++;
+          delivered.add(marker);
         } catch (e) {
           const code = (e && (e.statusCode || e.status)) || 0;
           if (code === 404 || code === 410) {
@@ -1835,7 +1853,10 @@ app.http('cron-reminders', {
         }
       }));
 
-      // 5) Persist de-dupe markers, pruning anything older than 3 days.
+      // 5) Persist de-dupe markers for what actually went out, pruning anything older
+      //    than 3 days. A reminder nobody could be sent stays unmarked, so the next run
+      //    retries it — which is the point of a reminder.
+      for (const m of delivered) sent[m] = now;
       for (const k of Object.keys(sent)) { if (now - sent[k] > 3 * REM_DAY_MS) delete sent[k]; }
       await c.items.upsert({ id: REM_SENT_ID, tenantId: BCC_TENANT_ID, docType: 'reminder-sent', data: { map: sent }, updatedAt: new Date().toISOString() });
 
@@ -2626,16 +2647,29 @@ app.http('sharepoint-list', {
       const access = await getGraphToken();
       const driveId = await spDriveId();
       const path = spPathFor(folder, sub);
-      const url = 'https://graph.microsoft.com/v1.0/drives/' + driveId + '/root:' + encodeURI(path) + ':/children?$top=300&$select=id,name,folder,file,size,lastModifiedDateTime,webUrl';
-      const r = await fetch(url, { headers: { Authorization: 'Bearer ' + access } });
-      if (!r.ok) { const d = (await r.text().catch(() => '')).slice(0, 200); return { status: 502, jsonBody: { ok: false, error: 'SharePoint list failed (' + r.status + ')', detail: d } }; }
-      const j = await r.json();
+      // Page through, bounded. A single $top=300 request silently truncated any folder
+      // with more children — the browser then rendered the partial listing as the whole
+      // folder. Bounded because bookkeeping.html builds the entire listing as one
+      // innerHTML string, so an unbounded crawl would be its own problem.
+      const SP_LIST_MAX = 1000, SP_LIST_PAGES = 5;
+      let listNext = 'https://graph.microsoft.com/v1.0/drives/' + driveId + '/root:' + encodeURI(path) + ':/children?$top=200&$select=id,name,folder,file,size,lastModifiedDateTime,webUrl';
+      const raw = [];
+      let listTruncated = false;
+      for (let page = 0; listNext; page++) {
+        if (page >= SP_LIST_PAGES) { listTruncated = true; break; }
+        const r = await fetch(listNext, { headers: { Authorization: 'Bearer ' + access } });
+        if (!r.ok) { const d = (await r.text().catch(() => '')).slice(0, 200); return { status: 502, jsonBody: { ok: false, error: 'SharePoint list failed (' + r.status + ')', detail: d } }; }
+        const jp = await r.json();
+        for (const f of (jp.value || [])) { if (raw.length < SP_LIST_MAX) raw.push(f); else listTruncated = true; }
+        listNext = (!listTruncated && jp['@odata.nextLink']) || null;
+      }
+      const j = { value: raw };
       const items = (j.value || []).map(f => ({
         id: f.id, name: f.name, folder: !!f.folder, childCount: f.folder ? f.folder.childCount : null,
         size: f.size || null, mimeType: (f.file && f.file.mimeType) || null,
         modified: f.lastModifiedDateTime || null, webUrl: f.webUrl || null
       })).sort((a, b) => ((b.folder ? 1 : 0) - (a.folder ? 1 : 0)) || String(a.name).localeCompare(b.name));
-      return { jsonBody: { ok: true, mapped: true, folder, path: sub, items } };
+      return { jsonBody: { ok: true, mapped: true, folder, path: sub, items, truncated: listTruncated } };
     } catch (e) { context.error('sharepoint-list', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
@@ -2733,17 +2767,32 @@ app.http('sharepoint-import', {
  * bounded batch and reports what's left, so the browser can loop without ever
  * hitting the function timeout. Already-imported files are skipped by their
  * SharePoint item id, so re-running is safe and never duplicates. */
-const SP_BATCH = 20, SP_MAX_DEPTH = 8;
-async function spWalk(driveId, access, path, depth, out) {
-  if (depth > SP_MAX_DEPTH || out.length > 3000) return;
-  const url = 'https://graph.microsoft.com/v1.0/drives/' + driveId + '/root:' + encodeURI(path) + ':/children?$top=300&$select=id,name,folder,file,size';
-  const r = await fetch(url, { headers: { Authorization: 'Bearer ' + access } });
-  if (!r.ok) return;
-  const j = await r.json();
-  for (const it of (j.value || [])) {
-    if (it.folder) await spWalk(driveId, access, path + '/' + it.name, depth + 1, out);
-    else out.push({ id: it.id, name: it.name, size: it.size || 0, path: path });
+const SP_BATCH = 20, SP_MAX_DEPTH = 8, SP_MAX_FILES = 3000;
+/* `limits` collects why enumeration stopped short, so the caller can say so instead of
+   reporting a truncated crawl as the complete file list. Previously a folder with more
+   than 300 children was silently cut off (no nextLink was followed), and hitting the
+   depth or file ceiling looked identical to "that's everything". */
+async function spWalk(driveId, access, path, depth, out, limits) {
+  if (depth > SP_MAX_DEPTH) { limits.depth = true; return; }
+  if (out.length >= SP_MAX_FILES) { limits.count = true; return; }
+  // Follow @odata.nextLink VERBATIM — it already carries $top/$select/$skiptoken, and
+  // encodeURI is only correct for the initial colon-addressed path below.
+  let next = 'https://graph.microsoft.com/v1.0/drives/' + driveId + '/root:' + encodeURI(path) + ':/children?$top=200&$select=id,name,folder,file,size';
+  const folders = [];
+  while (next) {
+    const r = await fetch(next, { headers: { Authorization: 'Bearer ' + access } });
+    if (!r.ok) { limits.error = true; return; }
+    const j = await r.json();
+    for (const it of (j.value || [])) {
+      if (it.folder) folders.push(it.name);
+      else if (out.length < SP_MAX_FILES) out.push({ id: it.id, name: it.name, size: it.size || 0, path: path });
+      else { limits.count = true; break; }
+    }
+    next = j['@odata.nextLink'] || null;
+    if (limits.count) break;
   }
+  // Recurse AFTER the page loop, so a deep tree doesn't interleave paginated requests.
+  for (const name of folders) await spWalk(driveId, access, path + '/' + name, depth + 1, out, limits);
 }
 app.http('sharepoint-import-all', {
   methods: ['POST'], authLevel: 'anonymous', route: 'integrations/sharepoint/{realmId}/import-all',
@@ -2758,7 +2807,8 @@ app.http('sharepoint-import-all', {
       const driveId = await spDriveId();
       const clientRoot = spPathFor(folder, '');
       const all = [];
-      await spWalk(driveId, access, clientRoot, 0, all);
+      const spLimits = {};
+      await spWalk(driveId, access, clientRoot, 0, all, spLimits);
 
       const c = container();
       const dest = safeFolder('/clients/' + realmId);
@@ -2811,9 +2861,22 @@ app.http('sharepoint-import-all', {
       // Anything that failed would otherwise loop forever — count it as processed.
       const remaining = Math.max(0, pending.length - batch.length);
       logAudit('document-upload', { user: who, path: '/api/integrations/sharepoint/import-all', meta: { realmId, imported: importedNow, source: 'sharepoint-bulk' } });
+      // If enumeration itself was cut short, `totalFiles` is not the total and `done`
+      // does not mean "everything is imported" — say which, rather than reporting a
+      // partial crawl as a finished one.
+      const enumTruncated = !!(spLimits.count || spLimits.depth || spLimits.error);
+      const enumNote = enumTruncated
+        ? ('Only part of the SharePoint folder could be listed ('
+            + [spLimits.count ? 'over ' + SP_MAX_FILES + ' files' : null,
+               spLimits.depth ? 'nested deeper than ' + SP_MAX_DEPTH + ' levels' : null,
+               spLimits.error ? 'SharePoint refused a listing request' : null].filter(Boolean).join('; ')
+            + '), so this is not the whole folder.')
+        : '';
       return { jsonBody: {
         ok: true, folder, totalFiles: all.length, alreadyHad: done.size,
-        imported: importedNow, failed, oversized, remaining, done: remaining === 0
+        imported: importedNow, failed, oversized, remaining,
+        done: remaining === 0 && !enumTruncated,
+        enumTruncated, enumNote
       } };
     } catch (e) { context.error('sharepoint-import-all', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
@@ -3108,15 +3171,24 @@ app.http('audit-qbo', {
       const params = [{ name: '@t', value: BCC_TENANT_ID }, { name: '@s', value: since }];
       let where = 'c.tenantId=@t AND c.docType="audit" AND c.ts>=@s AND c.action IN (' + actionList + ')';
       if (wantRealm) { where += ' AND c.meta.realmId=@r'; params.push({ name: '@r', value: wantRealm }); }
+      // Push the PRESENTATION filters into SQL. Applied in JavaScript afterwards, they ran
+      // on an already-truncated TOP 2000 page — so filtering to "refused" searched only
+      // the most recent 2000 pushes and then presented what survived as the complete
+      // count and CSV export. Identical semantics: both were literal equality matches.
+      if (wantOutcome) { where += ' AND c.meta.outcome=@o'; params.push({ name: '@o', value: wantOutcome }); }
+      if (wantUser) { where += ' AND LOWER(c.user)=@u'; params.push({ name: '@u', value: wantUser }); }
+      const CAP = 2000;
       const { resources } = await c.items.query({
-        query: 'SELECT TOP 2000 c.ts, c.action, c.user, c.meta FROM c WHERE ' + where + ' ORDER BY c.ts DESC',
+        // One over the cap, purely so truncation can be DETECTED rather than guessed at.
+        query: 'SELECT TOP ' + (CAP + 1) + ' c.ts, c.action, c.user, c.meta FROM c WHERE ' + where + ' ORDER BY c.ts DESC',
         parameters: params
       }).fetchAll();
-      // Access filter happens HERE, after the query — a row for a client the caller
-      // can't see must never be returned, even if they asked for that realmId.
-      let rows = resources.filter(r => r && r.meta && access.allowed(r.meta.realmId));
-      if (wantOutcome) rows = rows.filter(r => String((r.meta && r.meta.outcome) || '') === wantOutcome);
-      if (wantUser) rows = rows.filter(r => String(r.user || '').toLowerCase() === wantUser);
+      const capped = resources.length > CAP;
+      // The ACCESS filter stays here, after the query: it depends on companyAccessMap,
+      // which layers the owner-only lock, the admin bypass, enabled=false and
+      // allowedUserUpns — none of which are expressible in this WHERE clause. A row for a
+      // client the caller can't see must never be returned, even if they asked for it.
+      let rows = resources.slice(0, CAP).filter(r => r && r.meta && access.allowed(r.meta.realmId));
       // Company names so the log is readable without a second lookup client-side.
       const names = {};
       try {
@@ -3145,7 +3217,10 @@ app.http('audit-qbo', {
           ].map(esc).join(',');
         });
         // ﻿ so Excel opens UTF-8 correctly; CRLF is what spreadsheet apps expect.
-        const csv = '﻿' + [head.map(esc).join(','), ...body].join('\r\n') + '\r\n';
+        // If the query hit the cap, say so IN the file. An export that silently stops at
+        // 2000 rows is worse than one that admits it, because it reads as authoritative.
+        const capNote = capped ? ['', 'NOTE: this export was capped at ' + CAP + ' rows. Narrow the date range, or filter by client, to see the rest.'] : [];
+        const csv = '﻿' + [head.map(esc).join(','), ...body, ...capNote].join('\r\n') + '\r\n';
         return {
           status: 200,
           headers: {
@@ -3156,7 +3231,7 @@ app.http('audit-qbo', {
           body: csv
         };
       }
-      return { jsonBody: { ok: true, days, count: rows.length, companies: names, rows } };
+      return { jsonBody: { ok: true, days, count: rows.length, capped, companies: names, rows } };
     } catch (e) { context.error('audit-qbo', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
@@ -3203,7 +3278,16 @@ async function getIntegrationFields(channel) {
     _intCache.until = Date.now() + 60 * 1000;
     return fields;
   } catch (err) {
-    return {};
+    // Returning {} here is deliberate — ~20 call sites dereference the result unguarded,
+    // and a 'connector not configured' path is a far better failure than a TypeError. But
+    // it makes a transient Cosmos read error INDISTINGUISHABLE from "nothing saved yet",
+    // which is how the nightly QBO sync came to answer 200 ok:true and skip every company
+    // for the night. Flag it so a caller that cares can tell the difference, and never
+    // cache the empty result as if it were the real configuration.
+    console.error('getIntegrationFields(' + channel + ') failed:', err && err.message || err);
+    const failed = {};
+    Object.defineProperty(failed, '_readFailed', { value: true, enumerable: false });
+    return failed;
   }
 }
 
@@ -3627,12 +3711,23 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
         const diag = { firstStatus: m0.status || null, firstBody: (m0.status && m0.status !== 200) ? (m0.body || null) : null };
         const periods = monthResults.filter(x => x.per).map(x => x.per);
         const failedMonths = monthResults.filter(x => !x.per).length;
-        await Promise.all(periods.map(per => c.items.upsert(per).catch(() => {})));
+        // .catch(() => {}) meant a failed write vanished: the run still reported
+        // periodsBuilt = periods.length and partial:false, so a month that never reached
+        // Cosmos looked synced and the client's figures silently stayed stale.
+        const writes = await Promise.allSettled(periods.map(per => c.items.upsert(per)));
+        const failedWrites = writes.filter(w => w.status === 'rejected').length;
+        if (failedWrites) {
+          context.error('qbo-sync: ' + failedWrites + ' of ' + periods.length + ' period write(s) FAILED for realm ' + comp.realmId,
+            (writes.find(w => w.status === 'rejected') || {}).reason);
+        }
         comp.lastSyncAt = new Date().toISOString();
         comp.updatedAt = comp.lastSyncAt;
         try { await c.items.upsert(comp); } catch (_) {}
         try { await c.items.upsert({ id: 'bcc-qbo-debug-sync-' + comp.realmId, tenantId: BCC_TENANT_ID, docType: 'qbo-debug', at: new Date().toISOString(), realmId: comp.realmId, env, base, periodsBuilt: periods.length, failedMonths, firstStatus: diag.firstStatus, firstBody: diag.firstBody }); } catch (_) {}
-        return { realmId: comp.realmId, companyName: comp.companyName, periodsBuilt: periods.length, partial: failedMonths > 0, firstStatus: diag.firstStatus, firstBody: diag.firstBody, periods };
+        return { realmId: comp.realmId, companyName: comp.companyName,
+          periodsBuilt: periods.length - failedWrites, failedWrites,
+          partial: failedMonths > 0 || failedWrites > 0,
+          firstStatus: diag.firstStatus, firstBody: diag.firstBody, periods };
   }
 }
 
@@ -3652,6 +3747,9 @@ app.http('cron-qbo-sync', {
     if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
     try {
       const fields = await getIntegrationFields('qbo');
+      // Do NOT report a read failure as "not configured" — the cron would answer 200 and
+      // silently skip every company, which looks identical to a clean no-op run.
+      if (fields._readFailed) return { status: 503, jsonBody: { ok: false, error: 'could not read the QuickBooks app credentials — nothing was synced' } };
       if (!fields.clientId || !fields.clientSecret) return { status: 200, jsonBody: { ok: true, skipped: 'QBO app credentials not configured' } };
       const c = container();
       const { resources } = await c.items.query({
@@ -4596,7 +4694,9 @@ app.http('msgraph-pull-events', {
           };
         }).filter(function (s) { return s.startAt; });
 
-      return { jsonBody: { ok: true, events: out, range: { start: rangeStart, end: rangeEnd } } };
+      // Graph paginates; this deliberately reads one page. Say so rather than presenting
+      // the first N events as the whole calendar.
+      return { jsonBody: { ok: true, events: out, truncated: !!data['@odata.nextLink'], range: { start: rangeStart, end: rangeEnd } } };
     } catch (e) {
       context.error('msgraph pull-events error', e);
       return { status: 500, jsonBody: { ok: false, error: String(e.message || e) } };
@@ -4977,14 +5077,21 @@ app.http('qbo-company-update', {
         } catch (_) {}
         // Delete the company doc + every other realm-keyed doc (drive link, client
         // mailbox config, email collaboration metadata, financial periods).
+        // Track what did NOT get cleaned up. These swallowed catches are deliberate — a
+        // failure here must not abort the disconnect and strand the company half-removed
+        // — but reporting unqualified success meant a client's live Drive OAuth token or
+        // mailbox config could survive a disconnect with nobody any the wiser.
+        const leftBehind = [];
         for (const k of [id, 'bcc-clientdrive-' + realmId, 'bcc-client-mailbox-' + realmId, 'bcc-emailmeta-' + realmId]) {
-          try { await c.item(k, BCC_TENANT_ID).delete(); } catch (e) { if (e.code !== 404 && k === id) throw e; }
+          try { await c.item(k, BCC_TENANT_ID).delete(); }
+          catch (e) { if (e.code !== 404) { if (k === id) throw e; leftBehind.push(k); } }
         }
         try {
           const { resources: pers } = await c.items.query({ query: 'SELECT c.id FROM c WHERE c.tenantId=@t AND c.docType="financial-period" AND c.realmId=@r', parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@r', value: realmId }] }).fetchAll();
-          for (const per of pers) { try { await c.item(per.id, BCC_TENANT_ID).delete(); } catch (_) {} }
-        } catch (_) {}
-        return { jsonBody: { ok: true, disconnected: true, realmId } };
+          for (const per of pers) { try { await c.item(per.id, BCC_TENANT_ID).delete(); } catch (e) { if (e.code !== 404) leftBehind.push(per.id); } }
+        } catch (e) { leftBehind.push('financial-period query'); }
+        if (leftBehind.length) context.error('qbo disconnect ' + realmId + ': could not delete ' + leftBehind.join(', '));
+        return { jsonBody: { ok: true, disconnected: true, realmId, leftBehind } };
       }
 
       const body = await request.json().catch(() => ({}));
@@ -7173,9 +7280,15 @@ app.http('qbo-cashflow', {
           const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
           const bucketOfDay = (d) => d <= 30 ? 0 : d <= 60 ? 1 : d <= 90 ? 2 : -1;
           // Trailing-12-month P&L → monthly-average revenue / COGS / overhead.
-          const r12Start = new Date(today.getFullYear(), today.getMonth() - 11, 1).toISOString().slice(0, 10);
-          const r12End = today.toISOString().slice(0, 10);
-          const pl12 = flattenQboReport(await apiGet('/reports/ProfitAndLoss?start_date=' + r12Start + '&end_date=' + r12End + '&accounting_method=Accrual'));
+          // Twelve COMPLETE months, ending on the last day of the PRIOR month. Running to
+          // today meant the window was 11 months plus however much of this one had
+          // elapsed, while the divisor stayed 12 — so every average (revenue, COGS,
+          // overhead) was diluted, most on the 1st of a month and least on the 31st, and
+          // the forecast understated the business by up to ~8%.
+          const r12End = new Date(today.getFullYear(), today.getMonth(), 0);
+          const r12Start = new Date(r12End.getFullYear(), r12End.getMonth() - 11, 1);
+          const isoDay = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+          const pl12 = flattenQboReport(await apiGet('/reports/ProfitAndLoss?start_date=' + isoDay(r12Start) + '&end_date=' + isoDay(r12End) + '&accounting_method=Accrual'));
           const rev12 = (findByGroup(pl12, 'Income') ?? findByLabel(pl12, /total income/i)) || 0;
           const cogs12 = (findByGroup(pl12, 'COGS') ?? findByLabel(pl12, /total cost of goods sold|total cogs/i)) || 0;
           const opex12 = (findByGroup(pl12, 'Expenses') ?? findByLabel(pl12, /total expenses/i)) || 0;
