@@ -66,10 +66,19 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
-    // Drop any caches that aren't the current version (cleans up after
-    // we bump CACHE_NAME on future updates).
-    const keys = await caches.keys();
-    await Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)));
+    // Drop any caches that aren't the current version (cleans up after we bump
+    // CACHE_NAME). But ONLY once the new cache actually has something in it: install
+    // swallows every per-URL failure, so a bump applied while the user is signed out (or
+    // briefly offline) can produce an EMPTY new cache — and evicting the old one then
+    // leaves the device with no offline copies at all, which is strictly worse than
+    // holding a slightly stale set. The stale caches get dropped on the next activate
+    // that succeeds.
+    const cache = await caches.open(CACHE_NAME);
+    const filled = (await cache.keys()).length;
+    if (filled > 0) {
+      const keys = await caches.keys();
+      await Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)));
+    }
     // Take control of any tabs that were open before this SW activated.
     await self.clients.claim();
   })());
@@ -131,13 +140,15 @@ self.addEventListener('fetch', (event) => {
       // revalidation at all, and CACHE_NAME had never been bumped).
       if (cached) {
         fetch(req).then((r) => {
-          if (r && r.ok && r.type === 'basic') caches.open(CACHE_NAME).then((c) => c.put(req, r.clone())).catch(() => {});
+          if (r && r.ok && r.type === 'basic' && r.status === 200) caches.open(CACHE_NAME).then((c) => c.put(req, r.clone())).catch(() => {});
         }).catch(() => {});
         return cached;
       }
       try {
         const r = await fetch(req);
-        if (r && r.ok && r.type === 'basic') {
+        // r.ok already excludes 4xx/5xx; type 'basic' excludes opaque cross-origin. A 206
+        // partial must never be cached — Cache.put rejects it, but be explicit.
+        if (r && r.ok && r.type === 'basic' && r.status === 200) {
           const clone = r.clone();
           caches.open(CACHE_NAME).then((c) => c.put(req, clone)).catch(() => {});
         }

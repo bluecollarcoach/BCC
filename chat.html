@@ -256,7 +256,9 @@ window.addEventListener('bcc-users-ready', function () {
 // the composer and would wipe a half-typed draft.
 window.addEventListener('focus', function () {
   if (!active) return;
-  try { const r = loadRead(); r[active] = Date.now(); saveRead(r); } catch (e) {}
+  // Assign back to the module-level `read` map, not just to storage — unreadCount()
+  // and renderSidebar() read THAT, so without this the badge never actually cleared.
+  try { const r = loadRead(); r[active] = Date.now(); saveRead(r); read = r; } catch (e) {}
   if (typeof renderSidebar === 'function') { try { renderSidebar(); } catch (e) {} }
 });
 window.addEventListener('bcc-data-ready', function (e) {

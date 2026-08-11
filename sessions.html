@@ -442,6 +442,7 @@
     var bg = document.getElementById('modalBg');
     var titleEl = document.getElementById('modalTitle');
     var delBtn = document.getElementById('m-delete');
+    delBtn.disabled = false; // one shared element — never inherit a stuck disabled state
     document.getElementById('m-id').value = id || '';
     if (id) {
       var s = getSession(id);
@@ -596,6 +597,9 @@
         btn.disabled = false;
         if (confirm('Could not reach Outlook to remove the calendar event (' + ((e && e.message) || 'network error') + ').\n\nDelete the session here anyway? The calendar entry will remain.')) finish();
       });
+    // A hung request settles neither handler above. Don't leave Delete dead forever —
+    // #m-delete is a single shared element reused by every session that opens after this.
+    setTimeout(function () { btn.disabled = false; }, 15000);
   });
 
   /* ===== Init ===== */

@@ -602,16 +602,24 @@
     var pkgEl = editing ? ae.closest('.pkg') : null;
     var pkgId = pkgEl ? pkgEl.dataset.id : null;
     var field = editing ? ae.getAttribute('data-edit') : null;
-    var selS = null, selE = null;
+    var selS = null, selE = null, liveVal = null;
     if (editing) {
       try { selS = ae.selectionStart; selE = ae.selectionEnd; } catch (err) {} // number inputs/selects throw
-      commitNow(); // persist what is on screen so the rebuild below cannot lose a keystroke
+      // Carry the in-progress VALUE across the rebuild rather than committing it first.
+      // The sync layer writes the incoming doc into localStorage BEFORE it fires this
+      // event, so by now storage already holds the colleague's new sheet — and
+      // harvestPackages replaces s.packages wholesale from the DOM, which is still the
+      // PRE-sync list. Committing here would therefore push the stale package array
+      // straight over whatever they just added or removed.
+      liveVal = ae.value;
     }
     renderPackages();
     if (pkgId && field) {
       var back = document.querySelector('.pkg[data-id="' + pkgId + '"] [data-edit="' + field + '"]');
       if (back) {
         back.focus();
+        // Value first, THEN the caret — setting .value resets the selection to the end.
+        if (liveVal != null && back.value !== liveVal) { back.value = liveVal; dirtyCommit(); }
         if (selS != null) { try { back.setSelectionRange(selS, selE); } catch (err) {} }
       }
     }

@@ -1572,7 +1572,14 @@
   var _crmDirty = false;
   document.addEventListener('input', function (ev) {
     var pane = document.getElementById('detailMode');
-    if (pane && pane.contains(ev.target)) _crmDirty = true;
+    if (!pane || !pane.contains(ev.target)) return;
+    // `input` fires for selects and checkboxes too, not only typing — and the stage, type,
+    // company and needs controls all persist immediately via saveContact() and
+    // deliberately do not repaint. Marking those dirty latched the flag true for the life
+    // of the page and killed live refresh entirely for that contact.
+    var t = ev.target;
+    if (t.id === 'd-stage' || t.id === 'd-type' || t.id === 'd-companyId' || t.hasAttribute('data-need')) return;
+    _crmDirty = true;
   }, true);
   window.addEventListener('bcc-data-ready', function () {
     populateTypeDropdowns();

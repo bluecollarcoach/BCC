@@ -799,6 +799,20 @@
     if (!realm) return all;
     return all.filter(function (p) { return (p.realmId || '') === realm; });
   }
+  /* Collapse to one record per company+period. A manual entry and a QBO period can now
+     coexist for the same month (they have distinct keys, by design) — the single-company
+     table shows both with their Source, which is right, but every AGGREGATE must count
+     the month once or the firm-wide totals double it. Manual wins: someone typed it
+     deliberately, presumably to correct what synced. */
+  function dedupePeriods(list) {
+    var by = {};
+    list.forEach(function (p) {
+      var k = (p.realmId || '') + '|' + (p.period || '');
+      var cur = by[k];
+      if (!cur || (p.source === 'manual' && cur.source !== 'manual')) by[k] = p;
+    });
+    return Object.keys(by).map(function (k) { return by[k]; });
+  }
   // Latest period per company (for the All-companies summary).
   function latestByCompany() {
     var map = {};
@@ -823,7 +837,13 @@
     p.updatedAt = nowIso();
     if (!p.createdAt) p.createdAt = p.updatedAt;
     // QBO periods arrive with their own realm-scoped id; only mint one for manual entries.
-    if (!p.id) p.id = PER_PREFIX + (p.realmId ? p.realmId + '-' : '') + p.period;
+    // A '-manual' SUFFIX, so the key can never collide with the one the nightly sync owns
+    // (api/src/index.js writes 'bcc-financial-period-<realm>-<period>'). Without it a
+    // manual entry overwrote the synced month locally and then vanished on the next load,
+    // when loadPeriodsFromCloud rewrote the server's copy back over it. A suffix — not a
+    // prefix — because disconnectCompany prunes on PER_PREFIX + realm + '-', and anything
+    // inserted before the realm would survive a disconnect and keep feeding the KPIs.
+    if (!p.id) p.id = PER_PREFIX + (p.realmId ? p.realmId + '-' : '') + p.period + (p.source === 'manual' ? '-manual' : '');
     p.tenantId = 'blue-collar-coach';
     p.docType = 'financial-period';
     localStorage.setItem(p.id, JSON.stringify(p));
@@ -873,7 +893,7 @@
       setDelta(document.getElementById('kpiNetD'), net>=0?'profitable overall':'net loss', net>=0?'up':'down');
       // YTD net across all companies, current year.
       var year = (new Date()).getFullYear().toString();
-      var yNet=0; allPeriods().forEach(function(p){ if(p.realmId&&p.period&&p.period.indexOf(year)===0&&!periodInProgress(p.period)){ yNet += netOf(p);} });
+      var yNet=0; dedupePeriods(allPeriods()).forEach(function(p){ if(p.realmId&&p.period&&p.period.indexOf(year)===0&&!periodInProgress(p.period)){ yNet += netOf(p);} });
       document.getElementById('kpiYtd').textContent = dollars(yNet);
       setDelta(document.getElementById('kpiYtdD'), year + ' · closed months · all companies');
       return;
@@ -3728,9 +3748,22 @@
   function openFilePreview(name, viewUrl, downloadUrl, mime, probe) {
     if (probe) {
       var ov0 = document.createElement('div'); ov0.id = 'fp_modal'; ov0.className = 'em-modal-ov';
-      ov0.innerHTML = '<div class="em-modal" style="max-width:920px;"><div class="em-modal-body"><div style="padding:34px 20px;text-align:center;color:var(--muted);font-size:13.5px;">Opening ' + esc(name) + '…</div></div></div>';
+      ov0.innerHTML = '<div class="em-modal" style="max-width:920px;"><div class="em-modal-head">' +
+        '<div class="em-modal-subj" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(name) + '</div>' +
+        '<button class="btn btn-ghost" id="fp0_close" type="button" style="font-size:18px;min-height:34px;width:38px;">×</button></div>' +
+        '<div class="em-modal-body"><div style="padding:34px 20px;text-align:center;color:var(--muted);font-size:13.5px;">Opening ' + esc(name) + '…</div></div></div>';
       document.body.appendChild(ov0);
-      var drop = function () { var m = document.getElementById('fp_modal'); if (m) m.remove(); };
+      // This placeholder covers the whole screen AND suppresses the reader's Escape (that
+      // guard keys off #fp_modal), so it needs every dismissal a real modal has — without
+      // them a slow or hung fetch locked the user out of the page entirely.
+      var drop = function () {
+        var m = document.getElementById('fp_modal'); if (m) m.remove();
+        document.removeEventListener('keydown', ov0Key);
+      };
+      function ov0Key(e) { if (e.key === 'Escape') drop(); }
+      ov0.querySelector('#fp0_close').onclick = drop;
+      ov0.addEventListener('click', function (e) { if (e.target === ov0) drop(); });
+      document.addEventListener('keydown', ov0Key);
       fetch(viewUrl, { credentials: 'include' }).then(function (r) {
         if (!r.ok) {
           return r.json().catch(function () { return null; }).then(function (j) {
@@ -3819,6 +3852,7 @@
      /clients/<realm>/mail), so it inherits the existing access gate, preview and
      download. What lives here on top of that is the log: when it arrived, who it is
      from, what it is, and whether anyone has dealt with it yet. ---- */
+  function localDayStr(d) { d = d || new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
   function mailKey() { return 'bcc-clientmail-' + currentRealm; }
   function mailFolder() { return clientFolder() + '/mail'; }
   function loadMailDoc() {
@@ -3838,7 +3872,9 @@
     var body = document.getElementById('mail-body'); if (!body) return;
     body.innerHTML =
       '<div class="ws-form" style="margin-bottom:14px;">' +
-        '<label>Date received<input type="date" id="ml_date" value="' + esc(new Date().toISOString().slice(0, 10)) + '" /></label>' +
+        // Local date, not toISOString() — the UTC date is already tomorrow on a US evening,
+        // so the field pre-filled a day that has not happened yet.
+        '<label>Date received<input type="date" id="ml_date" value="' + esc(localDayStr()) + '" /></label>' +
         '<label>From (sender)<input id="ml_from" placeholder="e.g. IRS, Chase Bank, State of Ohio" /></label>' +
         '<label class="full">What is it?<input id="ml_what" placeholder="e.g. 941 notice, bank statement, insurance renewal" /></label>' +
         '<label class="full">Scan / photo (optional)<input type="file" id="ml_file" accept="image/*,application/pdf" /></label>' +

@@ -1605,10 +1605,15 @@
           // Use "Clear" to deliberately wipe a connector.
           rec.fields = rec.fields || {};
           card.querySelectorAll('[data-int-key]').forEach(function (inp) {
-            // Skip blanks too. A secret input renders empty when the value was never
-            // shown to this admin, so saving the form would otherwise persist '' over a
-            // credential the server holds. "Clear" remains the way to wipe one.
-            var v = (inp.value || '').trim(); if (!v) return;
+            // Skip a blank SECRET only. A password field renders empty when the stored
+            // value was never shown to this admin, so saving would otherwise persist ''
+            // over a credential the server holds — "Clear" is the way to wipe those.
+            // A visible text field or a select shows its real value, so a blank there is
+            // a deliberate clear and must be honoured; skipping those made an optional
+            // field (a page id, a list id) impossible to empty — Save toasted success and
+            // the old value snapped straight back.
+            var v = (inp.value || '').trim();
+            if (!v && inp.type === 'password') return;
             rec.fields[inp.getAttribute('data-int-key')] = v;
           });
           // After a save, mark as not-tested-yet
@@ -1673,7 +1678,8 @@
           // would destroy the very credential the test is about to exercise.
           var rec = loadIntegration(channel); rec.fields = rec.fields || {};
           card.querySelectorAll('[data-int-key]').forEach(function (inp) {
-            var v = (inp.value || '').trim(); if (!v) return; // see the Save branch
+            var v = (inp.value || '').trim();
+            if (!v && inp.type === 'password') return; // see the Save branch
             rec.fields[inp.getAttribute('data-int-key')] = v;
           });
           saveIntegration(rec);

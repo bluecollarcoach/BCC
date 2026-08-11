@@ -222,8 +222,13 @@
     var sane = function (x) { return String(x || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40); };
     var keyOwnerOk = function (k) {
       if (!me) return false; // no identity to check against — do not guess
+      // These families embed a SANITISED upn (see emSigKey / myTasksKey).
       if (k.indexOf('bcc-mytasks-') === 0) return k === 'bcc-mytasks-' + sane(me);
-      var m = /^(bcc-(?:daily-log|emailsig|chat-last-read)-)/.exec(k);
+      // emSigKey's transform is NOT the same as sane(): it does not trim edge dashes or
+      // truncate, so replicate it exactly rather than approximately.
+      if (k.indexOf('bcc-emailsig-') === 0) return k === 'bcc-emailsig-' + (me.replace(/[^a-z0-9]+/g, '-') || 'x');
+      // These embed it raw.
+      var m = /^(bcc-(?:daily-log|chat-last-read)-)/.exec(k);
       if (m) return k.indexOf(m[1] + me + '-') === 0 || k === m[1] + me;
       return true; // not a personal key shape
     };
@@ -2148,14 +2153,21 @@
       // it indefinitely — flush() can issue a batch PUT plus N per-key PUTs plus N
       // DELETEs sequentially, so a slow server would wedge sign-out with no feedback.
       if (pushTimer) clearTimeout(pushTimer);
-      var done = false;
+      var done = false, settled = false;
       var go = function () {
         if (done) return; done = true;
-        if (pending.size && !confirm(pending.size + ' change' + (pending.size === 1 ? '' : 's') + ' could not be saved yet. They are stored on this device and will finish saving next time you sign in here. Sign out now?')) return;
+        // Ask ONLY on the timeout path, i.e. the flush has not settled and navigating away
+        // would abort a request that is still open. Do not re-read pending.size to decide:
+        // flush() clears it synchronously before its first await, so mid-flight it is
+        // always 0 — which is exactly how the previous version skipped the confirm and
+        // killed the in-flight PUT, the very thing it was written to prevent. Report the
+        // count captured BEFORE the flush for the same reason.
+        if (!settled && !confirm(queued + ' change' + (queued === 1 ? '' : 's') + ' ' + (queued === 1 ? 'is' : 'are') + ' still saving. They are stored on this device and will finish saving next time you sign in here. Sign out now?')) { done = false; return; }
         window.bccAudit && window.bccAudit('signout');
         location.href = '/.auth/logout?post_logout_redirect_uri=' + encodeURIComponent(location.origin + '/');
       };
-      try { Promise.resolve(flush()).then(go, go); } catch (e) { go(); }
+      var settleThenGo = function () { settled = true; go(); };
+      try { Promise.resolve(flush()).then(settleThenGo, settleThenGo); } catch (e) { settleThenGo(); }
       setTimeout(go, 2500);
       return;
     }

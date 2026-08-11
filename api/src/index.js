@@ -938,7 +938,16 @@ const ALLOWED_AUDIT_ACTIONS = new Set([
   'financial-period-save', 'financial-period-delete',
   // Other recently-added events that were also being rejected
   'chat-members-update', 'dashboard-update', 'permissions-update',
-  'user-add', 'user-remove', 'job-create'
+  'user-add', 'user-remove', 'job-create',
+  // A rejected action is dropped SILENTLY — the row simply never appears in Activity or
+  // the audit trail. These 13 were all being emitted by the app and refused here. Cross-
+  // checked by extracting every bccAudit()/logAudit() literal in the repo against this
+  // set; keep doing that whenever an action is added, or the event just disappears.
+  'client-task-update', 'weekly-note-add', 'notify-user',
+  'report-save', 'report-freeze', 'report-pdf', 'report-goals-save',
+  'payapp-save', 'payapp-delete', 'payapp-print',
+  'cpr-extract', 'cpr-remote-sign',
+  'client-mail-add', 'client-mail-done', 'client-mail-reopen', 'client-mail-del'
 ]);
 
 app.http('audit', {
@@ -2927,9 +2936,20 @@ async function driveDocAndToken(realmId) {
   // for up to 40 minutes, while drive-upload still answered { ok: true }. Deleting the
   // entry in the OAuth callback would not have worked: that runs on whichever worker
   // handled the callback, not necessarily the one holding the warm entry.
-  const atKey = realmId + '|' + String(doc.refreshToken || '').slice(-24) + '|' + String(doc.provider || '');
+  // driveAccessToken ROTATES doc.refreshToken in place (Entra issues a new one on every
+  // refresh grant), so the key must be recomputed after the call — storing under the
+  // pre-refresh key meant every subsequent request missed and the Map grew without bound.
+  const atKeyFor = d => realmId + '|' + String((d && d.refreshToken) || '').slice(-24) + '|' + String((d && d.provider) || '');
+  const atKey = atKeyFor(doc);
   const hit = _driveATCache.get(atKey);
   if (hit && hit.exp > Date.now()) return { doc, at: hit.at };
+  // Cheap bound. Entries orphaned by a reconnect (a brand-new token from the auth-code
+  // exchange) are never any later request's key, so nothing else would ever evict them.
+  if (_driveATCache.size > 200) {
+    const nowMs = Date.now();
+    for (const [k, v] of _driveATCache) if (!v || v.exp <= nowMs) _driveATCache.delete(k);
+    if (_driveATCache.size > 200) _driveATCache.clear();
+  }
   let at;
   try {
     at = await driveAccessToken(doc, creds);
@@ -2946,7 +2966,11 @@ async function driveDocAndToken(realmId) {
     }
     throw e;
   }
-  _driveATCache.set(atKey, { at, exp: Date.now() + 40 * 60 * 1000 });
+  // Delete the OLD key BEFORE setting the new one: on Google the token is not rotated, so
+  // the two keys are identical and deleting afterwards would wipe what we just stored.
+  const atKeyNow = atKeyFor(doc);
+  if (atKeyNow !== atKey) _driveATCache.delete(atKey);
+  _driveATCache.set(atKeyNow, { at, exp: Date.now() + 40 * 60 * 1000 });
   return { doc, at };
 }
 
@@ -3132,10 +3156,12 @@ app.http('audit-client', {
       const params = [{ name: '@t', value: BCC_TENANT_ID }, { name: '@s', value: since }, { name: '@r', value: realmId }];
       if (wantUser) { where += ' AND LOWER(c.user)=@u'; params.push({ name: '@u', value: wantUser }); }
       const { resources } = await c.items.query({
-        query: 'SELECT TOP ' + ACT_CAP + ' c.ts, c.action, c.user, c.meta FROM c WHERE ' + where + ' ORDER BY c.ts DESC',
+        // One OVER the cap, so "exactly ACT_CAP rows exist" is distinguishable from
+        // "there are more" — testing >= ACT_CAP on a TOP ACT_CAP query always said capped.
+        query: 'SELECT TOP ' + (ACT_CAP + 1) + ' c.ts, c.action, c.user, c.meta FROM c WHERE ' + where + ' ORDER BY c.ts DESC',
         parameters: params
       }).fetchAll();
-      return { jsonBody: { ok: true, realmId, days, rows: resources, capped: resources.length >= ACT_CAP } };
+      return { jsonBody: { ok: true, realmId, days, rows: resources.slice(0, ACT_CAP), capped: resources.length > ACT_CAP } };
     } catch (e) { context.error('audit-client', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
@@ -3727,7 +3753,7 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
         const writes = await Promise.allSettled(periods.map(per => c.items.upsert(per)));
         const failedWrites = writes.filter(w => w.status === 'rejected').length;
         if (failedWrites) {
-          context.error('qbo-sync: ' + failedWrites + ' of ' + periods.length + ' period write(s) FAILED for realm ' + comp.realmId,
+          console.error('qbo-sync: ' + failedWrites + ' of ' + periods.length + ' period write(s) FAILED for realm ' + comp.realmId + ':',
             (writes.find(w => w.status === 'rejected') || {}).reason);
         }
         comp.lastSyncAt = new Date().toISOString();
@@ -4385,20 +4411,20 @@ app.http('msgraph-message-get', {
       let attachmentsError = null;
       if (m.hasAttachments) {
         try {
-          // isInline and contentId are properties of the BASE microsoft.graph.attachment
-          // type, so they are safe to $select on this polymorphic collection. sourceUrl is
-          // NOT — it lives on the referenceAttachment subtype and a bare mention of it
-          // makes Graph reject the whole query, which would surface as "could not load
-          // attachments" on every message that has any. @odata.type needs no $select: the
-          // subtype discriminator always comes back on a derived-type collection.
-          const ar = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + id + '/attachments?$select=id,name,contentType,size,isInline,contentId', { headers: { Authorization: 'Bearer ' + access } });
+          // ONLY base microsoft.graph.attachment properties may be named here: id, name,
+          // contentType, size, isInline, lastModifiedDateTime. Naming a property that lives
+          // on a SUBTYPE — sourceUrl (referenceAttachment) or contentId/contentBytes
+          // (fileAttachment) — makes Graph 400 the whole query, which surfaces as "could
+          // not load this email's attachment(s)" on every message that has any.
+          // @odata.type needs no $select: the discriminator always comes back.
+          const ar = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + id + '/attachments?$select=id,name,contentType,size,isInline', { headers: { Authorization: 'Bearer ' + access } });
           if (ar.ok) {
             const aj = await ar.json();
             attachments = (aj.value || []).map(a => {
               const odata = String(a['@odata.type'] || '');
               return {
                 id: a.id, name: a.name, contentType: a.contentType, size: a.size,
-                isInline: !!a.isInline, contentId: a.contentId || '',
+                isInline: !!a.isInline,
                 // 'file' is the only kind with bytes behind /$value. 'reference' is a
                 // OneDrive/SharePoint pointer (what Outlook creates for a cloud attachment
                 // or any large file it converts to a link) and 'item' is an embedded
