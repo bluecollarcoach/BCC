@@ -652,9 +652,13 @@ app.http('data', {
         // document here would add thousands of event-loop yields to the hottest
         // request in the app (this is the routine full sync every page load runs).
         const appCheck = await appAccessChecker(p);
+        // Same reasoning as appCheck: resolve the bookkeeping tier ONCE, then filter
+        // synchronously. Admins short-circuit to 'admin' and are unaffected.
+        const bkTier = hasClientScoped ? await bookkeepingTierFor(p) : null;
         const items = [];
         for (const r of gated) {
           if (appCheck(r.id, 'view') === false) continue;
+          if (dataKeyClientRealm(r.id) && !bkDataAllowed(bkTier, r.id, 'view')) continue;
           const isInt = String(r.id).startsWith('bcc-integration-');
           const isAdminCfg = ADMIN_KEYS.has(r.id);
           const data = isInt ? (dataAdmin ? r.data : redactIntegrationData(r.data))
@@ -677,6 +681,7 @@ app.http('data', {
         let touchesIntegration = false;
         const realmAccessCache = new Map();
         const putAppCheck = await appAccessChecker(p); // resolve tiers once, not per item
+        let putBkTier; // resolved lazily, once, only if the batch has a client-scoped key
         for (const it of items) {
           if (!isPcKey(it.key)) return badRequest('invalid key: ' + it.key);
           if (isProtectedServerKey(it.key)) return forbidden('this record is managed by a secure endpoint and cannot be written here');
@@ -693,6 +698,8 @@ app.http('data', {
             if (it.data && it.data.realmId != null && String(it.data.realmId) !== String(clientRealm)) return badRequest('realmId does not match record key: ' + it.key);
             if (!realmAccessCache.has(clientRealm)) realmAccessCache.set(clientRealm, await driveClientAccess(p, clientRealm));
             if (realmAccessCache.get(clientRealm).err) return forbidden('no access to this client');
+            if (putBkTier === undefined) putBkTier = await bookkeepingTierFor(p);
+            if (!bkDataAllowed(putBkTier, it.key, 'edit')) return forbidden('your access level does not include this record');
           }
           // CRM/Engagements/Marketing/Rate-Sheet records — only someone with 'edit'+
           // on the owning app (bcc-contact- requires it on at least one sharing app).
@@ -759,6 +766,7 @@ app.http('data', {
         if (!ownsPersonalKey(key)) return forbidden('you can only delete your own personal records');
         const delRealm = dataKeyClientRealm(key);
         if (delRealm && (await driveClientAccess(p, delRealm)).err) return forbidden('no access to this client');
+        if (delRealm && !bkDataAllowed(await bookkeepingTierFor(p), key, 'edit')) return forbidden('your access level does not include this record');
         if ((await appAccessForKey(p, key, 'edit')) === false) return forbidden('you do not have edit access for this');
         if (key.startsWith(DOC_DOC_PREFIX)) {
           const existingDoc = await c.item(key, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
@@ -1183,9 +1191,21 @@ app.http('push-subscribe', {
         return { status: 204 };
       }
 
-      // DELETE — remove all push-sub docs owned by the caller. (Cheap;
-      // a user usually has 1-3 device subscriptions at most.)
-      const q = {
+      // DELETE — remove the caller's push-sub docs. With ?endpoint= it removes ONLY that
+      // device's row, which is what sign-out needs: a Web Push subscription belongs to the
+      // browser profile, not to the person, so a shared or handed-on device otherwise kept
+      // delivering the previous user's notifications indefinitely. Without it, every row
+      // for the caller goes — which is what "turn notifications off for my account" means,
+      // but would be wrong at sign-out (it would kill push on their phone and tablet too).
+      const wantEndpoint = (function () { try { return new URL(request.url).searchParams.get('endpoint') || ''; } catch (_) { return ''; } })();
+      const q = wantEndpoint ? {
+        query: 'SELECT c.id FROM c WHERE c.tenantId = @t AND c.docType = "push-sub" AND LOWER(c.user) = @u AND c.subscription.endpoint = @e',
+        parameters: [
+          { name: '@t', value: BCC_TENANT_ID },
+          { name: '@u', value: who },
+          { name: '@e', value: wantEndpoint }
+        ]
+      } : {
         query: 'SELECT c.id FROM c WHERE c.tenantId = @t AND c.docType = "push-sub" AND LOWER(c.user) = @u',
         parameters: [
           { name: '@t', value: BCC_TENANT_ID },
@@ -2206,6 +2226,25 @@ async function bookkeepingTierFor(p) {
 // would read as full access. null stays permissive: it means no row exists yet.
 function bookkeepingNoFinancials(tier) { return tier === 'tasks' || tier === 'none'; }
 function bookkeepingReadOnly(tier) { return tier === 'tasks' || tier === 'view' || tier === 'none'; }
+
+/* Client-scoped bookkeeping records flow through the GENERIC /api/data endpoint, which
+   until now applied only COMPANY access — is this client yours? — and never the
+   bookkeeping tier. Every dedicated endpoint layers both (see resolveClientMailbox:
+   "Company access alone is not enough here"), so a 'tasks' or 'none' bookkeeper was
+   reading and writing every accessible client's WIP, certified payroll, pay applications
+   and client info through the routine sync, while the same data was refused to them
+   everywhere else.
+   'tasks' is DEFINED as "per-client tasks only", so bcc-task- must stay fully writable
+   for that tier — denying it would destroy the only thing the tier exists for. 'none' is
+   denied everything, including tasks. */
+function bkClientKeyKind(id) { return /^bcc-task-/.test(String(id || '')) ? 'task' : 'financial'; }
+function bkDataAllowed(tier, id, need) {
+  if (tier === 'none') return false;                       // no bookkeeping access at all
+  if (bkClientKeyKind(id) === 'task') return true;         // tasks are the 'tasks' tier's whole point
+  if (bookkeepingNoFinancials(tier)) return false;         // 'tasks' sees no financial records
+  if (need === 'edit' && bookkeepingReadOnly(tier)) return false; // 'view' reads, never writes
+  return true;
+}
 
 /* Generic per-app permission tier (CRM, Engagements/Jobs, Marketing, Rate Sheet).
  * admin.html lets an admin set Admin/Edit/View/None for these apps, and bcc-api.js

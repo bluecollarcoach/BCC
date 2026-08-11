@@ -2147,6 +2147,33 @@
     // flush() clears `pending` SYNCHRONOUSLY before its first await, so re-reading
     // pending.size after calling it always saw 0 and the confirm never appeared —
     // sign-out cancelled the in-flight PUT without asking. Count first.
+    /* Retire THIS device's push subscription. A Web Push subscription belongs to the
+       browser profile and origin, not to the signed-in person — so without this, a shared
+       or handed-on machine kept delivering the previous user's notifications indefinitely,
+       and the next person to tap "Enable alerts" re-registered the SAME endpoint under
+       their own name on top of it.
+       Deliberately fire-and-forget, and endpoint-scoped:
+         - navigator.serviceWorker.ready NEVER settles when nothing controls the scope
+           (SW registration is best-effort, and absent in iOS private browsing), so
+           awaiting it here could wedge sign-out permanently. Nothing below waits on it.
+         - ?endpoint= removes only this device's row. The unscoped DELETE means "turn
+           notifications off for my account" and would kill push on their phone too. */
+    try {
+      if (navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
+        navigator.serviceWorker.getRegistration().then(function (reg) {
+          if (!reg || !reg.pushManager) return;
+          return reg.pushManager.getSubscription().then(function (sub) {
+            if (!sub) return;
+            var ep = sub.endpoint;
+            try { sub.unsubscribe(); } catch (e) {}
+            // keepalive so the request survives the navigation below.
+            try { fetch(API_BASE + '/push-subscribe?endpoint=' + encodeURIComponent(ep), { method: 'DELETE', keepalive: true }); } catch (e) {}
+          });
+        }).catch(function () {});
+      }
+      _origRemoveItem.call(localStorage, 'bcc-push-enabled');
+    } catch (e) {}
+
     var queued = pending.size;
     if (queued) {
       // Give the flush a real chance to land before navigating away, but never wait on
