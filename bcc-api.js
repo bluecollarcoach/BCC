@@ -940,7 +940,10 @@
           var _stale = [];
           for (var _si = 0; _si < localStorage.length; _si++) {
             var _sk = localStorage.key(_si);
-            if (_sk && (_sk.indexOf('bcc-mytasks-') === 0 || _sk.indexOf('bcc-daily-log-') === 0)) _stale.push(_sk);
+            // 'bccnc-' too: the notification centre's items and its fired/seen markers
+            // are per-PERSON but deliberately not bcc- keys, so nothing else clears them
+            // — the next user inherited the previous one's bell contents.
+            if (_sk && (_sk.indexOf('bcc-mytasks-') === 0 || _sk.indexOf('bcc-daily-log-') === 0 || _sk.indexOf('bccnc-') === 0)) _stale.push(_sk);
           }
           // _origRemoveItem queues nothing, so the previous user's SERVER copies are
           // untouched — they come back on their next pull. This only clears this device.
@@ -1062,7 +1065,7 @@
             var gone = [];
             for (var pi = 0; pi < localStorage.length; pi++) {
               var pk = localStorage.key(pi);
-              if (!pk || seenKeys.has(pk) || pending.has(pk)) continue; // queued local write wins
+              if (!pk || seenKeys.has(pk) || pending.has(pk) || heldInFlight(pk)) continue; // queued — or still-saving — local write wins
               for (var px = 0; px < PRUNABLE_PREFIXES.length; px++) {
                 if (pk.indexOf(PRUNABLE_PREFIXES[px]) === 0) { gone.push(pk); break; }
               }
@@ -1550,7 +1553,16 @@
     // tab once and can jump past the topbar straight to the page content.
     // Targets the first <main>, .wrap, or .app element on the page.
     if (document.body && !document.getElementById('bcc-skip')) {
-      var skipTarget = document.querySelector('main, .wrap, .app, .board, .grid-wrap');
+      /* Try each selector IN ORDER. A comma list returns the first match in DOCUMENT
+         order, not the first selector's match — so adding '.page' to one list would make
+         guide.html jump to its in-page sidebar (which wraps the content) instead of the
+         content. Several pages have no main/.wrap/.app at all and their container is
+         '.page', which is why the link was a dead anchor on kb.html and scheduler.html. */
+      var skipTarget = null;
+      ['main', '.wrap', '.app', '.board', '.grid-wrap', '.content', '.page'].some(function (sel) {
+        skipTarget = document.querySelector(sel);
+        return !!skipTarget;
+      });
       if (skipTarget && !skipTarget.id) skipTarget.id = 'bcc-main';
       var skip = document.createElement('a');
       skip.id = 'bcc-skip';
@@ -2323,10 +2335,25 @@
       }
       var reg = await navigator.serviceWorker.ready;
       var existing = await reg.pushManager.getSubscription();
+      // A subscription is bound to the VAPID key it was minted with. Reusing one created
+      // under a DIFFERENT (rotated, or previously misconfigured) key meant this reported
+      // success while every push to it 403'd forever, with nothing to indicate why.
+      // Compare the stored applicationServerKey against the one the server is using now,
+      // and re-mint when they differ.
       if (existing) {
-        // Re-post the existing subscription so the server has a fresh row
-        // for this user even if the cookie / UPN context changed.
-        try { existing = await reg.pushManager.getSubscription(); } catch (_) {}
+        var wanted = urlBase64ToUint8Array(pubKey);
+        var have = null;
+        try { have = existing.options && existing.options.applicationServerKey; } catch (_) {}
+        var same = false;
+        if (have) {
+          var hv = new Uint8Array(have);
+          same = hv.length === wanted.length;
+          for (var ki = 0; same && ki < hv.length; ki++) if (hv[ki] !== wanted[ki]) same = false;
+        }
+        if (!same) {
+          try { await existing.unsubscribe(); } catch (_) {}
+          existing = null;
+        }
       }
       var sub = existing || await reg.pushManager.subscribe({
         userVisibleOnly: true,
@@ -2485,7 +2512,7 @@
     if (!item || !item.title) return;
     var list = ncLoad();
     var tag = item.tag || '';
-    if (tag && list.some(function (i) { return i.tag === tag; })) return; // collapse dups
+    if (tag && list.some(function (i) { return i.tag === tag; })) return false; // collapse dups
     var rec = {
       id: 'n' + Date.now() + Math.random().toString(36).slice(2, 6),
       type: item.type || 'info',
@@ -2608,7 +2635,9 @@
 
     bell.onclick = function (e) {
       e.stopPropagation();
-      if (panel.classList.toggle('open')) ncRenderPanel();
+      // Recount on open: another tab may have added or read items since the last paint,
+      // so the badge and the list it opens could disagree.
+      if (panel.classList.toggle('open')) { ncBadge(); ncRenderPanel(); }
     };
     document.addEventListener('click', function (e) {
       if (panel.classList.contains('open') && !panel.contains(e.target) && !bell.contains(e.target)) panel.classList.remove('open');
@@ -2776,8 +2805,15 @@
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (j) {
         if (!j || !j.ok || !Array.isArray(j.notifications) || !j.notifications.length) return;
+        // The server now returns recent notifications regardless of read state, so every
+        // one of the user's devices gets a chance to show them — previously whichever
+        // device polled first marked them read and they never reached the others at all.
+        // Only report back the ones THIS device actually surfaced (ncAdd collapses by tag
+        // against the local store), so re-polling doesn't churn.
         var ids = [];
-        j.notifications.forEach(function (n) { ncAdd({ type: 'info', title: n.title, body: n.body, url: n.url, tag: n.id }); ids.push(n.id); });
+        j.notifications.forEach(function (n) {
+          if (ncAdd({ type: 'info', title: n.title, body: n.body, url: n.url, tag: n.id }) !== false) ids.push(n.id);
+        });
         if (ids.length) fetch('/api/notifications', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: ids }) }).catch(function () {});
       })
       .catch(function () {});

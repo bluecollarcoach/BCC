@@ -837,7 +837,12 @@
 
           // ---- Linked documents (fetched scoped by contact — see loadContactDocs) ----
           '<div class="card">' +
-            '<h4>Documents <button class="add" onclick="location.href=\'documents.html?contact=' + esc(c.id) + '\'">+ Upload</button></h4>' +
+            // No inline onclick. An HTML attribute is entity-decoded BEFORE its contents
+            // are compiled as JavaScript, so esc() output placed inside a JS string
+            // literal there is decoded straight back to the original characters — a
+            // contact id carrying a quote would break out and execute in the viewer's
+            // authenticated session. Wired in JS below instead.
+            '<h4>Documents <button class="add" id="upDocBtn" type="button">+ Upload</button></h4>' +
             '<div id="contactDocs"><p class="muted" style="font-size:13px;">Loading…</p></div>' +
           '</div>' +
         '</div>' +
@@ -999,6 +1004,8 @@
         renderDetail(c.id);
       };
     });
+    var upBtn = document.getElementById('upDocBtn');
+    if (upBtn) upBtn.onclick = function () { location.href = 'documents.html?contact=' + encodeURIComponent(c.id); };
     loadContactDocs(c.id);
   }
   // Documents linked to a contact — fetched scoped (metadata is no longer synced

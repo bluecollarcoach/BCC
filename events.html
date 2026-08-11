@@ -320,7 +320,15 @@
     renderGrid();
   });
 
-  function init() { renderGrid(); }
+  function init() {
+    renderGrid();
+    // Deep link from the Scheduler: ?id=<event>. getEvent is namespace-guarded, so an
+    // unknown or out-of-namespace id simply does nothing.
+    try {
+      var eid = new URLSearchParams(location.search).get('id');
+      if (eid && getEvent(eid)) openModal(eid);
+    } catch (e) {}
+  }
   window.addEventListener('bcc-data-ready', renderGrid);
   window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
   setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);

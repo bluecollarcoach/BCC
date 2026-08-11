@@ -197,6 +197,7 @@
       Object.keys(ST.sources).forEach(function (id) {
         try { ST.sources[id].pjs && ST.sources[id].pjs.destroy && ST.sources[id].pjs.destroy(); } catch (e) {}
       });
+      detachSignResize(ST);
       ST.sources = {}; ST.order = [];
       if (ov.parentNode) ov.parentNode.removeChild(ov);
       document.removeEventListener('keydown', onKey);
@@ -253,12 +254,19 @@
     var id = uid();
     // pdf.js may detach the buffer it's given — hand it a copy, keep our own for pdf-lib.
     var doc = await pjsLib.getDocument({ data: bytes.slice(), disableAutoFetch: true, isEvalSupported: false }).promise;
-    ST.sources[id] = { bytes: bytes, pjs: doc, name: name };
+    // All-or-nothing. getPage() rejects on a malformed page dict, and the loop used to
+    // push straight into ST.order — so a document that failed on page 30 of 60 left the
+    // first 29 silently merged in, under an error toast, with no way to tell which were
+    // real. Accumulate locally and commit only once every page has parsed. Nothing inside
+    // the loop reads ST.sources, so registering it afterwards is safe.
+    var entries = [];
     for (var i = 0; i < doc.numPages; i++) {
       var pg = await doc.getPage(i + 1);
       var base = ((pg.rotate || 0) % 360 + 360) % 360;
-      ST.order.push({ key: uid(), srcId: id, srcIndex: i, base: base, rot: 0, sel: false, ann: [] });
+      entries.push({ key: uid(), srcId: id, srcIndex: i, base: base, rot: 0, sel: false, ann: [] });
     }
+    ST.sources[id] = { bytes: bytes, pjs: doc, name: name };
+    for (var j = 0; j < entries.length; j++) ST.order.push(entries[j]);
     return id;
   }
 
@@ -331,7 +339,7 @@
       };
     });
     body.querySelectorAll('[data-rot]').forEach(function (b) {
-      b.onclick = function () { var e = findEntry(ST, b.getAttribute('data-rot')); if (e) { e.rot = (e.rot + 90) % 360; ST.dirty = true; renderPages(ST); } };
+      b.onclick = function () { var e = findEntry(ST, b.getAttribute('data-rot')); if (e) { e.rot = (e.rot + 90) % 360; markDirty(ST); renderPages(ST); } };
     });
     body.querySelectorAll('[data-del]').forEach(function (b) {
       b.onclick = function () { deleteKeys(ST, [b.getAttribute('data-del')]); };
@@ -341,6 +349,14 @@
   }
 
   function findEntry(ST, key) { for (var i = 0; i < ST.order.length; i++) if (ST.order[i].key === key) return ST.order[i]; return null; }
+  /* One place to flip the dirty flag, so the title's " - edited" marker actually tracks it.
+     Nine sites set ST.dirty directly, and NONE of them re-ran setName — the Organize-tab
+     handlers call renderPages (not render), and the four Sign-tab sites (drop, delete,
+     dblclick edit, drag/resize) never re-render at all. So you could place a signature and
+     the header would still claim the file was untouched.
+     Must go through ST._setName: setName is a closure inside open(), invisible to these
+     module-level siblings. */
+  function markDirty(ST) { if (ST.dirty) return; markDirty(ST); if (ST._setName) ST._setName(); }
 
   function deleteKeys(ST, keys) {
     var set = {}; keys.forEach(function (k) { set[k] = 1; });
@@ -349,19 +365,37 @@
       if (!confirm('Delete all pages?')) return;
     }
     ST.order = ST.order.filter(function (e) { return !set[e.key]; });
-    ST.dirty = true;
+    markDirty(ST);
     renderPages(ST);
   }
 
   function pagesAction(ST, act) {
-    if (act === 'add') { pickFile(function (f) { readFileBytes(f).then(function (u8) { addSource(ST, u8, f.name).then(function () { ST.dirty = true; renderPages(ST); toast('Added ' + f.name, 'success'); }).catch(function (e) { toast('Could not add: ' + e.message, 'error'); }); }); }); return; }
+    if (act === 'add') {
+      pickFile(function (f) {
+        readFileBytes(f)
+          .then(function (u8) {
+            addSource(ST, u8, f.name).then(function () {
+              markDirty(ST);
+              ST.merged = true; // sticky: pages came from elsewhere, so the export is derived
+              renderPages(ST);
+              toast('Added ' + f.name, 'success');
+            }).catch(function (e) { toast('Could not add: ' + (e && e.message || e), 'error'); });
+          })
+          // readFileBytes rejects on any FileReader error (a file pulled from a share or
+          // USB mid-read, a revoked permission). This chain had no catch at all, so the
+          // rejection was unhandled and picking the file simply did nothing. The inner
+          // chain is not returned, so this can never double-toast.
+          .catch(function (e) { toast('Could not read that file: ' + (e && e.message || e), 'error'); });
+      });
+      return;
+    }
     if (act === 'selAll') {
       var allSel = ST.order.every(function (e) { return e.sel; }) && ST.order.length;
       ST.order.forEach(function (e) { e.sel = !allSel; });
       renderPages(ST); return;
     }
     var sel = ST.order.filter(function (e) { return e.sel; });
-    if (act === 'rotateSel') { sel.forEach(function (e) { e.rot = (e.rot + 90) % 360; }); ST.dirty = true; renderPages(ST); return; }
+    if (act === 'rotateSel') { sel.forEach(function (e) { e.rot = (e.rot + 90) % 360; }); markDirty(ST); renderPages(ST); return; }
     if (act === 'delSel') { deleteKeys(ST, sel.map(function (e) { return e.key; })); return; }
     if (act === 'extractSel') { extractSelected(ST, sel); return; }
   }
@@ -403,7 +437,7 @@
     if (fi < 0 || ti < 0) return;
     var it = ST.order.splice(fi, 1)[0];
     ST.order.splice(ti, 0, it);
-    ST.dirty = true;
+    markDirty(ST);
     renderPages(ST);
   }
 
@@ -456,6 +490,7 @@
     // Invalidate the sign handles NOW: the innerHTML replacement below detaches the
     // old canvas, and a stale (non-null, detached) handle would let addAnnotation
     // place a stamp into the loading wrap — wiped when the async render finishes.
+    detachSignResize(ST);
     ST._signCanvas = ST._signVp = ST._signEntry = null;
     if (!ST.order.length) { body.innerHTML = '<div class="bpdf-empty">Add a PDF first (Organize &amp; split tab).</div>'; ensureSaveBar(ST); return; }
     if (!findEntry(ST, ST.signPageKey)) ST.signPageKey = ST.order[0].key;
@@ -511,10 +546,46 @@
       ST._signVp = vp; ST._signCanvas = canvas; ST._signEntry = entry;
       // re-attach existing annotations for this page as editable overlays
       entry.ann.forEach(function (a) { addOverlayFromAnn(ST, wrap, canvas, vp, a); });
+      /* Overlays are absolutely positioned in CSS px, but the canvas is max-width:100%
+         height:auto — so narrowing the window shrank the page while the stamps stayed
+         put, and a signature aligned to a signature line drifted somewhere else entirely.
+         captureSignOverlays then baked that drift into the saved PDF. Rescale the overlays
+         whenever the canvas box changes. */
+      detachSignResize(ST);
+      ST._signCssW = canvas.clientWidth || 0;
+      if (window.ResizeObserver) {
+        ST._signRO = new ResizeObserver(function () {
+          var nw = canvas.clientWidth;
+          // Mirrors captureSignOverlays' guard: renderSign replaces the body and detaches
+          // this canvas, and an unguarded callback would compute 0 or Infinity, write NaN
+          // into the overlay styles, and captureSignOverlays would then store NaN
+          // coordinates — pdf-lib swallows the resulting drawImage error, so the
+          // signature would vanish from the export with nothing said.
+          if (!canvas.isConnected || !nw || !ST._signCssW || nw === ST._signCssW) return;
+          var r = nw / ST._signCssW;
+          wrap.querySelectorAll('.bpdf-ann').forEach(function (el) {
+            var L = parseFloat(el.style.left) || 0, T = parseFloat(el.style.top) || 0;
+            var W = parseFloat(el.style.width) || 0, H = parseFloat(el.style.height) || 0;
+            el.style.left = (L * r) + 'px'; el.style.top = (T * r) + 'px';
+            el.style.width = (W * r) + 'px'; el.style.height = (H * r) + 'px';
+            var tx = el.querySelector('.bpdf-anntext');
+            if (tx) tx.style.fontSize = Math.round((H * r) * 0.82) + 'px';
+            el._srcAnn = null; // rescaled: the div is the truth again
+          });
+          ST._signCssW = nw;
+        });
+        ST._signRO.observe(canvas);
+      }
     } catch (e) {
+      detachSignResize(ST);
       ST._signCanvas = ST._signVp = ST._signEntry = null; // no live canvas — block placements
       wrap.innerHTML = '<div class="bpdf-empty" style="color:var(--burgundy,#7a1f2b);">Could not render this page.</div>';
     }
+  }
+  /* Every renderSignPage builds a NEW canvas, so a leaked observer would go on mutating
+     overlays that belong to a page nobody is looking at. */
+  function detachSignResize(ST) {
+    if (ST._signRO) { try { ST._signRO.disconnect(); } catch (e) {} ST._signRO = null; }
   }
 
   /* place a new annotation: prompt for content, then drop a draggable box */
@@ -525,9 +596,20 @@
     // means a page render is still in flight and the stamp would be wiped.
     if (!wrap || !canvas || !canvas.isConnected || canvas.parentNode !== wrap) { toast('Page is still rendering…', 'warn'); return; }
     if (kind === 'sig') {
+      // The pad is open for as long as it takes to sign, and renderSignPage() replaces
+      // the wrap's contents on any page change — so `wrap`/`canvas` captured up here can
+      // be detached by the time the signature comes back, and the stamp would land in an
+      // element nobody is looking at and be gone at the next render. Re-validate against
+      // FRESH handles, and confirm we are still on the page the user started signing.
+      var startEntry = ST._signEntry;
       openSignaturePad(function (res) {
         if (!res) return;
-        dropOverlay(ST, wrap, canvas, { type: 'sig', src: res.dataUrl, aspect: res.w / res.h });
+        var w2 = document.getElementById('bpdf-cwrap'), c2 = ST._signCanvas;
+        if (!w2 || !c2 || !c2.isConnected || c2.parentNode !== w2 || ST._signEntry !== startEntry) {
+          toast('The page changed while you were signing — re-add the signature.', 'warn', 8000);
+          return;
+        }
+        dropOverlay(ST, w2, c2, { type: 'sig', src: res.dataUrl, aspect: res.w / res.h });
       });
       return;
     }
@@ -567,7 +649,7 @@
     var left = (cw - defW) / 2, top = (canvas.clientHeight || canvas.height) * 0.4;
     var el = buildOverlayEl(ST, wrap, canvas, spec, left, top, defW, defH);
     wrap.appendChild(el);
-    ST.dirty = true;
+    markDirty(ST);
   }
 
   function buildOverlayEl(ST, wrap, canvas, spec, left, top, w, h) {
@@ -582,7 +664,7 @@
     el.innerHTML = inner +
       '<button class="bpdf-del" title="Remove" type="button">×</button>' +
       '<span class="bpdf-rs" title="Resize"></span>';
-    el.querySelector('.bpdf-del').onclick = function (ev) { ev.stopPropagation(); el.remove(); ST.dirty = true; };
+    el.querySelector('.bpdf-del').onclick = function (ev) { ev.stopPropagation(); el.remove(); markDirty(ST); };
     var textEl = el.querySelector('.bpdf-anntext');
     if (textEl) {
       // double-click to edit text; the box re-fits the new string so screen == PDF
@@ -593,7 +675,7 @@
         var maxW = (canvas.clientWidth || canvas.width) - (parseFloat(el.style.left) || 0);
         if (wFit > maxW) { hNow = Math.max(10, hNow * maxW / wFit); wFit = maxW; el.style.height = hNow + 'px'; textEl.style.fontSize = Math.round(hNow * 0.82) + 'px'; }
         el.style.width = wFit + 'px'; spec.aspect = wFit / hNow;
-        ST.dirty = true;
+        markDirty(ST);
       });
     }
     makeDraggable(el, wrap, canvas, textEl, ST);
@@ -607,6 +689,13 @@
       ? { type: 'sig', src: a.src, aspect: a.aspect }
       : { type: 'text', text: a.text, check: a.check, aspect: (a.w && a.h) ? a.w / a.h : undefined };
     var el = buildOverlayEl(ST, wrap, canvas, spec, box.left, box.top, box.w, box.h);
+    // Keep the ORIGINAL annotation on the element. Re-deriving geometry from the div is
+    // lossy: the div is axis-aligned and carries no orientation, so a stamp placed before
+    // the page was rotated comes back through pdfBoxToCss as its bounding box and would
+    // be re-stored with a fresh theta — changing its placement, orientation and aspect
+    // every time the Sign tab is revisited. If the user never touches it, re-emit exactly
+    // what was stored.
+    el._srcAnn = a;
     wrap.appendChild(el);
   }
 
@@ -645,7 +734,8 @@
         el.style.width = nw + 'px'; el.style.height = nh + 'px';
         if (textEl) textEl.style.fontSize = Math.round(nh * 0.82) + 'px';
       }
-      ST.dirty = true;
+      el._srcAnn = null; // the user moved it: the div is now the truth
+      markDirty(ST);
     }
     function up() {
       mode = null;
@@ -668,6 +758,9 @@
     var factor = vp.width / canvas.clientWidth; // CSS px -> viewport px
     var anns = [];
     wrap.querySelectorAll('.bpdf-ann').forEach(function (el) {
+      // Untouched since it was re-attached — re-emit the stored annotation verbatim
+      // rather than round-tripping it through an orientation-less box.
+      if (el._srcAnn) { anns.push(el._srcAnn); return; }
       var spec = el._spec || {};
       var left = parseFloat(el.style.left), top = parseFloat(el.style.top);
       var w = parseFloat(el.style.width), h = parseFloat(el.style.height);
@@ -731,11 +824,17 @@
     var canvas = ov.querySelector('#bpdf-padcanvas');
     var typed = ov.querySelector('#bpdf-typed');
     // size the canvas to its displayed box for crisp lines
+    var _sizedW = 0, _sizedH = 0;
     function sizeCanvas() {
       var r = canvas.getBoundingClientRect();
-      // Setting width/height resets the canvas bitmap — any prior ink is gone,
-      // so the "has ink" flag must reset with it or "Use" exports a blank PNG.
-      canvas.width = Math.max(300, Math.round(r.width)); canvas.height = Math.max(120, Math.round(r.height));
+      var w = Math.max(300, Math.round(r.width)), h = Math.max(120, Math.round(r.height));
+      // Skip entirely when the box has not changed. Assigning width/height resets the
+      // bitmap per spec, so re-sizing on every tab switch silently erased whatever the
+      // signer had already drawn — and the flag reset below made "Use" refuse afterwards.
+      // The pad's CSS box cannot change while it is open, so this is a no-op re-entry.
+      if (w === _sizedW && h === _sizedH) return;
+      _sizedW = w; _sizedH = h;
+      canvas.width = w; canvas.height = h;
       hasInk = false;
       var ctx = canvas.getContext('2d'); ctx.lineWidth = 2.4; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#0a2a5e';
     }
@@ -759,7 +858,7 @@
       };
     });
 
-    function cleanup() { window.removeEventListener('mouseup', end); window.removeEventListener('touchend', end); if (ov.parentNode) ov.parentNode.removeChild(ov); }
+    function cleanup() { window.removeEventListener('mouseup', end); window.removeEventListener('touchend', end); document.removeEventListener('keydown', padKey); if (ov.parentNode) ov.parentNode.removeChild(ov); }
     ov.querySelector('[data-pd="cancel"]').onclick = function () { cleanup(); cb(null); };
     ov.querySelector('[data-pd="clear"]').onclick = function () {
       if (mode === 'draw') { canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height); hasInk = false; } else typed.value = '';
@@ -776,7 +875,18 @@
       }
       cleanup(); cb(out);
     };
-    ov.addEventListener('mousedown', function (e) { if (e.target === ov) { cleanup(); cb(null); } });
+    // Fires on MOUSEDOWN anywhere on the backdrop, so a slightly-off stroke used to bin a
+    // completed signature outright — while the editor itself confirms before discarding
+    // far less work. Ask first. Both callers already treat null as a no-op.
+    ov.addEventListener('mousedown', function (e) {
+      if (e.target !== ov) return;
+      if ((hasInk || (typed.value || '').trim()) && !confirm('Discard this signature?')) return;
+      cleanup(); cb(null);
+    });
+    // The pad had no Escape handling of its own either, so the backdrop was the only way
+    // out other than the buttons.
+    var padKey = function (e) { if (e.key === 'Escape') { if ((hasInk || (typed.value || '').trim()) && !confirm('Discard this signature?')) return; cleanup(); cb(null); } };
+    document.addEventListener('keydown', padKey);
   }
 
   // trim transparent margins from the drawn signature; returns {dataUrl,w,h}
@@ -823,32 +933,59 @@
     var out = await PDFLib.PDFDocument.create();
     var srcDocs = {};
     var helv = null, ding = null;
+    // What the save had to compromise on, so doSaveTarget/doDownload can say so.
+    ST._buildNotes = { degradedText: 0, droppedSig: 0, flattened: false };
     async function getSrc(id) {
       if (!srcDocs[id]) srcDocs[id] = await PDFLib.PDFDocument.load(ST.sources[id].bytes, { ignoreEncryption: true });
       return srcDocs[id];
     }
+
+    /* ONE copyPages call per SOURCE, not per page. pdf-lib builds a fresh object copier on
+       every invocation and its dedup map lives only for that call — so copying page by
+       page re-embedded every shared indirect object (font programs, logos, ICC profiles)
+       once PER PAGE. A 40-page statement with one embedded font carried 40 copies of it.
+       Emit in `entries` order, NOT ST.order: the Extract path passes a subset and depends
+       on its own ordering. */
+    var bySrc = {};
+    entries.forEach(function (e, idx) {
+      var g = (bySrc[e.srcId] = bySrc[e.srcId] || { idxs: [], slots: [] });
+      g.idxs.push(e.srcIndex);
+      g.slots.push(idx);
+    });
+    var pages = new Array(entries.length);
+    var srcIds = Object.keys(bySrc);
+    for (var si = 0; si < srcIds.length; si++) {
+      var sid = srcIds[si];
+      try {
+        var srcDoc = await getSrc(sid);
+        var copiedAll = await out.copyPages(srcDoc, bySrc[sid].idxs);
+        for (var ci = 0; ci < copiedAll.length; ci++) pages[bySrc[sid].slots[ci]] = copiedAll[ci];
+      } catch (err) {
+        // Name the offending source so a multi-file merge failure is actionable — and
+        // abort rather than silently dropping pages from a financial document.
+        var srcName = (ST.sources[sid] && ST.sources[sid].name) || 'source PDF';
+        throw new Error('Pages from "' + srcName + '" could not be processed: ' + (err && err.message || err));
+      }
+    }
+
     for (var i = 0; i < entries.length; i++) {
       var e = entries[i];
-      var pg;
-      try {
-        var src = await getSrc(e.srcId);
-        var copied = await out.copyPages(src, [e.srcIndex]);
-        pg = copied[0];
-        pg.setRotation(PDFLib.degrees(((e.base || 0) + e.rot) % 360));
-        out.addPage(pg);
-      } catch (err) {
-        // Name the offending source so a multi-file merge failure is actionable —
-        // and abort rather than silently dropping pages from a financial document.
-        var srcName = (ST.sources[e.srcId] && ST.sources[e.srcId].name) || 'source PDF';
-        throw new Error('Page ' + (i + 1) + ' (from "' + srcName + '") could not be processed: ' + (err && err.message || err));
-      }
+      var pg = pages[i];
+      if (!pg) throw new Error('Page ' + (i + 1) + ' could not be processed.');
+      pg.setRotation(PDFLib.degrees(((e.base || 0) + e.rot) % 360));
+      out.addPage(pg);
       for (var j = 0; j < e.ann.length; j++) {
         var a = e.ann[j];
         if (a.type === 'sig') {
           try {
             var png = await out.embedPng(a.src);
             pg.drawImage(png, { x: a.blX, y: a.blY, width: a.w, height: a.h, rotate: PDFLib.radians(a.theta || 0) });
-          } catch (err) { /* skip a broken image rather than fail the whole save */ }
+          } catch (err) {
+            // Skip a broken image rather than fail the whole save — but COUNT it. A
+            // signature that silently did not make it into the file is the worst possible
+            // outcome for a document that gets filed as a legal record.
+            ST._buildNotes.droppedSig++;
+          }
         } else {
           try {
             // Check marks use ZapfDingbats — Helvetica's WinAnsi encoding has no
@@ -865,17 +1002,47 @@
             };
             try { pg.drawText(txt, dopts); }
             catch (encErr) {
-              // Character(s) outside the font's encoding — degrade to WinAnsi-safe
-              // text ('?' placeholders) instead of aborting the save.
+              // Character(s) outside the font's encoding — degrade to WinAnsi-safe text
+              // ('?' placeholders) rather than aborting the whole save. But RECORD it:
+              // the overlay on screen keeps showing the real characters, so without a
+              // warning the editor and the saved file disagree and nothing says which
+              // one is right.
               if (!helv) helv = await out.embedFont(PDFLib.StandardFonts.Helvetica);
               dopts.font = helv;
-              pg.drawText(txt.replace(/[^\x20-\x7E\xA0-\xFF‘’“”–—•…€™]/g, '?'), dopts);
+              var safe = txt.replace(/[^\x20-\x7E\xA0-\xFF‘’“”–—•…€™]/g, '?');
+              pg.drawText(safe, dopts);
+              if (safe !== txt) ST._buildNotes.degradedText++;
             }
           } catch (err) { /* never abort the whole save for one stamp */ }
         }
       }
     }
+    /* pdf-lib rebuilds the document from scratch: copyPages carries the page tree and its
+       /Annots but NOTHING at catalog level, so /AcroForm, /Outlines and /Names are gone.
+       A fillable PDF therefore comes back with its fields flattened into dead artwork,
+       and a digitally signed one comes back with the signature invalidated (there is no
+       incremental-update save — every byte offset in the /ByteRange moves). Neither is
+       recoverable here, so DETECT and warn rather than pretend. */
+    try {
+      for (var di = 0; di < srcIds.length; di++) {
+        var d0 = await getSrc(srcIds[di]);
+        var cat = d0.catalog;
+        if (cat && typeof cat.lookup === 'function' && cat.lookup(PDFLib.PDFName.of('AcroForm'))) { ST._buildNotes.flattened = true; break; }
+      }
+    } catch (e) { /* detection is best-effort; never fail a save over it */ }
     return await out.save();
+  }
+
+  /* One place that turns _buildNotes into something the user actually sees. Every one of
+     these used to be swallowed: the save reported plain success while a signature had
+     been dropped, characters replaced with '?', or a form flattened. */
+  function buildWarnings(ST) {
+    var n = ST._buildNotes || {};
+    var out = [];
+    if (n.droppedSig) out.push(n.droppedSig + ' signature/image stamp' + (n.droppedSig === 1 ? '' : 's') + ' could NOT be written into the file');
+    if (n.degradedText) out.push(n.degradedText + ' text stamp' + (n.degradedText === 1 ? '' : 's') + ' contained characters this PDF font cannot show — they were saved as "?"');
+    if (n.flattened) out.push('this PDF had fillable form fields or a digital signature; the saved copy is flattened, so fields are no longer editable and any signature is no longer valid');
+    return out;
   }
 
   /* ---------- shared footer save bar ---------- */
@@ -902,8 +1069,30 @@
     });
   }
 
+  /* Does the document still match the file it was opened from? Page deletions and
+     reorders leave no per-entry marker, so this used to lean on ST.dirty — which
+     doSaveTarget clears on a successful save. From that point a page-deleted copy was
+     suggested under the ORIGINAL filename, and /api/documents stores the name verbatim,
+     so the client's folder ended up with two entries reading identically: one complete,
+     one with pages missing. Compare STRUCTURE instead, so it survives a save and also
+     self-corrects when an edit is undone (drag a page back, un-rotate it). */
+  function structurallyChanged(ST) {
+    if (ST.merged) return true;                       // pages from another document
+    var ids = Object.keys(ST.sources);
+    if (ids.length !== 1) return true;
+    var src = ST.sources[ids[0]];
+    var n = (src && src.pjs && src.pjs.numPages) || 0;
+    if (ST.order.length !== n) return true;           // pages added or removed
+    for (var i = 0; i < ST.order.length; i++) {
+      var e = ST.order[i];
+      if (e.srcIndex !== i) return true;              // reordered
+      if (e.rot) return true;                         // rotated
+      if (e.ann && e.ann.length) return true;         // stamped or signed
+    }
+    return false;
+  }
   function exportName(ST) {
-    var edited = ST.dirty || ST.order.some(function (e) { return e.rot || e.ann.length; });
+    var edited = ST.dirty || structurallyChanged(ST);
     return baseName(ST.name) + (edited ? '-edited' : '') + '.pdf';
   }
 
@@ -913,7 +1102,9 @@
     try {
       var bytes = await buildPdf(ST);
       downloadBytes(bytes, exportName(ST));
-      if (msg) msg.textContent = 'Downloaded.';
+      var warn = buildWarnings(ST);
+      if (msg) msg.textContent = 'Downloaded.' + (warn.length ? ' See the warning.' : '');
+      if (warn.length) toast('Downloaded, but ' + warn.join('; ') + '.', 'warn', 14000);
     } catch (e) { if (msg) msg.textContent = ''; toast('Could not build PDF: ' + e.message, 'error', 7000); }
   }
 
@@ -930,7 +1121,9 @@
       var bytes = await buildPdf(ST);
       var blob = new Blob([bytes], { type: 'application/pdf' });
       await target.handler(blob, suggested);
-      if (msg) msg.textContent = 'Saved: ' + suggested;
+      var warn = buildWarnings(ST);
+      if (msg) msg.textContent = 'Saved: ' + suggested + (warn.length ? ' (with warnings)' : '');
+      if (warn.length) toast('Saved, but ' + warn.join('; ') + '.', 'warn', 14000);
       ST.dirty = false; if (ST._setName) ST._setName();
       if (ST.onSaved) { try { ST.onSaved(suggested); } catch (e) {} }
     } catch (e) {

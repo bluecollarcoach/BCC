@@ -57,7 +57,6 @@
   <img src="bcc-logo.png" alt="Blue Collar Coach" />
   <h1>Access denied</h1>
   <p class="lead" id="lead">You&rsquo;re signed in, but your account doesn&rsquo;t have permission for this page. Ask an administrator to grant you the right role.</p>
-  <div id="who"></div>
   <div class="actions" id="actions">
     <a class="btn btn-primary" id="switchBtn" href="#">Sign in with a different account</a>
     <a class="btn btn-ghost"   id="signOutBtn" href="#">Sign out completely</a>
@@ -71,7 +70,6 @@
 (function () {
   var p = new URLSearchParams(location.search);
   var reason = p.get('reason');
-  var who    = p.get('who');
 
   // SWA's /.auth/complete is a system route we can't override via
   // staticwebapp.config.json (system paths bypass user route rules).
@@ -97,10 +95,10 @@
       'BCC Connect is restricted to <strong>@bluecollarcoach.us</strong> accounts. ' +
       'If you have multiple Microsoft accounts on this device, tap the button below and pick your Blue Collar Coach one.';
   }
-  if (who) {
-    document.getElementById('who').innerHTML =
-      '<div class="who">Signed in as: ' + who.replace(/[<>&"']/g, '') + '</div>';
-  }
+  // The ?who= parameter used to be printed here. Nothing in the app ever sets it, so its
+  // only real use was letting someone hand out a link that puts arbitrary text on an
+  // anonymous, BCC-branded page — a ready-made phishing surface. Removed outright rather
+  // than sanitised: there is no legitimate caller to preserve.
 
   // Microsoft's "logout from this device" endpoint. We chain SWA logout into
   // Microsoft logout so the user is signed out of BOTH the SWA session AND the

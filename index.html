@@ -306,7 +306,7 @@
 </div>
 
 <footer>
-  BCC Connect &middot; <a href="guide.html">How-to guide</a> &middot; <a href="activity.html">Activity log</a><br/>
+  BCC Connect &middot; <a href="guide.html">How-to guide</a><span id="footActivity"> &middot; <a href="activity.html">Activity log</a></span><br/>
   &copy; <span id="yr"></span> Blue Collar Coach &middot; Internal use only
 </footer>
 
@@ -339,6 +339,12 @@
       if (!key) return;
       if (!window.bccCanAccess(key)) a.style.display = 'none';
     });
+    // The footer offered every member the Activity log, which is admin-only server-side
+    // (/api/audit GET returns 403 for anyone else) — so a non-admin clicking it landed on
+    // a page that could only tell them no. Hide the whole span, separator included, or
+    // the footer renders a dangling "·".
+    var fa = document.getElementById('footActivity');
+    if (fa && window.bccIsAdmin && !window.bccIsAdmin()) fa.style.display = 'none';
   }
   window.addEventListener('bcc-auth-ready', gateTiles);
 </script>

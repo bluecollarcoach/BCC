@@ -490,7 +490,13 @@
   (function () {
     var handoffDay = '';
     try { handoffDay = sessionStorage.getItem('bcc-new-session-day') || ''; sessionStorage.removeItem('bcc-new-session-day'); } catch (e) {}
-    if (handoffDay) openModal(null, handoffDay);
+    if (handoffDay) { openModal(null, handoffDay); return; }
+    // Deep link from the Scheduler: ?id=<session>. Open that session directly instead of
+    // dropping the user on the current week with no idea which item they clicked.
+    try {
+      var sid = new URLSearchParams(location.search).get('id');
+      if (sid && getSession(sid)) openModal(sid);
+    } catch (e) {}
   })();
   document.getElementById('m-cancel').addEventListener('click', closeModal);
   document.getElementById('modalBg').addEventListener('click', function (e) {

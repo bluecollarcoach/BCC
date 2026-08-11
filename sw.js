@@ -185,6 +185,42 @@ self.addEventListener('message', (event) => {
  * Wrapped in try/catch + getter helpers so a malformed payload can
  * never break the existing offline cache behavior.
  */
+/* A push subscription can be rotated or invalidated by the browser at any time (storage
+   pressure, a permission reset, a push-service change). Nothing re-registered it, so push
+   simply stopped working on that device forever, with no signal to the user and a row in
+   Cosmos still pointing at the dead endpoint. Re-subscribe with the CURRENT server key —
+   sw.js holds no VAPID key of its own, so fetch it — and hand the new subscription to the
+   same endpoint the page uses. */
+self.addEventListener('pushsubscriptionchange', (event) => {
+  event.waitUntil((async () => {
+    try {
+      let key = event.oldSubscription && event.oldSubscription.options && event.oldSubscription.options.applicationServerKey;
+      if (!key) {
+        const r = await fetch('/api/push-public-key');
+        if (!r.ok) return;
+        const j = await r.json();
+        if (!j || !j.publicKey) return;
+        const b64 = (j.publicKey + '='.repeat((4 - (j.publicKey.length % 4)) % 4)).replace(/-/g, '+').replace(/_/g, '/');
+        const raw = atob(b64);
+        key = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) key[i] = raw.charCodeAt(i);
+      }
+      const sub = await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+      // credentials:'include' so the SWA auth cookie rides along — without it the server
+      // cannot tell whose device this is and the row would be orphaned.
+      await fetch('/api/push-subscribe', {
+        method: 'POST', credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ subscription: sub })
+      });
+      // Retire the dead endpoint so it stops being pushed to.
+      if (event.oldSubscription && event.oldSubscription.endpoint) {
+        await fetch('/api/push-subscribe?endpoint=' + encodeURIComponent(event.oldSubscription.endpoint), { method: 'DELETE', credentials: 'include' }).catch(() => {});
+      }
+    } catch (e) { /* best-effort: a failed re-subscribe must never break the SW */ }
+  })());
+});
+
 self.addEventListener('push', (event) => {
   let data = {};
   try {

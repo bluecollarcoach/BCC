@@ -734,7 +734,16 @@
     var meta = [c.industry, c.size].filter(Boolean).join(' · ');
     var contactLinks = [];
     if (c.phone)   contactLinks.push('<a href="tel:' + esc(c.phone.replace(/\D/g,'')) + '">' + esc(c.phone) + '</a>');
-    if (c.website) contactLinks.push('<a href="' + esc(c.website) + '" target="_blank" rel="noreferrer">' + esc(c.website.replace(/^https?:\/\//, '')) + '</a>');
+    // Force http(s). The field is free text and esc() does nothing to a SCHEME — the
+    // browser entity-decodes the attribute before parsing the URL, so 'javascript:…'
+    // stored by any teammate would execute in the viewer's authenticated session on
+    // click. Same normalisation the app already uses for the client-app URL: anything
+    // without a scheme gets https://, so real entries like "acme.com:8080" still work.
+    if (c.website) {
+      var wsafe = String(c.website).trim();
+      wsafe = /^https?:\/\//i.test(wsafe) ? wsafe : 'https://' + wsafe.replace(/^\/+/, '');
+      contactLinks.push('<a href="' + esc(wsafe) + '" target="_blank" rel="noreferrer">' + esc(String(c.website).replace(/^https?:\/\//, '')) + '</a>');
+    }
     if (c.domain && !c.website) contactLinks.push(esc(c.domain));
     var contactLine = contactLinks.join(' &middot; ');
     var locLine = [c.city, c.state].filter(Boolean).join(', ');

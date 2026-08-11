@@ -281,7 +281,11 @@
     var channels = ['google-ads','meta','linkedin','mailchimp','wordpress','godaddy'];
     strip.innerHTML = channels.map(function (ch) {
       var rec = loadIntegration(ch);
-      var status = rec.status || 'disconnected';
+      // Whitelist. This lands in a class attribute completely unescaped, and rec comes
+      // from a synced doc any teammate can write — an unexpected value breaks out of the
+      // attribute. Only the three states the CSS actually styles are allowed through.
+      var raw = String(rec.status || 'disconnected');
+      var status = (raw === 'connected' || raw === 'error') ? raw : 'disconnected';
       var label = status === 'connected' ? 'Connected' : status === 'error' ? 'Error' : 'Not connected';
       return '<div class="channel-card ' + status + '">' +
         '<div class="icon">' + CHANNEL_ICON[ch] + '</div>' +

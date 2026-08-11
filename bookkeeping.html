@@ -1530,10 +1530,29 @@
         if (!comps.length && !errs.length) { body.innerHTML = '<div style="color:var(--muted);padding:24px;">No connected companies to project.</div>'; return; }
         // Editable run-rate assumptions per company (defaults from synced history).
         var st = comps.map(function (c) { return { revenue: c.avgRevenue || 0, cogsPct: Math.round((c.cogsRatio || 0) * 1000) / 10, burn: c.monthlyBurn || 0 }; });
+        /* Mirror the SERVER's bucketing exactly (see qbo-cashflow). Adding a flat
+           month of operating profit on top of the A/R and A/P buckets double-counted:
+           `inflow` is the collection of invoices ALREADY raised, and opNet adds the
+           revenue those same invoices represent again. New revenue earned in forecast
+           month f is earned around its midpoint and collected DSO days later — which
+           lands AFTER the existing-A/R window, so it back-fills rather than doubling.
+           Same for new COGS at DPO; overhead is paid mid-month.
+           opNet is still returned: the "Op net/mo" column is a legitimate run-rate
+           figure, it just must not be added to the projection like this. */
         function calc(c, s) {
           var opNet = s.revenue * (1 - s.cogsPct / 100) - s.burn;
-          var inf = c.inflow || [0, 0, 0], outf = c.outflow || [0, 0, 0], p = [], run = c.cash || 0;
-          for (var i = 0; i < 3; i++) { run = run + (inf[i] || 0) - (outf[i] || 0) + opNet; p.push(run); }
+          var inf = c.inflow || [0, 0, 0], outf = c.outflow || [0, 0, 0];
+          var DSO = (c.DSO != null ? c.DSO : 30), DPO = (c.DPO != null ? c.DPO : 30);
+          var cogs = s.revenue * (s.cogsPct / 100);
+          var bucketOfDay = function (d) { return d < 30 ? 0 : d < 60 ? 1 : d < 90 ? 2 : -1; };
+          var newSales = [0, 0, 0], newCosts = [0, 0, 0];
+          for (var f = 0; f < 4; f++) {
+            var bc = bucketOfDay(f * 30 + 15 + DSO); if (bc >= 0) newSales[bc] += s.revenue;
+            var bp = bucketOfDay(f * 30 + 15 + DPO); if (bp >= 0) newCosts[bp] += cogs;
+            var bo = bucketOfDay(f * 30 + 15);       if (bo >= 0) newCosts[bo] += s.burn;
+          }
+          var p = [], run = c.cash || 0;
+          for (var i = 0; i < 3; i++) { run = run + (inf[i] || 0) + newSales[i] - (outf[i] || 0) - newCosts[i]; p.push(run); }
           return { opNet: opNet, proj: p };
         }
         var projCell = function (v) { return '<strong style="color:' + (v < 0 ? 'var(--burgundy)' : 'var(--green)') + ';">' + money2(v) + '</strong>'; };
@@ -1898,7 +1917,10 @@
       var n = customN || (prior != null && pol !== 'none' ? ('was ' + mrMoney0(prior)) : '');
       out.push({ l: l, v: v, n: n, dir: t.dir, tone: t.tone, vt: hkey ? mrHealthTone(hkey, hval, goals) : 'neutral' });
     };
-    if (k.monthsOfCash != null) add('Months of Cash', String(Math.round(k.monthsOfCash)), (k.monthsOfCash) + ' mo · cash ÷ trailing 3-mo avg opex', null, null, 'none', 'monthsOfCash', k.monthsOfCash);
+    // Name the basis actually used — burnFrom3 is false when the trailing-3-month P&L
+    // could not be fetched and this fell back to a single month, which can move the
+    // figure materially.
+    if (k.monthsOfCash != null) add('Months of Cash', String(Math.round(k.monthsOfCash)), (k.monthsOfCash) + ' mo · cash ÷ ' + (k.burnFrom3 === false ? 'ONE month’s opex (3-month average unavailable)' : 'trailing 3-mo avg opex'), null, null, 'none', 'monthsOfCash', k.monthsOfCash);
     add('Cash on Hand', mrMoney0(k.cash), '', k.cash, k.cashPrior, 'up-good');
     add('Monthly Net Income', mrMoney0(k.netIncome), '', k.netIncome, k.netIncomePrior, 'up-good', 'posneg', k.netIncome);
     add('Revenue', mrMoney0(k.revenue), '', k.revenue, k.revenuePrior, 'up-good');
@@ -1954,8 +1976,16 @@
       document.body.appendChild(ov);
       ov.addEventListener('click', function (e) { if (e.target === ov) closeMonthlyReport(); });
       ov.querySelector('#mrClose').onclick = closeMonthlyReport;
-      ov.querySelector('#mrPrint').onclick = printMonthlyReport;
-      ov.querySelector('#mrSaveFile').onclick = saveMonthlyReportToFiles;
+      // A degraded pull means one or more statements/comparisons came back null and are
+      // silently missing from the report. Confirm before producing something the client
+      // will read as complete. NOT wired through mrBtns: that also disables "Save notes",
+      // whose write is independent of QBO and would lose the coach's typed narrative.
+      var mrDegradedOk = function (what) {
+        if (!(_mr.data && _mr.data.degraded)) return true;
+        return confirm('Some QuickBooks figures could not be pulled for this period, so parts of this report are missing (prior-period comparisons, cash flow, or A/R & A/P aging).\n\n' + what + ' anyway?\n\nPress Refresh first if you want to try the pull again.');
+      };
+      ov.querySelector('#mrPrint').onclick = function () { if (mrDegradedOk('Print it')) printMonthlyReport(); };
+      ov.querySelector('#mrSaveFile').onclick = function () { if (mrDegradedOk('File it to the client')) saveMonthlyReportToFiles(); };
       ov.querySelector('#mrSaveObs').onclick = function () { saveReportObservations(true); };
       ov.querySelector('#mrPeriod').onchange = function () { loadMonthlyReport(this.value); };
       ov.querySelector('#mrRefresh').onclick = function () {
@@ -1986,6 +2016,9 @@
     ]).then(function (res) {
       var d = res[0], cf = res[1];
       _mr.data = d; _mr.obs = (d.observations || []).map(mrCoerceObs);
+      if (d && d.degraded) {
+        (window.bccNotify || alert)('Some QuickBooks figures could not be pulled for this period — parts of this report are missing. Press Refresh to try again.', 'warn', 12000);
+      }
       _mr.forecast = (cf && cf.ok && cf.companies && cf.companies[0] && !cf.companies[0].error) ? cf.companies[0] : null;
       mrInitManual(_mr.forecast);
       renderMrBody();
@@ -3713,7 +3746,12 @@
     if (!window.bccPdfEditor) { (window.bccNotify || alert)('PDF tools are still loading — try again in a moment.', 'warn'); return; }
     window.bccPdfEditor.open({ bytes: bytes, name: name || 'document.pdf', saveTargets: pdfSaveTargets() });
   }
+  /* 40 MB is deliberate and stays: opening an oversized scan SPECIFICALLY to split it
+     into savable parts is the documented workaround for the 25 MB upload ceiling, and
+     Download is purely local with no server limit at all. What was missing is any warning
+     — the editor happily opened a 30 MB file and only failed at Save, after the work. */
   var PDF_EDIT_MAX = 40 * 1024 * 1024; // same cap as the file picker
+  var PDF_SAVE_MAX = 25 * 1024 * 1024; // /api/documents ceiling
   function openPdfFromUrl(url, name) {
     if (window.bccNotify) window.bccNotify('Opening in PDF tools…', 'info', 2500);
     fetch(url, { credentials: 'include' })
@@ -3733,7 +3771,13 @@
     var inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'application/pdf,.pdf';
     inp.onchange = function () {
       var f = inp.files && inp.files[0]; if (!f) return;
-      if (f.size > 40 * 1024 * 1024) { (window.bccNotify || alert)('That PDF is large (max 40 MB for in-browser editing).', 'warn'); return; }
+      if (f.size > PDF_EDIT_MAX) { (window.bccNotify || alert)('That PDF is too large for in-browser editing (max 40 MB).', 'warn'); return; }
+      // Opening is allowed up to 40 MB on purpose — splitting an oversized scan into
+      // savable parts is the workaround for the 25 MB upload ceiling. Say so up front,
+      // rather than letting the save fail after all the work has been done.
+      if (f.size > PDF_SAVE_MAX) {
+        (window.bccNotify || alert)('This PDF is over 25 MB, so it can’t be saved back into the client’s files as one piece. You can still edit it and use Download, or split it and save the parts.', 'warn', 12000);
+      }
       var r = new FileReader(); r.onload = function () { openPdfTools(r.result, f.name); }; r.onerror = function () { (window.bccNotify || alert)('Could not read that file.', 'error'); }; r.readAsArrayBuffer(f);
     };
     inp.click();
@@ -5253,6 +5297,19 @@
     for (var i = 0; i < 7; i++) { var x = new Date(d); x.setDate(d.getDate() + i); out.push((x.getMonth()+1) + '/' + x.getDate()); }
     return out;
   }
+  /* Day letters for the week ACTUALLY entered. DOW is a fixed Su..S list, and the
+     week-start field is a bare date input with no constraint — so a payroll week starting
+     on a Monday (or any non-Sunday) printed every column under the wrong day name on a
+     form that is filed with a public agency. Derive them from the date. */
+  var DOW_FULL = ['Su', 'M', 'T', 'W', 'Th', 'F', 'S'];
+  function weekDows(weekStart) {
+    if (!weekStart) return DOW_FULL.slice();
+    var d = new Date(weekStart + 'T00:00:00');
+    if (isNaN(d)) return DOW_FULL.slice();
+    var out = [];
+    for (var i = 0; i < 7; i++) out.push(DOW_FULL[(d.getDay() + i) % 7]);
+    return out;
+  }
 
   /* ---- Per-job "sent email" history (Jenna: autofill from the last CPR for that job,
      and show which forms were sent before). Keyed by project so every weekly payroll for
@@ -5889,7 +5946,8 @@
         return '<td><input data-emp="' + i + '" data-arr="' + (label === 'OT' ? 'ot' : 'st') + '" data-d="' + di + '" value="' + esc(arr[di] || '') + '" style="width:42px;text-align:center;border:1px solid var(--chrome-mute);border-radius:5px;padding:5px 2px;font-size:12.5px;" /></td>';
       }).join('');
     }
-    var dayHead = '<td></td>' + wd.map(function (x, di) { return '<td style="font-size:10px;color:var(--muted);text-align:center;">' + DOW[di] + '<br>' + esc(x) + '</td>'; }).join('');
+    var dw = weekDows(r.weekStart);
+    var dayHead = '<td></td>' + wd.map(function (x, di) { return '<td style="font-size:10px;color:var(--muted);text-align:center;">' + dw[di] + '<br>' + esc(x) + '</td>'; }).join('');
     return '<div style="border:1px solid var(--chrome-mute);border-radius:10px;padding:12px;margin-bottom:10px;">' +
       '<div class="ws-form" style="margin-bottom:8px;">' +
         '<label class="full">Employee name<input data-emp="' + i + '" data-f="name" value="' + esc(e.name || '') + '" /></label>' +
@@ -5961,8 +6019,25 @@
   }
   // File the certified-payroll report into the client's private documents, tagged
   // "Certified Payroll". Replaces the prior copy so there's one current file/report.
+  /* Which employees have hours on this job but no rate to price them at? cnum('') is 0,
+     so a blank rate silently produces $0 gross for that line — on a certified payroll
+     form that is filed with a public agency. Reported at the boundary where a document
+     is actually produced. */
+  function cprMissingRates(r) {
+    return (r.employees || []).filter(function (e) {
+      var stH = sumArr(e.st), otH = sumArr(e.ot);
+      return (stH > 0 && !cnum(e.stRate)) || (otH > 0 && !cnum(e.otRate));
+    }).map(function (e) { return (e.name || '(unnamed)'); });
+  }
+  function cprConfirmRates(r, what) {
+    var miss = cprMissingRates(r);
+    if (!miss.length) return true;
+    return confirm(miss.length + ' employee' + (miss.length === 1 ? ' has' : 's have') + ' hours on this job but no pay rate, so they will print at $0.00:\n\n' + miss.slice(0, 8).join(', ') + (miss.length > 8 ? ', …' : '') + '\n\n' + what + ' anyway?');
+  }
   function cprSaveToFiles(r, silent) {
     var realm = currentRealm; if (!realm) return;
+    // silent = the automatic save alongside an explicit action that already asked.
+    if (!silent && !cprConfirmRates(r, 'File it to the client')) return;
     var html, fname;
     try {
       html = cprDocHtml(r, false);
@@ -6011,7 +6086,8 @@
         '<td rowspan="2" class="n">' + money(c.ded) + '</td><td rowspan="2" class="n">' + money(c.net) + '</td></tr>' +
         '<tr><td class="c b">OT</td>' + dr(e.ot) + '<td class="n">' + c.otH.toFixed(2) + '</td><td class="n">' + (e.otRate ? money(e.otRate) : '') + '</td></tr>';
     }).join('');
-    var dayHead = wd.map(function (x, di) { return '<th>' + DOW[di] + '<br>' + esc(x) + '</th>'; }).join('');
+    var dwp = weekDows(r.weekStart);
+    var dayHead = wd.map(function (x, di) { return '<th>' + dwp[di] + '<br>' + esc(x) + '</th>'; }).join('');
     var fringeLine = r.fringe === 'plans' ? '☒ (a) paid into approved plans/funds/programs &nbsp;&nbsp; ☐ (b) paid in cash'
                   : r.fringe === 'cash' ? '☐ (a) approved plans &nbsp;&nbsp; ☒ (b) paid in cash to employees'
                   : '☐ (a) approved plans &nbsp;&nbsp; ☐ (b) paid in cash';
@@ -6057,6 +6133,7 @@
     return doc;
   }
   function printCpr(r) {
+    if (!cprConfirmRates(r, 'Print it')) return;
     var w = window.open('', '_blank');
     if (!w) { (window.bccNotify || alert)('Allow pop-ups to print the payroll form.', 'warn'); return; }
     w.document.open(); w.document.write(cprDocHtml(r, true)); w.document.close();
@@ -6290,7 +6367,8 @@
       { key:'net',   w:42,  align:'right',  h:'Net\nwages' }
     ];
     var dayCols = [];
-    for (var di = 0; di < 7; di++) dayCols.push({ key:'day'+di, day:di, w:22, align:'center', h: DOW[di] + '\n' + (wd[di] || '') });
+    var dwx = weekDows(r.weekStart);
+    for (var di = 0; di < 7; di++) dayCols.push({ key:'day'+di, day:di, w:22, align:'center', h: dwx[di] + '\n' + (wd[di] || '') });
     var otstAt = 0; for (var ci0 = 0; ci0 < cols.length; ci0++) { if (cols[ci0].key === 'otst') { otstAt = ci0 + 1; break; } }
     cols = cols.slice(0, otstAt).concat(dayCols, cols.slice(otstAt));
     var cx = M; cols.forEach(function (c) { c.x = cx; cx += c.w; });
@@ -6433,6 +6511,7 @@
   }
 
   function cprMndotDownload(r) {
+    if (!cprConfirmRates(r, 'Build the MnDOT forms')) return;
     if (window.bccNotify) window.bccNotify('Building the MnDOT forms…', 'info', 3000);
     Promise.all([
       cprEnsurePdfLib(),
@@ -6756,7 +6835,12 @@
       '</table>' +
       '<div class="cert">' + certText +
       '<div class="sig">Contractor: <span class="fld">' + esc(r.contractorName || '') + '</span> &nbsp; By: <span class="fld">' + esc(r.socName || '') + '</span>, ' + esc(r.socTitle || '') + ' &nbsp; Date: <span class="fld">' + esc(r.socDate || '') + '</span></div>' +
-      '<div class="sig">Architect’s Certificate for Payment — Amount Certified: <span class="fld">' + m(pc.line8) + '</span> &nbsp; By: <span class="fld">&nbsp;</span> &nbsp; Date: <span class="fld">&nbsp;</span></div>' +
+      // AMOUNT CERTIFIED is the ARCHITECT's figure, and they may certify less than was
+      // requested. Pre-filling it with line 8 — the contractor's own request — presents
+      // the contractor's number as if the architect had already certified it. Leave it
+      // blank, like the signature and date beside it.
+      '<div class="sig">Architect’s Certificate for Payment — Amount Certified: <span class="fld">&nbsp;</span> &nbsp; By: <span class="fld">&nbsp;</span> &nbsp; Date: <span class="fld">&nbsp;</span></div>' +
+      '<div style="font-size:10px;color:#666;margin-top:3px;">Amount Certified is completed by the Architect and may differ from the amount requested on line 8.</div>' +
       '</div>' +
       '<div class="g703wrap"><h1>Continuation Sheet</h1><div class="sub">Application no. ' + esc(r.appNo || '') + ' · Period to ' + esc(r.periodTo || '') + ' — G703™ style</div>' +
       '<table class="g703"><thead><tr><th>Item</th><th>Description of work</th><th>Scheduled value</th><th>From previous</th><th>This period</th><th>Materials stored</th><th>Total completed &amp; stored</th><th>%</th><th>Balance to finish</th><th>Retainage</th></tr></thead><tbody>' +

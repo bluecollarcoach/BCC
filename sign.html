@@ -94,13 +94,36 @@
   /* ---- pad ---- */
   var mode = 'draw', hasInk = false, drawing = false, last = null;
   var pad = document.getElementById('pad');
+  /* The bitmap must match the element's RENDERED size or every stroke is offset. The old
+     Math.max(300,…)/Math.max(140,…) floors meant that on a phone — where this pad renders
+     roughly 250-290 CSS px wide — the bitmap stayed 300x140 while the box was smaller, so
+     the canvas scaled and the ink landed away from the finger. An external signer has no
+     way to recover from that; they just see a signature that will not follow them.
+     Also skip the resize when nothing changed: assigning width/height clears the bitmap
+     per spec, which is what erased a drawn signature whenever the signer peeked at the
+     Type tab and came back. */
   function sizePad() {
     var r = pad.getBoundingClientRect();
-    pad.width = Math.max(300, Math.round(r.width)); pad.height = Math.max(140, Math.round(r.height));
-    hasInk = false;
+    var w = Math.max(1, Math.round(r.width)), h = Math.max(1, Math.round(r.height));
+    if (pad.width !== w || pad.height !== h) { pad.width = w; pad.height = h; hasInk = false; }
     var ctx = pad.getContext('2d'); ctx.lineWidth = 2.4; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#0a2a5e';
   }
-  function pt(e) { var r = pad.getBoundingClientRect(); var t = e.touches && e.touches[0]; return { x: (t ? t.clientX : e.clientX) - r.left, y: (t ? t.clientY : e.clientY) - r.top }; }
+  // A genuine resize (rotating the phone) legitimately clears the bitmap — say so, rather
+  // than letting the signer press Submit on a pad they think still holds their signature.
+  window.addEventListener('resize', function () {
+    if (mode !== 'draw') return;
+    var had = hasInk;
+    sizePad();
+    if (had && !hasInk && err) { err.textContent = 'The screen changed size, so the signature was cleared. Please sign again.'; err.style.display = ''; }
+  });
+  // Scale CSS px -> bitmap px. Equal right after sizePad(), but this stays correct if a
+  // resize lands mid-stroke.
+  function pt(e) {
+    var r = pad.getBoundingClientRect();
+    var t = e.touches && e.touches[0];
+    var sx = r.width ? pad.width / r.width : 1, sy = r.height ? pad.height / r.height : 1;
+    return { x: ((t ? t.clientX : e.clientX) - r.left) * sx, y: ((t ? t.clientY : e.clientY) - r.top) * sy };
+  }
   function start(e) { drawing = true; last = pt(e); e.preventDefault(); }
   function move(e) { if (!drawing) return; var p = pt(e); var ctx = pad.getContext('2d'); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; hasInk = true; e.preventDefault(); }
   function end() { drawing = false; }

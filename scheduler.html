@@ -213,12 +213,29 @@
   function contactById(id) { try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (_) { return null; } }
   function contactName(c) { if (!c) return ''; return ((c.firstName || '') + ' ' + (c.lastName || '')).trim() || c.email || ''; }
 
-  function itemsOn(date) {
-    var y = ymd(date);
-    return allItems().filter(function (it) {
-      var t = new Date(it.startAt); return !isNaN(t) && ymd(t) === y;
-    }).sort(function (a, b) { return new Date(a.startAt) - new Date(b.startAt); });
+  /* Index by local day, built ONCE. itemsOn() used to call allItems() — a full
+     localStorage scan with a JSON.parse per record — and the year view calls it for all
+     504 cells (12 months x 6 weeks x 7 days), so opening that view re-scanned and
+     re-parsed the entire store 504 times over. Module-scoped, not render-local:
+     openDayModal runs from a click handler long after render() has returned.
+     Invalidated on every data change, so it cannot go stale. */
+  var _idx = null;
+  function itemIndex() {
+    if (_idx) return _idx;
+    _idx = {};
+    allItems().forEach(function (it) {
+      var t = new Date(it.startAt);
+      if (isNaN(t)) return;
+      var k = ymd(t);
+      (_idx[k] = _idx[k] || []).push(it);
+    });
+    Object.keys(_idx).forEach(function (k) {
+      _idx[k].sort(function (a, b) { return new Date(a.startAt) - new Date(b.startAt); });
+    });
+    return _idx;
   }
+  function invalidateIndex() { _idx = null; }
+  function itemsOn(date) { return itemIndex()[ymd(date)] || []; }
 
   /* ===== State ===== */
   var view = 'month';
@@ -271,9 +288,12 @@
       el.addEventListener('click', function (e) {
         e.stopPropagation();
         // Jump to the relevant module (sessions or events)
+        // Carry the id across. Landing on the bare page dumped the user on the CURRENT
+        // week with no indication of which item they had clicked — from a month or year
+        // view that can be months away from what they were looking at.
         var id = el.dataset.id;
-        if (id.indexOf(SESSION_PREFIX) === 0) location.href = 'sessions.html';
-        else if (id.indexOf(EVENT_PREFIX) === 0) location.href = 'events.html';
+        if (id.indexOf(SESSION_PREFIX) === 0) location.href = 'sessions.html?id=' + encodeURIComponent(id);
+        else if (id.indexOf(EVENT_PREFIX) === 0) location.href = 'events.html?id=' + encodeURIComponent(id);
       });
     });
   }
@@ -366,7 +386,7 @@
   }
 
   function init() { render(); }
-  window.addEventListener('bcc-data-ready', render);
+  window.addEventListener('bcc-data-ready', function () { invalidateIndex(); render(); });
   window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
   setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
 })();

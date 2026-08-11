@@ -69,7 +69,12 @@ const ADMIN_KEYS      = new Set(['bcc-admin-config-v1', 'bcc-customer-types-v1']
 // isPcKey() accepts, so /api/data would let ANY signed-in user DELETE it — which
 // silently re-arms replay of the exact OAuth state that marker exists to burn.
 // The bulk GET already drops it by docType; this closes the write/delete side.
-const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-bkentry-', 'bcc-emailmeta-', 'bcc-financial-period-', 'bcc-usernotif-', 'bcc-feedback-', 'bcc-errorlog-', 'bcc-report-', 'bcc-oauthstate-used-', 'bcc-sharepoint-map-v1'];
+const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-bkentry-', 'bcc-emailmeta-', 'bcc-financial-period-', 'bcc-usernotif-', 'bcc-feedback-', 'bcc-errorlog-', 'bcc-report-', 'bcc-oauthstate-used-', 'bcc-sharepoint-map-v1',
+  // Server-owned bookkeeping written by the crons. Both are plain bcc- docs that isPcKey
+  // accepts, so /api/data would otherwise let any signed-in user read, overwrite or
+  // DELETE them — and wiping the reminder de-dupe map re-sends every reminder in the
+  // window to everyone subscribed.
+  'bcc-reminder-sent-v1', 'bcc-qbo-debug-'];
 // A SERVER-owned file-metadata doc (written by /api/documents) is FLAT: docType sits
 // at the top level. A documents.html record synced through /api/data is WRAPPED: its
 // docType lives under .data, so top-level docType is undefined. That difference is
@@ -978,6 +983,21 @@ app.http('audit', {
         // Every other write requires a valid BCC domain account.
         if (!domainAllowed(p) && action !== 'signin-denied') return domainBlocked();
 
+        /* meta.realmId decides which client's Activity feed a row lands in — and the
+           QuickBooks push log is queried on exactly that field, which is the record the
+           firm treats as authoritative for what was posted to a client's books. It was
+           accepted verbatim from the request, so anyone signed in could write rows into
+           any client's history. Verify access before honouring it.
+           Only enforced when it LOOKS like a QBO realm (digits): several legitimate
+           callers pass a non-realm marker (the firm-level notary bucket uses 'firm'),
+           and driveClientAccess fails closed on a missing company doc, so blanket
+           enforcement would reject real rows. */
+        if (body.meta && body.meta.realmId != null) {
+          const rid = String(body.meta.realmId);
+          if (/^[0-9]{4,}$/.test(rid) && (await driveClientAccess(p, rid)).err) {
+            return forbidden('no access to this client');
+          }
+        }
         const ts = new Date().toISOString();
         const id = 'audit-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
         const doc = {
@@ -1635,7 +1655,14 @@ app.http('cpr-sign', {
         await notifyUser(c, tok.uid, { title: '✍️ Signature received', body: name + (title ? ' (' + title + ')' : '') + ' signed for ' + (company || 'a client') + ' — use “Insert saved signature” on the payroll report.', url: '/bookkeeping.html', tag: 'cprsig-' + tok.realmId });
       }
       return { jsonBody: { ok: true } };
-    } catch (e) { context.error('cpr sign error', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+    } catch (e) {
+      // ANONYMOUS endpoint — sign.html is in the public allow-list, so this text reaches
+      // an EXTERNAL signer. Log the detail; never echo an internal exception (a Cosmos
+      // message, a stack fragment, an env key name) back to them. sign.html has its own
+      // fallback copy when `error` is absent.
+      context.error('cpr sign error', e);
+      return { status: 500, jsonBody: { ok: false, error: 'The signature could not be recorded. Please try again, or contact Blue Collar Coach.' } };
+    }
   })
 });
 
@@ -1711,8 +1738,17 @@ app.http('notifications', {
     try {
       if (request.method === 'GET') {
         const { resources } = await c.items.query({
-          query: 'SELECT TOP 50 c.id, c.title, c.body, c.url, c.tag, c.createdAt FROM c WHERE c.tenantId=@t AND c.docType="usernotif" AND c.forUpn=@u AND c.read=false ORDER BY c.createdAt DESC',
-          parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@u', value: me }]
+          // Return recent rows regardless of read state, WITH the flag, bounded by a
+          // time window. Filtering on read=false server-side meant whichever device
+          // polled first marked them read and they never appeared on the person's other
+          // devices at all — a phone that was not the fastest poller simply never showed
+          // the notification.
+          query: 'SELECT TOP 50 c.id, c.title, c.body, c.url, c.tag, c.createdAt, c.read FROM c WHERE c.tenantId=@t AND c.docType="usernotif" AND c.forUpn=@u AND c.createdAt>=@since ORDER BY c.createdAt DESC',
+          parameters: [
+            { name: '@t', value: BCC_TENANT_ID },
+            { name: '@u', value: me },
+            { name: '@since', value: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString() }
+          ]
         }).fetchAll();
         return { jsonBody: { ok: true, notifications: resources } };
       }
@@ -1836,7 +1872,10 @@ app.http('cron-reminders', {
         } else {
           kind = 'day'; payloadTitle = 'Upcoming: ' + title; payloadBody = 'Starts ' + remFmtTime(t) + loc;
         }
-        const marker = d.id + ':' + kind;
+        // Include the start time. Without it, moving a session to a different time reused
+        // the marker minted for the ORIGINAL schedule, so the reminder for the new time
+        // counted as already sent and silently never went out.
+        const marker = d.id + ':' + kind + ':' + t;
         if (sent[marker]) continue;
         // The marker used to be written HERE, before anything was sent — so a reminder
         // with no live subscription, or one whose send failed, was recorded as sent and
@@ -6672,7 +6711,12 @@ async function assembleMonthlyReport(apiGet, comp, per, method) {
   // client is actually spending right now (proven case: $135K cash read as "8.5
   // months" off a $16K/mo YTD average, when the actual last 3 months averaged
   // ~$31.7K/mo — a true runway of ~4.3 months).
-  const monthlyBurn = (plBurn && plOpex(plBurn) > 0) ? Math.round((plOpex(plBurn) / 3) * 100) / 100 : opex;
+  // Publish WHICH basis was used. The report prints "cash ÷ trailing 3-mo avg opex" as
+  // its methodology, but plBurn has a silent .catch(() => null) — on a transient QuickBooks
+  // failure this falls back to a SINGLE month's opex, which can move the figure materially
+  // while the client-facing deliverable still asserts the three-month average.
+  const burnFrom3 = !!(plBurn && plOpex(plBurn) > 0);
+  const monthlyBurn = burnFrom3 ? Math.round((plOpex(plBurn) / 3) * 100) / 100 : opex;
   const monthsOfCash = monthlyBurn > 0 ? Math.round((cash / monthlyBurn) * 10) / 10 : null;
   const currentRatio = currentLiabilities > 0 ? Math.round((currentAssets / currentLiabilities) * 100) / 100 : null;
 
@@ -6691,7 +6735,7 @@ async function assembleMonthlyReport(apiGet, comp, per, method) {
     degraded: !plPrior || !plYtd || !bsPrior || !plBurn || !cashFlow || !arAging || !apAging || !arSummary || !apSummary,
     company: { name: comp.companyName || realmId, legalName: comp.legalName || comp.companyName || '' },
     kpis: {
-      cash, cashPrior: bsPrior ? bsCash(bsPrior) : null, monthsOfCash, monthlyBurn,
+      cash, cashPrior: bsPrior ? bsCash(bsPrior) : null, monthsOfCash, monthlyBurn, burnFrom3,
       revenue, revenuePrior: plPrior ? plRevenue(plPrior) : null, revenueYtd: plYtd ? plRevenue(plYtd) : null,
       cogs, grossProfit, grossMargin: revenue ? grossProfit / revenue : null,
       grossMarginPrior: plPrior && plRevenue(plPrior) ? (plRevenue(plPrior) - plCogs(plPrior)) / plRevenue(plPrior) : null,
@@ -7060,10 +7104,15 @@ function buildReportDocDef(b) {
 }
 // The BCC logo as a data URI for the PDF header. Fetched once from the app's own
 // static asset (anonymous-served) and cached; falls back to a text wordmark.
-let _reportLogo = null, _reportLogoTried = false;
+let _reportLogo = null, _reportLogoRetryAt = 0;
 async function getReportLogo(request) {
-  if (_reportLogoTried) return _reportLogo;
-  _reportLogoTried = true;
+  // Latch on SUCCESS only. The flag used to be set BEFORE the fetch, so one transient
+  // failure — a cold start racing the static host, a single blip — permanently stripped
+  // the letterhead from every monthly report that worker rendered afterwards, for the
+  // life of the instance, with nothing to say why. Back off on failure so a persistent
+  // problem still doesn't re-download on every report.
+  if (_reportLogo) return _reportLogo;
+  if (Date.now() < _reportLogoRetryAt) return null;
   try {
     const origin = publicOrigin(request);
     const r = await fetch(origin + '/bcc-logo-full.png');
@@ -7072,6 +7121,7 @@ async function getReportLogo(request) {
       if (buf.length > 0 && buf.length < 600000) _reportLogo = 'data:image/png;base64,' + buf.toString('base64');
     }
   } catch (_) { }
+  if (!_reportLogo) _reportLogoRetryAt = Date.now() + 5 * 60 * 1000;
   return _reportLogo;
 }
 async function renderReportPdf(b) {
