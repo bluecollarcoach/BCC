@@ -590,15 +590,11 @@
       .then(function (j) {
         btn.disabled = false;
         if (j && j.ok !== false) { finish(); return; }
-        if (confirm('The Outlook calendar event could not be removed (' + ((j && j.error) || 'unknown error') + ').
-
-Delete the session here anyway? The calendar entry will remain, and a future Pull from Outlook may bring it back.')) finish();
+        if (confirm('The Outlook calendar event could not be removed (' + ((j && j.error) || 'unknown error') + ').\n\nDelete the session here anyway? The calendar entry will remain, and a future Pull from Outlook may bring it back.')) finish();
       })
       .catch(function (e) {
         btn.disabled = false;
-        if (confirm('Could not reach Outlook to remove the calendar event (' + ((e && e.message) || 'network error') + ').
-
-Delete the session here anyway? The calendar entry will remain.')) finish();
+        if (confirm('Could not reach Outlook to remove the calendar event (' + ((e && e.message) || 'network error') + ').\n\nDelete the session here anyway? The calendar entry will remain.')) finish();
       });
   });
 

@@ -351,18 +351,23 @@
      that field is attacker-writable in the same way a company's is — so it is checked
      against this page's namespace before it is ever used as a storage key. */
   function unlinkContactsFrom(companyId) {
-    var n = 0;
+    // COLLECT first, write second. Writing inside a localStorage.key(i) scan is unsafe:
+    // the sync layer's hooked setItem persists its outbox under its own key, and the
+    // first queued write of a session CREATES that key — which grows localStorage and
+    // can shift the indices this loop is still walking, silently skipping a contact and
+    // leaving exactly the dangling link this function exists to prevent.
+    var todo = [];
     for (var i = 0; i < localStorage.length; i++) {
       var k = localStorage.key(i); if (!k || k.indexOf(CONTACT_PREFIX) !== 0) continue;
       try {
         var ct = JSON.parse(localStorage.getItem(k));
         if (!ct || ct.companyId !== companyId) continue;
         ct.companyId = null;
-        localStorage.setItem(isContactKey(ct.id) ? ct.id : k, JSON.stringify(ct));
-        n++;
+        todo.push({ key: isContactKey(ct.id) ? ct.id : k, doc: ct });
       } catch (_) {}
     }
-    return n;
+    todo.forEach(function (e) { localStorage.setItem(e.key, JSON.stringify(e.doc)); });
+    return todo.length;
   }
   function saveCompany(c) {
     c.updatedAt = nowIso();
@@ -908,9 +913,7 @@
       var id = tr.dataset.id;
       if (btn && btn.dataset.act === 'delete') {
         e.stopPropagation();
-        if (!confirm('Delete this company?
-
-Linked contacts and engagements keep their data but lose the link.')) return;
+        if (!confirm('Delete this company?\n\nLinked contacts and engagements keep their data but lose the link.')) return;
         // The detail view unlinks referencing contacts before deleting; this row handler
         // did not, so a company deleted from the list left its contacts pointing at an id
         // that no longer resolves — they vanished from every company view and could not
