@@ -320,18 +320,22 @@
     renderGrid();
   });
 
-  function init() {
-    renderGrid();
-    // Deep link from the Scheduler: ?id=<event>. getEvent is namespace-guarded, so an
-    // unknown or out-of-namespace id simply does nothing.
-    try {
-      var eid = new URLSearchParams(location.search).get('id');
-      if (eid && getEvent(eid)) openModal(eid);
-    } catch (e) {}
+  function init() { renderGrid(); }
+  /* Deep link from the Scheduler: ?id=<event>. This has to latch, because init() runs on
+     BOTH boot paths — the 600ms fallback and then bcc-auth-ready, which does not check
+     didInit — so folding the open into init() re-opened the modal after the user had
+     already closed it, discarding whatever they had typed. Same idiom as jobs.html: the
+     flag is set only on the branch that actually opens something, so a deep link that
+     arrives before its data has synced still gets one chance on 'bcc-data-ready'.
+     getEvent is namespace-guarded, so an unknown or out-of-namespace id does nothing. */
+  var _deepLinkDone = false;
+  function tryDeepLink() {
+    if (_deepLinkDone) return;
+    try { var eid = new URLSearchParams(location.search).get('id'); if (eid && getEvent(eid)) { _deepLinkDone = true; openModal(eid); } } catch (e) {}
   }
-  window.addEventListener('bcc-data-ready', renderGrid);
-  window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
-  setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
+  window.addEventListener('bcc-data-ready', function () { renderGrid(); tryDeepLink(); });
+  window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); tryDeepLink(); });
+  setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); tryDeepLink(); } }, 600);
 })();
 </script>
 </body>

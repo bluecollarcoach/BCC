@@ -179,20 +179,39 @@
   /* Families whose docs only their owner writes, so an unauthenticated replay cannot
      clobber anyone else. Anything not listed here is dropped rather than guessed at. */
   var OFFLINE_OWNED_PREFIXES = ['bcc-daily-log-', 'bcc-mytasks-', 'bcc-timeentry-', 'bcc-fieldform-'];
+  /* The outbox is read AND rewritten on every synced localStorage write, so a bulk import
+     re-parsed and re-serialised the entire queue once per document — quadratic, and enough
+     to lock the tab up for seconds. Memoize the PARSED object; the write stays synchronous.
+     Deliberately not a debounced/deferred write: durability is the only reason this file
+     exists, and pagehide is not guaranteed on a crash, an OOM kill or a mobile background
+     termination, which are exactly the cases the outbox is here to survive. */
+  var _outboxCache = null;
   function outboxRead() {
-    try { var o = JSON.parse(localStorage.getItem(OUTBOX_KEY) || 'null'); return (o && typeof o === 'object' && o.items) ? o : { upn: '', items: {} }; }
-    catch (e) { return { upn: '', items: {} }; }
+    if (_outboxCache) return _outboxCache;
+    var o;
+    try { o = JSON.parse(localStorage.getItem(OUTBOX_KEY) || 'null'); } catch (e) { o = null; }
+    _outboxCache = (o && typeof o === 'object' && o.items) ? o : { upn: '', items: {} };
+    return _outboxCache;
   }
   function outboxWrite(o) {
+    _outboxCache = o;   // every caller must share one instance, or drop() and rehydrate() disagree
     try { _origSetItem.call(localStorage, OUTBOX_KEY, JSON.stringify(o)); }
     catch (e) { /* quota — the in-memory queue still carries it for this page's life */ }
   }
+  // Another TAB owns the same outbox. Without this the cache would go stale the moment a
+  // second tab wrote, and this tab's next write would clobber the other's queued items
+  // wholesale — the read-modify-write at least merged them before.
+  window.addEventListener('storage', function (e) {
+    if (!e || e.key === OUTBOX_KEY || e.key === null) _outboxCache = null;
+  });
   function outboxPut(key, value, trusted) {
     var o = outboxRead();
     var who = String((user && user.userDetails) || '').toLowerCase();
     // A different person signed in on this device: start their outbox clean rather than
     // inheriting writes that are not theirs to replay.
-    if (o.upn && who && o.upn !== who) o = { upn: who, items: {} };
+    // Rebind the cache too, or the previous person's entries survive in memory into the new
+    // session — the exact leak this branch exists to prevent.
+    if (o.upn && who && o.upn !== who) { o = { upn: who, items: {} }; _outboxCache = o; }
     if (who) o.upn = who;
     if (!o.items[key] && Object.keys(o.items).length >= OUTBOX_MAX) return; // bounded
     o.items[key] = { v: value, t: !!trusted };
@@ -588,7 +607,7 @@
       .then(function (j) {
         var items = (j && j.items) || [];
         if (!items.length) return;
-        var changed = [], maxUpd = since;
+        var changed = [], maxUpd = since, pollFailed = 0, minFailedUpd = '';
         items.forEach(function (it) {
           if (!it || !it.key || it.data === undefined) return;
           if (it.updatedAt && it.updatedAt > maxUpd) maxUpd = it.updatedAt;
@@ -599,16 +618,24 @@
           if (DEVICE_LOCAL_KEYS.indexOf(it.key) >= 0) return;
           var val = typeof it.data === 'string' ? it.data : JSON.stringify(it.data);
           if (localStorage.getItem(it.key) === val) return; // no real change
-          _origSetItem.call(localStorage, it.key, val);
-          changed.push(it.key);
+          // Same per-item guard as the bootstrap pull: one full-storage failure must not
+          // abandon the rest of the batch. changed.push INSIDE the try — announcing a key
+          // that never landed would have every listener re-render from the old value.
+          try { _origSetItem.call(localStorage, it.key, val); changed.push(it.key); }
+          catch (e) {
+            pollFailed++;
+            if (it.updatedAt && (!minFailedUpd || it.updatedAt < minFailedUpd)) minFailedUpd = it.updatedAt;
+          }
         });
-        try { if (maxUpd > since) _origSetItem.call(localStorage, 'bcc-sync-since-v1', maxUpd); } catch (e) {}
+        // Same cursor clamp: a doc that did not land must stay eligible for the next delta.
+        try { if (maxUpd > since && (!minFailedUpd || maxUpd < minFailedUpd)) _origSetItem.call(localStorage, 'bcc-sync-since-v1', maxUpd); } catch (e) {}
         if (changed.length) {
           if (changed.indexOf('bcc-admin-config-v1') >= 0) {
             try { recomputePcPeople(); } catch (e) {}
           }
           window.dispatchEvent(new CustomEvent('bcc-data-ready', { detail: { keys: changed, live: true } }));
         }
+        if (pollFailed) console.warn('[bcc-api] ' + pollFailed + ' live update(s) could not be stored locally (storage full?) — they will be retried');
       })
       .catch(function () { /* offline / transient — next tick retries */ })
       .finally(function () { _liveBusy = false; });
@@ -1041,6 +1068,7 @@
           // Only a FULL pull is authoritative about what still EXISTS: a delta pull
           // carries just the changed docs, so absence from it means nothing.
           var seenKeys = useDelta ? null : new Set();
+          var pullFailed = 0, minFailedUpd = '';
           (j.items || []).forEach(function (it) {
             if (!it || !it.key) return;
             if (seenKeys) seenKeys.add(it.key); // server still has this doc
@@ -1049,7 +1077,15 @@
             if (pending.has(it.key) || heldInFlight(it.key)) return; // user has a newer local write queued (or still saving)
             if (DEVICE_LOCAL_KEYS.indexOf(it.key) >= 0) return; // device preference (see setItem)
             var val = typeof it.data === 'string' ? it.data : JSON.stringify(it.data);
-            _origSetItem.call(localStorage, it.key, val);
+            // Per-item, because a QuotaExceededError on ONE document used to throw straight
+            // out of this forEach: every remaining doc was skipped and the cursor stamps
+            // below never ran, so SYNC_FULL_KEY stayed unwritten and every later pull was a
+            // full pull that hit the same wall — the sync never recovered on its own.
+            try { _origSetItem.call(localStorage, it.key, val); }
+            catch (e) {
+              pullFailed++;
+              if (it.updatedAt && (!minFailedUpd || it.updatedAt < minFailedUpd)) minFailedUpd = it.updatedAt;
+            }
           });
           // DELETIONS: the loop above only ever WRITES keys, so a record another
           // user deleted lived on in this browser indefinitely — the page still
@@ -1079,9 +1115,18 @@
             if (gone.length) console.info('[bcc-api] dropped ' + gone.length + ' record(s) deleted by someone else');
           }
           try {
-            if (maxUpd) _origSetItem.call(localStorage, SYNC_SINCE_KEY, maxUpd);
-            if (!useDelta) _origSetItem.call(localStorage, SYNC_FULL_KEY, String(Date.now()));
+            // Never advance the cursor past a doc that did NOT land. The server filters
+            // deltas on `updatedAt > since`, so stamping over a failed write means that doc
+            // is never offered again — the browser keeps a permanently stale copy, and the
+            // first local edit to it pushes that stale value back up and reverts the newer
+            // server copy for everyone. Leaving the cursor short costs one re-fetch.
+            if (maxUpd && (!minFailedUpd || maxUpd < minFailedUpd)) _origSetItem.call(localStorage, SYNC_SINCE_KEY, maxUpd);
+            // Likewise, only record a completed full pull if it actually completed. With
+            // failures, the next load legitimately does another full pull — harmless now
+            // that the items which DID fit have already been applied.
+            if (!useDelta && !pullFailed) _origSetItem.call(localStorage, SYNC_FULL_KEY, String(Date.now()));
           } catch (e) {}
+          if (pullFailed) console.warn('[bcc-api] ' + pullFailed + ' record(s) could not be stored locally (storage full?) — they will be retried');
         }
       } catch (e) {
         console.warn('[bcc-api] initial pull failed', e);
@@ -2201,7 +2246,12 @@
         // always 0 — which is exactly how the previous version skipped the confirm and
         // killed the in-flight PUT, the very thing it was written to prevent. Report the
         // count captured BEFORE the flush for the same reason.
-        if (!settled && !confirm(queued + ' change' + (queued === 1 ? '' : 's') + ' ' + (queued === 1 ? 'is' : 'are') + ' still saving. They are stored on this device and will finish saving next time you sign in here. Sign out now?')) { done = false; return; }
+        // Cancel must be FINAL, so `done` stays true. Resetting it to false left the flush
+        // continuation armed: settleThenGo would later call go() again, find done === false
+        // and settled === true, skip the confirm entirely and sign the user out anyway.
+        // confirm() also blocks the thread, so a flush that finished while the dialog was
+        // open signed them out the instant they pressed Cancel.
+        if (!settled && !confirm(queued + ' change' + (queued === 1 ? '' : 's') + ' ' + (queued === 1 ? 'is' : 'are') + ' still saving. They are stored on this device and will finish saving next time you sign in here. Sign out now?')) return;
         window.bccAudit && window.bccAudit('signout');
         location.href = '/.auth/logout?post_logout_redirect_uri=' + encodeURIComponent(location.origin + '/');
       };
@@ -2797,6 +2847,17 @@
     if (changed) ncEngSeenSave(seen);
   }
 
+  /* A durable per-device record of which server notifications this device has already
+     surfaced. It has to be separate from the bell's display list, because that list is NOT
+     a delivery record: "Clear" empties it outright and ncSave() truncates it to NC_MAX.
+     Once an item fell out of it, the server's 14-day window handed it straight back on the
+     next 60s poll and it was re-badged and re-toasted — so Clear undid itself, forever.
+     Its own key, NOT NC_FIRED: ncScanReminders prunes that object by age with no regard for
+     key shape and would evict these on a different schedule. */
+  var NC_SRVSEEN = 'bccnc-srvseen-v1';
+  function ncSrvSeen() { try { return JSON.parse(localStorage.getItem(NC_SRVSEEN)) || {}; } catch (e) { return {}; } }
+  function ncSrvSeenSave(o) { try { localStorage.setItem(NC_SRVSEEN, JSON.stringify(o)); } catch (e) {} }
+
   // Pull server-pushed per-user notifications (feedback landed / addressed, etc.)
   // into the bell, then mark them delivered so they aren't re-fetched.
   function ncScanServerNotifs() {
@@ -2810,10 +2871,17 @@
         // device polled first marked them read and they never reached the others at all.
         // Only report back the ones THIS device actually surfaced (ncAdd collapses by tag
         // against the local store), so re-polling doesn't churn.
-        var ids = [];
+        var seen = ncSrvSeen(), now = Date.now(), ids = [], changed = false;
         j.notifications.forEach(function (n) {
-          if (ncAdd({ type: 'info', title: n.title, body: n.body, url: n.url, tag: n.id }) !== false) ids.push(n.id);
+          if (!n || !n.id || seen[n.id]) return;   // this device has already surfaced it
+          seen[n.id] = now; changed = true;        // recorded BEFORE ncAdd, so a collapse still counts
+          ncAdd({ type: 'info', title: n.title, body: n.body, url: n.url, tag: n.id });
+          ids.push(n.id);
         });
+        // Prune past the server's own 14-day window, with a day's margin — first-seen is
+        // always at or after createdAt, so 15 days cannot drop one the server still returns.
+        Object.keys(seen).forEach(function (k) { if (now - seen[k] > 15 * DAY_MS) { delete seen[k]; changed = true; } });
+        if (changed) ncSrvSeenSave(seen);
         if (ids.length) fetch('/api/notifications', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: ids }) }).catch(function () {});
       })
       .catch(function () {});

@@ -194,17 +194,30 @@ self.addEventListener('message', (event) => {
 self.addEventListener('pushsubscriptionchange', (event) => {
   event.waitUntil((async () => {
     try {
-      let key = event.oldSubscription && event.oldSubscription.options && event.oldSubscription.options.applicationServerKey;
-      if (!key) {
+      // The SERVER's key is primary. Preferring the old subscription's key meant a VAPID
+      // rotation could never heal itself: the device re-subscribed under the retired key
+      // and every push to it was rejected from then on. The old key stays as a fallback for
+      // the case this handler exists to cover — the server being unreachable at the moment
+      // the browser rotates the subscription.
+      let key = null;
+      try {
         const r = await fetch('/api/push-public-key');
-        if (!r.ok) return;
-        const j = await r.json();
-        if (!j || !j.publicKey) return;
-        const b64 = (j.publicKey + '='.repeat((4 - (j.publicKey.length % 4)) % 4)).replace(/-/g, '+').replace(/_/g, '/');
-        const raw = atob(b64);
-        key = new Uint8Array(raw.length);
-        for (let i = 0; i < raw.length; i++) key[i] = raw.charCodeAt(i);
-      }
+        if (r.ok) {
+          const j = await r.json();
+          if (j && j.publicKey) {
+            const b64 = (j.publicKey + '='.repeat((4 - (j.publicKey.length % 4)) % 4)).replace(/-/g, '+').replace(/_/g, '/');
+            const raw = atob(b64);
+            key = new Uint8Array(raw.length);
+            for (let i = 0; i < raw.length; i++) key[i] = raw.charCodeAt(i);
+          }
+        }
+      } catch (_) { /* offline or server down — fall back to the old key below */ }
+      if (!key) key = event.oldSubscription && event.oldSubscription.options && event.oldSubscription.options.applicationServerKey;
+      if (!key) return;
+      // The UA may already have minted a replacement subscription under the OLD key by the
+      // time this fires; subscribe() would then reject with InvalidStateError for a
+      // different applicationServerKey. Clear it first so the new key can take.
+      try { const cur = await self.registration.pushManager.getSubscription(); if (cur) await cur.unsubscribe(); } catch (_) {}
       const sub = await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
       // credentials:'include' so the SWA auth cookie rides along — without it the server
       // cannot tell whose device this is and the row would be orphaned.

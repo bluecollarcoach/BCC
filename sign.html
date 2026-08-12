@@ -114,7 +114,10 @@
     if (mode !== 'draw') return;
     var had = hasInk;
     sizePad();
-    if (had && !hasInk && err) { err.textContent = 'The screen changed size, so the signature was cleared. Please sign again.'; err.style.display = ''; }
+    // showErr, not a hand-rolled repeat of it: `.err` is `display:none` in the stylesheet,
+    // and `style.display = ''` clears the inline value rather than overriding the rule — so
+    // this warning could never actually appear. showErr sets 'block'.
+    if (had && !hasInk) showErr('The screen changed size, so the signature was cleared. Please sign again.');
   });
   // Scale CSS px -> bitmap px. Equal right after sizePad(), but this stays correct if a
   // resize lands mid-stroke.

@@ -899,7 +899,13 @@
       return;
     }
     // Single company.
-    var all = periodsFor(currentRealm);
+    // dedupePeriods here too, not only on the firm-wide branch above. A month can hold BOTH
+    // a manual entry and the nightly QBO period as two separate docs (that is what the
+    // '-manual' suffix is for), so raw periodsFor() double-counted it in YTD Net and handed
+    // closed[0]/closed[1] the SAME month as "last" and "prior" — a month-over-month delta
+    // against itself. Order is preserved: dedupePeriods keys on realmId|period, which is
+    // never array-index-like, so insertion (i.e. descending) order survives.
+    var all = dedupePeriods(periodsFor(currentRealm));
     if (all.length === 0) { ids.forEach(function (k){ document.getElementById(k).textContent='—'; });
       setDelta(document.getElementById('kpiRevD'),'no data — Sync from QBO'); setDelta(document.getElementById('kpiExpD'),''); setDelta(document.getElementById('kpiNetD'),''); setDelta(document.getElementById('kpiYtdD'),''); return; }
     // "Last month" = most recent CLOSED month (skip the in-progress current month).
@@ -1544,7 +1550,12 @@
           var inf = c.inflow || [0, 0, 0], outf = c.outflow || [0, 0, 0];
           var DSO = (c.DSO != null ? c.DSO : 30), DPO = (c.DPO != null ? c.DPO : 30);
           var cogs = s.revenue * (s.cogsPct / 100);
-          var bucketOfDay = function (d) { return d < 30 ? 0 : d < 60 ? 1 : d < 90 ? 2 : -1; };
+          // Inclusive edges, matching the server's bucketOfDay in qbo-cashflow exactly. With
+          // `<` the two disagreed whenever DSO or DPO landed on 15, 45 or 75 (they are plain
+          // integers 0..120), shifting a forecast month one bucket later and dropping the
+          // last one off the 90-day horizon entirely — so this modal and the monthly report
+          // showed different 90-day projections for the same company.
+          var bucketOfDay = function (d) { return d <= 30 ? 0 : d <= 60 ? 1 : d <= 90 ? 2 : -1; };
           var newSales = [0, 0, 0], newCosts = [0, 0, 0];
           for (var f = 0; f < 4; f++) {
             var bc = bucketOfDay(f * 30 + 15 + DSO); if (bc >= 0) newSales[bc] += s.revenue;
@@ -2886,6 +2897,16 @@
     // QuickBooks. Pin the realm this scan belongs to.
     var realmAt = currentRealm;
     var host = document.getElementById('qboWriteForm');
+    // Generation, not just realm. Clearing #qboWriteForm unconditionally on a realm change
+    // wipes whatever is in it RIGHT NOW — which can be a form the bookkeeper opened for the
+    // new client and has already started typing into. That is precisely what _txnFormGen
+    // exists to prevent (see openTxnForm), and this scan has the longest in-flight window of
+    // any of these paths: extract → refs → vendor create → refs reload.
+    var genAt = _txnFormGen;
+    var dropScan = function () {
+      if (host && _txnFormGen === genAt) host.innerHTML = '';
+      (window.bccNotify || alert)('Receipt scan dropped — you changed clients while it was being read.', 'warn', 7000);
+    };
     if (host) host.innerHTML = '<div style="padding:14px;color:var(--muted);">📷 Reading “' + esc(file.name) + '” with AI…</div>';
     var reader = new FileReader();
     reader.onload = function () {
@@ -2895,12 +2916,7 @@
       fetch('/api/ai/extract-receipt', { method: 'POST', credentials: 'include', body: fd })
         .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
         .then(function (resp) {
-          if (currentRealm !== realmAt) {
-            // Clear the "Reading …" placeholder too, or it sits on the new client's form.
-            if (host) host.innerHTML = '';
-            (window.bccNotify || alert)('Receipt scan dropped — you changed clients while it was being read.', 'warn', 7000);
-            return;
-          }
+          if (currentRealm !== realmAt) { dropScan(); return; }
           if (resp && resp.needsKey) { if (host) host.innerHTML = '<div style="padding:12px;background:#fbf6ec;border-radius:8px;font-size:13px;">AI capture isn’t configured yet. An admin needs to add an <strong>ANTHROPIC_API_KEY</strong> in the app settings (Azure portal → Static Web App → Configuration). Once added, scanning auto-fills transactions.</div>'; return; }
           if (!resp || !resp.ok) throw new Error((resp && resp.error) || 'extraction failed');
           var d = resp.data || {};
@@ -2924,12 +2940,14 @@
             } else if (d.vendorName) {
               if (host) host.innerHTML = '<div style="padding:14px;color:var(--muted);">Creating vendor “' + esc(d.vendorName) + '”…</div>';
               createVendorAuto(d.vendorName, function (newId) {
-                // createVendorAuto is another round trip — check again before seeding.
-                if (currentRealm !== realmAt) return;
+                // createVendorAuto is another round trip — check again before seeding. These
+                // two returned bare, leaving "Creating vendor …" stranded on the NEW client's
+                // write form with nothing ever clearing it.
+                if (currentRealm !== realmAt) { dropScan(); return; }
                 openTxnForm(txnEntity, null, Object.assign({ party: newId || '' }, seedBase));
                 if (window.bccNotifySaved) window.bccNotifySaved('Filled from receipt' + tot + '. Created vendor “' + d.vendorName + '”. ' + nextStep);
               }, function (err) {
-                if (currentRealm !== realmAt) return;
+                if (currentRealm !== realmAt) { dropScan(); return; }
                 openTxnForm(txnEntity, null, seedBase);
                 (window.bccNotify || alert)('Filled from receipt' + tot + '. Couldn’t auto-create vendor (' + err + ') — pick one or use + Vendor.', 'warn', 8000);
               });
@@ -3482,6 +3500,20 @@
 
   /* ---- Tasks ---- */
   function taskPrefix() { return 'bcc-task-' + currentRealm + '-'; }
+  /* The server refuses a task write from a 'view'-tier bookkeeper — "view reads, never
+     writes" — while 'tasks' tier exists precisely TO write them, so bccCanEdit() is the
+     wrong test here (it says no to 'tasks' as well). Check the level directly. Without this
+     the page happily ticked the box and the refused PUT surfaced as a bare "that change
+     wasn't saved" toast some time later, with the checkbox already moved. */
+  function canWriteTasks() {
+    if (!window.bccGetAppPermission) return true;          // pre-auth: let the server decide
+    var lvl = window.bccGetAppPermission('bookkeeping');
+    return lvl === 'tasks' || lvl === 'edit' || lvl === 'admin';
+  }
+  function refuseTaskWrite() {
+    (window.bccNotify || alert)('You have view-only access to Bookkeeping, so tasks can’t be changed here.', 'warn', 7000);
+    return false;
+  }
   function allTasks() { var out = []; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (!k || k.indexOf(taskPrefix()) !== 0) continue; try { var t = JSON.parse(localStorage.getItem(k)); if (t && t.id) out.push(t); } catch (e) {} } return out; }
   var RECUR_LABEL = { weekly: '🔁 Weekly', monthly: '🔁 Monthly', quarterly: '🔁 Quarterly', yearly: '🔁 Yearly' };
   /* A rolled-forward recurring task whose next occurrence is in the FUTURE is not "ready"
@@ -3618,6 +3650,7 @@
     var teTitle = document.getElementById('te_title'); if (teTitle) teTitle.addEventListener('keydown', function (e) { if (e.key === 'Enter') saveTaskEdit(editingId); if (e.key === 'Escape') { _taskEdit = null; renderTasks(); } });
   }
   function saveTaskEdit(id) {
+    if (!canWriteTasks()) return refuseTaskWrite();
     var t; try { t = JSON.parse(localStorage.getItem(id)); } catch (e) {}
     if (!t) {
       // The task couldn't be read back — it was deleted or renamed on another device
@@ -3660,6 +3693,7 @@
     }).catch(function () {});
   }
   function addTask() {
+    if (!canWriteTasks()) return refuseTaskWrite();
     var title = document.getElementById('tk_title').value.trim(); if (!title) { (window.bccNotify || alert)('Task title required.', 'warn'); return; }
     var recur = (document.getElementById('tk_recur') || {}).value || 'none';
     var due = document.getElementById('tk_due').value || '';
@@ -3672,6 +3706,7 @@
     renderTasks();
   }
   function toggleTask(id, done) {
+    if (!canWriteTasks()) { refuseTaskWrite(); renderTasks(); return; }
     var t; try { t = JSON.parse(localStorage.getItem(id)); } catch (e) {}
     // Same shape as the saveTaskEdit bug: bailing here skipped BOTH the write and the
     // re-render, so the checkbox stayed ticked on screen while nothing was recorded —
@@ -3701,7 +3736,7 @@
     }
     renderTasks(); if (typeof updateDrawer === 'function') updateDrawer();
   }
-  function delTask(id) { if (!confirm('Delete this task?')) return; localStorage.removeItem(id); if (window.bccAudit) window.bccAudit('client-task-delete', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } }); renderTasks(); }
+  function delTask(id) { if (!canWriteTasks()) return refuseTaskWrite(); if (!confirm('Delete this task?')) return; localStorage.removeItem(id); if (window.bccAudit) window.bccAudit('client-task-delete', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } }); renderTasks(); }
 
   /* ---- Time tracking is now fully AUTOMATIC (no manual tab / punch clock).
      Active time on the open client is accrued and flushed to /api/bookkeeping/time
@@ -3800,13 +3835,20 @@
       // This placeholder covers the whole screen AND suppresses the reader's Escape (that
       // guard keys off #fp_modal), so it needs every dismissal a real modal has — without
       // them a slow or hung fetch locked the user out of the page entirely.
+      // `cancelled` is set ONLY by a dismissal, never by drop() itself: drop() also runs on
+      // the success path below, before the real modal is built, and flagging it there would
+      // make the .catch swallow a genuine "couldn't open" error as if the user had closed
+      // it. Without the flag, dismissing merely hid the placeholder — the fetch kept going
+      // and the preview popped open on top of whatever the user had moved on to.
+      var cancelled = false;
       var drop = function () {
         var m = document.getElementById('fp_modal'); if (m) m.remove();
         document.removeEventListener('keydown', ov0Key);
       };
-      function ov0Key(e) { if (e.key === 'Escape') drop(); }
-      ov0.querySelector('#fp0_close').onclick = drop;
-      ov0.addEventListener('click', function (e) { if (e.target === ov0) drop(); });
+      var dismiss = function () { cancelled = true; drop(); };
+      function ov0Key(e) { if (e.key === 'Escape') dismiss(); }
+      ov0.querySelector('#fp0_close').onclick = dismiss;
+      ov0.addEventListener('click', function (e) { if (e.target === ov0) dismiss(); });
       document.addEventListener('keydown', ov0Key);
       fetch(viewUrl, { credentials: 'include' }).then(function (r) {
         if (!r.ok) {
@@ -3816,6 +3858,7 @@
         }
         return r.blob();
       }).then(function (blob) {
+        if (cancelled) return;   // user closed the placeholder — don't open on top of them
         drop();
         // Hand the preview a blob: URL so it isn't fetched a second time. Revoked on close.
         var burl = URL.createObjectURL(blob);
@@ -3823,6 +3866,7 @@
         var m = document.getElementById('fp_modal');
         if (m) m.setAttribute('data-revoke', burl);
       }).catch(function (e) {
+        if (cancelled) return;   // ...and don't scold them for a fetch they abandoned
         drop();
         (window.bccNotify || alert)('Couldn’t open ' + name + ': ' + (e && e.message ? e.message : 'network error'), 'error', 9000);
       });
@@ -4187,6 +4231,9 @@
         say('Stopped early — ' + total + ' file' + (total === 1 ? '' : 's') + ' imported' + (notes.length ? ' (' + notes.join('; ') + ')' : '') +
             '. About ' + leftover + ' file' + (leftover === 1 ? '' : 's') + ' could not be brought over; run the import again to retry them.');
         (window.bccNotify || alert)('SharePoint import stopped early — roughly ' + leftover + ' file' + (leftover === 1 ? '' : 's') + ' were not imported. Run it again to retry.', 'warn', 10000);
+        // A partial import still imported files. Returning before this left them invisible
+        // in the Files list until a reload, which reads as "nothing came over at all".
+        loadFiles();
         return;
       }
       say('Done — ' + total + ' file' + (total === 1 ? '' : 's') + ' imported into Internal files, tagged by folder.' + (notes.length ? ' (' + notes.join('; ') + ')' : ''));
@@ -5760,6 +5807,12 @@
     var subject = (document.getElementById('cpe_subj').value || '').trim() || 'Certified Payroll';
     var bodyText = document.getElementById('cpe_body').value || '';
     var wantMndot = document.getElementById('cpe_mndot').checked, wantDli = document.getElementById('cpe_dli').checked;
+    // Email was the one certified-payroll output that skipped the missing-pay-rate check, so
+    // a report showing $0.00 gross and net could be sent to the agency with nothing said,
+    // while downloading the identical form warned first. Conditioned on there being a form
+    // attached — a covering note with no PDF has no rates to be missing. Placed BEFORE the
+    // button is disabled: cancelling must leave the Send button usable.
+    if ((wantMndot || wantDli) && !cprConfirmRates(draftAt, 'Email it')) return;
     var btn = document.getElementById('cpe_send'); btn.disabled = true;
     if (st) st.textContent = 'Preparing attachments…';
     var atts = [];
@@ -5815,6 +5868,14 @@
   // Per-company saved signature so the owner (e.g. Tyson) signs once and it can be
   // inserted on every report for that company. Synced like other bcc-* docs.
   function cprSigKey() { return 'bcc-cprsig-' + currentRealm; }
+  /* refreshSavedSig re-reads this key from the server on every render of the signature
+     block, and a signature saved LOCALLY has not been pushed yet — the sync layer debounces
+     the PUT. So saving a new company signature and re-rendering fetched the server's older
+     copy straight back over it, and that stale value is what the queued PUT then sent to
+     Cosmos: the new signature was lost on the way out. Suppress the refresh briefly after a
+     local write. Keyed to the realm as well as the time, so opening a DIFFERENT client
+     inside the window still refreshes normally. */
+  var _cprSigLocalAt = 0, _cprSigLocalKey = '';
   function cprGetCompanySig() { try { var s = JSON.parse(localStorage.getItem(cprSigKey()) || 'null'); return (s && s.src) ? s : null; } catch (e) { return null; } }
   function cprRenderSig() {
     var wrap = document.getElementById('cpr_sigwrap'); if (!wrap || !cprDraft) return;
@@ -5860,6 +5921,7 @@
         src: cprDraft.signatureSrc, name: cprDraft.socName || '', title: cprDraft.socTitle || '',
         updatedAt: nowIso(), updatedBy: myUpn()
       }));
+      _cprSigLocalAt = Date.now(); _cprSigLocalKey = cprSigKey();
       if (window.bccAudit) window.bccAudit('cpr-save', { key: cprSigKey(), path: '/bookkeeping.html', meta: { realmId: currentRealm, what: 'company-signature' } });
       if (window.bccNotifySaved) window.bccNotifySaved('Signature saved for ' + companyName(currentRealm) + ' — use “Insert saved signature” on future reports.');
       cprRenderSig();
@@ -5887,6 +5949,10 @@
     // "Insert saved signature" appears without a full reload.
     (function refreshSavedSig() {
       var key = cprSigKey(), realmAt = currentRealm;
+      // 15s covers the push debounce plus the PUT plus bcc-api.js's transient retry. The
+      // only cost is that a signature someone else saved inside that window appears on the
+      // next render or reload rather than instantly.
+      if (key === _cprSigLocalKey && Date.now() - _cprSigLocalAt < 15000) return;
       fetch('/api/data/' + encodeURIComponent(key), { credentials: 'include' })
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (d) {

@@ -218,7 +218,9 @@
      504 cells (12 months x 6 weeks x 7 days), so opening that view re-scanned and
      re-parsed the entire store 504 times over. Module-scoped, not render-local:
      openDayModal runs from a click handler long after render() has returned.
-     Invalidated on every data change, so it cannot go stale. */
+     Invalidated on every data change AND on both boot paths (init) — the bootstrap pull
+     fires no 'bcc-data-ready', so relying on that event alone left this holding a
+     pre-sync snapshot for the whole session. */
   var _idx = null;
   function itemIndex() {
     if (_idx) return _idx;
@@ -385,7 +387,14 @@
     else renderYear();
   }
 
-  function init() { render(); }
+  // invalidateIndex() here, not just render(). init() runs on both boot paths, and the
+  // 600ms fallback fires BEFORE the bootstrap pull finishes on any slow connection — that
+  // first render built _idx from pre-sync localStorage, and nothing rebuilt it afterwards:
+  // 'bcc-data-ready' (the only other invalidation) is fired solely by the 8s delta poll for
+  // docs that CHANGED, never by the bootstrap, which writes localStorage directly. So the
+  // calendar showed a pre-sync month for the rest of the session. Two index builds per load
+  // at worst; every navigation render still hits the warm cache.
+  function init() { invalidateIndex(); render(); }
   window.addEventListener('bcc-data-ready', function () { invalidateIndex(); render(); });
   window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
   setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);

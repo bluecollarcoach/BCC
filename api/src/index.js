@@ -577,6 +577,11 @@ app.http('data', {
           // app, client info, notary) — only someone with access to THAT company.
           const clientRealm = dataKeyClientRealm(key);
           if (clientRealm && (await driveClientAccess(p, clientRealm)).err) return { jsonBody: { key, data: null } };
+          // ...and at the right TIER. The bookkeeping-tier gate went onto the bulk GET, the
+          // PUT and the DELETE but was missed here, so a 'tasks'-tier bookkeeper — who is
+          // meant to see only that client's task list — could still read every financial
+          // record for a company they have access to, one key at a time.
+          if (clientRealm && !bkDataAllowed(await bookkeepingTierFor(p), key, 'view')) return { jsonBody: { key, data: null } };
           // CRM/Engagements/Marketing/Rate-Sheet records — only someone with at
           // least 'view' on the owning app (bcc-contact- checks all sharing apps).
           if ((await appAccessForKey(p, key, 'view')) === false) return { jsonBody: { key, data: null } };
@@ -2279,9 +2284,14 @@ function bookkeepingReadOnly(tier) { return tier === 'tasks' || tier === 'view' 
 function bkClientKeyKind(id) { return /^bcc-task-/.test(String(id || '')) ? 'task' : 'financial'; }
 function bkDataAllowed(tier, id, need) {
   if (tier === 'none') return false;                       // no bookkeeping access at all
+  // Order matters. The read-only check has to come FIRST, because the task short-circuit
+  // below returns true unconditionally — so with the checks the other way round a 'view'
+  // bookkeeper could create, overwrite and delete client tasks, flatly contradicting the
+  // "'view' reads, never writes" rule this line states. 'tasks' is the one tier exempted:
+  // bookkeepingReadOnly() includes it, but writing tasks is the entire point of that tier.
+  if (need === 'edit' && bookkeepingReadOnly(tier) && tier !== 'tasks') return false;
   if (bkClientKeyKind(id) === 'task') return true;         // tasks are the 'tasks' tier's whole point
   if (bookkeepingNoFinancials(tier)) return false;         // 'tasks' sees no financial records
-  if (need === 'edit' && bookkeepingReadOnly(tier)) return false; // 'view' reads, never writes
   return true;
 }
 
@@ -3881,48 +3891,6 @@ app.http('cron-qbo-sync', {
       context.error('cron-qbo-sync error', err);
       return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } };
     }
-  }
-});
-
-/* TEMPORARY — read the feedback queue headlessly, and resolve/notify. Removed again at
-   the end of this pass; it exists only so the queue can be triaged without a browser
-   session. Same CRON_SECRET gate as every other headless endpoint. */
-app.http('cron-feedback', {
-  methods: ['GET', 'POST'], authLevel: 'anonymous', route: 'cron/feedback',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
-    try {
-      const c = container();
-      if (request.method === 'POST') {
-        const b = await request.json().catch(() => ({}));
-        const id = String(b.id || '');
-        if (id.indexOf('bcc-feedback-') !== 0) return badRequest('bad id');
-        const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-        if (!doc) return { status: 404, jsonBody: { ok: false, error: 'not found' } };
-        const st = String(b.status || 'resolved').toLowerCase();
-        if (['new', 'reviewed', 'resolved'].indexOf(st) < 0) return badRequest('bad status');
-        const note = String(b.note || '').trim().slice(0, 2000);
-        const wasResolved = doc.status === 'resolved';
-        doc.status = st; doc.reviewedBy = String(b.by || 'lyle@bluecollarcoach.us').toLowerCase(); doc.updatedAt = new Date().toISOString();
-        if (note) { doc.resolutionNote = note; doc.resolutionBy = doc.reviewedBy; doc.resolutionAt = new Date().toISOString(); }
-        await c.items.upsert(doc);
-        let notified = false;
-        if (doc.userUpn && st === 'resolved' && !wasResolved) {
-          notified = await notifyUser(c, doc.userUpn, {
-            title: '✅ Your feedback was addressed',
-            body: note || String(doc.message || '').slice(0, 90),
-            url: safeNotifyPath(doc.page), tag: 'fbdone-' + doc.id
-          });
-        }
-        return { jsonBody: { ok: true, id: doc.id, status: doc.status, notified } };
-      }
-      const { resources } = await c.items.query({
-        query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC',
-        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
-      }).fetchAll();
-      return { jsonBody: { ok: true, count: resources.length, items: resources } };
-    } catch (e) { context.error('cron-feedback', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   }
 });
 

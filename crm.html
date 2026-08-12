@@ -1039,7 +1039,13 @@
     sublineEl = document.getElementById('subline');
     syncMetaEl = document.getElementById('syncMeta');
 
-    qInput.addEventListener('input', renderList);
+    // Debounce the SEARCH BOX only. renderList re-scans and re-parses the whole of
+    // localStorage, so running it per keystroke made typing in a large book lag badly. It is
+    // deliberately not applied to renderList itself: the post-save, post-delete and
+    // end-of-import call sites all need a synchronous repaint, and the dropdowns below fire
+    // once per change rather than per character.
+    var _qT = null;
+    qInput.addEventListener('input', function () { clearTimeout(_qT); _qT = setTimeout(renderList, 180); });
     stageFilter.addEventListener('change', renderList);
     regionFilter.addEventListener('change', renderList);
     typeFilter.addEventListener('change', renderList);

@@ -260,10 +260,20 @@
     // real. Accumulate locally and commit only once every page has parsed. Nothing inside
     // the loop reads ST.sources, so registering it afterwards is safe.
     var entries = [];
-    for (var i = 0; i < doc.numPages; i++) {
-      var pg = await doc.getPage(i + 1);
-      var base = ((pg.rotate || 0) % 360 + 360) % 360;
-      entries.push({ key: uid(), srcId: id, srcIndex: i, base: base, rot: 0, sel: false, ann: [] });
+    try {
+      for (var i = 0; i < doc.numPages; i++) {
+        var pg = await doc.getPage(i + 1);
+        var base = ((pg.rotate || 0) % 360 + 360) % 360;
+        entries.push({ key: uid(), srcId: id, srcIndex: i, base: base, rot: 0, sel: false, ann: [] });
+      }
+    } catch (e) {
+      // Committing nothing is right, but `doc` is a live pdf.js worker still holding this
+      // client's PDF bytes. ST.sources never learns about it on this path, so the teardown
+      // at close cannot reach it and it leaks for the life of the tab. destroy() is async
+      // and REJECTS on failure — a plain sync try/catch would let that escape as an
+      // unhandled rejection, so catch the promise.
+      try { Promise.resolve(doc.destroy()).catch(function () {}); } catch (_) {}
+      throw e;
     }
     ST.sources[id] = { bytes: bytes, pjs: doc, name: name };
     for (var j = 0; j < entries.length; j++) ST.order.push(entries[j]);
@@ -411,7 +421,12 @@
       var bytes = await buildPdf(ST, sel);
       var fn = baseName(ST.name) + '-extract-' + sel.length + 'p.pdf';
       downloadBytes(bytes, fn);
-      toast('Extracted ' + sel.length + ' page' + (sel.length === 1 ? '' : 's') + '.', 'success');
+      // Same warning check the main save does. Without it, a signature pdf-lib could not
+      // embed was dropped from the extract and still reported as a plain success.
+      var pl = sel.length + ' page' + (sel.length === 1 ? '' : 's');
+      var warn = buildWarnings(ST);
+      if (warn.length) toast('Extracted ' + pl + ', but ' + warn.join('; ') + '.', 'warn', 14000);
+      else toast('Extracted ' + pl + '.', 'success');
     } catch (e) { toast('Extract failed: ' + e.message, 'error', 7000); }
   }
 
@@ -575,7 +590,13 @@
             el.style.width = (W * r) + 'px'; el.style.height = (H * r) + 'px';
             var tx = el.querySelector('.bpdf-anntext');
             if (tx) tx.style.fontSize = Math.round((H * r) * 0.82) + 'px';
-            el._srcAnn = null; // rescaled: the div is the truth again
+            // Provenance is deliberately KEPT here. This is a pure CSS-pixel rescale — every
+            // coordinate is multiplied by the same r, so the stored PDF geometry is still
+            // exactly right. Dropping _srcAnn forced the overlay back through the
+            // re-derivation path, which on a rotated page transposes width/height and
+            // rewrites the angle to the current view: merely resizing the window silently
+            // re-oriented a signature the user never touched. Only a real edit invalidates
+            // provenance — the drag/resize handler and the dblclick editor, both of which do.
           });
           ST._signCssW = nw;
         });
@@ -674,7 +695,14 @@
     if (textEl) {
       // double-click to edit text; the box re-fits the new string so screen == PDF
       el.addEventListener('dblclick', function () {
-        var nt = prompt('Edit text:', spec.text); if (nt == null) return; spec.text = String(nt); textEl.textContent = spec.text;
+        var nt = prompt('Edit text:', spec.text); if (nt == null) return;
+        // The div is now the truth, so drop the stored annotation (mirrors move()). Without
+        // this, captureSignOverlays' _srcAnn short-circuit re-emitted the ORIGINAL text into
+        // the saved PDF for any stamp that had round-tripped through entry.ann — the edit
+        // was visible on screen and silently absent from the file. Placed after the cancel
+        // return on purpose: a cancelled prompt must keep the provenance intact.
+        el._srcAnn = null;
+        spec.text = String(nt); textEl.textContent = spec.text;
         var hNow = parseFloat(el.style.height) || 20;
         var wFit = measureTextW(spec.text, hNow);
         var maxW = (canvas.clientWidth || canvas.width) - (parseFloat(el.style.left) || 0);
@@ -1032,7 +1060,19 @@
       for (var di = 0; di < srcIds.length; di++) {
         var d0 = await getSrc(srcIds[di]);
         var cat = d0.catalog;
-        if (cat && typeof cat.lookup === 'function' && cat.lookup(PDFLib.PDFName.of('AcroForm'))) { ST._buildNotes.flattened = true; break; }
+        // A bare /AcroForm presence test is not enough: plenty of perfectly ordinary PDFs
+        // carry an EMPTY /AcroForm << /Fields [] >>, and warning on those cried "fields
+        // flattened / signature no longer valid" on essentially every save. Require the
+        // form to actually contain something — either real /Fields, or an /XFA stream,
+        // where a dynamic form's fields live and /Fields is legitimately empty (that case
+        // is genuinely destroyed by copyPages, so it must keep warning).
+        var af = (cat && typeof cat.lookup === 'function') ? cat.lookup(PDFLib.PDFName.of('AcroForm')) : null;
+        if (af && typeof af.lookup === 'function') {
+          var fl = af.lookup(PDFLib.PDFName.of('Fields'));
+          var hasFields = !!(fl && typeof fl.size === 'function' && fl.size() > 0);
+          var hasXfa = !!af.lookup(PDFLib.PDFName.of('XFA'));
+          if (hasFields || hasXfa) { ST._buildNotes.flattened = true; break; }
+        }
       }
     } catch (e) { /* detection is best-effort; never fail a save over it */ }
     return await out.save();
