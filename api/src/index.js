@@ -4559,6 +4559,27 @@ app.http('msgraph-message-get', {
           else attachmentsError = 'Graph rejected (' + ar.status + ')';
         } catch (e) { attachmentsError = String((e && e.message) || e); }
       }
+      // An inline image in an HTML body is referenced as <img src="cid:SOMETHING">, and
+      // resolving one needs that attachment's contentId. contentId lives on the
+      // fileAttachment SUBTYPE, so it cannot be named in the $select above without
+      // 400-ing the entire listing (see the note there) — the OData type-cast segment is
+      // the supported way to ask for it. Deliberately a SECOND request and deliberately
+      // best-effort: if the cast is rejected the listing above is untouched, so the worst
+      // case is the previous behaviour rather than a broken attachment strip. Only issued
+      // when the body actually references a cid, which is a minority of messages.
+      const htmlBody = (m.body && m.body.contentType === 'html') ? String(m.body.content || '') : '';
+      if (attachments.length && /cid:/i.test(htmlBody)) {
+        try {
+          const cr = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + id +
+            '/attachments/microsoft.graph.fileAttachment?$select=id,contentId',
+            { headers: { Authorization: 'Bearer ' + access } });
+          if (cr.ok) {
+            const cj = await cr.json();
+            const cidById = new Map((cj.value || []).filter(a => a && a.contentId).map(a => [a.id, String(a.contentId).replace(/^<|>$/g, '')]));
+            attachments.forEach(a => { const c = cidById.get(a.id); if (c) a.cid = c; });
+          }
+        } catch (_) { /* client falls back to matching the cid against the filename */ }
+      }
       return { jsonBody: { ok: true, message: {
         id: m.id, subject: m.subject || '(no subject)',
         from: (m.from && m.from.emailAddress && m.from.emailAddress.address) || '',

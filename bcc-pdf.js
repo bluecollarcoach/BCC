@@ -355,8 +355,13 @@
      dblclick edit, drag/resize) never re-render at all. So you could place a signature and
      the header would still claim the file was untouched.
      Must go through ST._setName: setName is a closure inside open(), invisible to these
-     module-level siblings. */
-  function markDirty(ST) { if (ST.dirty) return; markDirty(ST); if (ST._setName) ST._setName(); }
+     module-level siblings.
+     Do NOT drop the `if (ST.dirty) return;` guard: the drag/resize site calls this on every
+     mousemove and relies on it to do the DOM work exactly once.
+     (2026-08-12: this line read `markDirty(ST);` where it should have read `ST.dirty = true;`
+     — infinite self-recursion, so every Organize-tab action threw RangeError before its
+     renderPages and the grid silently drifted out of step with the exported file.) */
+  function markDirty(ST) { if (ST.dirty) return; ST.dirty = true; if (ST._setName) ST._setName(); }
 
   function deleteKeys(ST, keys) {
     var set = {}; keys.forEach(function (k) { set[k] = 1; });

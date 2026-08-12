@@ -5043,12 +5043,39 @@
         // Outlook message from a forwarded email. Rendering those as ordinary download
         // links is why clicking an attachment could do nothing at all: the download
         // endpoint has nothing to stream for them. Say what they are instead.
+        var rawBody = m.bodyContent || '';
+        // An image embedded in an HTML email is written as <img src="cid:TOKEN"> and points
+        // at an attachment on the message. A browser cannot resolve that against anything —
+        // least of all inside a srcdoc frame, which has no document to resolve it against —
+        // so every embedded image drew as a broken icon, and a message whose readable
+        // content IS the pasted image (a screenshot of an invoice, a photo off a phone)
+        // looked blank. Collect the referenced tokens first: they also decide which inline
+        // attachments may be hidden from the strip below.
+        var CID_RE = /cid:([^"'\s>)\\]+)/gi;
+        var cidTokens = [], seenCid = {}, cidM;
+        if (m.bodyType === 'html') {
+          CID_RE.lastIndex = 0;
+          while ((cidM = CID_RE.exec(rawBody))) { if (!seenCid[cidM[1]]) { seenCid[cidM[1]] = 1; cidTokens.push(cidM[1]); } }
+        }
+        var attFor = function (token) {
+          var t = String(token || '').replace(/^<|>$/g, '').toLowerCase(), hit = null;
+          (m.attachments || []).forEach(function (a) { if (!hit && a.cid && String(a.cid).toLowerCase() === t) hit = a; });
+          if (hit) return hit;
+          // Fallback for when the server could not read contentId: Outlook writes it as
+          // "image001.png@01DA1234.5678ABCD", and the half before the @ is the filename.
+          var nm = t.split('@')[0];
+          (m.attachments || []).forEach(function (a) { if (!hit && String(a.name || '').toLowerCase() === nm) hit = a; });
+          return hit;
+        };
+        var embedded = {};
+        cidTokens.forEach(function (t) { var a = attFor(t); if (a) embedded[a.id] = 1; });
         var attList = (m.attachments || []).filter(function (a) {
-          // Inline images are the sender's signature logo far more often than not. Keep
-          // any that carry a real filename-looking name and hide the rest, rather than
-          // dropping every inline attachment — phones legitimately send real photos
-          // with Content-Disposition: inline, and those are what Megan is sending.
-          return !(a.isInline && /^(image\d+|oledata|ole\d+)\./i.test(String(a.name || '')));
+          // Hide an inline image ONLY when the body actually embeds it — it is about to be
+          // drawn in place, so listing it again underneath is noise. An inline attachment
+          // that nothing references is the opposite case, and the old name-pattern filter
+          // hid those too: they were dropped from the strip AND never drawn in the body,
+          // which is exactly how an emailed photo could vanish from a message entirely.
+          return !(a.isInline && embedded[a.id]);
         });
         var att = attList.length ? '<div class="em-att">📎 ' + attList.map(function (a) {
           var kb = a.size ? (' <span style="color:var(--muted);font-size:11px;">(' + Math.max(1, Math.round(a.size / 1024)) + ' KB)</span>') : '';
@@ -5073,8 +5100,56 @@
         ifr.className = 'em-body-frame';
         ifr.setAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox'); // NO allow-scripts: neutralizes any JS in the email
         var head = '<base target="_blank"><meta charset="utf-8"><style>body{font:14px/1.55 Inter,system-ui,Arial,sans-serif;color:#1a1a1a;margin:12px;word-wrap:break-word;}img{max-width:100%;height:auto;}</style>';
-        ifr.srcdoc = head + (m.bodyType === 'html' ? (m.bodyContent || '') : ('<pre style="white-space:pre-wrap;font:inherit;">' + esc(m.bodyContent || '') + '</pre>'));
+        var wrap = function (html) { return head + (m.bodyType === 'html' ? html : ('<pre style="white-space:pre-wrap;font:inherit;">' + esc(html) + '</pre>')); };
+        // Paint the text of the message straight away — it must never wait on an image
+        // fetch — and swap the resolved images in afterwards.
+        ifr.srcdoc = wrap(rawBody);
         bodyEl.appendChild(ifr);
+        if (cidTokens.length) {
+          // The sandboxed frame is a null origin and carries no session cookie, so it could
+          // never fetch these itself. The parent does it and hands the bytes over as data:
+          // URLs, which a sandboxed frame will happily render.
+          var ONE_MAX = 8 * 1024 * 1024, budget = 24 * 1024 * 1024;
+          Promise.all(cidTokens.map(function (t) {
+            var a = attFor(t);
+            if (!a || a.kind !== 'file' || (a.size && a.size > ONE_MAX)) return Promise.resolve(null);
+            return fetch(attDl(a) + '&inline=1', { credentials: 'include' })
+              .then(function (r) { return r.ok ? r.blob() : null; })
+              .then(function (b) {
+                if (!b || !/^image\//i.test(b.type || '')) return null;
+                // Soft budget: these run concurrently, so it bounds the total roughly rather
+                // than exactly. It exists to stop one message carrying 30MB of pasted photos
+                // from being base64'd into a srcdoc string, not to be precise.
+                if (b.size > budget) return null;
+                budget -= b.size;
+                return new Promise(function (res) {
+                  var fr = new FileReader();
+                  fr.onload = function () { res({ t: t, url: String(fr.result) }); };
+                  fr.onerror = function () { res(null); };
+                  fr.readAsDataURL(b);
+                });
+              })
+              .catch(function () { return null; });
+          })).then(function (out) {
+            if (currentRealm !== realmAt) return; // client switched mid-fetch
+            var mn = document.getElementById('em_modal');
+            if (!mn || mn.getAttribute('data-open-msg') !== id) return; // reader closed or moved on
+            var map = {}, got = 0;
+            out.forEach(function (o) { if (o) { map[o.t] = o.url; got++; } });
+            var frame = bodyEl.querySelector('.em-body-frame');
+            if (got && frame) frame.srcdoc = wrap(rawBody.replace(CID_RE, function (whole, tok) { return map[tok] || whole; }));
+            var missed = cidTokens.length - got;
+            if (missed) {
+              // Say so rather than leaving broken-image boxes with no explanation.
+              var warn = document.createElement('div');
+              warn.className = 'em-att';
+              warn.style.color = 'var(--muted)';
+              warn.innerHTML = missed + ' image' + (missed === 1 ? '' : 's') + ' in this email couldn’t be loaded' +
+                (m.webLink ? ' — <a href="' + esc(m.webLink) + '" target="_blank" rel="noopener">open it in Outlook</a>' : '') + '.';
+              bodyEl.insertBefore(warn, frame || null);
+            }
+          });
+        }
       })
       .catch(function () { var b = document.getElementById('em_m_body'); if (b) b.innerHTML = '<div style="color:var(--burgundy);padding:20px;">Could not load this message.</div>'; });
   }
@@ -5302,12 +5377,15 @@
      on a Monday (or any non-Sunday) printed every column under the wrong day name on a
      form that is filed with a public agency. Derive them from the date. */
   var DOW_FULL = ['Su', 'M', 'T', 'W', 'Th', 'F', 'S'];
-  function weekDows(weekStart) {
-    if (!weekStart) return DOW_FULL.slice();
+  // `labels` overrides the letters for forms that spell a day differently — MnDOT prints
+  // R for Thursday. It must still be a SUNDAY-FIRST list; the rotation is done here.
+  function weekDows(weekStart, labels) {
+    var L = labels || DOW_FULL;
+    if (!weekStart) return L.slice();
     var d = new Date(weekStart + 'T00:00:00');
-    if (isNaN(d)) return DOW_FULL.slice();
+    if (isNaN(d)) return L.slice();
     var out = [];
-    for (var i = 0; i < 7; i++) out.push(DOW_FULL[(d.getDay() + i) % 7]);
+    for (var i = 0; i < 7; i++) out.push(L[(d.getDay() + i) % 7]);
     return out;
   }
 
@@ -5946,7 +6024,10 @@
         return '<td><input data-emp="' + i + '" data-arr="' + (label === 'OT' ? 'ot' : 'st') + '" data-d="' + di + '" value="' + esc(arr[di] || '') + '" style="width:42px;text-align:center;border:1px solid var(--chrome-mute);border-radius:5px;padding:5px 2px;font-size:12.5px;" /></td>';
       }).join('');
     }
-    var dw = weekDows(r.weekStart);
+    // cprDraft, not `r` — the three PDF builders take the saved report as a parameter named
+    // `r`, this one renders the live editor and has no such parameter. Referencing it here
+    // was a bare ReferenceError that killed the entire Certified Payroll editor render.
+    var dw = weekDows(cprDraft.weekStart);
     var dayHead = '<td></td>' + wd.map(function (x, di) { return '<td style="font-size:10px;color:var(--muted);text-align:center;">' + dw[di] + '<br>' + esc(x) + '</td>'; }).join('');
     return '<div style="border:1px solid var(--chrome-mute);border-radius:10px;padding:12px;margin-bottom:10px;">' +
       '<div class="ws-form" style="margin-bottom:8px;">' +
@@ -6158,7 +6239,10 @@
   // Pure builder (testable): returns [{name, bytes}] — one or more payroll PDFs + the SOC.
   async function cprMndotBuild(r, payrollBytes, socBytes, PDFLib) {
     var fmtD = function (iso) { if (!iso) return ''; var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso); return m ? (+m[2]) + '/' + (+m[3]) + '/' + m[1] : iso; };
-    var MDOW = ['Su', 'M', 'T', 'W', 'R', 'F', 'S']; // MnDOT uses R for Thursday
+    // Rotated to the week ACTUALLY entered, like the other two builders. It was a fixed
+    // Sunday-first row printed directly above weekDates()-derived dates, so a Monday-start
+    // payroll labelled every column with the wrong day on a form filed with MnDOT.
+    var MDOW = weekDows(r.weekStart, ['Su', 'M', 'T', 'W', 'R', 'F', 'S']); // MnDOT uses R for Thursday
     var wd = weekDates(r.weekStart);
     var emps = (r.employees || []).filter(function (e) { return e && ((e.name || '').trim() || !cprEmpIsBlank(e)); });
     var files = [];

@@ -241,8 +241,11 @@ function readKey() {
 let PEOPLE = (window.bccPeople || []).slice();
 window.addEventListener('bcc-users-ready', function () {
   PEOPLE = (window.bccPeople || []).slice();
+  // render() re-reads chans/msgs/read/who and calls renderSidebar()+renderThread(), so it
+  // is the whole refresh. (A second `updateTabs()` call used to sit here guarded by
+  // typeof — no such function has ever existed on this page, so the guard was always
+  // false and the line was dead.)
   if (typeof render === 'function') { try { render(); } catch (e) {} }
-  if (typeof updateTabs === 'function') { try { updateTabs(); } catch (e) {} }
 });
 
 /* bcc-api.js's live poll drops teammates' messages straight into localStorage every
