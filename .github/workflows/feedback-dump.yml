@@ -1,0 +1,50 @@
+name: TEMP feedback dump
+
+# TEMPORARY. Manual-dispatch only. Reads the feedback queue, and (when `resolve` is
+# supplied) marks one item resolved and notifies its submitter — the same thing the
+# Admin UI does, reachable without a browser session for this maintenance pass.
+# Deleted again at the end of the pass, along with /api/cron/feedback.
+on:
+  workflow_dispatch:
+    inputs:
+      resolve:
+        description: 'feedback id to resolve (blank = just list)'
+        required: false
+        default: ''
+      note:
+        description: 'reply sent to the submitter'
+        required: false
+        default: ''
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve one item
+        if: ${{ github.event.inputs.resolve != '' }}
+        run: |
+          jq -n --arg id "${{ github.event.inputs.resolve }}" --arg note "${{ github.event.inputs.note }}" \
+            '{id:$id, status:"resolved", note:$note}' > /tmp/body.json
+          code=$(curl -sS -o /tmp/res.json -w '%{http_code}' --max-time 120 -X POST \
+            'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/cron/feedback' \
+            -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            -H 'content-type: application/json' --data @/tmp/body.json)
+          echo "HTTP $code"
+          jq -c . /tmp/res.json
+          test "$code" = "200"
+
+      - name: Read feedback queue
+        run: |
+          code=$(curl -sS -o /tmp/fb.json -w '%{http_code}' --max-time 120 \
+            'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/cron/feedback' \
+            -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}")
+          echo "HTTP $code"
+          # One short line per item — a single multi-megabyte JSON line does not survive
+          # the Actions log, so emit a digest instead of the raw dump.
+          jq -r '"COUNT " + (.count|tostring)' /tmp/fb.json
+          jq -r '.items[] | "ITEM\t" + .id + "\t" + (.status//"-") + "\t" + (.type//"-")
+                 + "\t" + (.userUpn//"-") + "\t" + (.createdAt//"-")
+                 + "\t" + ((.rating//"")|tostring)
+                 + "\t" + ((.message//"")|gsub("[\r\n\t]";" ")|.[0:600])
+                 + "\t|NOTE|" + ((.resolutionNote//"")|gsub("[\r\n\t]";" ")|.[0:300])' /tmp/fb.json
+          test "$code" = "200"
