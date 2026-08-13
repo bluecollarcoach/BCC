@@ -103,6 +103,10 @@ function isProtectedServerKey(k) { return PROTECTED_KEY_PREFIXES.some(pre => Str
 const CLIENT_SCOPED_ID_RE = [
   /^bcc-task-([^-]+)-[0-9a-z]+$/,
   /^bcc-close-([^-]+)-\d{4}-\d{2}$/,
+  // A bookkeeper's MANUAL correction to a month's figures. Deliberately not under
+  // bcc-financial-period- (which is server-owned and never syncs) so it reaches Cosmos and
+  // the rest of the firm; gated per client like every other client-scoped record.
+  /^bcc-period-manual-([^-]+)-\d{4}-\d{2}$/,
   /^bcc-wip-([^-]+)$/,
   /^bcc-cpr-(?!sends-)([^-]+)-[0-9a-z]+$/,
   /^bcc-payapp-([^-]+)-[0-9a-z]+$/,
@@ -2473,11 +2477,17 @@ async function companyAccessMap(p) {
 function docFolderRealm(meta) { return (/^\/clients\/([^/]+)/i.exec(String((meta && meta.folder) || '')) || [])[1] || null; }
 async function docAccessFilter(p) {
   const admin = await isAppAdmin(p);
+  // Company access alone was the whole gate here, so a 'tasks'-tier bookkeeper — who is
+  // meant to see that client's task list and nothing else — could list and download the
+  // client's monthly financial report, certified payroll and everything else in their
+  // folder. Mirrors the rule /api/data and qbo-periods already enforce.
+  const noFin = bookkeepingNoFinancials(await bookkeepingTierFor(p));
   const cache = new Map(); // realm -> boolean
   return async (meta) => {
     if (admin) return true;
     const realm = docFolderRealm(meta);
     if (!realm) return true;                    // non-client docs remain team-visible
+    if (noFin) return false;                    // 'tasks'/'none' see no client financial docs
     if (cache.has(realm)) return cache.get(realm);
     const acc = await driveClientAccess(p, realm);
     const ok = !acc.err;
@@ -4497,7 +4507,12 @@ app.http('msgraph-message-get', {
       // bookkeeper saw the hasAttachments indicator with no way to explain (or
       // retry) why nothing was downloadable.
       let attachmentsError = null;
-      if (m.hasAttachments) {
+      // Graph reports hasAttachments=false for a message whose ONLY attachments are inline,
+      // which is exactly the shape of every message the inline-image feature exists for — so
+      // keying the listing off that flag skipped the lookup on precisely the messages that
+      // needed it. The /attachments collection itself returns inline parts perfectly well.
+      const htmlBody = (m.body && m.body.contentType === 'html') ? String(m.body.content || '') : '';
+      if (m.hasAttachments || /cid:/i.test(htmlBody)) {
         try {
           // ONLY base microsoft.graph.attachment properties may be named here: id, name,
           // contentType, size, isInline, lastModifiedDateTime. Naming a property that lives
@@ -4535,7 +4550,6 @@ app.http('msgraph-message-get', {
       // best-effort: if the cast is rejected the listing above is untouched, so the worst
       // case is the previous behaviour rather than a broken attachment strip. Only issued
       // when the body actually references a cid, which is a minority of messages.
-      const htmlBody = (m.body && m.body.contentType === 'html') ? String(m.body.content || '') : '';
       if (attachments.length && /cid:/i.test(htmlBody)) {
         try {
           const cr = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + id +
@@ -6541,10 +6555,25 @@ app.http('qbo-kpis', {
       const opex = (findByGroup(pl, 'Expenses') ?? findByLabel(pl, /total expenses/i)) || 0;
       const netIncome = (findByGroup(pl, 'NetIncome') ?? (revenue - cogs - opex));
       const expenses = cogs + opex;
-      // "Months of cash" = runway of OVERHEAD: cash ÷ average monthly operating
-      // expense. COGS is excluded because it only occurs when producing revenue
-      // (including it made the figure meaningless for COGS-heavy trades).
-      const monthlyBurn = opex / burnMonths;
+      /* "Months of cash" = runway of OVERHEAD: cash ÷ average monthly operating expense.
+         COGS is excluded because it only occurs when producing revenue (including it made
+         the figure meaningless for COGS-heavy trades).
+         The burn window is COMPLETE MONTHS ONLY, computed separately from the reporting
+         window above. Dividing the caller's asOf window by a whole `burnMonths` counted a
+         part-month of spend as a full month, so on the 1st of a month the figure jumped and
+         then drifted back down as the month filled in — roughly 40% across a single month
+         for a client whose spending never changed. This mirrors the cash-flow endpoint,
+         which already anchors on the last day of the prior month. The reporting P&L above is
+         deliberately left on the caller's window: netMargin is labelled against it. */
+      const burnEnd = new Date(end.getFullYear(), end.getMonth(), 0);
+      const burnStart = new Date(burnEnd.getFullYear(), burnEnd.getMonth() - (burnMonths - 1), 1);
+      let monthlyBurn = opex / burnMonths;   // fallback if the extra pull fails
+      try {
+        const burnPl = flattenQboReport(await apiGet('/reports/ProfitAndLoss?start_date=' + burnStart.toISOString().slice(0, 10) +
+          '&end_date=' + burnEnd.toISOString().slice(0, 10) + '&accounting_method=' + method));
+        const burnOpex = (findByGroup(burnPl, 'Expenses') ?? findByLabel(burnPl, /total expenses/i));
+        if (burnOpex != null) monthlyBurn = burnOpex / burnMonths;
+      } catch (_) { /* keep the fallback rather than failing the whole KPI card */ }
 
       const currentRatio = currentLiabilities > 0 ? currentAssets / currentLiabilities : null;
       const workingCapital = currentAssets - currentLiabilities;
@@ -6821,7 +6850,16 @@ app.http('qbo-monthly-report', {
         // Read-modify-write (not a blind overwrite) — a past period may already carry a
         // frozen snapshot (frozenByMethod, see GET below); saving notes must not wipe it.
         const existingObs = await c.item(docId(period), BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-        const obsDoc = Object.assign({}, existingObs || {}, { id: docId(period), tenantId: BCC_TENANT_ID, docType: 'monthly-report', realmId, period, observations, updatedAt: new Date().toISOString(), updatedBy: who });
+        /* Observations quote dollar figures ("gross margin fell to 24%, down $18k"), so they
+           are only true of the basis they were written against. Stored flat, switching a
+           report from accrual to cash — or re-pulling it — printed last basis's sentences
+           beside the new basis's table, contradicting it. Key them by method, exactly as
+           frozenByMethod already keys the numbers. The flat field is still written so
+           existing documents and any older client keep rendering. */
+        const obsMethod = String(b.method || '').toLowerCase() === 'cash' ? 'cash' : 'accrual';
+        const obsByMethod = Object.assign({}, (existingObs && existingObs.observationsByMethod) || {});
+        obsByMethod[obsMethod] = observations;
+        const obsDoc = Object.assign({}, existingObs || {}, { id: docId(period), tenantId: BCC_TENANT_ID, docType: 'monthly-report', realmId, period, observations, observationsByMethod: obsByMethod, updatedAt: new Date().toISOString(), updatedBy: who });
         await c.items.upsert(obsDoc);
         logAudit('report-save', { user: who, path: '/api/integrations/qbo/companies/' + realmId + '/monthly-report', meta: { realmId, period } });
         return { jsonBody: { ok: true, period, observations } };
@@ -6895,10 +6933,22 @@ app.http('qbo-monthly-report', {
         }
       }
       // Default to bare-fact observations when none saved, so a report is never blank.
-      data.observations = (saved && Array.isArray(saved.observations) && saved.observations.length) ? saved.observations : factObservations(data.kpis);
+      // Prefer the narrative written against THIS basis; fall back to the flat field for
+      // documents saved before observationsByMethod existed, then to bare facts so a report
+      // is never blank.
+      // method here is 'Cash'/'Accrual' (capitalised for QBO's API); the POST stores under
+      // the lowercase form, so normalise or the lookup silently never matches.
+      const savedObs = (saved && saved.observationsByMethod && saved.observationsByMethod[String(method).toLowerCase()])
+        || (saved && Array.isArray(saved.observations) ? saved.observations : []);
+      data.observations = (savedObs && savedObs.length) ? savedObs : factObservations(data.kpis);
       data.observationsUpdatedAt = saved ? saved.updatedAt : null;
       data.observationsBy = saved ? saved.updatedBy : null;
       data.goals = goals;
+      // Publish the classification the handler already computed. Without it the client had
+      // only frozenAt/frozen to go on, so a PAST month that failed to freeze (a degraded QBO
+      // pull) was labelled "Current month — live from QuickBooks" and had its Refresh button
+      // hidden — the one control that would have fixed it.
+      data.isPast = isPast;
       return { jsonBody: data };
     } catch (e) {
       context.error('qbo-monthly-report error', e);
@@ -7964,7 +8014,13 @@ app.http('documents-list-create', {
       // does nothing to stop.
       if (!(await isAppAdmin(p))) {
         const um = folder.match(/^\/clients\/([^/]+)(?:\/|$)/i);
-        if (um) { const uacc = await driveClientAccess(p, um[1]); if (uacc.err) return { status: 403, jsonBody: { error: 'no access to this client' } }; }
+        if (um) {
+          const uacc = await driveClientAccess(p, um[1]); if (uacc.err) return { status: 403, jsonBody: { error: 'no access to this client' } };
+          // ...and at the right tier. This path calls driveClientAccess directly rather than
+          // going through docAccessFilter, so it needs the bookkeeping-tier rule stated
+          // separately or a 'tasks' bookkeeper could still write into a client's folder.
+          if (bookkeepingNoFinancials(await bookkeepingTierFor(p))) return { status: 403, jsonBody: { error: 'your access level does not include this client’s files' } };
+        }
       }
       const tags = String(form.get('tags') || '').trim();
       // docId is CALLER-SUPPLIED (documents.html sends it on every upload so an edit

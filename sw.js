@@ -214,11 +214,20 @@ self.addEventListener('pushsubscriptionchange', (event) => {
       } catch (_) { /* offline or server down — fall back to the old key below */ }
       if (!key) key = event.oldSubscription && event.oldSubscription.options && event.oldSubscription.options.applicationServerKey;
       if (!key) return;
-      // The UA may already have minted a replacement subscription under the OLD key by the
-      // time this fires; subscribe() would then reject with InvalidStateError for a
-      // different applicationServerKey. Clear it first so the new key can take.
-      try { const cur = await self.registration.pushManager.getSubscription(); if (cur) await cur.unsubscribe(); } catch (_) {}
-      const sub = await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+      // Try to subscribe FIRST and only tear down an existing subscription if that is what
+      // is actually in the way. Unsubscribing unconditionally meant that any later failure —
+      // a transient push-service error, a revoked permission — left the device with no
+      // subscription at all, which is strictly worse than the stale one it started with, and
+      // nothing retries a pushsubscriptionchange.
+      let sub = null;
+      try {
+        sub = await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+      } catch (e) {
+        const cur = await self.registration.pushManager.getSubscription().catch(() => null);
+        if (!cur) throw e;                        // nothing was in the way; the failure is real
+        await cur.unsubscribe().catch(() => {});  // a key mismatch — now the teardown is justified
+        sub = await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+      }
       // credentials:'include' so the SWA auth cookie rides along — without it the server
       // cannot tell whose device this is and the row would be orphaned.
       await fetch('/api/push-subscribe', {

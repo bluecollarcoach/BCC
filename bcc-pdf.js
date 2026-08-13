@@ -275,6 +275,10 @@
       try { Promise.resolve(doc.destroy()).catch(function () {}); } catch (_) {}
       throw e;
     }
+    // The editor can be closed while a large PDF is still parsing. Registering the source
+    // then leaves a live pdf.js worker holding the client's raw PDF bytes with nothing left
+    // to tear it down, since destroy() walks ST.sources of an ST nobody references any more.
+    if (ST.closed) { try { Promise.resolve(doc.destroy()).catch(function () {}); } catch (_) {} return id; }
     ST.sources[id] = { bytes: bytes, pjs: doc, name: name };
     for (var j = 0; j < entries.length; j++) ST.order.push(entries[j]);
     return id;
@@ -696,12 +700,25 @@
       // double-click to edit text; the box re-fits the new string so screen == PDF
       el.addEventListener('dblclick', function () {
         var nt = prompt('Edit text:', spec.text); if (nt == null) return;
-        // The div is now the truth, so drop the stored annotation (mirrors move()). Without
-        // this, captureSignOverlays' _srcAnn short-circuit re-emitted the ORIGINAL text into
-        // the saved PDF for any stamp that had round-tripped through entry.ann — the edit
-        // was visible on screen and silently absent from the file. Placed after the cancel
-        // return on purpose: a cancelled prompt must keep the provenance intact.
-        el._srcAnn = null;
+        /* If this stamp came from stored PDF geometry, edit THAT in place. Dropping
+           provenance here forced re-derivation from the axis-aligned div, which on a rotated
+           page transposes width/height and rewrites the angle to the current view — so
+           correcting a typo silently re-oriented and re-proportioned the stamp in the saved
+           file. Editing the stored annotation changes only what actually changed: the string,
+           and the width needed to fit it at the stored height. blX/blY/theta are untouched.
+           A freshly placed stamp has no _srcAnn and still falls through to the re-fit below,
+           where the div genuinely is the truth. */
+        var src = el._srcAnn;
+        if (src) {
+          src.text = String(nt);
+          // measureTextW is unit-agnostic — it sets the font from the height it is given and
+          // returns a width in those same units — so passing the stored PDF-point height
+          // yields a PDF-point width. No viewport round-trip, and no scale to get wrong.
+          src.w = measureTextW(src.text, src.h);
+          spec.text = src.text; textEl.textContent = src.text;
+          markDirty(ST);
+          return;
+        }
         spec.text = String(nt); textEl.textContent = spec.text;
         var hNow = parseFloat(el.style.height) || 20;
         var wFit = measureTextW(spec.text, hNow);

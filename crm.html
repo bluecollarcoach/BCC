@@ -1604,8 +1604,13 @@
     if (_crmDirty) return;                       // typed, then clicked away — still unsaved
     renderDetail(id);
   });
-  window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
-  setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
+  /* init() must run EXACTLY once. The auth-ready handler SET didInit but never CHECKED it,
+     so any bootstrap slower than 600ms ran init() twice and every addEventListener inside it
+     was registered twice — one click then did its work twice (a confirm asked twice, two
+     audit rows, two writes). Route both boot paths through one guarded entry point. */
+  function bootOnce() { if (document.body.dataset.didInit) return; document.body.dataset.didInit = '1'; init(); }
+  window.addEventListener('bcc-auth-ready', bootOnce);
+  setTimeout(bootOnce, 600);
 })();
 </script>
 

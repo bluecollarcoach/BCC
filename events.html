@@ -331,11 +331,21 @@
   var _deepLinkDone = false;
   function tryDeepLink() {
     if (_deepLinkDone) return;
+    // Never open over a modal the user already has open. tryDeepLink also runs on every
+    // live-poll tick, so a ?id= whose event only syncs down later would otherwise pop open
+    // on top of an event the user was in the middle of editing, discarding their edits.
+    var mb = document.getElementById('modalBg');
+    if (mb && mb.classList.contains('open')) return;
     try { var eid = new URLSearchParams(location.search).get('id'); if (eid && getEvent(eid)) { _deepLinkDone = true; openModal(eid); } } catch (e) {}
   }
   window.addEventListener('bcc-data-ready', function () { renderGrid(); tryDeepLink(); });
-  window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); tryDeepLink(); });
-  setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); tryDeepLink(); } }, 600);
+  /* init() must run EXACTLY once. The auth-ready handler SET didInit but never CHECKED it,
+     so any bootstrap slower than 600ms ran init() twice and every addEventListener inside it
+     was registered twice — one click then did its work twice (a confirm asked twice, two
+     audit rows, two writes). Route both boot paths through one guarded entry point. */
+  function bootOnce() { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } tryDeepLink(); }
+  window.addEventListener('bcc-auth-ready', bootOnce);
+  setTimeout(bootOnce, 600);
 })();
 </script>
 </body>

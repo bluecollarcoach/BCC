@@ -61,6 +61,11 @@
     transition:opacity 0.12s, background 0.12s;
   }
   .course-card:hover .edit-pencil { opacity:1; }
+  /* A coarse pointer has no hover, so the pencil stayed at opacity:0 while remaining a live
+     tap target sitting over the card — tapping the top-right of a course opened the EDITOR
+     instead of the course, with nothing on screen to explain why. Same fix as chat.html's
+     delete button. */
+  @media (hover:none) { .course-card .edit-pencil { opacity:1; } }
   .course-card .edit-pencil:hover { background:rgba(0,0,0,0.12); }
   .progress-bar {
     height:6px; background:var(--chrome-mute); border-radius:3px;
@@ -502,8 +507,13 @@
 
   function init() { route(); }
   window.addEventListener('bcc-data-ready', route);
-  window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
-  setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
+  /* init() must run EXACTLY once. The auth-ready handler SET didInit but never CHECKED it,
+     so any bootstrap slower than 600ms ran init() twice and every addEventListener inside it
+     was registered twice — one click then did its work twice (a confirm asked twice, two
+     audit rows, two writes). Route both boot paths through one guarded entry point. */
+  function bootOnce() { if (document.body.dataset.didInit) return; document.body.dataset.didInit = '1'; init(); }
+  window.addEventListener('bcc-auth-ready', bootOnce);
+  setTimeout(bootOnce, 600);
 })();
 </script>
 </body>

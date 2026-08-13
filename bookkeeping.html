@@ -653,6 +653,13 @@
 <script>
 (function () {
   var PER_PREFIX = 'bcc-financial-period-';
+  /* Manual corrections need their OWN id space. bcc-financial-period- is server-owned: the
+     sync layer refuses to push it (bcc-api.js setItem/removeItem) and the pull query excludes
+     it, so a manual entry saved under that prefix said "Period saved." and then never left
+     the browser — invisible to every other device and to everyone else at the firm, and gone
+     for good when that browser's storage was cleared. This family syncs normally and is
+     access-gated per client by CLIENT_SCOPED_ID_RE server-side. */
+  var MPER_PREFIX = 'bcc-period-manual-';
   var INT_KEY    = 'bcc-integration-qbo';
 
   // Multi-company state. companies come from /api/integrations/qbo/companies;
@@ -754,7 +761,7 @@
           (window.bccNotify || alert)(name + ' was disconnected, but ' + j.leftBehind.length + ' stored record(s) could not be removed. Tell an admin to check the error log.', 'warn', 12000);
         }
         // Drop the company's cached financial-period snapshots locally too.
-        try { Object.keys(localStorage).forEach(function (k) { if (k.indexOf(PER_PREFIX + realm + '-') === 0) localStorage.removeItem(k); }); } catch (_) {}
+        try { Object.keys(localStorage).forEach(function (k) { if (k.indexOf(PER_PREFIX + realm + '-') === 0 || k.indexOf(MPER_PREFIX + realm + '-') === 0) localStorage.removeItem(k); }); } catch (_) {}
         if (currentRealm === realm) currentRealm = '';
         if (window.bccNotifySaved) window.bccNotifySaved(name + ' disconnected.');
         return loadCompanies();
@@ -787,7 +794,7 @@
   function allPeriods() {
     var out = [];
     for (var i = 0; i < localStorage.length; i++) {
-      var k = localStorage.key(i); if (!k || k.indexOf(PER_PREFIX) !== 0) continue;
+      var k = localStorage.key(i); if (!k || (k.indexOf(PER_PREFIX) !== 0 && k.indexOf(MPER_PREFIX) !== 0)) continue;
       try { var p = JSON.parse(localStorage.getItem(k)); if (p && p.id) out.push(p); } catch (_) {}
     }
     return out.sort(function (a, b) { return (b.period || '').localeCompare(a.period || ''); });
@@ -814,9 +821,13 @@
     return Object.keys(by).map(function (k) { return by[k]; });
   }
   // Latest period per company (for the All-companies summary).
+  // dedupePeriods first: a month can carry BOTH a manual correction and the superseded QBO
+  // doc, and picking whichever happened to come last meant the firm-wide KPI cards showed
+  // the stale QuickBooks figure for a month the bookkeeper had explicitly corrected — while
+  // YTD Net in the same row of cards used the corrected one.
   function latestByCompany() {
     var map = {};
-    allPeriods().forEach(function (p) {
+    dedupePeriods(allPeriods()).forEach(function (p) {
       var r = p.realmId || '';
       if (!map[r] || (p.period || '') > (map[r].period || '')) map[r] = p;
     });
@@ -826,7 +837,7 @@
   // for "last month" KPIs so they reflect a full, settled month, not partial data.
   function latestClosedByCompany() {
     var map = {};
-    allPeriods().forEach(function (p) {
+    dedupePeriods(allPeriods()).forEach(function (p) {
       if (periodInProgress(p.period)) return;
       var r = p.realmId || '';
       if (!map[r] || (p.period || '') > (map[r].period || '')) map[r] = p;
@@ -843,7 +854,7 @@
     // when loadPeriodsFromCloud rewrote the server's copy back over it. A suffix — not a
     // prefix — because disconnectCompany prunes on PER_PREFIX + realm + '-', and anything
     // inserted before the realm would survive a disconnect and keep feeding the KPIs.
-    if (!p.id) p.id = PER_PREFIX + (p.realmId ? p.realmId + '-' : '') + p.period + (p.source === 'manual' ? '-manual' : '');
+    if (!p.id) p.id = (p.source === 'manual' ? MPER_PREFIX : PER_PREFIX) + (p.realmId ? p.realmId + '-' : '') + p.period;
     p.tenantId = 'blue-collar-coach';
     p.docType = 'financial-period';
     localStorage.setItem(p.id, JSON.stringify(p));
@@ -1487,6 +1498,10 @@
     var go = document.getElementById('pi_go'); if (go) go.disabled = total === 0;
   }
   function piCommit() {
+    // Fifth task write path. The four single-task guards missed this one, so a view-tier
+    // bookkeeper could bulk-create hundreds of tasks locally that the server then refused
+    // one by one.
+    if (!canWriteTasks()) return refuseTaskWrite();
     var created = 0, failed = 0, byClient = {};
     _pi.tasks.forEach(function (t) {
       var realms = [];
@@ -1711,7 +1726,11 @@
   // Last-12 CLOSED months for one company, oldest→newest, mapped by fn(period).
   // Excludes the in-progress current month so trends/KPIs reflect completed periods only.
   function kpiSeries(fn) {
-    return periodsFor(currentRealm).slice().filter(function (p) { return !periodInProgress(p.period); }).sort(function (a, b) { return (a.period || '').localeCompare(b.period || ''); }).slice(-12).map(fn);
+    // dedupePeriods, matching the KPI cards above: a month holding BOTH a manual correction
+    // and the superseded QBO doc was plotted twice, which also pushed a genuine month out of
+    // the trailing-12 window — so the trend line disagreed with the cards it sits under.
+    // dedupePeriods returns a fresh array, so the .slice() guard before .sort is redundant.
+    return dedupePeriods(periodsFor(currentRealm)).filter(function (p) { return !periodInProgress(p.period); }).sort(function (a, b) { return (a.period || '').localeCompare(b.period || ''); }).slice(-12).map(fn);
   }
   function kpiMonths() { return kpiSeries(function (p) { return p.period; }); }
   function loadQboKpis() {
@@ -1724,7 +1743,12 @@
     var tiles = document.getElementById('qboKpiTiles');
     tiles.innerHTML = '<div class="kpi"><div class="label">Loading…</div></div>';
     document.getElementById('qboKpiNote').textContent = '';
-    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/kpis?method=' + rg.method + '&asOf=' + rg.to + '&burnMonths=' + rg.months, { credentials: 'include' })
+    // burnMonths is FIXED at 3, not the length of the selected period. Passing rg.months
+    // divided overhead by the whole year-to-date window, so with YTD selected this tile
+    // reported roughly 2.4x the runway that the client's own monthly report prints for the
+    // same company — two "Months of cash" figures, both from us, disagreeing. dashboard.html
+    // and assembleMonthlyReport both already use 3.
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/kpis?method=' + rg.method + '&asOf=' + rg.to + '&burnMonths=3', { credentials: 'include' })
       .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
       .then(function (resp) {
         if (currentRealm !== realmAt) return; // user switched clients while this KPI pull was in flight
@@ -1998,7 +2022,15 @@
       ov.querySelector('#mrPrint').onclick = function () { if (mrDegradedOk('Print it')) printMonthlyReport(); };
       ov.querySelector('#mrSaveFile').onclick = function () { if (mrDegradedOk('File it to the client')) saveMonthlyReportToFiles(); };
       ov.querySelector('#mrSaveObs').onclick = function () { saveReportObservations(true); };
-      ov.querySelector('#mrPeriod').onchange = function () { loadMonthlyReport(this.value); };
+      /* Observations are the coach's own written commentary and are only persisted by an
+         explicit Save (or by the PDF/file actions that piggy-back on it). Switching month or
+         closing the overlay simply replaced _mr.obs, so a paragraph someone had just typed
+         vanished with no prompt and no way back. Flush first. */
+      ov.querySelector('#mrPeriod').onchange = function () {
+        var next = this.value;
+        if (mrObsDirty()) { saveReportObservations(false).then(function () { loadMonthlyReport(next); }); return; }
+        loadMonthlyReport(next);
+      };
       ov.querySelector('#mrRefresh').onclick = function () {
         if (!confirm('Re-pull this period\'s numbers from QuickBooks now? Only do this if you know the client\'s books changed since it was last reported — this replaces the locked-in figures.')) return;
         loadMonthlyReport(_mr.period, true);
@@ -2008,7 +2040,11 @@
     ov.querySelector('#mrPeriod').innerHTML = mrPeriodOptions(_mr.period);
     loadMonthlyReport(_mr.period);
   }
-  function closeMonthlyReport() { var ov = document.getElementById('mrOverlay'); if (ov) ov.style.display = 'none'; }
+  function mrObsDirty() { return !!(_mr && _mr.data) && JSON.stringify(_mr.obs || []) !== (_mr.obsSaved || '[]'); }
+  function closeMonthlyReport() {
+    if (mrObsDirty()) saveReportObservations(false);   // fire-and-forget; failure still toasts
+    var ov = document.getElementById('mrOverlay'); if (ov) ov.style.display = 'none';
+  }
   function mrBtns(disabled) { ['mrPrint', 'mrSaveFile', 'mrSaveObs'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = disabled; }); }
   function loadMonthlyReport(period, forceRefresh) {
     _mr.period = period; _mr.forecast = null; _mr.fcManual = null; _mr.fcInclude = true;
@@ -2016,17 +2052,35 @@
     body.innerHTML = '<div style="color:var(--muted);padding:22px;text-align:center;">Pulling QuickBooks statements, KPIs &amp; cash-flow forecast…</div>';
     if (st) st.textContent = ''; if (rb) rb.style.display = 'none'; mrBtns(true);
     var method = (typeof qboRange === 'function' ? qboRange().method : 'accrual');
-    var base = '/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm);
+    /* Pin the client (and the period) this pull is FOR. Every other QBO loader on this page
+       does this — loadQboKpis, loadQboReport, showPnl, renderWip — and this one did not.
+       Closing the modal only hides it; the fetches keep running. So a slow pull for client A
+       could land after the modal was reopened for client B and overwrite _mr.data, after
+       which "Save to client Files" filed A's complete financial statements into B's folder,
+       and A's written observations were saved onto B's monthly-report record. The period
+       guard covers the same race within one client, from the Month dropdown. */
+    var realmAt = currentRealm, periodAt = period;
+    var stale = function () { return currentRealm !== realmAt || _mr.period !== periodAt; };
+    var base = '/api/integrations/qbo/companies/' + encodeURIComponent(realmAt);
     var url = base + '/monthly-report?period=' + encodeURIComponent(period) + '&method=' + method + (forceRefresh ? '&refresh=1' : '');
     Promise.all([
       fetch(url, { credentials: 'include' })
         .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); }),
-      // Forward-looking forecast is as-of-today (current open A/R/A/P + run-rate); best-effort.
-      fetch('/api/integrations/qbo/cashflow?realmId=' + encodeURIComponent(currentRealm), { credentials: 'include' })
-        .then(function (r) { return r.ok ? r.json() : { ok: false }; }).catch(function () { return { ok: false }; })
+      /* The forecast is computed as-of-TODAY from current open A/R/A/P and run-rate, so
+         embedding it in a report for a past month printed a forward projection that
+         contradicted the very KPI cards above it — and a report re-opened months later grew
+         a different forecast each time. Only fetch it for the latest complete month, where
+         "as of today" and "as of the period" are the same thing. {ok:false} is already the
+         handled miss case, and renderMrForecast prints its own unavailable notice. */
+      (period === mrDefaultPeriod()
+        ? fetch('/api/integrations/qbo/cashflow?realmId=' + encodeURIComponent(realmAt), { credentials: 'include' })
+            .then(function (r) { return r.ok ? r.json() : { ok: false }; }).catch(function () { return { ok: false }; })
+        : Promise.resolve({ ok: false }))
     ]).then(function (res) {
+      if (stale()) return;
       var d = res[0], cf = res[1];
       _mr.data = d; _mr.obs = (d.observations || []).map(mrCoerceObs);
+      _mr.obsSaved = JSON.stringify(_mr.obs);   // baseline for the unsaved-notes check
       if (d && d.degraded) {
         (window.bccNotify || alert)('Some QuickBooks figures could not be pulled for this period — parts of this report are missing. Press Refresh to try again.', 'warn', 12000);
       }
@@ -2035,11 +2089,19 @@
       renderMrBody();
       // Past periods are locked in once reported (see server-side freeze) so the numbers
       // can't silently drift if the client's books get corrected/reclassified later.
-      var lockNote = d.frozenAt ? ('🔒 Locked in ' + new Date(d.frozenAt).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })) : (d.frozen === false ? '🔓 Current month — live from QuickBooks' : '');
+      // A PAST month with no frozenAt did not freeze — almost always a degraded QBO pull.
+      // Labelling it "Current month — live from QuickBooks" was simply false, and hiding
+      // Refresh removed the only control that would have put it right.
+      var lockNote = d.frozenAt ? ('🔒 Locked in ' + new Date(d.frozenAt).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }))
+        : (d.isPast ? '⚠️ Not locked in — some QuickBooks figures are missing'
+        : (d.frozen === false ? '🔓 Current month — live from QuickBooks' : ''));
       if (st) st.textContent = d.periodLabel + ' · ' + d.method + ' basis' + (lockNote ? ' · ' + lockNote : '') + (d.observationsUpdatedAt ? ' · notes saved' : '') + (_mr.forecast ? ' · forecast ✓' : '');
-      if (rb) rb.style.display = d.frozenAt ? '' : 'none'; // only a locked-in past period has anything to refresh
+      if (rb) rb.style.display = (d.frozenAt || d.isPast) ? '' : 'none'; // a locked-in period, or a past one that failed to lock
       mrBtns(false);
-    }).catch(function (e) { body.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:12px;">' + esc(qboFriendly(e && e.message)) + '</div>'; });
+    }).catch(function (e) {
+      if (stale()) return;   // an error for the PREVIOUS client must not paint into this modal
+      body.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:12px;">' + esc(qboFriendly(e && e.message)) + '</div>';
+    });
   }
   function mrHdr(t) { return '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--gold-deep,#a8884a);">' + t + '</div>'; }
   function renderMrBody() {
@@ -2227,7 +2289,7 @@
   }
   function saveReportObservations(notify) {
     var d = _mr.data; if (!d) return Promise.resolve();
-    return fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/monthly-report', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ period: d.period, observations: _mr.obs }) })
+    return fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/monthly-report', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ period: d.period, method: d.method, observations: _mr.obs }) })
       .then(function (r) { return r.json(); })
       // `notify` suppresses only the SUCCESS toast — it exists so the piggy-backed
       // callers (Preview/Print PDF, Save to client Files) don't stack a redundant
@@ -2236,7 +2298,7 @@
       // the PDF built fine from memory and the page said "filed to the client", and
       // the notes were simply gone when the month was reopened.
       .then(function (j) {
-        if (j && j.ok) { if (notify && window.bccNotifySaved) window.bccNotifySaved('Report notes saved.'); return; }
+        if (j && j.ok) { _mr.obsSaved = JSON.stringify(_mr.obs || []); if (notify && window.bccNotifySaved) window.bccNotifySaved('Report notes saved.'); return; }
         (window.bccNotify || alert)('Your observations could not be saved — press “Save notes” to try again. Everything else was unaffected.', 'warn', 9000);
       })
       .catch(function () { (window.bccNotify || alert)('Your observations could not be saved — press “Save notes” to try again. Everything else was unaffected.', 'warn', 9000); });
@@ -2435,7 +2497,7 @@
       // the wrong entity id, straight into live QuickBooks.
       if (myGen !== _txnFormGen) return;
       var pre = (edit && edit.entity) || {};
-      var today = new Date().toISOString().slice(0, 10);
+      var today = bizToday();   // Central, not UTC — see bizToday
       var partyVal = (entity === 'invoice' ? (pre.CustomerRef && pre.CustomerRef.value)
         : entity === 'purchase' ? (pre.EntityRef && pre.EntityRef.value)
         : (pre.VendorRef && pre.VendorRef.value)) || (seed && seed.party) || '';
@@ -2454,7 +2516,10 @@
           // (bank or credit card), and has no due date (nothing is owed later).
           var payAccts = (refs.accounts || []).filter(function (a) { return /bank|credit card/i.test(a.type || ''); });
           dateRow = '<label class="full">Paid from (bank / credit card)<select id="tx_payacct">' + txOpt(payAccts.length ? payAccts : refs.accounts, (pre.AccountRef && pre.AccountRef.value) || '') + '</select></label>' +
-            '<label>Date<input type="date" id="tx_date" value="' + esc((seed && seed.date) || today) + '" /></label>';
+            // pre.TxnDate FIRST, matching the bill/invoice branch below. Without it, opening an
+        // existing Purchase to categorise it silently re-dated the transaction to today in
+        // the client's live books — moving it into the wrong accounting period.
+        '<label>Date<input type="date" id="tx_date" value="' + esc(pre.TxnDate || (seed && seed.date) || today) + '" /></label>';
         } else {
           dateRow = '<label>Date<input type="date" id="tx_date" value="' + esc(pre.TxnDate || (seed && seed.date) || today) + '" /></label>' +
             '<label>Due date<input type="date" id="tx_due" value="' + esc(pre.DueDate || '') + '" /></label>';
@@ -2635,7 +2700,7 @@
       if (currentRealm !== _txnFormRealm) return;
       if (myGen !== _txnFormGen) return; // a different write form was opened while the lists loaded
       var pre = (edit && edit.entity) || {};
-      var today = new Date().toISOString().slice(0, 10);
+      var today = bizToday();   // Central, not UTC — see bizToday
       var accts = refs.accounts || [];
       var acctOpt = function (sel) { return '<option value="">— account —</option>' + accts.map(function (a) { return '<option value="' + esc(a.id) + '"' + (String(a.id) === String(sel) ? ' selected' : '') + '>' + esc(a.name) + '</option>'; }).join(''); };
       var draft = [];
@@ -3463,7 +3528,12 @@
       '<label class="full">Notes<textarea id="ci_notes" rows="4">' + esc(d.notes || '') + '</textarea></label>' +
       '</div><div style="margin-top:8px;font-size:12px;color:var(--muted);" id="ci_status"></div>';
     if (!d.legalName) { var co = companyName(currentRealm); var le = document.getElementById('ci_legalName'); if (le && co && co !== '—') le.value = co; }
-    body.querySelectorAll('input,textarea').forEach(function (el) { el.addEventListener('input', scheduleInfoSave); });
+    /* Bind the realm this form was rendered FOR. The autosave is debounced 500ms and read
+       currentRealm only when it finally fired, so typing in one client's legal name / EIN /
+       notes and switching client within half a second wrote those values into the client you
+       had just opened — overwriting real data with another company's. */
+    var infoRealmAt = currentRealm;
+    body.querySelectorAll('input,textarea').forEach(function (el) { el.addEventListener('input', function () { scheduleInfoSave(infoRealmAt); }); });
     fillInfoFromQbo(d);
   }
   // Pre-fill BLANK Client-info fields from QuickBooks company profile. Never
@@ -3485,17 +3555,21 @@
         setIf('ci_website', ci.website);
         setIf('ci_address', ci.address);
         setIf('ci_fiscalYearEnd', ci.fiscalYearEnd);
-        if (filled) { saveInfo(); var s = document.getElementById('ci_status'); if (s) s.textContent = 'Blank fields filled from QuickBooks'; }
+        if (filled) { saveInfo(realmAt); var s = document.getElementById('ci_status'); if (s) s.textContent = 'Blank fields filled from QuickBooks'; }
       })
       .catch(function () {});
   }
-  function scheduleInfoSave() { var s = document.getElementById('ci_status'); if (s) s.textContent = 'Saving…'; if (_infoTimer) clearTimeout(_infoTimer); _infoTimer = setTimeout(saveInfo, 500); }
-  function saveInfo() {
-    var d = { id: infoId(), tenantId: 'blue-collar-coach', docType: 'client-info', realmId: currentRealm, updatedAt: nowIso(), updatedBy: myUpn() };
+  function scheduleInfoSave(realm) { var s = document.getElementById('ci_status'); if (s) s.textContent = 'Saving…'; if (_infoTimer) clearTimeout(_infoTimer); _infoTimer = setTimeout(function () { saveInfo(realm); }, 500); }
+  function saveInfo(realm) {
+    // No realm, no write. Without this the id fell back to the literal 'bcc-client-info-'
+    // whenever no client was selected (the workspace-back path), creating an orphan record
+    // that belongs to nobody and syncs to every device.
+    if (!realm) return;
+    var d = { id: 'bcc-client-info-' + realm, tenantId: 'blue-collar-coach', docType: 'client-info', realmId: realm, updatedAt: nowIso(), updatedBy: myUpn() };
     ['legalName','dba','contactName','email','phone','website','ein','fiscalYearEnd','payrollSchedule','address','notes'].forEach(function (k) { var el = document.getElementById('ci_' + k); if (el) d[k] = el.value; });
     localStorage.setItem(d.id, JSON.stringify(d));
     var s = document.getElementById('ci_status'); if (s) s.textContent = 'Saved';
-    if (window.bccAudit) window.bccAudit('client-info-update', { key: d.id, path: '/bookkeeping.html', meta: { realmId: currentRealm } });
+    if (window.bccAudit) window.bccAudit('client-info-update', { key: d.id, path: '/bookkeeping.html', meta: { realmId: realm } });
   }
 
   /* ---- Tasks ---- */
@@ -3506,7 +3580,12 @@
      the page happily ticked the box and the refused PUT surfaced as a bare "that change
      wasn't saved" toast some time later, with the checkbox already moved. */
   function canWriteTasks() {
-    if (!window.bccGetAppPermission) return true;          // pre-auth: let the server decide
+    // The function exists from the moment bcc-api.js parses; it is the IDENTITY that lands
+    // later, and until it does bccGetAppPermission returns 'none' for everyone. Guarding on
+    // the function alone therefore refused every task write for the first moment of every
+    // page load, telling a legitimate bookkeeper they were view-only. Guard on identity, and
+    // while it is unknown let the server — which is the real gate — decide.
+    if (!window.bccGetAppPermission || !(window.bccUser && window.bccUser.userDetails)) return true;
     var lvl = window.bccGetAppPermission('bookkeeping');
     return lvl === 'tasks' || lvl === 'edit' || lvl === 'admin';
   }
@@ -3750,14 +3829,21 @@
   /* ---- PDF tools (split / organize / merge / sign) — see bcc-pdf.js ---- */
   // Save destinations offered inside the editor: always Internal files; the shared
   // client drive too when one is connected for this client.
-  function pdfSaveTargets() {
+  // `realm` is the client the editor was OPENED for. pdfSaveTargets used to read
+  // currentRealm at call time, which is correct only when the caller opened the editor
+  // synchronously — openPdfFromUrl downloads first, so a client switch during that download
+  // meant the Save buttons filed one client's document into another client's private files
+  // and their client-visible shared drive.
+  function pdfSaveTargets(realm) {
     var targets = [];
     // Capture the client HERE, at editor-open time. These handlers are invoked by
     // bcc-pdf.js only when the bookkeeper clicks Save — minutes later, after a
     // client switch is entirely possible — so reading currentRealm live inside them
     // (via clientFolder()) would file one client's PDF into another client's private
     // folder. Same realm-race guard as saveMonthlyReportToFiles/cprSaveToFiles.
-    var realmAt = currentRealm;
+    // Prefer the realm the CALLER opened the editor for: openPdfFromUrl downloads before it
+    // can open, so by the time this runs currentRealm may already be a different client.
+    var realmAt = realm || currentRealm;
     targets.push({ label: 'Save to internal files', icon: '🔒', handler: function (blob, filename) {
       var fd = new FormData(); fd.append('file', blob, filename); fd.append('folder', '/clients/' + realmAt); fd.append('tags', 'pdf-edit');
       return fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
@@ -3777,9 +3863,9 @@
     }
     return targets;
   }
-  function openPdfTools(bytes, name) {
+  function openPdfTools(bytes, name, realm) {
     if (!window.bccPdfEditor) { (window.bccNotify || alert)('PDF tools are still loading — try again in a moment.', 'warn'); return; }
-    window.bccPdfEditor.open({ bytes: bytes, name: name || 'document.pdf', saveTargets: pdfSaveTargets() });
+    window.bccPdfEditor.open({ bytes: bytes, name: name || 'document.pdf', saveTargets: pdfSaveTargets(realm) });
   }
   /* 40 MB is deliberate and stays: opening an oversized scan SPECIFICALLY to split it
      into savable parts is the documented workaround for the 25 MB upload ceiling, and
@@ -3788,6 +3874,8 @@
   var PDF_EDIT_MAX = 40 * 1024 * 1024; // same cap as the file picker
   var PDF_SAVE_MAX = 25 * 1024 * 1024; // /api/documents ceiling
   function openPdfFromUrl(url, name) {
+    // Pin the client BEFORE the download, and refuse to open the editor if it moved.
+    var realmAt = currentRealm;
     if (window.bccNotify) window.bccNotify('Opening in PDF tools…', 'info', 2500);
     fetch(url, { credentials: 'include' })
       .then(function (r) {
@@ -3798,7 +3886,11 @@
       })
       .then(function (buf) {
         if (buf.byteLength > PDF_EDIT_MAX) throw new Error('that PDF is too large for in-browser editing (max 40 MB)');
-        openPdfTools(buf, name);
+        if (currentRealm !== realmAt) {
+          (window.bccNotify || alert)('You changed clients while that document was downloading, so it wasn’t opened. Open it again from this client’s files.', 'warn', 8000);
+          return;
+        }
+        openPdfTools(buf, name, realmAt);
       })
       .catch(function (e) { (window.bccNotify || alert)('Could not open the file: ' + e.message, 'error', 6000); });
   }
@@ -3860,9 +3952,25 @@
       }).then(function (blob) {
         if (cancelled) return;   // user closed the placeholder — don't open on top of them
         drop();
+        /* Vet the type BEFORE any bytes become a SAME-ORIGIN blob: URL. The comment further
+           down about "safe because the preview is a cross-origin SAS URL" is true for the
+           other callers but NOT for this one — an email attachment is fetched and re-served
+           from our own origin, so an .html or .svg attachment from an outside sender ran its
+           script inside the bookkeeper's authenticated session, with access to every client
+           record in localStorage. The allowlist deliberately mirrors the server's inlineOk()
+           so the two agree on what may render, and the Blob is RE-TYPED to the vetted type so
+           a friendly-looking filename cannot smuggle active content past it. `mime` (which
+           comes from the sender's own headers) no longer steers the render mode. */
+        var ct0 = String(blob.type || mime || '').toLowerCase().split(';')[0].trim();
+        var inlineSafe = (/^image\//.test(ct0) && ct0 !== 'image/svg+xml') ||
+                         ct0 === 'application/pdf' || ct0 === 'text/plain' || ct0 === 'text/csv';
+        if (!inlineSafe) {
+          (window.bccNotify || alert)('“' + name + '” can’t be previewed here — use Download to save and open it.', 'warn', 8000);
+          return;
+        }
         // Hand the preview a blob: URL so it isn't fetched a second time. Revoked on close.
-        var burl = URL.createObjectURL(blob);
-        openFilePreview(name, burl, downloadUrl, mime || blob.type, false);
+        var burl = URL.createObjectURL(new Blob([blob], { type: ct0 }));
+        openFilePreview(name, burl, downloadUrl, ct0, false);
         var m = document.getElementById('fp_modal');
         if (m) m.setAttribute('data-revoke', burl);
       }).catch(function (e) {
@@ -3875,7 +3983,9 @@
     var ext = fileExt(name); var ct = (mime || '').toLowerCase();
     var isImg = /^(png|jpe?g|gif|webp|bmp|svg)$/.test(ext) || /^image\//.test(ct);
     var isPdf = ext === 'pdf' || ct === 'application/pdf';
-    var isTxt = /^(txt|csv|log|md|json)$/.test(ext) || /^text\//.test(ct);
+    // text/* narrowed to the two INERT text types — /^text\// also matched text/html, which
+    // is the render mode an emailed .html attachment wanted.
+    var isTxt = /^(txt|csv|log|md|json)$/.test(ext) || ct === 'text/plain' || ct === 'text/csv';
     var inner;
     if (isImg) inner = '<img src="' + esc(viewUrl) + '" alt="' + esc(name) + '" style="max-width:100%;max-height:72vh;display:block;margin:0 auto;border-radius:8px;" />';
     // No sandbox: a scriptless sandbox makes Chrome refuse to load its built-in PDF viewer
@@ -5114,8 +5224,16 @@
           (m.attachments || []).forEach(function (a) { if (!hit && String(a.name || '').toLowerCase() === nm) hit = a; });
           return hit;
         };
+        // Only treat an inline image as "shown in the body" if the pipeline below will
+        // ACTUALLY render it. A photo over ONE_MAX is skipped by the fetch, so marking it
+        // embedded hid it from the attachment strip as well and the client's document
+        // vanished from the app entirely — it had been downloadable before.
+        var ONE_MAX = 8 * 1024 * 1024;
         var embedded = {};
-        cidTokens.forEach(function (t) { var a = attFor(t); if (a) embedded[a.id] = 1; });
+        cidTokens.forEach(function (t) {
+          var a = attFor(t);
+          if (a && a.kind === 'file' && !(a.size && a.size > ONE_MAX)) embedded[a.id] = 1;
+        });
         var attList = (m.attachments || []).filter(function (a) {
           // Hide an inline image ONLY when the body actually embeds it — it is about to be
           // drawn in place, so listing it again underneath is noise. An inline attachment
@@ -5156,7 +5274,7 @@
           // The sandboxed frame is a null origin and carries no session cookie, so it could
           // never fetch these itself. The parent does it and hands the bytes over as data:
           // URLs, which a sandboxed frame will happily render.
-          var ONE_MAX = 8 * 1024 * 1024, budget = 24 * 1024 * 1024;
+          var budget = 24 * 1024 * 1024;   // ONE_MAX is hoisted above, next to `embedded`
           Promise.all(cidTokens.map(function (t) {
             var a = attFor(t);
             if (!a || a.kind !== 'file' || (a.size && a.size > ONE_MAX)) return Promise.resolve(null);
@@ -5187,13 +5305,25 @@
             if (got && frame) frame.srcdoc = wrap(rawBody.replace(CID_RE, function (whole, tok) { return map[tok] || whole; }));
             var missed = cidTokens.length - got;
             if (missed) {
-              // Say so rather than leaving broken-image boxes with no explanation.
+              // Say so rather than leaving broken-image boxes with no explanation — and put
+              // the ones we know about back within reach as ordinary download links, so a
+              // photo too big to inline is still openable instead of simply gone.
+              var stuck = [], stuckSeen = {};
+              cidTokens.forEach(function (t) {
+                if (map[t]) return;
+                var a = attFor(t);
+                if (a && a.kind === 'file' && !stuckSeen[a.id]) { stuckSeen[a.id] = 1; stuck.push(a); }
+              });
               var warn = document.createElement('div');
               warn.className = 'em-att';
               warn.style.color = 'var(--muted)';
-              warn.innerHTML = missed + ' image' + (missed === 1 ? '' : 's') + ' in this email couldn’t be loaded' +
-                (m.webLink ? ' — <a href="' + esc(m.webLink) + '" target="_blank" rel="noopener">open it in Outlook</a>' : '') + '.';
+              warn.innerHTML = missed + ' image' + (missed === 1 ? '' : 's') + ' in this email couldn’t be shown inline' +
+                (stuck.length ? ' — ' + stuck.map(function (a) {
+                  return '<a class="fs-file" href="' + attDl(a) + '" data-pvname="' + esc(a.name) + '" data-pvmime="' + esc(a.contentType || '') + '" data-pvprobe="1">' + esc(a.name) + '</a>';
+                }).join(' &nbsp;&middot;&nbsp; ') : '') +
+                (m.webLink ? ' <span style="font-size:11px;">(<a href="' + esc(m.webLink) + '" target="_blank" rel="noopener">open in Outlook</a>)</span>' : '') + '.';
               bodyEl.insertBefore(warn, frame || null);
+              if (stuck.length) wirePreviews(warn, '&');
             }
           });
         }
@@ -5450,19 +5580,24 @@
     var k = (p + '|' + cn).replace(/^\|+|\|+$/g, '');
     return k || 'default';
   }
-  function cprSendsKey() { return 'bcc-cpr-sends-' + currentRealm; }
-  function cprSendsLoad() { try { var a = JSON.parse(localStorage.getItem(cprSendsKey())); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+  // `realm` is the client the send was ISSUED for. The send completes after an async
+  // attachment build plus the Graph call, so reading currentRealm at that point filed the
+  // history — recipients, payroll number, project — under whichever client happened to be
+  // open when it finished, while the audit row two lines away correctly used the captured
+  // realm. The next payroll for the real client then pre-filled from someone else's send.
+  function cprSendsKey(realm) { return 'bcc-cpr-sends-' + (realm || currentRealm); }
+  function cprSendsLoad(realm) { try { var a = JSON.parse(localStorage.getItem(cprSendsKey(realm))); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
   function cprSendsForJob(jobKey) {
     return cprSendsLoad().filter(function (s) { return s && s.jobKey === jobKey; })
       .sort(function (a, b) { return String(b.at || '').localeCompare(String(a.at || '')); });
   }
-  function cprSendsRecord(rec) {
+  function cprSendsRecord(rec, realm) {
     try {
-      var all = cprSendsLoad();
+      var all = cprSendsLoad(realm);
       all.push(rec);
       all.sort(function (a, b) { return String(b.at || '').localeCompare(String(a.at || '')); });
       if (all.length > 200) all = all.slice(0, 200); // keep it small
-      localStorage.setItem(cprSendsKey(), JSON.stringify(all)); // device-local (push-excluded in bcc-api.js)
+      localStorage.setItem(cprSendsKey(realm), JSON.stringify(all)); // device-local (push-excluded in bcc-api.js)
     } catch (e) {}
   }
   function cprFormsLabel(f) {
@@ -5853,7 +5988,7 @@
         .then(function (resp) {
           if (resp && resp.ok === false) throw new Error(resp.error || 'send failed');
           // Remember this send first (so nothing downstream can lose it), then audit/notify.
-          cprSendsRecord({ jobKey: cprJobKey(draftAt), projectName: draftAt.projectName || '', to: to, cc: cc, subject: subject, forms: { mndot: wantMndot, dli: wantDli }, payrollNo: draftAt.payrollNo || '', at: new Date().toISOString() });
+          cprSendsRecord({ jobKey: cprJobKey(draftAt), projectName: draftAt.projectName || '', to: to, cc: cc, subject: subject, forms: { mndot: wantMndot, dli: wantDli }, payrollNo: draftAt.payrollNo || '', at: new Date().toISOString() }, realmAt);
           if (window.bccAudit) window.bccAudit('client-email-send', { key: draftAt.id, path: '/bookkeeping.html', meta: { realmId: realmAt, what: 'certified-payroll', recipients: to.length } });
           if (window.bccNotifySaved) window.bccNotifySaved('Payroll report emailed.');
           var box = document.getElementById('cpr_emailbox'); if (box) { box.style.display = 'none'; box.innerHTML = ''; }
@@ -5957,6 +6092,10 @@
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (d) {
           if (!d || !d.data || currentRealm !== realmAt) return;
+          // Re-check the local-save window HERE too, not only before the fetch: a GET already
+          // in flight when the bookkeeper pressed Save still landed and wrote the server's
+          // older copy back over the signature they had just saved.
+          if (key === _cprSigLocalKey && Date.now() - _cprSigLocalAt < 15000) return;
           // /api/data returns .data as an OBJECT when it was written by the sync
           // (and a string when written server-side). Storing the object raw put
           // the literal "[object Object]" in localStorage, so JSON.parse failed
@@ -7031,6 +7170,14 @@
     return doc;
   }
   function saveClose() { if (!_close) return; _close.updatedAt = nowIso(); _close.updatedBy = myUpn(); localStorage.setItem(_close.id, JSON.stringify(_close)); }
+  /* The firm and its clients are on Central time, but new Date().toISOString() is UTC — so
+     from 7pm Central (6pm during CDT) onward "today" was already tomorrow, and a transaction
+     entered in the evening posted to the client's live books with tomorrow's date. Same
+     helper shape (and same fallback) the server already uses. */
+  function bizToday() {
+    try { return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' }); }
+    catch (e) { return new Date().toISOString().slice(0, 10); }
+  }
   function periodEndDate(period) { var d = new Date(+period.slice(0, 4), +period.slice(5, 7), 0); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
   function renderClose() {
     var body = document.getElementById('close-body'); if (!body) return;
@@ -7212,9 +7359,17 @@
     var realmAt = currentRealm; // realm-race guard — the job-costs fetch below can take a few seconds
     body.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px;">' +
       '<h3 style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;margin:0;">Job costing / WIP <span style="color:var(--muted);font-weight:400;font-size:12px;">· ' + esc(companyName(currentRealm)) + '</span></h3></div>' +
-      '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Cost &amp; billed-to-date come from QuickBooks (by customer/job, year to date). Enter each job’s <strong>contract</strong> and <strong>estimated cost</strong> to get percent complete, earned revenue, and over/under billing.</div>' +
+      '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Cost &amp; billed-to-date come from QuickBooks (by customer/job, <strong>life of job</strong>). Enter each job’s <strong>contract</strong> and <strong>estimated cost</strong> to get percent complete, earned revenue, and over/under billing.</div>' +
       '<div id="wip_out" style="color:var(--muted);padding:10px 0;">Loading jobs from QuickBooks…</div>';
-    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/job-costs', { credentials: 'include' })
+    /* Send an explicit LIFE-OF-JOB window. The endpoint defaults to Jan 1 of the current
+       year, so cost-to-date was year-to-date while the estimated cost the bookkeeper enters
+       is for the whole job — every job that started before January reported a percent
+       complete far too low, and therefore an over/(under) billing figure that is simply
+       wrong. Construction jobs routinely cross a year boundary, which is exactly what this
+       schedule is for. WIP_SINCE_YEARS back is far enough to cover any live job. */
+    var WIP_SINCE_YEARS = 6;
+    var wipFrom = (new Date().getFullYear() - WIP_SINCE_YEARS) + '-01-01';
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/job-costs?from=' + wipFrom, { credentials: 'include' })
       .then(function (r) { return r.json(); })
       .then(function (j) {
         if (currentRealm !== realmAt) return;
@@ -7227,7 +7382,7 @@
   function renderWipTable(jobs) {
     var out = document.getElementById('wip_out'); if (!out) return;
     var m = mrMoney0;
-    if (!jobs.length) { out.innerHTML = '<div style="color:var(--muted);padding:12px 0;">No customer/job activity found in QuickBooks this year. (Job costing works best when income &amp; expenses are tagged to a Customer:Job.)</div>'; return; }
+    if (!jobs.length) { out.innerHTML = '<div style="color:var(--muted);padding:12px 0;">No customer/job activity found in QuickBooks. (Job costing works best when income &amp; expenses are tagged to a Customer:Job.)</div>'; return; }
     var rows = jobs.map(function (job, i) {
       var ov = _wip.jobs[job.name] || {};
       return '<tr data-wrow="' + i + '" data-job="' + esc(job.name) + '">' +
@@ -7453,8 +7608,15 @@
       renderOverview();
     }
   });
-  window.addEventListener('bcc-auth-ready', function () { document.body.dataset.didInit = '1'; init(); });
-  setTimeout(function () { if (!document.body.dataset.didInit) { document.body.dataset.didInit = '1'; init(); } }, 600);
+  /* init() must run EXACTLY once. The auth-ready handler set didInit but never checked it,
+     so whenever the bootstrap took longer than 600ms both paths ran and every
+     addEventListener inside init() was registered twice. On the receipt scanner that meant
+     one dropped file started two AI extractions and two createVendorAuto calls — i.e. a
+     duplicate vendor written into the client's live QuickBooks. Same guard crm-companies.html
+     already uses. */
+  function bootOnce() { if (document.body.dataset.didInit) return; document.body.dataset.didInit = '1'; init(); }
+  window.addEventListener('bcc-auth-ready', bootOnce);
+  setTimeout(bootOnce, 600);
 })();
 </script>
 </body>

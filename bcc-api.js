@@ -185,24 +185,40 @@
      Deliberately not a debounced/deferred write: durability is the only reason this file
      exists, and pagehide is not guaranteed on a crash, an OOM kill or a mobile background
      termination, which are exactly the cases the outbox is here to survive. */
-  var _outboxCache = null;
+  var _outboxCache = null, _outboxRaw = null;
   function outboxRead() {
-    if (_outboxCache) return _outboxCache;
+    // Verify the memo against what is ACTUALLY in localStorage with a cheap string compare,
+    // rather than trusting an invalidation event. The 'storage' event does not fire in the
+    // tab that made the change, nor for a page restored from the bfcache — so a tab restored
+    // after another tab had queued work held a stale parse and its next write wiped that
+    // work. A getItem + === is far cheaper than the JSON.parse this memo exists to avoid.
+    var raw = null;
+    try { raw = localStorage.getItem(OUTBOX_KEY); } catch (e) {}
+    if (_outboxCache && raw === _outboxRaw) return _outboxCache;
     var o;
-    try { o = JSON.parse(localStorage.getItem(OUTBOX_KEY) || 'null'); } catch (e) { o = null; }
+    try { o = JSON.parse(raw || 'null'); } catch (e) { o = null; }
     _outboxCache = (o && typeof o === 'object' && o.items) ? o : { upn: '', items: {} };
+    _outboxRaw = raw;
     return _outboxCache;
   }
   function outboxWrite(o) {
     _outboxCache = o;   // every caller must share one instance, or drop() and rehydrate() disagree
-    try { _origSetItem.call(localStorage, OUTBOX_KEY, JSON.stringify(o)); }
-    catch (e) { /* quota — the in-memory queue still carries it for this page's life */ }
+    var str = null;
+    try { str = JSON.stringify(o); } catch (e) { str = null; }
+    try {
+      _origSetItem.call(localStorage, OUTBOX_KEY, str);
+      _outboxRaw = str;                 // only once the write actually landed
+    } catch (e) {
+      // Quota. The in-memory queue still carries it for this page's life, but storage and
+      // memory now disagree — forget the raw marker so the next read re-syncs from storage.
+      _outboxRaw = null;
+    }
   }
   // Another TAB owns the same outbox. Without this the cache would go stale the moment a
   // second tab wrote, and this tab's next write would clobber the other's queued items
   // wholesale — the read-modify-write at least merged them before.
   window.addEventListener('storage', function (e) {
-    if (!e || e.key === OUTBOX_KEY || e.key === null) _outboxCache = null;
+    if (!e || e.key === OUTBOX_KEY || e.key === null) { _outboxCache = null; _outboxRaw = null; }
   });
   function outboxPut(key, value, trusted) {
     var o = outboxRead();
@@ -210,8 +226,13 @@
     // A different person signed in on this device: start their outbox clean rather than
     // inheriting writes that are not theirs to replay.
     // Rebind the cache too, or the previous person's entries survive in memory into the new
-    // session — the exact leak this branch exists to prevent.
-    if (o.upn && who && o.upn !== who) { o = { upn: who, items: {} }; _outboxCache = o; }
+    // session — the exact leak this branch exists to prevent. Their queue is PARKED rather
+    // than discarded, so it comes back if they sign in on this device again.
+    if (o.upn && who && o.upn !== who) {
+      outboxPark(o.upn, o.items);
+      o = { upn: who, items: {} }; _outboxCache = o;
+      outboxWrite(o);
+    }
     if (who) o.upn = who;
     if (!o.items[key] && Object.keys(o.items).length >= OUTBOX_MAX) return; // bounded
     o.items[key] = { v: value, t: !!trusted };
@@ -223,15 +244,61 @@
     keys.forEach(function (k) { if (o.items[k] !== undefined) { delete o.items[k]; changed = true; } });
     if (changed) outboxWrite(o);
   }
+  /* PARKING, not deleting. An outbox entry rejected because it belongs to a DIFFERENT user
+     is not garbage — it is that person's unsent work, and they may well sign back in on this
+     same shared device. Deleting it lost the write permanently, and the bootstrap purge had
+     usually already removed the local copy, so it was the last one in existence. Park it by
+     owner instead and hand it back when they return.
+     Key is deliberately NOT 'bcc-' prefixed: the setItem hook syncs anything that is, which
+     would push one user's parked queue into the shared tenant store. */
+  var PARKED_KEY = 'bccOutboxParkedV1';
+  function parkedRead() {
+    try { var o = JSON.parse(localStorage.getItem(PARKED_KEY) || 'null'); return (o && typeof o === 'object') ? o : {}; }
+    catch (e) { return {}; }
+  }
+  function parkedWrite(o) { try { _origSetItem.call(localStorage, PARKED_KEY, JSON.stringify(o)); } catch (e) {} }
+  function outboxPark(upn, items) {
+    var ks = items ? Object.keys(items) : [];
+    if (!ks.length) return;
+    var all = parkedRead();
+    var who = String(upn || '').toLowerCase() || '_unknown';
+    var b = all[who] || (all[who] = {});
+    ks.forEach(function (k) { b[k] = items[k]; });
+    var have = Object.keys(b);                       // same bound as the outbox itself
+    if (have.length > OUTBOX_MAX) have.slice(0, have.length - OUTBOX_MAX).forEach(function (k) { delete b[k]; });
+    parkedWrite(all);
+  }
+  function outboxUnpark(upn) {
+    var who = String(upn || '').toLowerCase();
+    if (!who) return {};
+    var all = parkedRead(); var b = all[who];
+    if (!b) return {};
+    delete all[who]; parkedWrite(all);
+    return b;
+  }
+  // Is this key still held anywhere unsent? The bootstrap purge must not remove the last copy.
+  function outboxHas(k) {
+    if (outboxRead().items[k] !== undefined) return true;
+    var all = parkedRead();
+    for (var w in all) { if (all[w] && all[w][k] !== undefined) return true; }
+    return false;
+  }
   /* Replayed at bootstrap, after identity is known and BEFORE the pull is applied — the
      existing `pending.has(...)` guards at the pull and prune sites are what stop the
      server's older copy from landing on top, and they only work if `pending` is seeded
      first. Returns how many writes were recovered. */
   function outboxRehydrate() {
     var o = outboxRead();
+    var me = String((user && user.userDetails) || '').toLowerCase();
+    // Anything parked while somebody else was signed in is mine again now.
+    var back = outboxUnpark(me), backKeys = Object.keys(back);
+    if (backKeys.length) {
+      backKeys.forEach(function (k) { if (o.items[k] === undefined) o.items[k] = back[k]; });
+      o.upn = me;
+      outboxWrite(o);
+    }
     var keys = Object.keys(o.items || {});
     if (!keys.length) return 0;
-    var me = String((user && user.userDetails) || '').toLowerCase();
     // A personal doc names its owner IN the key, so that — not the outbox's recorded upn —
     // is the authority on whose it is. This matters for the offline case the outbox exists
     // for: a write made before /.auth/me ever answered has NO recorded upn, so an
@@ -251,19 +318,26 @@
       if (m) return k.indexOf(m[1] + me + '-') === 0 || k === m[1] + me;
       return true; // not a personal key shape
     };
-    var kept = 0, drop = [];
+    var kept = 0, drop = [], park = {};
     keys.forEach(function (k) {
       var e = o.items[k];
       var mine = !o.upn || !me || o.upn === me;
       var personal = /^bcc-(daily-log|mytasks|emailsig|chat-last-read)-/.test(k);
       var owned = OFFLINE_OWNED_PREFIXES.some(function (p) { return k.indexOf(p) === 0; });
-      if (personal && !keyOwnerOk(k)) { drop.push(k); return; }
-      if (!mine && (personal || !e.t)) { drop.push(k); return; }
+      // Not mine to replay — but it IS somebody's. Park it rather than destroying it.
+      if (personal && !keyOwnerOk(k)) { park[k] = e; return; }
+      if (!mine && (personal || !e.t)) { park[k] = e; return; }
       // Untrusted (pre-auth / offline) writes are replayable only for owner-only families.
+      // This one genuinely cannot be attributed to anyone, so it is the only real drop.
       if (!e.t && !owned) { drop.push(k); return; }
       pending.set(k, e.v);
       kept++;
     });
+    var parkKeys = Object.keys(park);
+    if (parkKeys.length) {
+      outboxPark(o.upn || '_unknown', park);
+      outboxDrop(parkKeys);          // moved, not lost
+    }
     if (drop.length) outboxDrop(drop);
     if (kept) schedulePush();
     return kept;
@@ -415,7 +489,20 @@
   var failedStatus = {};
   var _skipNotifyAt = 0;
 
-  async function flush() {
+  /* flush() is SERIALIZED. It used to be re-entrant: the 5s retry, schedulePush, bccSyncNow,
+     bccRetrySync and sign-out can all call it while one is mid-flight, and each call snapshots
+     `pending` and clears it. Two overlapping flushes therefore both held snapshots, and when
+     the slower one failed it re-queued its STALE value over a newer edit the faster one had
+     already consumed and sent — a silent revert of the user's most recent change. With one
+     flush at a time the `pending.has()` guards mean "a newer write exists" again, which is
+     what they were written to mean. Every caller treats the result as a promise or
+     fire-and-forget, and sign-out keeps its own 2.5s cap, so chaining cannot wedge it. */
+  var _flushChain = null;
+  function flush() {
+    _flushChain = (_flushChain || Promise.resolve()).then(_flushOnce, _flushOnce);
+    return _flushChain;
+  }
+  async function _flushOnce() {
     if (!signedIn || pending.size === 0) return;
     var entries = Array.from(pending.entries());
     pending.clear();
@@ -628,7 +715,11 @@
           }
         });
         // Same cursor clamp: a doc that did not land must stay eligible for the next delta.
-        try { if (maxUpd > since && (!minFailedUpd || maxUpd < minFailedUpd)) _origSetItem.call(localStorage, 'bcc-sync-since-v1', maxUpd); } catch (e) {}
+        try {
+          var pcur = maxUpd;   // same clamp as the bootstrap pull — see the note there
+          if (minFailedUpd) { var pt = new Date(minFailedUpd).getTime(); pcur = isNaN(pt) ? '' : new Date(pt - 1).toISOString(); }
+          if (pcur && pcur > since) _origSetItem.call(localStorage, 'bcc-sync-since-v1', pcur);
+        } catch (e) {}
         if (changed.length) {
           if (changed.indexOf('bcc-admin-config-v1') >= 0) {
             try { recomputePcPeople(); } catch (e) {}
@@ -1120,7 +1211,16 @@
             // is never offered again — the browser keeps a permanently stale copy, and the
             // first local edit to it pushes that stale value back up and reverts the newer
             // server copy for everyone. Leaving the cursor short costs one re-fetch.
-            if (maxUpd && (!minFailedUpd || maxUpd < minFailedUpd)) _origSetItem.call(localStorage, SYNC_SINCE_KEY, maxUpd);
+            // Advance to just BELOW the earliest failure rather than requiring the whole
+            // batch to precede it: maxUpd is the maximum timestamp seen, so `maxUpd <
+            // minFailedUpd` could never be true once anything failed, and the cursor was
+            // pinned forever — every later pull re-fetched the entire tenant.
+            var cursor = maxUpd;
+            if (minFailedUpd) {
+              var mt = new Date(minFailedUpd).getTime();
+              cursor = isNaN(mt) ? '' : new Date(mt - 1).toISOString();
+            }
+            if (cursor && cursor > (_since || '')) _origSetItem.call(localStorage, SYNC_SINCE_KEY, cursor);
             // Likewise, only record a completed full pull if it actually completed. With
             // failures, the next load legitimately does another full pull — harmless now
             // that the items which DID fit have already been applied.
@@ -1146,7 +1246,9 @@
           var stale = [];
           for (var si = 0; si < localStorage.length; si++) {
             var sk = localStorage.key(si);
-            if (sk && sk.indexOf('bcc-emailsig-') === 0 && sk !== mineSig) stale.push(sk);
+            // ...unless it is still queued (or parked) unsent, in which case this local copy
+            // is the LAST one in existence and removing it destroys that person's edit.
+            if (sk && sk.indexOf('bcc-emailsig-') === 0 && sk !== mineSig && !outboxHas(sk)) stale.push(sk);
           }
           stale.forEach(function (k) { _origRemoveItem.call(localStorage, k); });
           if (stale.length) console.info('[bcc-api] cleared ' + stale.length + " cached signature(s) belonging to other users");
@@ -1504,6 +1606,20 @@
       // <a class="nav-link"> elements are hidden so the topbar stays clean.
       'header.topbar{position:relative;flex-wrap:nowrap;}' +
       'header.topbar > a.nav-link{display:none !important;}' +
+      /* Phone breakpoint. flex-wrap:nowrap above means the topbar cannot wrap, so on a narrow
+         screen the row's min-content width simply overflows and the LAST child — the
+         hamburger — is pushed off the right edge. That hamburger is the only navigation and
+         the only way to sign out on a phone, so on most pages a phone user was stranded on
+         whatever page they landed on. Dropping the module/product/wordmark labels reclaims
+         115-198px, which brings even the widest page inside a 320px viewport. This belongs
+         here rather than in a page stylesheet because it affects 17 of the 18 pages. */
+      '@media (max-width:700px){' +
+        'header.topbar{gap:8px;padding-left:12px;padding-right:12px;}' +
+        'header.topbar .module,header.topbar .product,header.topbar .wordmark{display:none;}' +
+        'header.topbar a.home,header.topbar .bcc-auth-chip{min-width:0;flex-shrink:1;}' +
+        '.bcc-auth-chip .bcc-name{max-width:88px;}' +
+        '#bcc-hamburger{margin-left:auto;flex:0 0 auto;}' +
+      '}' +
       // ---- Global LIGHT topbar (brand concept) ----
       // Every page body is already light (#f6f6f4/#fff); only the topbar was
       // dark. Force it light app-wide here so the chrome matches the home page
