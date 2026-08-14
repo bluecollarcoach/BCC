@@ -252,6 +252,7 @@
      Key is deliberately NOT 'bcc-' prefixed: the setItem hook syncs anything that is, which
      would push one user's parked queue into the shared tenant store. */
   var PARKED_KEY = 'bccOutboxParkedV1';
+  var PARK_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;   // see the age check in outboxRehydrate
   function parkedRead() {
     try { var o = JSON.parse(localStorage.getItem(PARKED_KEY) || 'null'); return (o && typeof o === 'object') ? o : {}; }
     catch (e) { return {}; }
@@ -263,7 +264,10 @@
     var all = parkedRead();
     var who = String(upn || '').toLowerCase() || '_unknown';
     var b = all[who] || (all[who] = {});
-    ks.forEach(function (k) { b[k] = items[k]; });
+    // Stamp WHEN it was parked. A parked value has no freshness guarantee of its own, and
+    // replaying a weeks-old one on the owner's return would revert everything that happened
+    // in between. `pk` is what makes the age check on the way out possible.
+    ks.forEach(function (k) { b[k] = { v: items[k].v, t: items[k].t, pk: Date.now() }; });
     var have = Object.keys(b);                       // same bound as the outbox itself
     if (have.length > OUTBOX_MAX) have.slice(0, have.length - OUTBOX_MAX).forEach(function (k) { delete b[k]; });
     parkedWrite(all);
@@ -275,6 +279,23 @@
     if (!b) return {};
     delete all[who]; parkedWrite(all);
     return b;
+  }
+  /* Strip settled keys out of the parked store. Without this a key parked while it was
+     still in `pending` became unreachable: flush's settle sweep only ever cleaned the
+     OUTBOX, so the parked copy survived the successful push forever and was replayed on the
+     owner's next sign-in, reverting whatever had happened since.
+     Deliberately NOT called from inside outboxDrop — outboxRehydrate calls outboxDrop
+     immediately after outboxPark on the very same keys, so purging there would undo the
+     park it was just asked to perform. */
+  function outboxUnparkKeys(keys) {
+    if (!keys || !keys.length) return;
+    var all = parkedRead(), changed = false;
+    Object.keys(all).forEach(function (w) {
+      var b = all[w]; if (!b) return;
+      keys.forEach(function (k) { if (b[k] !== undefined) { delete b[k]; changed = true; } });
+      if (!Object.keys(b).length) { delete all[w]; changed = true; }
+    });
+    if (changed) parkedWrite(all);
   }
   // Is this key still held anywhere unsent? The bootstrap purge must not remove the last copy.
   function outboxHas(k) {
@@ -290,15 +311,12 @@
   function outboxRehydrate() {
     var o = outboxRead();
     var me = String((user && user.userDetails) || '').toLowerCase();
-    // Anything parked while somebody else was signed in is mine again now.
-    var back = outboxUnpark(me), backKeys = Object.keys(back);
-    if (backKeys.length) {
-      backKeys.forEach(function (k) { if (o.items[k] === undefined) o.items[k] = back[k]; });
-      o.upn = me;
-      outboxWrite(o);
-    }
+    /* TWO PASSES, and the order matters. Merging my parked bucket in first and then stamping
+       o.upn = me (what this did originally) relabelled the PREVIOUS signer's still-queued
+       shared-doc writes as mine, so `mine` was true for them and they were replayed — and
+       pushed — under my name. Judge what is already in the outbox against the upn it was
+       actually written under FIRST; only then adopt my own parked entries. */
     var keys = Object.keys(o.items || {});
-    if (!keys.length) return 0;
     // A personal doc names its owner IN the key, so that — not the outbox's recorded upn —
     // is the authority on whose it is. This matters for the offline case the outbox exists
     // for: a write made before /.auth/me ever answered has NO recorded upn, so an
@@ -339,6 +357,29 @@
       outboxDrop(parkKeys);          // moved, not lost
     }
     if (drop.length) outboxDrop(drop);
+
+    /* PASS 2 — entries parked earlier under MY upn. Mine by construction, but still
+       age-checked: a parked write has no freshness guarantee, and replaying one from weeks
+       ago would revert everything that happened in the meantime. A week is long enough to
+       cover an offline Friday punch collected the following Monday, and short enough that a
+       genuinely stale value never silently overwrites live data. */
+    var back = outboxUnpark(me), backKeys = Object.keys(back);
+    if (backKeys.length) {
+      o = outboxRead();                       // the drops above rewrote it
+      var now = Date.now(), stale = 0;
+      backKeys.forEach(function (k) {
+        var e = back[k];
+        if (now - (e.pk || 0) > PARK_MAX_AGE_MS) { stale++; return; }
+        // Safety net: a personal key must still name me, even coming out of my own bucket.
+        if (/^bcc-(daily-log|mytasks|emailsig|chat-last-read)-/.test(k) && !keyOwnerOk(k)) return;
+        if (o.items[k] === undefined) o.items[k] = { v: e.v, t: e.t };
+        pending.set(k, e.v);
+        kept++;
+      });
+      o.upn = me;
+      outboxWrite(o);
+      if (stale) console.info('[bcc-api] discarded ' + stale + ' parked write(s) older than ' + Math.round(PARK_MAX_AGE_MS / 86400000) + ' day(s)');
+    }
     if (kept) schedulePush();
     return kept;
   }
@@ -658,7 +699,9 @@
     // refused (in which case the user has already been told and replaying it forever
     // would just re-tell them). Whatever got re-queued above stays in the outbox so it
     // still survives a reload. This single sweep covers every exit path above.
-    outboxDrop(entries.map(function (e) { return e[0]; }).filter(function (k) { return !pending.has(k); }));
+    var settledKeys = entries.map(function (e) { return e[0]; }).filter(function (k) { return !pending.has(k); });
+    outboxDrop(settledKeys);
+    outboxUnparkKeys(settledKeys);   // a parked copy of a key that has now SHIPPED must go too
     // Hold each key for one more poll interval so a response already in flight, built
     // from a pre-write read, can't land on top of what we just saved.
     var holdUntil = Date.now() + LIVE_POLL_MS + 2000;
@@ -1360,6 +1403,21 @@
       } catch (e) { console.warn('[bcc-api] page permission check failed', e); }
     }
 
+    /* Announce the BOOTSTRAP PULL as a data change before anything else.
+       The bootstrap writes localStorage with the UN-hooked setter (_origSetItem), so it
+       fires no event of its own, and 'bcc-data-ready' is dispatched ONLY by the 8s delta
+       poll, and only for docs some other device changed. Pages used to get their post-sync
+       repaint by accident: their auth-ready handler re-ran init() unconditionally, so a
+       load slower than 600ms rendered twice — once from stale localStorage at the timeout,
+       once from server data. Sweep 5 made init() run exactly once (correctly — the second
+       run was also re-registering every listener) and that accidental repaint went with it,
+       leaving 12 pages showing a pre-sync snapshot for the whole session, and showing
+       nothing at all on a device with cold storage.
+       Every page already has a correct 'bcc-data-ready' handler, so this restores the
+       repaint through the intended channel instead. live:false marks it as the boot pull
+       rather than a delta; keys:null means "assume everything changed". Nothing is focused
+       or half-typed this early, so no in-progress edit can be clobbered. */
+    window.dispatchEvent(new CustomEvent('bcc-data-ready', { detail: { keys: null, live: false } }));
     window.dispatchEvent(new Event('bcc-auth-ready'));
     if (window.bccPeople) window.dispatchEvent(new Event('bcc-users-ready'));
 
@@ -2832,6 +2890,11 @@
       if (!isSession && !isEvent) continue;
       var doc; try { doc = JSON.parse(localStorage.getItem(key)); } catch (e) { continue; }
       if (!doc || !doc.startAt) continue;
+      // A CANCELED session must not still page people. The server-side reminders cron
+      // already skips these; the in-app bell did not, so the 24h and 15-minute reminders
+      // kept firing for a session everyone had been told was off.
+      var remStatus = String(doc.status || '').toLowerCase();
+      if (remStatus === 'canceled' || remStatus === 'cancelled') continue;
       var t = Date.parse(doc.startAt);
       if (isNaN(t) || t <= now) continue;
       var remaining = t - now;

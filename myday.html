@@ -695,7 +695,17 @@
      so any bootstrap slower than 600ms ran init() twice and every addEventListener inside it
      was registered twice — one click then did its work twice (a confirm asked twice, two
      audit rows, two writes). Route both boot paths through one guarded entry point. */
-  function bootOnce(authed) { if (authed) _authSettled = true; if (document.body.dataset.didInit) return; document.body.dataset.didInit = '1'; init(); }
+  /* On the auth path, REPAINT rather than just returning. init() binds listeners and must
+     run once, but everything on this page that depends on identity (the clock, My time, My
+     tasks, the daily log) was rendered at the 600ms timeout when _authSettled was still
+     false — so Clock in/out stayed disabled for the whole session. liveRefresh is the right
+     second call: it re-renders exactly those, and is already guarded against clobbering an
+     in-progress clock-out edit or half-typed note. */
+  function bootOnce(authed) {
+    if (authed) _authSettled = true;
+    if (document.body.dataset.didInit) { if (authed) liveRefresh(); return; }
+    document.body.dataset.didInit = '1'; init();
+  }
   window.addEventListener('bcc-auth-ready', function () { bootOnce(true); });
   setTimeout(function () { bootOnce(false); }, 600);
 })();

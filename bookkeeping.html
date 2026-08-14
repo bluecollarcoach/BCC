@@ -791,6 +791,35 @@
     var cfg = document.getElementById('configLink'); if (cfg) cfg.textContent = canManage() ? 'Connect in Admin →' : 'Ask an admin to connect';
   }
 
+  /* One-time migration for manual corrections written before this family moved to
+     MPER_PREFIX. Those rows sit under a sync-BLOCKED prefix, so they never left the browser
+     they were typed on — the bookkeeper's correction was invisible to everyone else and
+     would die with that browser's storage. Rewrite them into the syncable id space so they
+     finally reach Cosmos. Runs once per browser; the marker is device-local by design. */
+  // Deliberately NOT 'bcc-' prefixed: the sync layer pushes anything that is, and this
+  // marker records what THIS browser has already migrated. Synced, it would reach every
+  // other device and suppress the migration there.
+  var MPER_MIGRATED_KEY = 'bccManualPeriodMigratedV1';
+  function migrateManualPeriods() {
+    try {
+      if (localStorage.getItem(MPER_MIGRATED_KEY)) return;
+      var re = /^bcc-financial-period-([^-]+)-(\d{4}-\d{2})-manual$/, moved = 0, olds = [];
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i); if (k && re.test(k)) olds.push(k);
+      }
+      olds.forEach(function (k) {
+        var m = re.exec(k), doc = null;
+        try { doc = JSON.parse(localStorage.getItem(k)); } catch (e) { return; }
+        if (!doc) return;
+        var nid = MPER_PREFIX + m[1] + '-' + m[2];
+        doc.id = nid; doc.realmId = doc.realmId || m[1]; doc.period = doc.period || m[2]; doc.source = 'manual';
+        if (localStorage.getItem(nid) === null) { localStorage.setItem(nid, JSON.stringify(doc)); moved++; }
+        localStorage.removeItem(k);   // hooked removeItem no-ops for this prefix — purely local
+      });
+      localStorage.setItem(MPER_MIGRATED_KEY, String(Date.now()));
+      if (moved) console.info('[bcc] migrated ' + moved + ' manual period correction(s) into the syncable id space');
+    } catch (e) {}
+  }
   function allPeriods() {
     var out = [];
     for (var i = 0; i < localStorage.length; i++) {
@@ -811,12 +840,24 @@
      table shows both with their Source, which is right, but every AGGREGATE must count
      the month once or the firm-wide totals double it. Manual wins: someone typed it
      deliberately, presumably to correct what synced. */
+  /* MERGE, don't replace. A manual correction only ever carries P&L figures — the balance
+     sheet fields (cashCents, currentAssetsCents, currentLiabilitiesCents) exist solely on the
+     QBO doc. Letting the manual record win outright therefore blanked months-of-cash, current
+     ratio and working capital for any month a bookkeeper had corrected by hand. Merge so the
+     manual P&L wins and the QBO-only fields survive.
+     Two manual docs for one month (a legacy row plus its migrated replacement) are broken by
+     RECENCY — falling through to "first in scan order" let a stale correction outrank the one
+     just saved, so the KPI kept showing the old number after an explicit fix. */
   function dedupePeriods(list) {
     var by = {};
     list.forEach(function (p) {
       var k = (p.realmId || '') + '|' + (p.period || '');
       var cur = by[k];
-      if (!cur || (p.source === 'manual' && cur.source !== 'manual')) by[k] = p;
+      if (!cur) { by[k] = p; return; }
+      var pM = p.source === 'manual', cM = cur.source === 'manual';
+      if (pM && !cM) { by[k] = Object.assign({}, cur, p); return; }   // manual wins, QBO extras survive
+      if (!pM && cM) { by[k] = Object.assign({}, p, cur); return; }   // same, QBO seen second
+      if (String(p.updatedAt || '') > String(cur.updatedAt || '')) by[k] = Object.assign({}, cur, p);
     });
     return Object.keys(by).map(function (k) { return by[k]; });
   }
@@ -854,7 +895,18 @@
     // when loadPeriodsFromCloud rewrote the server's copy back over it. A suffix — not a
     // prefix — because disconnectCompany prunes on PER_PREFIX + realm + '-', and anything
     // inserted before the realm would survive a disconnect and keep feeding the KPIs.
-    if (!p.id) p.id = (p.source === 'manual' ? MPER_PREFIX : PER_PREFIX) + (p.realmId ? p.realmId + '-' : '') + p.period;
+    if (!p.id) {
+      p.id = (p.source === 'manual' ? MPER_PREFIX : PER_PREFIX) + (p.realmId ? p.realmId + '-' : '') + p.period;
+      // MIGRATION. A manual correction saved before this family moved to MPER_PREFIX still
+      // lives at the old '-manual' suffixed id, and allPeriods() finds BOTH — so the same
+      // month ended up with two competing rows and the stale one could win. Retire the legacy
+      // row as part of writing the new one. The hooked removeItem early-returns for the
+      // bcc-financial-period- prefix, so this queues no spurious server DELETE.
+      if (p.source === 'manual' && p.realmId && p.period) {
+        var legacyId = PER_PREFIX + p.realmId + '-' + p.period + '-manual';
+        if (localStorage.getItem(legacyId) !== null) localStorage.removeItem(legacyId);
+      }
+    }
     p.tenantId = 'blue-collar-coach';
     p.docType = 'financial-period';
     localStorage.setItem(p.id, JSON.stringify(p));
@@ -963,7 +1015,7 @@
   // keyed by realmId (keys look like 'bcc-task-<realm>-<id>'; realmId is numeric
   // so it never contains a '-').
   function buildTaskMap() {
-    var map = {}, today = new Date().toISOString().slice(0, 10);
+    var map = {}, today = bizToday();   // Central, not UTC
     for (var i = 0; i < localStorage.length; i++) {
       var k = localStorage.key(i); if (!k || k.indexOf('bcc-task-') !== 0) continue;
       var rest = k.slice(9), dash = rest.indexOf('-'); if (dash < 0) continue;
@@ -1785,7 +1837,7 @@
       return '<table><thead>' + head + '</thead><tbody>' + bodyL + '</tbody></table>';
     }
     var cc = d.columns || [];
-    if (!(d.rows || []).length) return '<div style="color:var(--muted);padding:10px;">No data in this report' + (d.range ? ' for ' + esc(JSON.stringify(d.range)) : '') + '.</div>';
+    if (!(d.rows || []).length) return '<div style="color:var(--muted);padding:10px;">No data in this report' + (d.range ? ' for ' + esc(d.range.from ? (d.range.from + ' – ' + d.range.to) : ('as of ' + d.range.asOf)) : '') + '.</div>';
     // Only MONEY columns get currency formatting + right alignment. Detail reports
     // (A/R aging, transactions) carry text columns like Num / Due Date / Customer —
     // running those through money2 turned invoice "61" into "$61" and the date
@@ -2033,7 +2085,11 @@
       };
       ov.querySelector('#mrRefresh').onclick = function () {
         if (!confirm('Re-pull this period\'s numbers from QuickBooks now? Only do this if you know the client\'s books changed since it was last reported — this replaces the locked-in figures.')) return;
-        loadMonthlyReport(_mr.period, true);
+        // Flush typed notes first, exactly as the month dropdown does. Capture the period
+        // BEFORE the async save — loadMonthlyReport reassigns _mr.period as its first act.
+        var rp = _mr.period;
+        if (mrObsDirty()) { saveReportObservations(false).then(function () { loadMonthlyReport(rp, true); }); return; }
+        loadMonthlyReport(rp, true);
       };
     }
     ov.style.display = 'flex';
@@ -2048,6 +2104,11 @@
   function mrBtns(disabled) { ['mrPrint', 'mrSaveFile', 'mrSaveObs'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = disabled; }); }
   function loadMonthlyReport(period, forceRefresh) {
     _mr.period = period; _mr.forecast = null; _mr.fcManual = null; _mr.fcInclude = true;
+    // Record WHY a forecast is absent. It is deliberately not fetched for a past month (it
+    // is an as-of-today projection), and reporting that as "unavailable for this client —
+    // needs open A/R / A/P data" told the bookkeeper their QuickBooks data was deficient
+    // when nothing was wrong at all.
+    _mr.fcSkipped = (period !== mrDefaultPeriod());
     var body = document.getElementById('mrBody'), st = document.getElementById('mrStatus'), rb = document.getElementById('mrRefresh');
     body.innerHTML = '<div style="color:var(--muted);padding:22px;text-align:center;">Pulling QuickBooks statements, KPIs &amp; cash-flow forecast…</div>';
     if (st) st.textContent = ''; if (rb) rb.style.display = 'none'; mrBtns(true);
@@ -2240,7 +2301,12 @@
   function renderMrForecast() {
     var host = document.getElementById('mrForecast'); if (!host) return;
     var fc = _mr.forecast;
-    if (!fc) { host.innerHTML = '<div style="font-size:12px;color:var(--muted);">90-day cash-flow forecast unavailable for this client (needs open A/R / A/P data).</div>'; return; }
+    if (!fc) {
+      host.innerHTML = '<div style="font-size:12px;color:var(--muted);">' + (_mr.fcSkipped
+        ? 'The 90-day forecast is projected from today’s open A/R, A/P and run-rate, so it is only shown on the latest complete month (' + esc(mrDefaultPeriod()) + ').'
+        : '90-day cash-flow forecast unavailable for this client (needs open A/R / A/P data).') + '</div>';
+      return;
+    }
     var include = _mr.fcInclude !== false;
     var mo = _mr.fcManual || { on: false, billings: [0, 0, 0], cogsPct: 0, overhead: 0 };
     var chk = function (id, on, label) { return '<label style="font-size:12px;color:#5a5347;display:flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap;"><input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + ' style="width:16px;height:16px;" /> ' + label + '</label>'; };
@@ -2299,9 +2365,9 @@
       // the notes were simply gone when the month was reopened.
       .then(function (j) {
         if (j && j.ok) { _mr.obsSaved = JSON.stringify(_mr.obs || []); if (notify && window.bccNotifySaved) window.bccNotifySaved('Report notes saved.'); return; }
-        (window.bccNotify || alert)('Your observations could not be saved — press “Save notes” to try again. Everything else was unaffected.', 'warn', 9000);
+        (window.bccNotify || alert)('Your observations could not be saved. They are still on screen — press “Save notes” before closing this report or changing month, or they will be lost.', 'warn', 9000);
       })
-      .catch(function () { (window.bccNotify || alert)('Your observations could not be saved — press “Save notes” to try again. Everything else was unaffected.', 'warn', 9000); });
+      .catch(function () { (window.bccNotify || alert)('Your observations could not be saved. They are still on screen — press “Save notes” before closing this report or changing month, or they will be lost.', 'warn', 9000); });
   }
   function mrStmtTable(stmt) {
     if (!stmt || !(stmt.rows || []).length) return '<div class="mr-empty">No data for this statement.</div>';
@@ -2540,7 +2606,14 @@
         }
         var jobLinesHaveMixedJobs = false;
         if (entity === 'bill' || entity === 'purchase') {
-          var jobLine0 = pre.Line && pre.Line[0] && pre.Line[0].AccountBasedExpenseLineDetail;
+          // The first line that actually carries an AccountBasedExpenseLineDetail, not
+          // literally Line[0] — a bill whose first line is a discount, tax or item line has
+          // none, so the Project/job field rendered blank and saving then stripped the job
+          // (and its billable flag) off every line in the client's live books.
+          var jobLine0 = (pre.Line || []).map(function (l) { return l.AccountBasedExpenseLineDetail; }).filter(Boolean)[0];
+          // The payee's ACTUAL type — a purchase can be paid to an Employee or Customer, not
+          // only a Vendor, and assuming Vendor on save rewrote it in the client's live books.
+          var partyValType = (entity === 'purchase' && pre.EntityRef && pre.EntityRef.type) || '';
           var jobSel = (jobLine0 && jobLine0.CustomerRef && jobLine0.CustomerRef.value) || '';
           var jobSelName = (jobLine0 && jobLine0.CustomerRef && jobLine0.CustomerRef.name) || '';
           // This is ONE field for the whole transaction, prefilled from line 1 only. If the
@@ -2637,6 +2710,10 @@
             if (!jobRes.ok) { (window.bccNotify || alert)('“' + jb.value + '” doesn’t match a job/customer in the list — pick one from the dropdown, or clear the field.', 'warn'); return; }
             if (jobRes.id) g.jobCustomerId = jobRes.id;
           }
+          // Preserve the transaction's EXISTING billable status. Without this the server's
+          // default re-billed a NotBillable (or already-billed) line on every re-save.
+          if (jobLine0 && jobLine0.BillableStatus) g.billableStatus = jobLine0.BillableStatus;
+          if (partyValType) g.entityType = partyValType;
           if (jobLinesHaveMixedJobs && !confirm('This bill/purchase currently has DIFFERENT jobs on different lines. Saving here applies the same Project/job to every line, losing that per-line split. Continue?')) return;
           // On EDIT, a sparse update REPLACES all lines — carry through any line types the editor
           // doesn't render (item-based lines, discounts, etc.) verbatim so they aren't dropped.
@@ -2657,12 +2734,24 @@
     else { if (!g.party || !g.amount) { (window.bccNotify || alert)('Customer and amount required.', 'warn'); return; } fields = { customerId: g.party, totalAmt: g.amount, txnDate: g.date, depositAccountId: g.deposit, invoiceId: g.invoiceId }; }
     // Was being collected from the form but never actually sent — bills/purchases
     // silently never got job-costed even when a job was picked. Fixed 2026-08-06.
-    if (g.jobCustomerId && (entity === 'bill' || entity === 'purchase')) fields.jobCustomerId = g.jobCustomerId;
+    if (g.jobCustomerId && (entity === 'bill' || entity === 'purchase')) {
+      fields.jobCustomerId = g.jobCustomerId;
+      // Carry the EXISTING billable status through on an edit, so re-saving cannot flip a
+      // NotBillable (or already-billed) line back to Billable in the client's live books.
+      if (g.billableStatus) fields.billableStatus = g.billableStatus;
+    }
+    if (g.entityType && entity === 'purchase') fields.entityType = g.entityType;
     if (g.keepLines && g.keepLines.length) fields.keepLines = g.keepLines; // preserve non-editable line types on edit
     var verb = _txnEdit ? 'update' : 'create';
     // Parsed the same way the server will parse it, so the number in the confirmation
     // is the number that actually gets posted.
-    var total = entity === 'payment' ? qbonum(g.amount) : (g.lines || []).reduce(function (s, l) { return s + qbonum(l.amount); }, 0);
+    // keepLines are real lines the editor preserves but does not render (item lines,
+    // discounts, tax). Omitting them understated the figure in the "Post this to live
+    // QuickBooks?" confirmation — the one number the bookkeeper checks before committing to
+    // the client's books.
+    var total = entity === 'payment' ? qbonum(g.amount)
+      : (g.lines || []).reduce(function (s, l) { return s + qbonum(l.amount); }, 0)
+        + (g.keepLines || []).reduce(function (s, l) { return s + qbonum(l && l.Amount); }, 0);
     if (!confirm('Post this ' + entity + ' to ' + companyName(currentRealm) + '’s live QuickBooks?\n\nTotal: $' + total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }))) return;
     // confirm() is a blocking modal — nothing can switch clients while it's open, so
     // currentRealm read right after it resolves is still the client the user meant.
@@ -2686,7 +2775,7 @@
         if (_txnFormGen === formGenAt) { document.getElementById('qboWriteForm').innerHTML = ''; _txnEdit = null; _txnFile = null; _txnFormRealm = null; }
         if (currentRealm === realmAt) { loadQboKpis(); if (qboActiveReport) loadQboReport(qboActiveReport, null); }
       })
-      .catch(function (e) { if (_txnFormGen === formGenAt) { btn.disabled = false; btn.textContent = ot; } (window.bccNotify || alert)('QuickBooks rejected it: ' + e.message, 'error', 7000); });
+      .catch(function (e) { if (_txnFormGen === formGenAt) { btn.disabled = false; btn.textContent = ot; } (window.bccNotify || alert)(qboWriteFailMsg(e), 'error', 9000); });
   }
   // ===== Journal entries (adjusting / reclass) — debit/credit lines, must balance =====
   function jeMoney(n) { return (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
@@ -2793,7 +2882,7 @@
         if (_txnFormGen === formGenAt) { document.getElementById('qboWriteForm').innerHTML = ''; _txnEdit = null; _txnFormRealm = null; }
         if (currentRealm === realmAt) { loadQboKpis(); if (qboActiveReport) loadQboReport(qboActiveReport, null); }
       })
-      .catch(function (e) { if (btn && _txnFormGen === formGenAt) { btn.disabled = false; btn.textContent = ot; } (window.bccNotify || alert)('QuickBooks rejected it: ' + e.message, 'error', 7000); });
+      .catch(function (e) { if (btn && _txnFormGen === formGenAt) { btn.disabled = false; btn.textContent = ot; } (window.bccNotify || alert)(qboWriteFailMsg(e), 'error', 9000); });
   }
   function editTxn(entity, id) {
     // realm-race guard — without this, switching clients while this GET is in flight
@@ -2893,7 +2982,7 @@
           if (onCreated) loadQboRefs(function () { onCreated(resp.id); });
         }
       })
-      .catch(function (e) { if (_txnFormGen === formGenAt) { btn.disabled = false; btn.textContent = ot; } (window.bccNotify || alert)('QuickBooks rejected it: ' + e.message, 'error', 7000); });
+      .catch(function (e) { if (_txnFormGen === formGenAt) { btn.disabled = false; btn.textContent = ot; } (window.bccNotify || alert)(qboWriteFailMsg(e), 'error', 9000); });
   }
 
   /* ----- AI receipt/invoice capture ----- */
@@ -3293,7 +3382,7 @@
       '<button class="ov-action" type="button" data-ov="tasks"><span class="ic" aria-hidden="true">➕</span><span>Tasks &amp; to-dos<span class="sub">track the work</span></span></button>' +
     '</div>';
     actions = emailBanner + actions;
-    var today = new Date().toISOString().slice(0, 10);
+    var today = bizToday();   // Central, not UTC — a UTC 'today' rolls over at 7pm here
     // Exclude not-yet-due recurring occurrences, matching the nav badge and the Tasks tab.
     var openAll = allTasks().filter(function (t) { return t.status !== 'done' && !taskIsUpcoming(t, today); }).sort(function (a, b) { return (a.dueDate || '9999').localeCompare(b.dueDate || '9999') || (b.createdAt || '').localeCompare(a.createdAt || ''); });
     var open = todoMineFilter(openAll);
@@ -3601,13 +3690,13 @@
      occurrence a done checkbox, so one click silently advanced the schedule past a period
      that had not happened yet. One predicate, used by all three. */
   function taskIsUpcoming(t, today) {
-    today = today || new Date().toISOString().slice(0, 10);
+    today = today || bizToday();   // Central, not UTC
     return t.status !== 'done' && t.recurrence && t.recurrence !== 'none' && t.dueDate && t.dueDate > today;
   }
   // Next due date for a recurring task, advanced past today so a completed one doesn't
   // immediately reappear as "ready". Preserves day-of-month (clamped to the month length).
   function taskNextDue(dateStr, rec) {
-    var d = new Date((dateStr || new Date().toISOString().slice(0, 10)) + 'T00:00:00'); if (isNaN(d)) d = new Date();
+    var d = new Date((dateStr || bizToday()) + 'T00:00:00'); if (isNaN(d)) d = new Date();
     var today = new Date(); today.setHours(0, 0, 0, 0);
     var dom = d.getDate(), guard = 0;
     do {
@@ -3662,7 +3751,7 @@
   function renderTasks() {
     var body = document.getElementById('tasks-body'); if (!body) return;
     var opts = assigneeOpts('');
-    var today = new Date().toISOString().slice(0, 10);
+    var today = bizToday();   // Central, not UTC — a UTC 'today' rolls over at 7pm here
     var all = allTasks();
     // A recurring task with a future due date is "upcoming" — scheduled, not yet active.
     var isUpcoming = function (t) { return taskIsUpcoming(t, today); };
@@ -3700,7 +3789,11 @@
       var dueTxt = t.dueDate ? ((upc ? 'Next ' : 'Due ') + t.dueDate) : '';
       var meta = [who, dueTxt, rec].filter(Boolean).join(' · ');
       var isOpen = _taskOpen === t.id;
-      return '<div class="ws-row"' + (upc ? ' style="opacity:.6;"' : '') + '><input type="checkbox" data-tdone="' + esc(t.id) + '" ' + (t.status === 'done' ? 'checked' : '') + (upc ? ' title="Not due yet"' : '') + ' style="width:18px;height:18px;flex-shrink:0;" />' +
+      /* An UPCOMING recurring occurrence is by definition already complete for the current
+         period — it has been rolled forward. Leaving it tickable let a second bookkeeper
+         advance it again, skipping a period that never got done. A disabled input fires no
+         change event, so the blanket binding below needs no special case. */
+      return '<div class="ws-row"' + (upc ? ' style="opacity:.6;"' : '') + '><input type="checkbox" data-tdone="' + esc(t.id) + '" ' + ((t.status === 'done' || upc) ? 'checked' : '') + (upc ? ' disabled title="Done for this period — next due ' + esc(t.dueDate || '') + '"' : '') + ' style="width:18px;height:18px;flex-shrink:0;" />' +
         '<div style="flex:1;min-width:0;">' + taskTitleHtml(t, isOpen, t.status === 'done' ? 'task-done' : '') +
         (meta ? '<div style="font-size:12px;color:' + (overdue ? 'var(--burgundy)' : 'var(--muted)') + ';padding-left:12px;">' + esc(meta) + '</div>' : '') +
         (isOpen ? taskDetailHtml(t, false) : '') + '</div>' +
@@ -3965,7 +4058,13 @@
         var inlineSafe = (/^image\//.test(ct0) && ct0 !== 'image/svg+xml') ||
                          ct0 === 'application/pdf' || ct0 === 'text/plain' || ct0 === 'text/csv';
         if (!inlineSafe) {
-          (window.bccNotify || alert)('“' + name + '” can’t be previewed here — use Download to save and open it.', 'warn', 8000);
+          /* Refuse to RENDER it, but still open the modal — Download and "Open in new tab"
+             live in there, and for an emailed .xlsx/.docx/.zip that modal is the only way to
+             get the file at all. Returning here told the bookkeeper to "use Download" while
+             removing the very control it named. Passing downloadUrl as the view URL means no
+             bytes are handed to an inline renderer. */
+          openFilePreview(name, downloadUrl, downloadUrl, ct0, false);
+          (window.bccNotify || alert)('“' + name + '” can’t be shown here — use Download to save and open it.', 'info', 7000);
           return;
         }
         // Hand the preview a blob: URL so it isn't fetched a second time. Revoked on close.
@@ -5702,7 +5801,7 @@
     var reports = allCpr(); var maxNo = 0; reports.forEach(function (r) { maxNo = Math.max(maxNo, cnum(r.payrollNo)); });
     var d = JSON.parse(JSON.stringify(src));
     d.id = cprPrefix() + uid2(); d.payrollNo = String(maxNo + 1); d.isFinal = false;
-    d.payPeriodEnd = ''; d.weekStart = ''; d.socCommence = ''; d.socEnd = ''; d.socDate = new Date().toISOString().slice(0, 10);
+    d.payPeriodEnd = ''; d.weekStart = ''; d.socCommence = ''; d.socEnd = ''; d.socDate = bizToday();
     d.docId = null; // don't overwrite the source's filed copy
     d.createdAt = nowIso(); d.updatedAt = nowIso();
     (d.employees || []).forEach(function (e) {
@@ -6863,10 +6962,10 @@
       contractorName: info.legalName || companyName(currentRealm) || '', contractorAddress: info.address || '',
       ownerName: '', ownerAddress: '', architectName: '', architectAddress: '',
       projectName: '', projectAddress: '', contractFor: '',
-      appNo: String(maxNo + 1), periodTo: '', appDate: new Date().toISOString().slice(0, 10), projectNo: '', contractDate: '',
+      appNo: String(maxNo + 1), periodTo: '', appDate: bizToday(), projectNo: '', contractDate: '',
       contractSum: '', retPctWork: '5', retPctStored: '0', lessPrevious: '',
       changeOrderRows: [], lines: [blankPayLine()],
-      socName: '', socTitle: '', socDate: new Date().toISOString().slice(0, 10), isFinal: false,
+      socName: '', socTitle: '', socDate: bizToday(), isFinal: false,
       createdAt: nowIso(), updatedAt: nowIso()
     };
     if (prior) {
@@ -7170,10 +7269,37 @@
     return doc;
   }
   function saveClose() { if (!_close) return; _close.updatedAt = nowIso(); _close.updatedBy = myUpn(); localStorage.setItem(_close.id, JSON.stringify(_close)); }
+  /* Read-modify-write for every Close mutation. _close is a module global captured when the
+     tab was opened, so writing straight through it replaced the WHOLE checklist document —
+     two bookkeepers closing the same month in the same session silently erased each other's
+     ticks, notes and statement balances, with the loser's work simply gone. Re-read, apply
+     just this change, then save. */
+  function closeApply(fn) {
+    if (!_close) return;
+    var doc = loadCloseDoc(_close.period);
+    if (!doc || doc.realmId !== currentRealm) return;   // client switched under us
+    fn(doc);
+    _close = doc;
+    saveClose();
+  }
   /* The firm and its clients are on Central time, but new Date().toISOString() is UTC — so
      from 7pm Central (6pm during CDT) onward "today" was already tomorrow, and a transaction
      entered in the evening posted to the client's live books with tomorrow's date. Same
      helper shape (and same fallback) the server already uses. */
+  /* A failed QuickBooks write has two very different meanings and they must not share a
+     message. "QuickBooks rejected it" told the bookkeeper the transaction definitely did NOT
+     post — so on a dropped connection or a lapsed session, where the write may well have
+     landed, they posted it a second time and duplicated it in the client's live books. */
+  function qboWriteFailMsg(e) {
+    var m = (e && e.message) || '';
+    if (/Failed to fetch|NetworkError|Load failed|bad response|aborted/i.test(m)) {
+      return 'The connection dropped before we got an answer, so this may or may not have posted. Check the client’s QuickBooks before trying again — do not just re-post it.';
+    }
+    if (/401|sign-?in|signed out|unauthor/i.test(m)) {
+      return 'Your sign-in expired, so we could not confirm whether this posted. Sign back in and check the client’s QuickBooks before re-posting.';
+    }
+    return 'QuickBooks rejected it: ' + (typeof qboFriendly === 'function' ? qboFriendly(m) : m);
+  }
   function bizToday() {
     try { return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' }); }
     catch (e) { return new Date().toISOString().slice(0, 10); }
@@ -7213,7 +7339,7 @@
     document.getElementById('close_period').onchange = function () { saveClose(); _close = loadCloseDoc(this.value); renderClose(); };
     document.getElementById('close_mecontact').onchange = function () { setMonthEndContact(this.value); var nm = document.getElementById('close_mecname'); if (nm) nm.textContent = (window.bccDisplayName && window.bccDisplayName(monthEndContact())) || monthEndContact(); };
     var meNoteEl = document.getElementById('close_menote');
-    if (meNoteEl) meNoteEl.oninput = function () { _close.meetingNote = this.value; saveClose(); };
+    if (meNoteEl) meNoteEl.oninput = function () { var v = this.value; closeApply(function (d) { d.meetingNote = v; }); };
     document.getElementById('close_menotify').onclick = function () {
       var btn = this, st = document.getElementById('close_mestatus');
       // Capture the close doc + realm being notified right now — a period/client switch
@@ -7234,8 +7360,8 @@
         if (window.bccNotifySaved) window.bccNotifySaved('Notification sent — ' + label + ' month-end meeting hand-off.');
       });
     };
-    body.querySelectorAll('[data-cstep]').forEach(function (c) { c.onchange = function () { var k = c.getAttribute('data-cstep'); _close.steps[k] = _close.steps[k] || {}; _close.steps[k].done = c.checked; saveClose(); renderClose(); }; });
-    body.querySelectorAll('[data-cnote]').forEach(function (inp) { inp.oninput = function () { var k = inp.getAttribute('data-cnote'); _close.steps[k] = _close.steps[k] || {}; _close.steps[k].note = inp.value; saveClose(); }; });
+    body.querySelectorAll('[data-cstep]').forEach(function (c) { c.onchange = function () { var k = c.getAttribute('data-cstep'), v = c.checked; closeApply(function (d) { d.steps[k] = d.steps[k] || {}; d.steps[k].done = v; }); renderClose(); }; });
+    body.querySelectorAll('[data-cnote]').forEach(function (inp) { inp.oninput = function () { var k = inp.getAttribute('data-cnote'), v = inp.value; closeApply(function (d) { d.steps[k] = d.steps[k] || {}; d.steps[k].note = v; }); }; });
     closeLoadHelpers(period);
   }
   /* ---- Month-end complete → notify the meeting scheduler (Jessica's request).
@@ -7318,7 +7444,7 @@
     if (!host) return;
     host.querySelectorAll('[data-recon]').forEach(function (row) { updateReconRow(row); });
     host.querySelectorAll('[data-stmt]').forEach(function (inp) {
-      inp.oninput = function () { var id = inp.getAttribute('data-stmt'); _close.recon[id] = _close.recon[id] || {}; _close.recon[id].statementBalance = inp.value; saveClose(); var row = host.querySelector('[data-recon="' + id + '"]'); if (row) updateReconRow(row); };
+      inp.oninput = function () { var id = inp.getAttribute('data-stmt'), v = inp.value; closeApply(function (d) { d.recon[id] = d.recon[id] || {}; d.recon[id].statementBalance = v; }); var row = host.querySelector('[data-recon="' + id + '"]'); if (row) updateReconRow(row); };
     });
   }
   function updateReconRow(row) {
@@ -7418,7 +7544,19 @@
     }
     out.querySelectorAll('[data-wrow]').forEach(function (row) {
       row.querySelectorAll('[data-wf]').forEach(function (inp) {
-        inp.oninput = function () { var name = row.getAttribute('data-job'); _wip.jobs[name] = _wip.jobs[name] || {}; _wip.jobs[name][inp.getAttribute('data-wf')] = inp.value; saveWip(); recalcAll(); };
+        /* Read-modify-write against the FRESHEST local copy on every keystroke. _wip is a
+           module global captured when the tab was opened, so writing through it replaced the
+           whole document — a colleague setting up a different job in the same minute had
+           every contract and estimated cost they had just typed wiped by the next keystroke
+           here. recalcAll re-reads _wip.jobs per row, so it picks the merged doc up at once. */
+        inp.oninput = function () {
+          var name = row.getAttribute('data-job');
+          var d = loadWipDoc();
+          if (d.realmId !== currentRealm) return;   // client switched under us
+          d.jobs[name] = d.jobs[name] || {};
+          d.jobs[name][inp.getAttribute('data-wf')] = inp.value;
+          _wip = d; saveWip(); recalcAll();
+        };
       });
     });
     recalcAll();
@@ -7477,10 +7615,22 @@
     var entries = [];
     Object.keys(_bkAccrued).forEach(function (r) { var s = Math.round(_bkAccrued[r]); if (s > 0) entries.push({ realmId: r, companyName: _bkCompany[r] || '', seconds: s }); });
     if (!entries.length) return;
+    /* Clear OPTIMISTICALLY but put it back if the write did not land. Clearing
+       unconditionally meant that once the SWA cookie lapsed — which it does on any tab left
+       open all day, exactly the tab this feature measures — every 401 threw the accrued
+       seconds away, so a whole afternoon of bookkeeping time silently vanished. Merge on
+       restore so seconds accrued during the request are not lost either. */
+    var sentCopy = {};
+    entries.forEach(function (e) { sentCopy[e.realmId] = e.seconds; });
     _bkAccrued = {};
+    var restore = function () { Object.keys(sentCopy).forEach(function (r) { _bkAccrued[r] = (_bkAccrued[r] || 0) + sentCopy[r]; }); };
     var body = JSON.stringify({ entries: entries });
-    if (useBeacon && navigator.sendBeacon) { try { navigator.sendBeacon('/api/bookkeeping/time', new Blob([body], { type: 'application/json' })); } catch (e) {} }
-    else { fetch('/api/bookkeeping/time', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: body, keepalive: true }).catch(function () {}); }
+    if (useBeacon && navigator.sendBeacon) {
+      // A beacon reports only whether it was QUEUED; that is the best signal available on unload.
+      try { if (!navigator.sendBeacon('/api/bookkeeping/time', new Blob([body], { type: 'application/json' }))) restore(); } catch (e) { restore(); }
+    }
+    else { fetch('/api/bookkeeping/time', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: body, keepalive: true })
+      .then(function (r) { if (!r.ok) restore(); }).catch(restore); }
   }
   function bkStart() {
     if (_bkStarted) return; _bkStarted = true;
@@ -7523,6 +7673,8 @@
   }
   function renderAll() { try { localStorage.setItem('bcc-last-realm', currentRealm || ''); } catch (e) {} fillCompanyFilter(); renderStatus(); renderKpis(); renderTable(); toggleQboReports(); renderWorkspace(); applyChrome(); }
   function init() {
+    // Before anything reads periods: rescue manual corrections stranded under the legacy id.
+    migrateManualPeriods();
     yearFilter = document.getElementById('yearFilter');
     rowsEl = document.getElementById('rows');
     emptyEl = document.getElementById('empty');

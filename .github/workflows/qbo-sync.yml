@@ -17,9 +17,13 @@ jobs:
         run: |
           # Idempotent (upserts by period), so retrying after a cold-start timeout
           # is safe. Warm up first, then try up to 3 times.
+          # Warm-up only — deliberately NOT the sync endpoint. This used to GET
+          # /api/cron/qbo-sync, and that route accepted GET, so the "warm-up" ran the whole
+          # firm-wide sync: every scheduled run did the entire job twice, concurrently,
+          # against Intuit's rate limits. /api/profile just forces the cold start. The route
+          # is POST-only now, so this cannot recur even if someone re-points this line.
           curl -sS --max-time 60 -o /dev/null \
-            'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/cron/qbo-sync' \
-            -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}" || true
+            'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/profile' || true
           for attempt in 1 2 3; do
             code=$(curl -sS -o /tmp/out.json -w '%{http_code}' --max-time 600 \
               -X POST 'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/cron/qbo-sync' \

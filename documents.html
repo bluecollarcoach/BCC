@@ -133,10 +133,6 @@
     </div>
   </div>
 
-  <div class="note-banner" id="blobNote" hidden>
-    <strong>Heads up:</strong> the Azure Blob upload endpoint isn't wired into the Functions backend yet (lands in the next commit). For now you can see the document index and add metadata; actual file upload arrives shortly.
-  </div>
-
   <div class="uploader" id="uploader">
     <h3>Add a document</h3>
     <p>Drop a file here, or click to pick one. Max 25&nbsp;MB. Files go to your Azure Blob container; metadata stays in the cloud.</p>
@@ -443,7 +439,13 @@
 
     fetch('/api/documents', { method: 'POST', body: fd, credentials: 'include' })
       .then(function (r) {
-        if (!r.ok) throw new Error('Upload endpoint not wired yet (HTTP ' + r.status + ')');
+        // Preserve the STATUS so the catch can tell a refusal from a dropped connection.
+        if (!r.ok) {
+          return r.json().catch(function () { return null; }).then(function (j) {
+            var err = new Error((j && j.error) || ('the server returned ' + r.status));
+            err.status = r.status; throw err;
+          });
+        }
         return r.json();
       })
       .then(function (resp) {
@@ -456,12 +458,23 @@
         loadServerDocs().then(renderList);
       })
       .catch(function (e) {
-        // Upload endpoint not wired, or offline: keep the metadata-only row locally, which
-        // is what this fallback has always done. It syncs through /api/data normally
-        // because no server-owned doc exists at this id.
+        /* The upload endpoint has been wired for a long time. Treating EVERY failure as
+           "not wired yet" created a permanent firm-wide document row for a file that was
+           never stored — so the index listed a document nobody could ever open, and said
+           the upload was "pending" when nothing was queued and nothing would retry.
+           Only fall back to a metadata-only row when the request never reached a server
+           at all (fetch rejected, so e.status is undefined) — that is the genuine offline
+           case this path was written for. */
+        if (e && e.status === 401) {
+          if (window.bccNotify) window.bccNotify('Your sign-in expired, so “' + meta.name + '” was not uploaded. Sign back in and add it again.', 'error', 10000);
+          return;
+        }
+        if (e && e.status) {
+          if (window.bccNotify) window.bccNotify('“' + meta.name + '” could not be uploaded: ' + e.message, 'error', 10000);
+          return;
+        }
         saveDoc(meta);
-        document.getElementById('blobNote').hidden = false;
-        if (window.bccNotify) window.bccNotify('File metadata saved; binary upload pending (' + e.message + ').', 'warn');
+        if (window.bccNotify) window.bccNotify('You appear to be offline — “' + meta.name + '” is listed locally but has NOT been uploaded yet. Add it again once you are back online.', 'warn', 10000);
         renderList();
       })
       .finally(function () {
@@ -534,7 +547,10 @@
       var doc = allDocs().find(function (d) { return d.id === tr.dataset.id; });
       if (!doc) return;
       if (btn.dataset.act === 'delete') {
-        if (!confirm('Delete this document?\n\n"' + doc.name + '"\n\nThe metadata is removed; if the file was uploaded, the Azure Blob entry is also deleted when the API supports it.')) return;
+        // The API has deleted the blob for a long time. Saying it happens "when the API
+        // supports it" told the bookkeeper the client's file was still in storage after they
+        // had permanently destroyed it — the opposite of the truth, on an irreversible action.
+        if (!confirm('Permanently delete this document?\n\n"' + doc.name + '"\n\nThe file itself is deleted from storage, not just the index entry. This cannot be undone.')) return;
         deleteDoc(doc);
         renderList();
         // Backend delete (tolerates not-wired-yet). fetch() RESOLVES on 4xx/5xx,

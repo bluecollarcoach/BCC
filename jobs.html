@@ -478,6 +478,10 @@
   var _deepLinkDone = false;
   function tryDeepLink() {
     if (_deepLinkDone) return;
+    // Never open over a modal the user already has open — this also runs on every live-poll
+    // tick, so a late-syncing ?id= would otherwise pop over an engagement being edited.
+    var mb = document.getElementById('modalBg');
+    if (mb && mb.classList.contains('open')) return;
     try { var jid = new URLSearchParams(location.search).get('id'); if (jid && getEng(jid)) { _deepLinkDone = true; openModal(jid); } } catch (e) {}
   }
   window.addEventListener('bcc-data-ready', function () { renderBoard(); tryDeepLink(); });

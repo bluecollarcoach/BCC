@@ -228,6 +228,18 @@
   var ACTIONS = {
     // CRM
     'contact-create':  { label:'Created contact',   cat:'crm',    ic:'&#43;' },
+    // These actions are all really written by the app but had no entry here, so
+    // classifyAction fell through to the default and the category filters HID them —
+    // the log looked like the work had never happened.
+    'engagement-create': { label:'Created engagement', cat:'crm',     ic:'&#43;' },
+    'engagement-update': { label:'Updated engagement', cat:'crm',     ic:'&#9998;' },
+    'campaign-create':   { label:'Created campaign',   cat:'crm',     ic:'&#43;' },
+    'campaign-update':   { label:'Updated campaign',   cat:'crm',     ic:'&#9998;' },
+    'convo-delete':      { label:'Deleted conversation', cat:'crm',   ic:'&#128465;' },
+    'course-create':     { label:'Created course',     cat:'session', ic:'&#43;' },
+    'event-create':      { label:'Created event',      cat:'session', ic:'&#43;' },
+    'kb-article-create': { label:'Created KB article', cat:'doc',     ic:'&#43;' },
+    'kb-article-update': { label:'Updated KB article', cat:'doc',     ic:'&#9998;' },
     'contact-update':  { label:'Updated contact',   cat:'crm',    ic:'&#9998;' },
     'contact-delete':  { label:'Deleted contact',   cat:'crm',    ic:'&#10005;' },
     'convo-add':       { label:'Logged conversation', cat:'crm', ic:'&#128172;' },

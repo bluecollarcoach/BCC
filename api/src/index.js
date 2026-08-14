@@ -1829,9 +1829,18 @@ app.http('cron-reminders', {
 
     try {
       // 1) Load upcoming sessions + events.
+      /* Bounded to the window the loop below actually enforces. Unbounded, this re-read
+         every session and event ever created — in full, including bodies — 144 times a day,
+         a cost that grows forever while the useful set stays about a day wide. The lower
+         bound has an hour of slack so a session that started moments ago is still eligible
+         for its 15-minute reminder. */
       const q = {
-        query: 'SELECT c.id, c.data FROM c WHERE c.tenantId = @t AND (STARTSWITH(c.id, "bcc-session-") OR STARTSWITH(c.id, "bcc-event-"))',
-        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+        query: 'SELECT c.id, c.data FROM c WHERE c.tenantId = @t AND (STARTSWITH(c.id, "bcc-session-") OR STARTSWITH(c.id, "bcc-event-")) AND c.data.startAt > @lo AND c.data.startAt <= @hi',
+        parameters: [
+          { name: '@t', value: BCC_TENANT_ID },
+          { name: '@lo', value: new Date(Date.now() - 60 * 60 * 1000).toISOString() },
+          { name: '@hi', value: new Date(Date.now() + 25 * 60 * 60 * 1000).toISOString() }
+        ]
       };
       const { resources: docs } = await c.items.query(q).fetchAll();
 
@@ -2476,7 +2485,10 @@ async function companyAccessMap(p) {
 // filtering a list doesn't re-check the same client repeatedly.
 function docFolderRealm(meta) { return (/^\/clients\/([^/]+)/i.exec(String((meta && meta.folder) || '')) || [])[1] || null; }
 async function docAccessFilter(p) {
-  const admin = await isAppAdmin(p);
+  // NO admin short-circuit here. driveClientAccess already checks companyPrivateBlocked
+  // FIRST and only then short-circuits admins, so admins keep full access to every
+  // non-private client — while an owner-only locked client stays locked, which returning
+  // true up front quietly defeated.
   // Company access alone was the whole gate here, so a 'tasks'-tier bookkeeper — who is
   // meant to see that client's task list and nothing else — could list and download the
   // client's monthly financial report, certified payroll and everything else in their
@@ -2484,7 +2496,6 @@ async function docAccessFilter(p) {
   const noFin = bookkeepingNoFinancials(await bookkeepingTierFor(p));
   const cache = new Map(); // realm -> boolean
   return async (meta) => {
-    if (admin) return true;
     const realm = docFolderRealm(meta);
     if (!realm) return true;                    // non-client docs remain team-visible
     if (noFin) return false;                    // 'tasks'/'none' see no client financial docs
@@ -3226,6 +3237,10 @@ app.http('audit-client', {
     const realmId = request.params.realmId;
     try {
       const c = container();
+      // Tier gate FIRST, mirroring /api/audit/qbo. The client activity feed narrates every
+      // financial action taken on the company — amounts, vendors, report sends — so a
+      // 'tasks'-tier bookkeeper reading it defeats the whole point of that tier.
+      if (bookkeepingNoFinancials(await bookkeepingTierFor(p))) return forbidden('your access level does not include financials');
       // Access gate: admins see all; others only enabled companies assigned to
       // them (or open to all) — mirrors the company-list scoping.
       const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
@@ -3854,9 +3869,28 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
           console.error('qbo-sync: ' + failedWrites + ' of ' + periods.length + ' period write(s) FAILED for realm ' + comp.realmId + ':',
             (writes.find(w => w.status === 'rejected') || {}).reason);
         }
-        comp.lastSyncAt = new Date().toISOString();
-        comp.updatedAt = comp.lastSyncAt;
-        try { await c.items.upsert(comp); } catch (_) {}
+        /* Stamp freshness only if something actually LANDED, and never write this stale
+           snapshot back wholesale. `comp` was read minutes ago at the top of a multi-company
+           run, so upserting it whole reverted anything changed in between — including a
+           refresh token Intuit had rotated, which silently kills the client's connection.
+           Re-read and patch only the fields this sync owns, guarded by that read's ETag. */
+        const built = periods.length - failedWrites;
+        const nowIsoStr = new Date().toISOString();
+        const syncStatus = built > 0 ? ((failedMonths || failedWrites) ? 'partial' : 'ok') : 'failed';
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const fresh = await c.item(comp.id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+          if (!fresh) break;
+          if (built > 0) fresh.lastSyncAt = nowIsoStr;   // "last sync" must mean last SUCCESSFUL sync
+          fresh.lastSyncAttemptAt = nowIsoStr;
+          fresh.lastSyncStatus = syncStatus;
+          fresh.lastSyncError = built > 0 ? null : (diag.firstBody || null);
+          fresh.updatedAt = nowIsoStr;
+          try {
+            const opts = fresh._etag ? { accessCondition: { type: 'IfMatch', condition: fresh._etag } } : undefined;
+            await c.items.upsert(fresh, opts);
+            break;
+          } catch (e) { if (e && e.code !== 412) break; }   // 412 = someone else wrote; re-read and retry
+        }
         try { await c.items.upsert({ id: 'bcc-qbo-debug-sync-' + comp.realmId, tenantId: BCC_TENANT_ID, docType: 'qbo-debug', at: new Date().toISOString(), realmId: comp.realmId, env, base, periodsBuilt: periods.length, failedMonths, firstStatus: diag.firstStatus, firstBody: diag.firstBody }); } catch (_) {}
         return { realmId: comp.realmId, companyName: comp.companyName,
           periodsBuilt: periods.length - failedWrites, failedWrites,
@@ -3872,7 +3906,10 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
  * manual button, firm-wide, so the KPIs/reports are fresh each morning.
  */
 app.http('cron-qbo-sync', {
-  methods: ['POST', 'GET'],
+  // POST only. With GET allowed, the workflow's own "warm-up" curl — which exists purely to
+  // force a cold start — ran the entire firm-wide sync, so every scheduled run did the whole
+  // job twice concurrently against Intuit's rate limits.
+  methods: ['POST'],
   authLevel: 'anonymous',
   route: 'cron/qbo-sync',
   handler: async (request, context) => {
@@ -5875,12 +5912,17 @@ app.http('qbo-write', {
       const cap = { invoice: 'Invoice', bill: 'Bill', purchase: 'Purchase', payment: 'Payment', customer: 'Customer', vendor: 'Vendor', item: 'Item', account: 'Account', journalentry: 'JournalEntry', project: 'Customer' }[entity];
       if (!cap) return badRequest('unsupported entity: ' + entity);
       let payload;
+      /* Lines the editor preserves but does not render (item lines, discounts, tax). On an
+         update they are concatenated back onto the payload, so they are real lines — but the
+         guards below counted only the rendered ones, which made a transaction whose lines are
+         ALL of an unrendered type impossible to save at all. */
+      const keep = (b.op === 'update' && Array.isArray(f.keepLines)) ? f.keepLines : [];
       if (entity === 'invoice') {
         const lines = (f.lines || []).filter(l => l && (l.amount || l.itemId)).map(l => ({
           DetailType: 'SalesItemLineDetail', Amount: qboAmount(l.amount), Description: l.desc || undefined,
           SalesItemLineDetail: Object.assign({ ItemRef: { value: String(l.itemId) } }, l.qty ? { Qty: Number(l.qty) } : {}, l.unitPrice ? { UnitPrice: Number(l.unitPrice) } : {})
         }));
-        if (!f.customerId || !lines.length) return badRequest('customer and at least one line required');
+        if (!f.customerId || !(lines.length + keep.length)) return badRequest('customer and at least one line required');
         payload = { CustomerRef: { value: String(f.customerId) }, Line: lines };
         if (f.txnDate) payload.TxnDate = f.txnDate; if (f.dueDate) payload.DueDate = f.dueDate;
       } else if (entity === 'bill') {
@@ -5889,10 +5931,14 @@ app.http('qbo-write', {
           // A job/customer on the line books the cost to that job (and makes it billable).
           AccountBasedExpenseLineDetail: Object.assign(
             { AccountRef: { value: String(l.accountId) } },
-            f.jobCustomerId ? { CustomerRef: { value: String(f.jobCustomerId) }, BillableStatus: 'Billable' } : {}
+            // BillableStatus comes from the CALLER. Hard-coding 'Billable' meant that merely
+            // re-saving a job-costed bill flipped a NotBillable or already-HasBeenBilled line
+            // back to Billable in the client's live books — silently re-billing work.
+            f.jobCustomerId ? { CustomerRef: { value: String(f.jobCustomerId) },
+              BillableStatus: (['Billable', 'NotBillable', 'HasBeenBilled'].indexOf(String(f.billableStatus)) >= 0 ? String(f.billableStatus) : 'Billable') } : {}
           )
         }));
-        if (!f.vendorId || !lines.length) return badRequest('vendor and at least one line required');
+        if (!f.vendorId || !(lines.length + keep.length)) return badRequest('vendor and at least one line required');
         payload = { VendorRef: { value: String(f.vendorId) }, Line: lines };
         if (f.txnDate) payload.TxnDate = f.txnDate; if (f.dueDate) payload.DueDate = f.dueDate;
       } else if (entity === 'purchase') {
@@ -5905,13 +5951,20 @@ app.http('qbo-write', {
           // same as a Bill.
           AccountBasedExpenseLineDetail: Object.assign(
             { AccountRef: { value: String(l.accountId) } },
-            f.jobCustomerId ? { CustomerRef: { value: String(f.jobCustomerId) }, BillableStatus: 'Billable' } : {}
+            // BillableStatus comes from the CALLER. Hard-coding 'Billable' meant that merely
+            // re-saving a job-costed bill flipped a NotBillable or already-HasBeenBilled line
+            // back to Billable in the client's live books — silently re-billing work.
+            f.jobCustomerId ? { CustomerRef: { value: String(f.jobCustomerId) },
+              BillableStatus: (['Billable', 'NotBillable', 'HasBeenBilled'].indexOf(String(f.billableStatus)) >= 0 ? String(f.billableStatus) : 'Billable') } : {}
           )
         }));
-        if (!f.paymentAccountId || !lines.length) return badRequest('payment account and at least one line required');
+        if (!f.paymentAccountId || !(lines.length + keep.length)) return badRequest('payment account and at least one line required');
         const payType = ['Cash', 'Check', 'CreditCard'].includes(String(f.paymentType)) ? String(f.paymentType) : 'Cash';
         payload = { PaymentType: payType, AccountRef: { value: String(f.paymentAccountId) }, Line: lines };
-        if (f.vendorId) payload.EntityRef = { value: String(f.vendorId), type: 'Vendor' };
+        // Carry the ORIGINAL payee type through. Hard-coding 'Vendor' meant that merely
+        // categorising an expense paid to an Employee or Customer rewrote the payee type in
+        // the client's live books, detaching it from that employee's or customer's history.
+        if (f.vendorId) payload.EntityRef = { value: String(f.vendorId), type: (['Vendor', 'Customer', 'Employee'].indexOf(String(f.entityType)) >= 0 ? String(f.entityType) : 'Vendor') };
         if (f.txnDate) payload.TxnDate = f.txnDate;
       } else if (entity === 'payment') {
         if (!f.customerId || !f.totalAmt) return badRequest('customer and amount required');
@@ -5981,13 +6034,17 @@ app.http('qbo-write', {
       const res = await ctx.apiPost('/' + (entity === 'project' ? 'customer' : entity), payload);
       const created = res[cap] || {};
       // Authoritative server-side audit at the moment it posted to live books.
-      logAudit('qbo-write', { user: auditUser(request), path: '/api/integrations/qbo/companies/' + request.params.realmId + '/write', meta: Object.assign({
+      logAudit('qbo-write', { user: auditUser(request), path: '/api/integrations/qbo/companies/' + request.params.realmId + '/write', meta: Object.assign({}, auditSummary || {}, {
         realmId: request.params.realmId, entity, op: auditOp, outcome: 'posted',
         id: created.Id, docNumber: created.DocNumber,
         // Prefer what QBO actually recorded; fall back to what we sent, so the row is
         // still useful for entities QBO doesn't return a TotalAmt for.
         total: created.TotalAmt != null ? created.TotalAmt : (auditSummary && auditSummary.total)
-      }, auditSummary || {}) });
+      // auditSummary LAST would overwrite every field above it — including `total`, so the
+      // push log always showed the amount we attempted rather than the one QuickBooks
+      // actually recorded, which is the number that matters when they disagree. Spread it
+      // first and let the explicit values win.
+      }) });
       return { jsonBody: { ok: true, id: created.Id, docNumber: created.DocNumber, syncToken: created.SyncToken, total: created.TotalAmt } };
     } catch (e) {
       context.error('qbo-write', e);
@@ -6568,11 +6625,15 @@ app.http('qbo-kpis', {
       const burnEnd = new Date(end.getFullYear(), end.getMonth(), 0);
       const burnStart = new Date(burnEnd.getFullYear(), burnEnd.getMonth() - (burnMonths - 1), 1);
       let monthlyBurn = opex / burnMonths;   // fallback if the extra pull fails
+      // Track WHICH basis was used. The fallback is the exact part-month divisor the
+      // complete-months window was added to remove, so silently reverting to it republishes
+      // the ~40% drift under the same label. Published as burnComplete so the UI can caveat.
+      let burnComplete = false;
       try {
         const burnPl = flattenQboReport(await apiGet('/reports/ProfitAndLoss?start_date=' + burnStart.toISOString().slice(0, 10) +
           '&end_date=' + burnEnd.toISOString().slice(0, 10) + '&accounting_method=' + method));
         const burnOpex = (findByGroup(burnPl, 'Expenses') ?? findByLabel(burnPl, /total expenses/i));
-        if (burnOpex != null) monthlyBurn = burnOpex / burnMonths;
+        if (burnOpex != null) { monthlyBurn = burnOpex / burnMonths; burnComplete = true; }
       } catch (_) { /* keep the fallback rather than failing the whole KPI card */ }
 
       const currentRatio = currentLiabilities > 0 ? currentAssets / currentLiabilities : null;
@@ -6584,7 +6645,7 @@ app.http('qbo-kpis', {
         realmId, companyName: comp.companyName, asOf, method, burnMonths,
         kpis: {
           cash, currentAssets, currentLiabilities, currentRatio, workingCapital,
-          monthlyBurn, monthsOfCash, daysOfCash,
+          monthlyBurn, monthsOfCash, daysOfCash, burnComplete,
           revenue, cogs, opex, expenses, netIncome,
           netMargin: revenue ? netIncome / revenue : null,
           totalAssets, totalLiabilities
@@ -6938,10 +6999,19 @@ app.http('qbo-monthly-report', {
       // is never blank.
       // method here is 'Cash'/'Accrual' (capitalised for QBO's API); the POST stores under
       // the lowercase form, so normalise or the lookup silently never matches.
-      const savedObs = (saved && saved.observationsByMethod && saved.observationsByMethod[String(method).toLowerCase()])
-        || (saved && Array.isArray(saved.observations) ? saved.observations : []);
+      /* The flat `observations` field is the ACCRUAL narrative for any document written
+         before observationsByMethod existed. Falling back to it for a document that HAS the
+         keyed store just printed the accrual commentary — with accrual dollar figures — under
+         a cash-basis table, and the next save then cemented it into the cash slot. Once a
+         document is in the new format, a basis with nothing saved falls through to
+         factObservations instead. */
+      const byM = saved && saved.observationsByMethod;
+      const savedObs = byM
+        ? (byM[String(method).toLowerCase()] || [])
+        : ((saved && Array.isArray(saved.observations)) ? saved.observations : []);
       data.observations = (savedObs && savedObs.length) ? savedObs : factObservations(data.kpis);
-      data.observationsUpdatedAt = saved ? saved.updatedAt : null;
+      // Only claim "notes saved" when THIS basis actually has some.
+      data.observationsUpdatedAt = (saved && savedObs.length) ? saved.updatedAt : null;
       data.observationsBy = saved ? saved.updatedBy : null;
       data.goals = goals;
       // Publish the classification the handler already computed. Without it the client had
@@ -8019,7 +8089,11 @@ app.http('documents-list-create', {
           // ...and at the right tier. This path calls driveClientAccess directly rather than
           // going through docAccessFilter, so it needs the bookkeeping-tier rule stated
           // separately or a 'tasks' bookkeeper could still write into a client's folder.
-          if (bookkeepingNoFinancials(await bookkeepingTierFor(p))) return { status: 403, jsonBody: { error: 'your access level does not include this client’s files' } };
+          // Uploading is a WRITE, so the test is bookkeepingReadOnly (which covers
+          // 'view' as well as 'tasks'/'none'), not bookkeepingNoFinancials. A 'view'
+          // bookkeeper is defined as read-only everywhere else and could still put files
+          // into a client's folder through here.
+          if (bookkeepingReadOnly(await bookkeepingTierFor(p))) return { status: 403, jsonBody: { error: 'your bookkeeping access is view-only, so you cannot add files to this client' } };
         }
       }
       const tags = String(form.get('tags') || '').trim();
@@ -8114,6 +8188,11 @@ app.http('document-one', {
       let meta = null;
       try { ({ resource: meta } = await c.item(id, BCC_TENANT_ID).read()); } catch (e) { if (e.code !== 404) throw e; }
       if (meta) { const allowDel = await docAccessFilter(p); if (!(await allowDel(meta))) return forbidden('no access to this client’s files'); }
+      // Deleting is a WRITE and this is permanent (Blob + Cosmos). docAccessFilter is
+      // deliberately NOT the place for this rule — it also gates the GET/list/download
+      // callers, and a read-only bookkeeper is still supposed to READ these files. Keyed on
+      // docFolderRealm so firm-wide documents are unaffected.
+      if (meta && docFolderRealm(meta) && bookkeepingReadOnly(await bookkeepingTierFor(p))) return forbidden('your bookkeeping access is view-only, so you cannot delete this client’s files');
       if (meta && meta.storageKey) {
         try {
           const cont = getBlobContainer();

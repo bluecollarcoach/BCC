@@ -1699,7 +1699,10 @@
               rec2.status = 'error';
               rec2.lastTest = { ok: false, error: e.message };
               saveIntegration(rec2);
-              if (window.bccNotify) window.bccNotify('Test endpoint not wired yet — credentials saved but unverified.', 'warn');
+              // The test endpoint has been wired for a long time — claiming otherwise sent
+              // the admin looking for a missing feature instead of at the real error, which
+              // the chain had already captured.
+              if (window.bccNotify) window.bccNotify('Could not test ' + channel + ' (' + (e && e.message ? e.message : 'unknown error') + '). Credentials were saved but not verified.', 'warn', 9000);
               renderIntegrations();
             })
             .finally(function () { /* renderIntegrations re-creates the button */ });

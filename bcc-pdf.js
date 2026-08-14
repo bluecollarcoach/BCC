@@ -715,6 +715,24 @@
           // returns a width in those same units — so passing the stored PDF-point height
           // yields a PDF-point width. No viewport round-trip, and no scale to get wrong.
           src.w = measureTextW(src.text, src.h);
+          /* Clamp to the page and mirror the result back onto the div. The early return used
+             to skip BOTH: a longer replacement string was written straight into the saved
+             PDF running off the right-hand edge (the fall-through path shrinks to fit), and
+             the on-screen box kept its old size, so the editor clipped text the file
+             actually contained — the two disagreed in opposite directions.
+             pdfBoxToCss is the same rotation-correct projection renderSignPage uses on
+             re-attach, so this stays right on a rotated page and never touches blX/blY/theta. */
+          var box = pdfBoxToCss(ST._signVp, canvas, src);
+          var maxW = (canvas.clientWidth || canvas.width) - box.left;
+          if (box.w > maxW && box.w > 0) {
+            var shrink = maxW / box.w;
+            src.h = Math.max(1, src.h * shrink); src.w *= shrink;
+            box = pdfBoxToCss(ST._signVp, canvas, src);
+          }
+          el.style.left = box.left + 'px'; el.style.top = box.top + 'px';
+          el.style.width = box.w + 'px'; el.style.height = box.h + 'px';
+          textEl.style.fontSize = Math.round(box.h * 0.82) + 'px';
+          spec.aspect = src.w / src.h;
           spec.text = src.text; textEl.textContent = src.text;
           markDirty(ST);
           return;
