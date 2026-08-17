@@ -2641,7 +2641,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             '<label>' + (entity === 'bill' ? 'PO / Bill no.' : 'PO / Ref no.') + '<input id="tx_docnum" value="' + esc(pre.DocNumber || '') + '" placeholder="optional" /></label>' +
             '<label>Terms<select id="tx_terms">' + termOpts + '</select></label>';
         }
-        var jobLinesHaveMixedJobs = false;
+        var jobLinesHaveMixedJobs = false, jobLinesHaveMixedBillable = false;
         if (entity === 'bill' || entity === 'purchase') {
           // The first line that actually carries an AccountBasedExpenseLineDetail, not
           // literally Line[0] — a bill whose first line is a discount, tax or item line has
@@ -2667,9 +2667,22 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             seenJobIds[(cr && cr.value) || '(none)'] = 1;
           });
           jobLinesHaveMixedJobs = Object.keys(seenJobIds).length > 1;
+          /* Same hazard for the BILLABLE flag, which travels with the job. Line 1's status is
+             applied to every line on save, so a bill mixing a billable cost with an unbilled
+             one silently flips the unbilled one to Billable — the client gets invoiced for
+             work nobody meant to bill. Detected exactly like the mixed jobs above. */
+          var seenBillable = {};
+          (pre.Line || []).forEach(function (l) {
+            if (!l.AccountBasedExpenseLineDetail) return;
+            seenBillable[l.AccountBasedExpenseLineDetail.BillableStatus || '(none)'] = 1;
+          });
+          jobLinesHaveMixedBillable = Object.keys(seenBillable).length > 1;
           extraRow += '<label class="full">Project / job (optional — bills the cost to a job)' + txSearchInput('tx_job', refs.customers, jobSel, jobSelName) + '</label>';
           if (jobLinesHaveMixedJobs) {
             extraRow += '<div class="full" style="color:var(--burgundy);font-size:12px;">⚠️ This transaction’s lines currently have DIFFERENT jobs. Saving here applies ONE job to every line — to keep the per-line split, edit it in QuickBooks directly.</div>';
+          }
+          if (jobLinesHaveMixedBillable) {
+            extraRow += '<div class="full" style="color:var(--burgundy);font-size:12px;">⚠️ This transaction’s lines currently have DIFFERENT billable statuses. Saving here applies ONE status to every line, which can bill the client for a cost that was marked not billable — to keep the split, edit it in QuickBooks directly.</div>';
           }
         }
         html += '<div class="ws-form" style="margin-bottom:10px;">' + who + dateRow + extraRow + '</div>' +
@@ -2757,6 +2770,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           var origPartyId = (pre.EntityRef && pre.EntityRef.value) || '';
           if (partyValType && String(g.party || '') === String(origPartyId)) g.entityType = partyValType;
           if (jobLinesHaveMixedJobs && !confirm('This bill/purchase currently has DIFFERENT jobs on different lines. Saving here applies the same Project/job to every line, losing that per-line split. Continue?')) return;
+          if (jobLinesHaveMixedBillable && !confirm('This bill/purchase has DIFFERENT billable statuses on different lines. Saving here applies ONE status to every line, which can bill the client for a cost that was marked not billable. Continue?')) return;
           // On EDIT, a sparse update REPLACES all lines — carry through any line types the editor
           // doesn't render (item-based lines, discounts, etc.) verbatim so they aren't dropped.
           if (edit) { var editable = (entity === 'invoice' ? 'SalesItemLineDetail' : 'AccountBasedExpenseLineDetail'); g.keepLines = (pre.Line || []).filter(function (l) { return l.DetailType && l.DetailType !== editable; }); }
@@ -3844,7 +3858,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
          period — it has been rolled forward. Leaving it tickable let a second bookkeeper
          advance it again, skipping a period that never got done. A disabled input fires no
          change event, so the blanket binding below needs no special case. */
-      return '<div class="ws-row"' + (upc ? ' style="opacity:.6;"' : '') + '><input type="checkbox" data-tdone="' + esc(t.id) + '" ' + ((t.status === 'done' || upc) ? 'checked' : '') + (upc ? ' disabled title="Done for this period — next due ' + esc(t.dueDate || '') + '"' : '') + ' style="width:18px;height:18px;flex-shrink:0;" />' +
+      /* "Done for this period" applies only to an occurrence that was actually ROLLED
+         FORWARD. A brand-new recurring task dated in the future is upcoming but has never
+         been completed, and rendering it ticked-and-disabled told the bookkeeper it was
+         already done and gave her no way to tick it. */
+      var rolled = upc && (t.timesDone > 0 || !!t.lastDoneAt);
+      return '<div class="ws-row"' + (upc ? ' style="opacity:.6;"' : '') + '><input type="checkbox" data-tdone="' + esc(t.id) + '" ' + ((t.status === 'done' || rolled) ? 'checked' : '') + (rolled ? ' disabled title="Done for this period — next due ' + esc(t.dueDate || '') + '"' : (upc ? ' title="Not due yet"' : '')) + ' style="width:18px;height:18px;flex-shrink:0;" />' +
         '<div style="flex:1;min-width:0;">' + taskTitleHtml(t, isOpen, t.status === 'done' ? 'task-done' : '') +
         (meta ? '<div style="font-size:12px;color:' + (overdue ? 'var(--burgundy)' : 'var(--muted)') + ';padding-left:12px;">' + esc(meta) + '</div>' : '') +
         (isOpen ? taskDetailHtml(t, false) : '') + '</div>' +
@@ -5288,7 +5307,28 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
 
   /* ---- Reader / reply modal ---- */
   var _emEsc = null;
-  function emCloseModal() { var m = document.getElementById('em_modal'); if (m) m.remove(); if (_emEsc) { document.removeEventListener('keydown', _emEsc); _emEsc = null; } window._emReplyAttsInProgress = null; }
+  /* Is there an unsent reply on screen? openReply already asked before REBUILDING the box,
+     but every other way out of the reader — Escape, the ×, a backdrop click, opening another
+     message — removed the overlay without a word, taking a typed reply and its staged
+     attachments with it. */
+  function emReplyDirty() {
+    var b = document.getElementById('em_r_body');
+    var atts = window._emReplyAttsInProgress || [];
+    return !!((b && b.value.trim()) || atts.length);
+  }
+  function emConfirmDiscardReply() {
+    var atts = window._emReplyAttsInProgress || [];
+    return confirm('Discard your unsent reply' + (atts.length ? ' and ' + atts.length + ' attached file' + (atts.length === 1 ? '' : 's') : '') + '?');
+  }
+  // force = the reply has just been SENT (or the reader is being replaced by the same
+  // message), so there is nothing to protect and asking would be nonsense.
+  function emCloseModal(force) {
+    if (!force && emReplyDirty() && !emConfirmDiscardReply()) return false;
+    var m = document.getElementById('em_modal'); if (m) m.remove();
+    if (_emEsc) { document.removeEventListener('keydown', _emEsc); _emEsc = null; }
+    window._emReplyAttsInProgress = null;
+    return true;
+  }
   function emWireModal(ov) {
     document.body.appendChild(ov);
     ov.addEventListener('click', function (e) { if (e.target === ov) emCloseModal(); });
@@ -5305,7 +5345,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // every later getElementById returned the first, hidden one, so the visible
     // modal was inert — its X did nothing and the refetched message painted into
     // the invisible copy.
-    emCloseModal();
+    // If a reply is half-written, emCloseModal asks first — and if the bookkeeper says no,
+    // do NOT go on to open the other message over the top of it.
+    if (emCloseModal() === false) return;
     var realmAt = currentRealm;
     var msg = _emMsgs.filter(function (x) { return x.id === id; })[0] || { id: id, subject: '' };
     var ov = document.createElement('div'); ov.id = 'em_modal'; ov.className = 'em-modal-ov'; ov.setAttribute('data-open-msg', id);
@@ -5510,9 +5552,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // attachments with no warning.
     var existingBody = document.getElementById('em_r_body');
     var existingAtts = window._emReplyAttsInProgress || [];
-    if (existingBody && (existingBody.value.trim() || existingAtts.length)) {
-      if (!confirm('Discard your unsent reply' + (existingAtts.length ? ' and ' + existingAtts.length + ' attached file' + (existingAtts.length === 1 ? '' : 's') : '') + '?')) return;
-    }
+    if (emReplyDirty() && !emConfirmDiscardReply()) return;
     box.innerHTML = '<div class="em-reply"><div style="font-weight:700;font-size:12.5px;margin-bottom:6px;">' + (replyAll ? 'Reply all' : 'Reply') + '</div>' +
       '<textarea id="em_r_body" rows="6" placeholder="Write your reply…"></textarea>' +
       '<div style="margin-top:6px;">' +
@@ -5561,7 +5601,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           if (window.bccAudit) window.bccAudit('client-email-send', { path: '/bookkeeping.html', meta: { realmId: realmAt, kind: 'reply', attachments: sentCount } });
           if (window.bccNotifySaved) window.bccNotifySaved('Reply sent' + (sentCount ? ' with ' + sentCount + ' attachment' + (sentCount === 1 ? '' : 's') : '') + '.');
           window._emReplyAttsInProgress = null;
-          emCloseModal();
+          emCloseModal(true);   // just sent — nothing left to protect
         })
         .catch(function (e) {
           // The reader can be closed (Escape, or a click on the backdrop) while the send

@@ -1347,8 +1347,12 @@
       var USERS_CACHE_KEY = 'bcc-users-cache-v1';
       var applyUsers = function (live, persist) {
         window.bccPeopleFull = live;
-        recomputePcPeople(); // fires bcc-users-ready
+        recomputePcPeople();
         if (persist) { try { _origSetItem.call(localStorage, USERS_CACHE_KEY, JSON.stringify({ users: live, at: Date.now() })); } catch (e) {} }
+        /* Actually fire it. The old comment claimed recomputePcPeople did, and it does not —
+           so the BACKGROUND directory refresh updated bccPeople silently and every assignee
+           picker and name label kept showing the cached list until the next full reload. */
+        window.dispatchEvent(new Event('bcc-users-ready'));
       };
       var cachedUsers = null;
       try { var cu = JSON.parse(localStorage.getItem(USERS_CACHE_KEY) || 'null'); if (cu && Array.isArray(cu.users) && cu.users.length) cachedUsers = cu.users; } catch (e) {}

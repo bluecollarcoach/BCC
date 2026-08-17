@@ -499,14 +499,27 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   (function () {
     var handoffDay = '';
     try { handoffDay = sessionStorage.getItem('bcc-new-session-day') || ''; sessionStorage.removeItem('bcc-new-session-day'); } catch (e) {}
+    // The ?id= deep link is handled by trySessionDeepLink below, which retries until the
+    // session has actually synced. Its open-modal guard means this handoff still wins.
     if (handoffDay) { openModal(null, handoffDay); return; }
-    // Deep link from the Scheduler: ?id=<session>. Open that session directly instead of
-    // dropping the user on the current week with no idea which item they clicked.
+  })();
+  /* Latched retry, the same idiom jobs.html and events.html use. Evaluating ?id= once at
+     parse time meant a Scheduler deep link opened nothing whenever the session had not been
+     pulled into localStorage yet — a new device, a private window, or simply a slow
+     bootstrap — and the user landed on the current week with no idea which item they had
+     clicked. Retries on every data arrival until it succeeds, and never over an open modal. */
+  var _deepLinkDone = false;
+  function trySessionDeepLink() {
+    if (_deepLinkDone) return;
+    var bg = document.getElementById('modalBg');
+    if (bg && bg.classList.contains('open')) return;
     try {
       var sid = new URLSearchParams(location.search).get('id');
-      if (sid && getSession(sid)) openModal(sid);
+      if (sid && getSession(sid)) { _deepLinkDone = true; openModal(sid); }
     } catch (e) {}
-  })();
+  }
+  trySessionDeepLink();
+  window.addEventListener('bcc-data-ready', trySessionDeepLink);
   document.getElementById('m-cancel').addEventListener('click', closeModal);
   document.getElementById('modalBg').addEventListener('click', function (e) {
     if (e.target.id === 'modalBg') closeModal();

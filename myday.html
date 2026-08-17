@@ -596,6 +596,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // the browser blurring the field — left the next 8s poll free to repaint stored values
   // over half-written notes.
   var _logDirty = false;
+  // Same protection the daily log has: a live sync repaint must not wipe a half-typed
+  // personal to-do (or its due date) out from under the person typing it.
+  var _mtDirty = false;
   ['logWins', 'logBlockers', 'logTomorrow'].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) el.addEventListener('input', function () { _logDirty = true; });
@@ -675,6 +678,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     wrap.querySelectorAll('[data-mt-del]').forEach(function (b) { b.onclick = function () { var i = +b.getAttribute('data-mt-del'); var dd = loadMyTasks(); dd.items.splice(i, 1); saveMyTasks(dd); renderMyTasks(); }; });
     wrap.querySelectorAll('[data-mt-up]').forEach(function (b) { b.onclick = function () { var i = +b.getAttribute('data-mt-up'); swap(i, i - 1); }; });
     wrap.querySelectorAll('[data-mt-down]').forEach(function (b) { b.onclick = function () { var i = +b.getAttribute('data-mt-down'); swap(i, i + 1); }; });
+    /* Track typing so a live sync cannot wipe a half-written to-do. Checking activeElement
+       alone was not enough: type a task, click away to check something, and the 8s poll
+       repaints the card and throws the text away. Reset AFTER wiring, because this repaint
+       is what just made the boxes authoritative again. */
+    ['mt_new', 'mt_due'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.addEventListener('input', function () { _mtDirty = true; });
+    });
+    _mtDirty = false;
   }
 
   /* ===== Init ===== */
@@ -695,7 +707,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     renderHero(); renderKpis(); renderSessions(); renderClock();
     if (!_editDay) renderMyTime();
     var ae = document.activeElement;
-    if (!(ae && ae.id === 'mt_new')) renderMyTasks();
+    if (!_mtDirty && !(ae && (ae.id === 'mt_new' || ae.id === 'mt_due'))) renderMyTasks();
     if (!_logDirty && !(ae && (ae.id === 'logWins' || ae.id === 'logBlockers' || ae.id === 'logTomorrow'))) renderLog();
   }
   window.addEventListener('bcc-data-ready', liveRefresh);

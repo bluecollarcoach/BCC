@@ -466,6 +466,10 @@ async function logError(where, err, extra) {
   try {
     await container().items.upsert({
       id: 'bcc-errorlog-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7),
+      // Cosmos expires these for free (the container has TTL enabled). The cleanup cron was
+      // capped an order of magnitude below the write rate, so the retention it advertised
+      // was never actually reached and every purge cost RU it did not need to.
+      ttl: 90 * 24 * 3600,
       tenantId: BCC_TENANT_ID, docType: 'errorlog',
       source: (extra && extra.source) || 'server',
       where: String(where || '').slice(0, 200),
@@ -3814,9 +3818,22 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
         if (tok.refresh_token && tok.refresh_token !== comp.refreshToken) {
           // Persist the rotated token NOW — before the 12 report calls below — so a
           // later throw can't lose it (Intuit has already invalidated the old one).
-          comp.refreshToken = tok.refresh_token;
-          comp.updatedAt = new Date().toISOString();
-          try { await c.items.upsert(comp); }
+          comp.refreshToken = tok.refresh_token;   // in-memory copy for the rest of this run
+          /* Patch ONLY the token, guarded by a fresh read's ETag. `comp` was read minutes ago
+             at the top of a multi-company run, so upserting it whole reverted anything changed
+             in between — access lists, the private lock, even the sync stamps written later in
+             this same run. */
+          try {
+            for (let a = 0; a < 3; a++) {
+              const fresh = await c.item(comp.id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+              if (!fresh) break;
+              fresh.refreshToken = tok.refresh_token;
+              fresh.updatedAt = new Date().toISOString();
+              const opts = fresh._etag ? { accessCondition: { type: 'IfMatch', condition: fresh._etag } } : undefined;
+              try { await c.items.upsert(fresh, opts); break; }
+              catch (e) { if (e && e.code !== 412) throw e; }
+            }
+          }
           catch (e) { console.error('qbo-sync refresh-token persist FAILED for realm ' + comp.realmId + ':', e && e.message || e); }
         }
 
@@ -4519,16 +4536,23 @@ app.http('msgraph-messages', {
       let gurl;
       if (q) {
         // $search cannot be combined with $orderby; it ranks by relevance/recency.
-        gurl = 'https://graph.microsoft.com/v1.0/users/' + upn + '/messages?$search=' + encodeURIComponent('"' + q + '"') + '&$top=' + top + '&$select=' + select;
+        /* mailFolders/inbox, not /messages. /messages is the WHOLE mailbox, so the client
+           "inbox" was listing Sent Items, Drafts and Deleted Items alongside real mail — a
+           bookkeeper saw her own outgoing replies as if they were incoming, and the unread
+           badge counted drafts. $search works on the folder collection too. */
+        gurl = 'https://graph.microsoft.com/v1.0/users/' + upn + '/mailFolders/inbox/messages?$search=' + encodeURIComponent('"' + q + '"') + '&$top=' + top + '&$select=' + select;
       } else {
-        gurl = 'https://graph.microsoft.com/v1.0/users/' + upn + '/messages?$top=' + top + '&$orderby=receivedDateTime%20desc&$select=' + select;
+        gurl = 'https://graph.microsoft.com/v1.0/users/' + upn + '/mailFolders/inbox/messages?$top=' + top + '&$orderby=receivedDateTime%20desc&$select=' + select;
       }
       const r = await fetch(gurl, { headers: { Authorization: 'Bearer ' + access } });
       if (!r.ok) {
         const detail = (await r.text()).slice(0, 300);
         // Address saved but the shared mailbox isn't created in M365 yet → not an error.
         if (realmId && graphMailboxMissing(r.status, detail)) return { jsonBody: { ok: true, messages: [], pendingMailbox: true, note: 'mailbox not created yet' } };
-        return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')', detail } };
+        // `detail` is for the SERVER log only — a raw Azure AD / Graph error means nothing
+        // to a bookkeeper and leaks internal detail straight into the Email tab.
+        context.error('msgraph-messages Graph rejected', { status: r.status, detail });
+        return { status: 502, jsonBody: { ok: false, error: 'Client email is temporarily unavailable — an admin needs to check the Microsoft 365 connection in Admin → Integrations.' } };
       }
       const data = await r.json();
       const messages = (Array.isArray(data.value) ? data.value : []).map(m => ({
