@@ -136,6 +136,15 @@
     tbody td:before { content:attr(data-label); display:block; font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:1px; font-weight:700; margin-bottom:2px; }
   }
 </style>
+<script>/* Boot-error buffer. Must run BEFORE any page script: bcc-api.js is deferred, so
+   its error listener is not installed until after this page's inline script has already
+   parsed and run — which is exactly when a boot-time throw happens, and exactly the class
+   that has taken pages down three times without ever reaching the error log. Buffer here,
+   bcc-api.js drains it once identity is known. Bounded so a throw-loop cannot grow it. */
+window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__bccErrs.length<20)window.__bccErrs.push({
+  m:(e&&e.message)||'script error',
+  s:(e&&e.error&&e.error.stack)||((e&&e.filename)?(e.filename+':'+e.lineno+':'+e.colno):''),
+  u:location.pathname});}catch(_){}}); </script>
 <script src="bcc-api.js" defer></script>
 </head>
 <body>
@@ -737,6 +746,10 @@
         '</div>' +
         '<div style="font-size:13px;color:var(--ink);white-space:pre-wrap;word-break:break-word;">' + fbEsc(x.message || '') + '</div>' +
         ((x.user || x.url) ? '<div style="font-size:11.5px;color:var(--muted);margin-top:4px;">' + fbEsc([x.user, x.url].filter(Boolean).join(' · ')) + '</div>' : '') +
+        // The stack has always been recorded and never displayed, so every row here was
+        // undiagnosable — you could see THAT something broke but never where. Collapsed so
+        // the list stays readable.
+        (x.stack ? '<details style="margin-top:6px;"><summary style="font-size:11.5px;color:var(--muted);cursor:pointer;">stack</summary><pre style="font-size:11.5px;white-space:pre-wrap;word-break:break-word;margin:6px 0 0;">' + fbEsc(x.stack) + '</pre></details>' : '') +
       '</div>';
     }).join('');
   }

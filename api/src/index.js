@@ -1801,7 +1801,13 @@ app.http('errorlog', {
       let errWhere = 'c.tenantId=@t AND c.docType="errorlog"';
       if (src) { errWhere += ' AND c.source=@src'; errParams.push({ name: '@src', value: src }); }
       const { resources } = await c.items.query({
-        query: 'SELECT TOP ' + (ERR_CAP + 1) + ' c.id, c.source, c.where, c.message, c.user, c.url, c.at FROM c WHERE ' + errWhere + ' ORDER BY c.at DESC',
+        /* c["where"], NOT c.where — `where` is a RESERVED WORD in Cosmos SQL, so this query
+           was a syntax error and threw on every call. The admin Errors page has therefore
+           been showing nothing at all, which is why a client-side error breaking
+           bookkeeping.html for four people went unnoticed until someone reported the banner
+           by hand. Aliased to `where` so the existing UI keeps reading the same field.
+           The stack is selected too — it was recorded on every row and never read. */
+        query: 'SELECT TOP ' + (ERR_CAP + 1) + ' c.id, c.source, c["where"] AS "where", c.message, c.stack, c.user, c.url, c.at FROM c WHERE ' + errWhere + ' ORDER BY c.at DESC',
         parameters: errParams
       }).fetchAll();
       return { jsonBody: { ok: true, errors: resources.slice(0, ERR_CAP), capped: resources.length > ERR_CAP, source: src } };
@@ -1948,7 +1954,10 @@ app.http('cron-reminders', {
 
       return { jsonBody: { ok: true, scanned: docs.length, due: dueCount, pushed: okCount, pruned: deadCount } };
     } catch (err) {
+      // These run unattended, so console.error alone means nobody ever finds out. logError
+      // puts it in the Errors page, which is the only surface anyone actually looks at.
       context.error('cron-reminders error', err);
+      try { await logError('POST /api/cron/reminders', err, { user: 'cron' }); } catch (_) {}
       return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } };
     }
   }
@@ -2442,7 +2451,15 @@ async function appAccessChecker(p) {
     return null;
   };
 }
-async function driveClientAccess(p, realmId) {
+/* opts.files  — this route serves the client's FILES (SharePoint, external Drive, uploads).
+   opts.write  — this route MUTATES them.
+   The bookkeeping tier is folded in here rather than repeated at each route because it kept
+   being missed: /api/documents had it, but the SharePoint and external-Drive routes did not,
+   so a 'tasks'-tier bookkeeper could still list and download a client's financial documents
+   through the other door, and a read-only 'view' bookkeeper could import files into them.
+   Putting it behind this one call means a NEW client-file endpoint inherits the rule instead
+   of having to remember it. */
+async function driveClientAccess(p, realmId, opts) {
   const c = container();
   const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
   if (companyPrivateBlocked(comp, p)) return { err: { status: 403, jsonBody: { ok: false, error: 'no access to this client' } } };
@@ -2450,6 +2467,11 @@ async function driveClientAccess(p, realmId) {
     const who = String(p.userDetails || p.userId || '').toLowerCase();
     const allow = ((comp && comp.allowedUserUpns) || []).map(u => String(u).toLowerCase());
     if (!comp || comp.enabled === false || (allow.length && allow.indexOf(who) < 0)) return { err: { status: 403, jsonBody: { ok: false, error: 'no access to this client' } } };
+    if (opts && (opts.files || opts.write)) {
+      const tier = await bookkeepingTierFor(p);
+      if (bookkeepingNoFinancials(tier)) return { err: { status: 403, jsonBody: { ok: false, error: 'your bookkeeping access level does not include this client’s files' } } };
+      if (opts.write && bookkeepingReadOnly(tier)) return { err: { status: 403, jsonBody: { ok: false, error: 'your bookkeeping access is view-only, so you cannot change this client’s files' } } };
+    }
   }
   return { comp };
 }
@@ -2612,7 +2634,7 @@ app.http('drive-status', {
   handler: withAccessLog(async (request, context) => {
     const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
     const realmId = request.params.realmId;
-    const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
+    const acc = await driveClientAccess(p, realmId, { files: true }); if (acc.err) return acc.err;
     const c = container(); const id = 'bcc-clientdrive-' + realmId;
     if (request.method === 'DELETE') { try { await c.item(id, BCC_TENANT_ID).delete(); } catch (e) { if (e.code !== 404) throw e; } return { jsonBody: { ok: true, connected: false } }; }
     const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
@@ -2633,7 +2655,7 @@ app.http('drive-set-root', {
   handler: withAccessLog(async (request, context) => {
     const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
     const realmId = request.params.realmId;
-    const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
+    const acc = await driveClientAccess(p, realmId, { files: true, write: true }); if (acc.err) return acc.err;
     try {
       const dt = await driveDocAndToken(realmId); if (dt.err) return dt.err;
       const b = await request.json().catch(() => ({}));
@@ -2757,7 +2779,7 @@ app.http('sharepoint-list', {
   handler: withAccessLog(async (request, context) => {
     const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
     const realmId = request.params.realmId;
-    const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
+    const acc = await driveClientAccess(p, realmId, { files: true }); if (acc.err) return acc.err;
     try {
       const folder = await spFolderFor(realmId);
       if (!folder) return { jsonBody: { ok: true, mapped: false, items: [], error: 'No SharePoint folder is matched to this client yet.' } };
@@ -2796,7 +2818,7 @@ app.http('sharepoint-download', {
   handler: withAccessLog(async (request, context) => {
     const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
     const realmId = request.params.realmId, itemId = request.params.itemId;
-    const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
+    const acc = await driveClientAccess(p, realmId, { files: true }); if (acc.err) return acc.err;
     try {
       const access = await getGraphToken();
       const driveId = await spDriveId();
@@ -2827,7 +2849,7 @@ app.http('sharepoint-import', {
   handler: withAccessLog(async (request, context) => {
     const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
     const realmId = request.params.realmId;
-    const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
+    const acc = await driveClientAccess(p, realmId, { files: true, write: true }); if (acc.err) return acc.err;
     try {
       const body = await request.json().catch(() => ({}));
       const items = Array.isArray(body.items) ? body.items.slice(0, 50) : (body.itemId ? [{ id: body.itemId, name: body.name }] : []);
@@ -2917,7 +2939,7 @@ app.http('sharepoint-import-all', {
   handler: withAccessLog(async (request, context) => {
     const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
     const realmId = request.params.realmId;
-    const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
+    const acc = await driveClientAccess(p, realmId, { files: true, write: true }); if (acc.err) return acc.err;
     try {
       const folder = await spFolderFor(realmId);
       if (!folder) return { jsonBody: { ok: false, error: 'No SharePoint folder is matched to this client.' } };
@@ -3089,7 +3111,7 @@ app.http('drive-files', {
   handler: withAccessLog(async (request, context) => {
     const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
     const realmId = request.params.realmId;
-    const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
+    const acc = await driveClientAccess(p, realmId, { files: true }); if (acc.err) return acc.err;
     try {
       const dt = await driveDocAndToken(realmId); if (dt.err) return dt.err;
       const sp = new URL(request.url).searchParams;
@@ -3140,7 +3162,7 @@ app.http('drive-download', {
   handler: withAccessLog(async (request, context) => {
     const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
     const realmId = request.params.realmId, fileId = request.params.fileId;
-    const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
+    const acc = await driveClientAccess(p, realmId, { files: true }); if (acc.err) return acc.err;
     try {
       const dt = await driveDocAndToken(realmId); if (dt.err) return dt.err;
       const uq = new URL(request.url).searchParams;
@@ -3186,7 +3208,7 @@ app.http('drive-upload', {
   handler: withAccessLog(async (request, context) => {
     const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
     const realmId = request.params.realmId;
-    const acc = await driveClientAccess(p, realmId); if (acc.err) return acc.err;
+    const acc = await driveClientAccess(p, realmId, { files: true, write: true }); if (acc.err) return acc.err;
     try {
       const dt = await driveDocAndToken(realmId); if (dt.err) return dt.err;
       const form = await request.formData();
@@ -3933,9 +3955,22 @@ app.http('cron-qbo-sync', {
       out.forEach(o => logAudit('qbo-sync', { user: 'cron', meta: { realmId: o.realmId, companyName: o.companyName, periodsBuilt: o.periodsBuilt || 0, partial: !!o.partial, error: o.error, trigger: 'nightly' } }));
       const summary = out.map(o => ({ realmId: o.realmId, companyName: o.companyName, periodsBuilt: o.periodsBuilt, partial: o.partial, error: o.error }));
       context.log('cron-qbo-sync: synced ' + out.length + ' companies', JSON.stringify(summary));
+      /* A per-company failure used to be invisible: the run returned 200 with ok:true and
+         the workflow went green while a client's books quietly stopped updating. Log each
+         one, and fail the whole run when nothing succeeded. */
+      try {
+        for (const o of out) {
+          if (o && o.error) await logError('cron/qbo-sync ' + (o.companyName || o.realmId || '?'), { message: String(o.error) }, { user: 'cron' });
+        }
+      } catch (_) {}
+      const anyOk = out.some(o => o && !o.error);
+      if (out.length && !anyOk) {
+        return { status: 500, jsonBody: { ok: false, error: 'every company failed to sync', synced: 0, companies: summary } };
+      }
       return { jsonBody: { ok: true, synced: out.length, companies: summary } };
     } catch (err) {
       context.error('cron-qbo-sync error', err);
+      try { await logError('POST /api/cron/qbo-sync', err, { user: 'cron' }); } catch (_) {}
       return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } };
     }
   }
@@ -5184,10 +5219,16 @@ app.http('qbo-companies', {
         const tier = await bookkeepingTierFor(p);
         // 'none' = no bookkeeping access at all. Return nothing, not everything.
         if (tier === 'none') return { jsonBody: { isAdmin: false, taskOnly: false, companies: [] } };
-        // 'tasks' = every enabled client, but ONLY id + name — no financials, sync
-        // info, or access lists.
+        // 'tasks' = the clients ASSIGNED to them, and only id + name — no financials, sync
+        // info, or access lists. Ignoring allowedUserUpns here listed every company in the
+        // firm to a tasks-only bookkeeper, which disagreed with companyAccessMap and
+        // driveClientAccess — the gates that actually decide whether that client's tasks
+        // sync down — so the picker offered clients whose data never arrived.
         if (bookkeepingNoFinancials(tier)) {
-          const list = comps.filter(co => co.enabled !== false)
+          const meLc = String(p.userDetails || p.userId || '').toLowerCase();
+          const list = comps.filter(co => co.enabled !== false
+              && ((co.allowedUserUpns || []).length === 0
+                  || (co.allowedUserUpns || []).map(u => String(u).toLowerCase()).includes(meLc)))
             .map(co => ({ realmId: co.realmId, companyName: co.companyName, enabled: true }));
           return { jsonBody: { isAdmin: false, taskOnly: true, companies: list } };
         }
@@ -5916,7 +5957,13 @@ app.http('qbo-write', {
          update they are concatenated back onto the payload, so they are real lines — but the
          guards below counted only the rendered ones, which made a transaction whose lines are
          ALL of an unrendered type impossible to save at all. */
-      const keep = (b.op === 'update' && Array.isArray(f.keepLines)) ? f.keepLines : [];
+      /* Only lines that carry MONEY count toward "at least one line". Counting every
+         preserved line let an update through with no renderable lines at all — and on an
+         invoice, QBO's own SubTotalLine is always present, so the guard was unconditionally
+         satisfied and a blank invoice could be posted to the client's books. */
+      const KEEP_NONMONEY = { SubTotalLineDetail: 1, DescriptionOnly: 1, GroupLineDetail: 1 };
+      const keep = ((b.op === 'update' && Array.isArray(f.keepLines)) ? f.keepLines : [])
+        .filter(l => l && !KEEP_NONMONEY[l.DetailType]);
       if (entity === 'invoice') {
         const lines = (f.lines || []).filter(l => l && (l.amount || l.itemId)).map(l => ({
           DetailType: 'SalesItemLineDetail', Amount: qboAmount(l.amount), Description: l.desc || undefined,

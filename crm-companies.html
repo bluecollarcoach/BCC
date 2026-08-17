@@ -199,6 +199,15 @@
     .detail-head .who h2, .detail-head .who .meta-line, .detail-head .who .meta-line a { color: #000; }
   }
 </style>
+<script>/* Boot-error buffer. Must run BEFORE any page script: bcc-api.js is deferred, so
+   its error listener is not installed until after this page's inline script has already
+   parsed and run — which is exactly when a boot-time throw happens, and exactly the class
+   that has taken pages down three times without ever reaching the error log. Buffer here,
+   bcc-api.js drains it once identity is known. Bounded so a throw-loop cannot grow it. */
+window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__bccErrs.length<20)window.__bccErrs.push({
+  m:(e&&e.message)||'script error',
+  s:(e&&e.error&&e.error.stack)||((e&&e.filename)?(e.filename+':'+e.lineno+':'+e.colno):''),
+  u:location.pathname});}catch(_){}}); </script>
 <script src="bcc-api.js" defer></script>
 </head>
 <body>
@@ -961,6 +970,24 @@
     syncFromBookkeeping({ auto: true });
     checkOwnBooks(); // reveals "Import customers from QuickBooks" for the owner only
   }
+  /* Repaint once the bootstrap pull lands. This page had NO bcc-data-ready listener at all,
+     so on any browser whose localStorage was cold — a new laptop, a private window, an iOS
+     PWA after storage eviction — it rendered an empty company list and stayed empty for the
+     whole session. Guarded like crm.html's: never repaint over a pane the user is editing. */
+  var _coDirty = false;
+  document.addEventListener('input', function (ev) {
+    var pane = document.getElementById('detailMode');
+    if (pane && pane.contains(ev.target)) _coDirty = true;
+  }, true);
+  window.addEventListener('bcc-data-ready', function () {
+    var id = getParam('id');
+    if (!id) { if (rowsEl) renderList(); return; }
+    var pane = document.getElementById('detailMode');
+    var ae = document.activeElement;
+    if (pane && ae && pane.contains(ae)) return;   // caret is in the pane right now
+    if (_coDirty) return;                          // typed, then clicked away — still unsaved
+    renderDetail(id);
+  });
   window.addEventListener('bcc-auth-ready', function () { bootOnce(); maybeAutoSync(); });
   // Fallback init only (offline / no bcc-api). NO auto-sync here: the pull may not
   // have run yet, which would create duplicate companies.

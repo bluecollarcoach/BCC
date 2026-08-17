@@ -258,7 +258,7 @@
     catch (e) { return {}; }
   }
   function parkedWrite(o) { try { _origSetItem.call(localStorage, PARKED_KEY, JSON.stringify(o)); } catch (e) {} }
-  function outboxPark(upn, items) {
+  function outboxPark(upn, items, preserveStamp) {
     var ks = items ? Object.keys(items) : [];
     if (!ks.length) return;
     var all = parkedRead();
@@ -267,7 +267,17 @@
     // Stamp WHEN it was parked. A parked value has no freshness guarantee of its own, and
     // replaying a weeks-old one on the owner's return would revert everything that happened
     // in between. `pk` is what makes the age check on the way out possible.
-    ks.forEach(function (k) { b[k] = { v: items[k].v, t: items[k].t, pk: Date.now() }; });
+    /* preserveStamp KEEPS an entry's original pk. Re-stamping on every re-park would make a
+       stale entry immortal — its clock would reset each time the owner signed in, and a
+       month-old value would eventually be replayed over live data. That is worse than the
+       loss this age check exists to prevent, so entries put BACK because they were refused
+       must never be re-dated. */
+    var pnow = Date.now();
+    ks.forEach(function (k) {
+      var it = items[k];
+      var pk = (preserveStamp && typeof it.pk === 'number' && it.pk > 0) ? it.pk : pnow;
+      b[k] = { v: it.v, t: it.t, pk: pk };
+    });
     var have = Object.keys(b);                       // same bound as the outbox itself
     if (have.length > OUTBOX_MAX) have.slice(0, have.length - OUTBOX_MAX).forEach(function (k) { delete b[k]; });
     parkedWrite(all);
@@ -366,19 +376,31 @@
     var back = outboxUnpark(me), backKeys = Object.keys(back);
     if (backKeys.length) {
       o = outboxRead();                       // the drops above rewrote it
-      var now = Date.now(), stale = 0;
+      var now = Date.now(), stale = 0, superseded = 0, keepParked = {};
       backKeys.forEach(function (k) {
         var e = back[k];
-        if (now - (e.pk || 0) > PARK_MAX_AGE_MS) { stale++; return; }
-        // Safety net: a personal key must still name me, even coming out of my own bucket.
-        if (/^bcc-(daily-log|mytasks|emailsig|chat-last-read)-/.test(k) && !keyOwnerOk(k)) return;
-        if (o.items[k] === undefined) o.items[k] = { v: e.v, t: e.t };
+        /* An entry parked by an EARLIER build has no `pk` — the stamp and this age check
+           shipped together, with no migration. Reading a missing stamp as 0 made every such
+           entry look like it was parked at the Unix epoch, so the first sign-in after the
+           upgrade destroyed exactly the unsent work parking exists to preserve. Treat a
+           missing stamp as "parked now" and let it age from here. */
+        var pkt = (typeof e.pk === 'number' && e.pk > 0) ? e.pk : now;
+        // outboxUnpark already DELETED the whole bucket, so anything refused below has to be
+        // put back explicitly or it is destroyed — with its original stamp, never re-dated.
+        if (now - pkt > PARK_MAX_AGE_MS) { stale++; keepParked[k] = { v: e.v, t: e.t, pk: pkt }; return; }
+        if (/^bcc-(daily-log|mytasks|emailsig|chat-last-read)-/.test(k) && !keyOwnerOk(k)) { keepParked[k] = { v: e.v, t: e.t, pk: pkt }; return; }
+        // A queued local write is NEWER than anything parked. Seeding `pending` with the
+        // parked copy regardless meant the older value won and the newer edit was reverted.
+        if (o.items[k] !== undefined) { superseded++; return; }
+        o.items[k] = { v: e.v, t: e.t };
         pending.set(k, e.v);
         kept++;
       });
       o.upn = me;
       outboxWrite(o);
-      if (stale) console.info('[bcc-api] discarded ' + stale + ' parked write(s) older than ' + Math.round(PARK_MAX_AGE_MS / 86400000) + ' day(s)');
+      if (Object.keys(keepParked).length) outboxPark(me, keepParked, true);   // preserve stamps
+      if (stale) console.info('[bcc-api] left ' + stale + ' parked write(s) older than ' + Math.round(PARK_MAX_AGE_MS / 86400000) + ' day(s) parked, not replayed');
+      if (superseded) console.info('[bcc-api] dropped ' + superseded + ' parked write(s) superseded by a newer local edit');
     }
     if (kept) schedulePush();
     return kept;
@@ -1499,6 +1521,20 @@
       try { fetch('/api/errorlog', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ where: where, message: String(message).slice(0, 600), stack: String(stack || '').slice(0, 2000), url: url || location.pathname }) }).catch(function () {}); } catch (e) {}
     }
     window.addEventListener('error', function (e) { if (!e) return; reportClientError('window.onerror', e.message || 'script error', (e.error && e.error.stack) || (e.filename ? (e.filename + ':' + e.lineno + ':' + e.colno) : ''), location.pathname); });
+    /* Drain the boot buffer. Each page installs a tiny inline listener in <head> that
+       records errors into window.__bccErrs, because THIS file is deferred — its listener is
+       not installed until the page's own inline script has already parsed and run, which is
+       precisely when a boot-time throw happens. Those errors were therefore never reported,
+       which is why three separate outages had to be noticed by a person instead. Drained
+       once identity is known, since reportClientError needs signedIn to be true. */
+    function drainBootErrors() {
+      var buf = window.__bccErrs;
+      if (!signedIn || !buf || !buf.length) return;
+      window.__bccErrs = [];
+      buf.forEach(function (b) { reportClientError('boot', b.m, b.s, b.u); });
+    }
+    window.addEventListener('bcc-auth-ready', drainBootErrors);
+    setTimeout(drainBootErrors, 4000);   // belt-and-braces if auth-ready never fires
     window.addEventListener('unhandledrejection', function (e) { var r = e && e.reason; reportClientError('unhandledrejection', (r && r.message) || String(r || 'rejection'), (r && r.stack) || '', location.pathname); });
   })();
 

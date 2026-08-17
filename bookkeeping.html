@@ -376,6 +376,15 @@
   .em-reply textarea { width:100%; border:1px solid var(--chrome-mute); border-radius:8px; padding:10px; font:inherit; font-size:14px; }
   @media (max-width:680px) { .em-modal-body { padding:10px; } .em-body-frame { height:360px; } }
 </style>
+<script>/* Boot-error buffer. Must run BEFORE any page script: bcc-api.js is deferred, so
+   its error listener is not installed until after this page's inline script has already
+   parsed and run — which is exactly when a boot-time throw happens, and exactly the class
+   that has taken pages down three times without ever reaching the error log. Buffer here,
+   bcc-api.js drains it once identity is known. Bounded so a throw-loop cannot grow it. */
+window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__bccErrs.length<20)window.__bccErrs.push({
+  m:(e&&e.message)||'script error',
+  s:(e&&e.error&&e.error.stack)||((e&&e.filename)?(e.filename+':'+e.lineno+':'+e.colno):''),
+  u:location.pathname});}catch(_){}}); </script>
 <script src="bcc-api.js" defer></script>
 <script src="bcc-pdf.js" defer></script>
 </head>
@@ -659,6 +668,7 @@
 
 <script>
 (function () {
+  var companiesLoaded = false;   // set once loadCompanies() has actually resolved
   var PER_PREFIX = 'bcc-financial-period-';
   /* Manual corrections need their OWN id space. bcc-financial-period- is server-owned: the
      sync layer refuses to push it (bcc-api.js setItem/removeItem) and the pull query excludes
@@ -726,7 +736,11 @@
     return fetch('/api/integrations/qbo/companies', { credentials: 'include' })
       .then(function (r) { return r.ok ? r.json() : { companies: [] }; })
       .then(function (d) { companies = (d && d.companies) || []; isAdmin = !!(d && d.isAdmin); usersDir = (d && d.users) || []; taskOnly = !!(d && d.taskOnly); })
-      .catch(function () { companies = []; isAdmin = false; usersDir = []; taskOnly = false; });
+      .catch(function () { companies = []; isAdmin = false; usersDir = []; taskOnly = false; })
+      // Only AFTER this resolves does an empty `companies` mean "none assigned to you".
+      // Before it, the boot repaint rendered that access-denial copy at every user on every
+      // load — telling a bookkeeper with a full client list that she had none.
+      .then(function () { companiesLoaded = true; });
   }
   // Pull the latest financial periods from Cosmos (kept fresh by the nightly QBO
   // sync), access-scoped, into localStorage — so the tables/KPIs reflect last
@@ -820,7 +834,16 @@
         if (!doc) return;
         var nid = MPER_PREFIX + m[1] + '-' + m[2];
         doc.id = nid; doc.realmId = doc.realmId || m[1]; doc.period = doc.period || m[2]; doc.source = 'manual';
-        if (localStorage.getItem(nid) === null) { localStorage.setItem(nid, JSON.stringify(doc)); moved++; }
+        /* Adopt only if the legacy row is genuinely NEWER. Testing merely for absence meant
+           that on a browser whose sync had not yet applied (or on the very first load, before
+           the pull lands) a months-old never-synced correction was written into the syncable
+           id space and then PUSHED over whatever the firm currently has. Stamp updatedAt on
+           adoption so the pushed doc does not carry a stale client timestamp either. */
+        var cur = null; try { cur = JSON.parse(localStorage.getItem(nid)); } catch (e) {}
+        if (!cur || String(doc.updatedAt || '') > String(cur.updatedAt || '')) {
+          doc.updatedAt = nowIso();
+          localStorage.setItem(nid, JSON.stringify(doc)); moved++;
+        }
         localStorage.removeItem(k);   // hooked removeItem no-ops for this prefix — purely local
       });
       localStorage.setItem(MPER_MIGRATED_KEY, String(Date.now()));
@@ -1047,6 +1070,8 @@
     // reaches this before init() has run must do nothing rather than throw — an uncaught
     // throw here takes down the whole page and shows the "Something went wrong" banner.
     if (!rowsEl || !emptyEl) return;
+    // Never claim "no clients" before we have actually asked. See loadCompanies().
+    if (!companiesLoaded) { emptyEl.hidden = true; return; }
     var yf = document.getElementById('yearFilter'); if (yf) yf.style.display = 'none';
     setHead([{ label: 'Client' }, { label: 'To-dos' }, { label: 'Last sync' }, { label: '' }]);
     var pc = document.getElementById('periodCount');
@@ -2725,7 +2750,12 @@
           // Preserve the transaction's EXISTING billable status. Without this the server's
           // default re-billed a NotBillable (or already-billed) line on every re-save.
           if (jobLine0 && jobLine0.BillableStatus) g.billableStatus = jobLine0.BillableStatus;
-          if (partyValType) g.entityType = partyValType;
+          // Only carry the original payee TYPE through when the payee itself is unchanged.
+          // Keeping it after the user picked a different party posted the new vendor's id
+          // under the old party's type (Employee/Customer), which QBO either rejects or
+          // attaches to the wrong record entirely.
+          var origPartyId = (pre.EntityRef && pre.EntityRef.value) || '';
+          if (partyValType && String(g.party || '') === String(origPartyId)) g.entityType = partyValType;
           if (jobLinesHaveMixedJobs && !confirm('This bill/purchase currently has DIFFERENT jobs on different lines. Saving here applies the same Project/job to every line, losing that per-line split. Continue?')) return;
           // On EDIT, a sparse update REPLACES all lines — carry through any line types the editor
           // doesn't render (item-based lines, discounts, etc.) verbatim so they aren't dropped.
@@ -2761,9 +2791,18 @@
     // discounts, tax). Omitting them understated the figure in the "Post this to live
     // QuickBooks?" confirmation — the one number the bookkeeper checks before committing to
     // the client's books.
+    /* keepLines are the lines the editor preserves but does not render. Summing ALL of them
+       double-counted QBO's own computed rows — a SubTotalLine repeats the entire invoice
+       total, so the confirm dialog showed roughly twice the real amount on every invoice
+       edit. Count only real money lines, and subtract a discount rather than adding it. */
+    var KEEP_NONMONEY = { SubTotalLineDetail: 1, DescriptionOnly: 1, GroupLineDetail: 1 };
+    var keepSum = (g.keepLines || []).reduce(function (s, l) {
+      if (!l || KEEP_NONMONEY[l.DetailType]) return s;
+      var a = qbonum(l.Amount);
+      return s + (l.DetailType === 'DiscountLineDetail' ? -a : a);
+    }, 0);
     var total = entity === 'payment' ? qbonum(g.amount)
-      : (g.lines || []).reduce(function (s, l) { return s + qbonum(l.amount); }, 0)
-        + (g.keepLines || []).reduce(function (s, l) { return s + qbonum(l && l.Amount); }, 0);
+      : (g.lines || []).reduce(function (s, l) { return s + qbonum(l.amount); }, 0) + keepSum;
     if (!confirm('Post this ' + entity + ' to ' + companyName(currentRealm) + '’s live QuickBooks?\n\nTotal: $' + total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }))) return;
     // confirm() is a blocking modal — nothing can switch clients while it's open, so
     // currentRealm read right after it resolves is still the client the user meant.
@@ -7307,10 +7346,27 @@
     if (/Failed to fetch|NetworkError|Load failed|bad response|aborted/i.test(m)) {
       return 'The connection dropped before we got an answer, so this may or may not have posted. Check the client’s QuickBooks before trying again — do not just re-post it.';
     }
-    if (/401|sign-?in|signed out|unauthor/i.test(m)) {
+    if (/\b401\b|sign-?in|signed out|unauthor/i.test(m)) {
       return 'Your sign-in expired, so we could not confirm whether this posted. Sign back in and check the client’s QuickBooks before re-posting.';
     }
-    return 'QuickBooks rejected it: ' + (typeof qboFriendly === 'function' ? qboFriendly(m) : m);
+    /* qboFriendly maps REPORT-generation failures; running a write rejection through it
+       replaced Intuit's actual complaint ("Duplicate Document Number", "Account period
+       closed") with a generic report message, so the bookkeeper could not tell what QBO had
+       objected to. Surface Intuit's own Detail/Message instead, and keep the friendly text
+       only for the one case it genuinely covers: the connection needing re-auth. */
+    if (/needsReauth|reconnect|QBO 401|token refresh (failed|timed out)/i.test(m)) {
+      return 'QuickBooks needs reconnecting for this company — an admin can reconnect it from the Management dashboard.';
+    }
+    var detail = m;
+    try {
+      var brace = m.indexOf('{');
+      if (brace >= 0) {
+        var j = JSON.parse(m.slice(brace));
+        var er = ((j.Fault || j.fault || {}).Error) || ((j.fault || {}).error);
+        if (er && er[0]) detail = er[0].Detail || er[0].Message || m;
+      }
+    } catch (_) {}
+    return 'QuickBooks rejected it: ' + detail;
   }
   function bizToday() {
     try { return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' }); }
@@ -7365,8 +7421,16 @@
       monthEndNotify(label, note, function (err) {
         btn.disabled = false;
         if (err) { if (st) st.textContent = ''; (window.bccNotify || alert)('Could not notify: ' + err.message, 'error', 7000); return; }
-        closeAt.meetingNotifiedAt = nowIso(); closeAt.meetingNotifiedTo = monthEndContact();
-        closeAt.updatedAt = nowIso(); closeAt.updatedBy = myUpn(); localStorage.setItem(closeAt.id, JSON.stringify(closeAt)); // write the captured doc directly — saveClose() would target whatever _close is NOW, not the one this notification was actually for
+        /* Stamp onto the FRESHEST copy of that same document, not the snapshot captured
+           before the request. Writing the captured object back whole reverted every tick and
+           note made while /api/notify was in flight. Still keyed to closeAt.id so a client
+           switch cannot land this on a different client's checklist. */
+        var ndoc = null; try { ndoc = JSON.parse(localStorage.getItem(closeAt.id)); } catch (e) {}
+        if (!ndoc || !ndoc.id) ndoc = closeAt;
+        ndoc.meetingNotifiedAt = nowIso(); ndoc.meetingNotifiedTo = monthEndContact();
+        ndoc.updatedAt = nowIso(); ndoc.updatedBy = myUpn();
+        localStorage.setItem(closeAt.id, JSON.stringify(ndoc));
+        if (_close && _close.id === closeAt.id) _close = ndoc;   // keep the in-memory copy in step
         if (window.bccAudit) window.bccAudit('monthend-notify', { key: closeAt.id, path: '/bookkeeping.html', meta: { realmId: realmAt, period: period, to: monthEndContact() } });
         if (currentRealm === realmAt) renderClose(); // only repaint if still viewing the same client's Close tab
         if (window.bccNotifySaved) window.bccNotifySaved('Notification sent — ' + label + ' month-end meeting hand-off.');

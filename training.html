@@ -161,6 +161,15 @@
   .lessons .add-btn { background:transparent; border:1px dashed var(--chrome-mute); border-radius:7px; padding:8px; width:100%; cursor:pointer; color:var(--muted); font:inherit; font-size:12px; font-weight:600; margin-top:8px; }
   .lessons .add-btn:hover { color:var(--gold-deep); border-color:var(--gold); background:var(--gold-fade); }
 </style>
+<script>/* Boot-error buffer. Must run BEFORE any page script: bcc-api.js is deferred, so
+   its error listener is not installed until after this page's inline script has already
+   parsed and run — which is exactly when a boot-time throw happens, and exactly the class
+   that has taken pages down three times without ever reaching the error log. Buffer here,
+   bcc-api.js drains it once identity is known. Bounded so a throw-loop cannot grow it. */
+window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__bccErrs.length<20)window.__bccErrs.push({
+  m:(e&&e.message)||'script error',
+  s:(e&&e.error&&e.error.stack)||((e&&e.filename)?(e.filename+':'+e.lineno+':'+e.colno):''),
+  u:location.pathname});}catch(_){}}); </script>
 <script src="bcc-api.js" defer></script>
 </head>
 <body>
