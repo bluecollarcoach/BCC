@@ -1036,9 +1036,14 @@
      the owner's screen ever renders it. Requested by Jessica. ---- */
   // The working bookkeeper's landing: their client queue, to-dos first.
   function renderWorkList() {
+    // FIRST, before any DOM work: rowsEl/emptyEl are assigned by init(). A repaint that
+    // reaches this before init() has run must do nothing rather than throw — an uncaught
+    // throw here takes down the whole page and shows the "Something went wrong" banner.
+    if (!rowsEl || !emptyEl) return;
     var yf = document.getElementById('yearFilter'); if (yf) yf.style.display = 'none';
     setHead([{ label: 'Client' }, { label: 'To-dos' }, { label: 'Last sync' }, { label: '' }]);
-    document.getElementById('periodCount').textContent = companies.length + ' client' + (companies.length === 1 ? '' : 's');
+    var pc = document.getElementById('periodCount');
+    if (pc) pc.textContent = companies.length + ' client' + (companies.length === 1 ? '' : 's');
     if (!companies.length) {
       rowsEl.innerHTML = ''; emptyEl.hidden = false;
       emptyEl.querySelector('.big').textContent = 'No clients assigned to you yet.';

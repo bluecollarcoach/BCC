@@ -1417,8 +1417,16 @@
        repaint through the intended channel instead. live:false marks it as the boot pull
        rather than a delta; keys:null means "assume everything changed". Nothing is focused
        or half-typed this early, so no in-progress edit can be clobbered. */
-    window.dispatchEvent(new CustomEvent('bcc-data-ready', { detail: { keys: null, live: false } }));
+    /* ORDER MATTERS: auth-ready FIRST. Every page's bcc-data-ready handler assumes init()
+       has already run — it repaints using module-level element references that init() is
+       what assigns. Dispatching data-ready first meant that on any bootstrap faster than the
+       600ms fallback the handler ran before init() had ever executed, so those references
+       were still undefined and the handler threw ("Cannot set properties of undefined"),
+       which the global error boundary showed as "Something went wrong on this page".
+       auth-ready runs init() (once, via bootOnce); data-ready then repaints it with the
+       freshly pulled data. Both boot paths end up init-then-repaint. */
     window.dispatchEvent(new Event('bcc-auth-ready'));
+    window.dispatchEvent(new CustomEvent('bcc-data-ready', { detail: { keys: null, live: false } }));
     if (window.bccPeople) window.dispatchEvent(new Event('bcc-users-ready'));
 
     // Audit: record sign-in once per browser session. Subsequent page loads
