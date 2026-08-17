@@ -38,6 +38,7 @@ jobs:
           echo "HTTP $code"
           if [ "$code" != "200" ]; then echo "--- RAW BODY ---"; head -c 2000 /tmp/d.json; echo; fi
           # One short line per record — a multi-megabyte JSON line does not survive the log.
+          jq -r '"QUERY ERRORS: errors=" + (.errErr//"none") + " feedback=" + (.fbErr//"none")' /tmp/d.json
           echo "=== ERRORS (newest first) ==="
           jq -r '.errors[] | "ERR\t" + (.at//"-") + "\t" + (.source//"-") + "\t" + (.user//"-")
                  + "\t" + (.url//"-") + "\t" + ((.where//"")|gsub("[\r\n\t]";" "))
