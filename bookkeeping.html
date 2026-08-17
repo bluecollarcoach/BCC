@@ -169,6 +169,13 @@
   .ws-form { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
   @media (max-width:680px) { .ws-form { grid-template-columns:1fr; } }
   .ws-form label { display:flex; flex-direction:column; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); gap:4px; }
+  /* A checkbox label in a .ws-form grid is a CELL, so it stretches to fill that cell and the
+     whole cell becomes a click target — clicking empty space beside the words toggled the box
+     (jenna, 2026-08-14: "if i click anywhere around it, not just in the box, it selects it").
+     Two of these mark a certified payroll or a pay application as FINAL, so a stray click is
+     not cosmetic. Hug the content instead, and show a pointer over the real target. */
+  .ws-form label.chk { flex-direction:row; align-items:center; gap:6px; text-transform:none;
+    font-size:13px; width:max-content; max-width:100%; align-self:center; cursor:pointer; }
   .ws-form input, .ws-form textarea, .ws-form select { border:1px solid var(--chrome-mute); border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; color:var(--ink); background:#fff; }
   .ws-form input:focus, .ws-form textarea:focus, .ws-form select:focus { outline:2px solid var(--gold); outline-offset:-1px; border-color:var(--gold); }
   .ws-form .full { grid-column:1 / -1; }
@@ -5928,7 +5935,7 @@
       txt('State project # (MnDOT)', 'mndotSp', 'e.g. SP 1234-56') +
       txt('Federal project # (MnDOT)', 'mndotFed', 'if federally funded') +
       '<label>Payroll #<input data-cf="payrollNo" value="' + esc(cprDraft.payrollNo || '') + '" /></label>' +
-      '<label style="flex-direction:row;align-items:center;gap:8px;text-transform:none;font-size:13px;"><input type="checkbox" data-cf="isFinal" ' + (cprDraft.isFinal ? 'checked' : '') + ' /> Mark as FINAL report</label>' +
+      '<label class="chk"><input type="checkbox" data-cf="isFinal" ' + (cprDraft.isFinal ? 'checked' : '') + ' /> Mark as FINAL report</label>' +
       '</div>';
 
     var empsHtml = '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:6px 0 8px;">Employees</div>' +
@@ -6019,8 +6026,8 @@
       '<label class="full">Subject<input id="cpe_subj" value="' + esc(subj) + '" /></label>' +
       '<label class="full">Message<textarea id="cpe_body" rows="5">Attached is the certified payroll report' + (cprDraft.payrollNo ? ' (#' + esc(cprDraft.payrollNo) + ')' : '') + (cprDraft.projectName ? ' for ' + esc(cprDraft.projectName) : '') + '.\n\nThank you,\n' + esc(companyName(currentRealm)) + '</textarea></label>' +
       '<div class="full" style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:13px;">' +
-        '<label style="flex-direction:row;align-items:center;gap:6px;text-transform:none;font-size:13px;"><input type="checkbox" id="cpe_mndot"' + mndotChk + ' /> MnDOT forms (PDF)</label>' +
-        '<label style="flex-direction:row;align-items:center;gap:6px;text-transform:none;font-size:13px;"><input type="checkbox" id="cpe_dli"' + dliChk + ' /> MN DLI form (PDF)</label>' +
+        '<label class="chk"><input type="checkbox" id="cpe_mndot"' + mndotChk + ' /> MnDOT forms (PDF)</label>' +
+        '<label class="chk"><input type="checkbox" id="cpe_dli"' + dliChk + ' /> MN DLI form (PDF)</label>' +
       '</div>' +
       histPanel +
       '<div class="full" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><button class="btn btn-primary" id="cpe_send" type="button">Send</button><button class="btn btn-ghost" id="cpe_cancel" type="button">Cancel</button><span id="cpe_status" style="font-size:12px;color:var(--muted);"></span></div>' +
@@ -6346,7 +6353,7 @@
         '<label># exemptions<input data-emp="' + i + '" data-f="exemptions" value="' + esc(e.exemptions || '') + '" /></label>' +
         '<label>Labor code<input data-emp="' + i + '" data-f="laborCode" value="' + esc(e.laborCode || '') + '" placeholder="e.g. 101" /></label>' +
         '<label>Classification<input data-emp="' + i + '" data-f="classification" value="' + esc(e.classification || '') + '" placeholder="e.g. General Laborer" /></label>' +
-        '<label style="flex-direction:row;align-items:center;gap:6px;text-transform:none;font-size:13px;"><input type="checkbox" data-emp="' + i + '" data-f="apprentice" ' + (e.apprentice ? 'checked' : '') + ' /> Apprentice</label>' +
+        '<label class="chk"><input type="checkbox" data-emp="' + i + '" data-f="apprentice" ' + (e.apprentice ? 'checked' : '') + ' /> Apprentice</label>' +
       '</div>' +
       '<div style="overflow-x:auto;margin-bottom:8px;"><table style="border-collapse:collapse;"><tbody>' +
         '<tr>' + dayHead + '</tr>' +
@@ -7056,7 +7063,7 @@
       '<label>Application date<input data-pf="appDate" type="date" value="' + esc(r.appDate || '') + '" /></label>' +
       ptxt('Project no.', 'projectNo') +
       '<label>Contract date<input data-pf="contractDate" type="date" value="' + esc(r.contractDate || '') + '" /></label>' +
-      '<label style="flex-direction:row;align-items:center;gap:8px;text-transform:none;font-size:13px;"><input type="checkbox" data-pf="isFinal" ' + (r.isFinal ? 'checked' : '') + ' /> Mark as FINAL application</label>' +
+      '<label class="chk"><input type="checkbox" data-pf="isFinal" ' + (r.isFinal ? 'checked' : '') + ' /> Mark as FINAL application</label>' +
       '</div>';
     // Change orders
     var coRows = (r.changeOrderRows || []).map(function (co, i) {
