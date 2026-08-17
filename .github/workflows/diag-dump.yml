@@ -36,6 +36,7 @@ jobs:
             'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/cron/diag' \
             -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}")
           echo "HTTP $code"
+          if [ "$code" != "200" ]; then echo "--- RAW BODY ---"; head -c 2000 /tmp/d.json; echo; fi
           # One short line per record — a multi-megabyte JSON line does not survive the log.
           echo "=== ERRORS (newest first) ==="
           jq -r '.errors[] | "ERR\t" + (.at//"-") + "\t" + (.source//"-") + "\t" + (.user//"-")
