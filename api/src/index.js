@@ -1840,51 +1840,6 @@ app.http('errorlog', {
   })
 });
 
-/* TEMPORARY feedback dump — cron-secret gated, headless read only. REMOVED after this
-   sweep pulls the queue; it exists because there is no way to sign in as an admin here. */
-app.http('tmp-feedback-dump', {
-  methods: ['GET', 'POST'], authLevel: 'anonymous', route: 'cron/feedback-dump',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    const given = request.headers.get('x-bcc-cron-secret') || '';
-    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
-    const c = container();
-    try {
-      if (request.method === 'POST') {
-        // Resolve + reply + notify the submitter. Mirrors the admin path in app.http('feedback')
-        // exactly; it exists only because that path requires an interactive admin sign-in.
-        const b = await request.json().catch(() => ({}));
-        const fid = String(b.id || '');
-        if (fid.indexOf('bcc-feedback-') !== 0) return { status: 400, jsonBody: { ok: false, error: 'bad id' } };
-        const doc = await c.item(fid, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-        if (!doc) return { status: 404, jsonBody: { ok: false, error: 'not found' } };
-        const note = String(b.note || '').trim().slice(0, 2000);
-        const wasResolved = doc.status === 'resolved';
-        doc.status = 'resolved'; doc.reviewedBy = 'lyle@bluecollarcoach.us'; doc.updatedAt = new Date().toISOString();
-        if (note) { doc.resolutionNote = note; doc.resolutionBy = 'lyle@bluecollarcoach.us'; doc.resolutionAt = new Date().toISOString(); }
-        await c.items.upsert(doc);
-        let notified = false;
-        if (doc.userUpn && !wasResolved) {
-          try {
-            await notifyUser(c, doc.userUpn, {
-              title: '✅ Your feedback was addressed',
-              body: note || String(doc.message || '').slice(0, 90),
-              url: safeNotifyPath(doc.page), tag: 'fbdone-' + doc.id
-            });
-            notified = true;
-          } catch (ne) { context.error && context.error('tmp resolve notify failed', ne); }
-        }
-        return { jsonBody: { ok: true, id: doc.id, status: doc.status, notified } };
-      }
-      const { resources } = await c.items.query({
-        query: 'SELECT TOP 400 c.id, c.type, c.message, c.rating, c.page, c.userUpn, c.userName, c.status, c.createdAt, c.resolutionNote FROM c WHERE c.tenantId = @t AND c.docType = "feedback" AND (NOT IS_DEFINED(c.status) OR c.status != "resolved") ORDER BY c.createdAt DESC',
-        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
-      }, { partitionKey: BCC_TENANT_ID }).fetchAll();
-      return { jsonBody: { ok: true, count: resources.length, items: resources } };
-    } catch (e) { return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
-  }
-});
-
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
@@ -3265,6 +3220,13 @@ app.http('drive-files', {
       const folderId = sp.get('folderId') || '';
       const search = String(sp.get('q') || '').trim().slice(0, 100); // search files by name across the drive
       let items = [];
+      /* Paged, and honest when it stops. A single page silently returned the first 300
+         children as if they were the whole folder, so a client with more files than that had
+         the rest simply not exist in the app - no message, nothing to click. Bounded because
+         bookkeeping.html builds the listing as one innerHTML string, exactly as
+         sharepoint-list is bounded. */
+      const DRIVE_MAX = 1000, DRIVE_PAGES = 5;
+      let truncated = false;
       const root = dt.doc.root || null;
       if (dt.doc.provider === 'google') {
         const start = folderId || (root && root.folderId) || 'root';
@@ -3273,13 +3235,21 @@ app.http('drive-files', {
           ? "name contains '" + search.replace(/['\\]/g, ' ') + "' and trashed=false"
           : "'" + start + "' in parents and trashed=false";
         const q = encodeURIComponent(gq);
-        const r = await fetch('https://www.googleapis.com/drive/v3/files?q=' + q + '&fields=files(id,name,mimeType,modifiedTime,size,webViewLink)&pageSize=300&orderBy=folder,name&supportsAllDrives=true&includeItemsFromAllDrives=true', { headers: { Authorization: 'Bearer ' + dt.at } });
-        if (!r.ok) {
-          if (r.status === 403) return { jsonBody: { ok: false, needsReconnect: true, provider: 'google', account: dt.doc.account, error: 'Google Drive access isn’t authorized for this connection (the Drive permission was not granted). Disconnect and reconnect ' + (dt.doc.account || 'the account') + ', approving “See, edit, create and delete all your Google Drive files.”' } };
-          throw new Error('Google Drive ' + r.status);
+        // nextPageToken has to be named in `fields` or Google does not return it at all —
+        // which is why the page token was never even available to loop on.
+        let pageToken = '';
+        for (let page = 0; page < DRIVE_PAGES; page++) {
+          const r = await fetch('https://www.googleapis.com/drive/v3/files?q=' + q + '&fields=nextPageToken,files(id,name,mimeType,modifiedTime,size,webViewLink)&pageSize=300&orderBy=folder,name&supportsAllDrives=true&includeItemsFromAllDrives=true' + (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : ''), { headers: { Authorization: 'Bearer ' + dt.at } });
+          if (!r.ok) {
+            if (r.status === 403) return { jsonBody: { ok: false, needsReconnect: true, provider: 'google', account: dt.doc.account, error: 'Google Drive access isn’t authorized for this connection (the Drive permission was not granted). Disconnect and reconnect ' + (dt.doc.account || 'the account') + ', approving “See, edit, create and delete all your Google Drive files.”' } };
+            throw new Error('Google Drive ' + r.status);
+          }
+          const j = await r.json();
+          items = items.concat((j.files || []).map(f => ({ id: f.id, name: f.name, folder: f.mimeType === 'application/vnd.google-apps.folder', mimeType: f.mimeType || null, size: f.size ? Number(f.size) : null, modified: f.modifiedTime || null, webUrl: f.webViewLink || null })));
+          pageToken = j.nextPageToken || '';
+          if (!pageToken || items.length >= DRIVE_MAX) break;
         }
-        const j = await r.json();
-        items = (j.files || []).map(f => ({ id: f.id, name: f.name, folder: f.mimeType === 'application/vnd.google-apps.folder', mimeType: f.mimeType || null, size: f.size ? Number(f.size) : null, modified: f.modifiedTime || null, webUrl: f.webViewLink || null }));
+        if (pageToken) truncated = true;
       } else {
         let path;
         if (search) {
@@ -3287,18 +3257,23 @@ app.http('drive-files', {
           else path = "/me/drive/root/search(q='" + encodeURIComponent(search) + "')";
         } else if (root && root.driveId) { path = '/drives/' + root.driveId + '/items/' + encodeURIComponent(folderId || root.itemId) + '/children'; }
         else { path = folderId ? ('/me/drive/items/' + encodeURIComponent(folderId) + '/children') : '/me/drive/root/children'; }
-        const r = await fetch('https://graph.microsoft.com/v1.0' + path + (path.indexOf('?') >= 0 ? '&' : '?') + '$top=300&$select=id,name,folder,file,size,lastModifiedDateTime,webUrl', { headers: { Authorization: 'Bearer ' + dt.at } });
-        if (!r.ok) {
-          const detail = (await r.text().catch(() => '')).slice(0, 160);
-          // No landing folder set + the account has no personal OneDrive → tell the UI to ask for the shared-folder link.
-          if (!root && (r.status === 403 || r.status === 404)) return { jsonBody: { ok: false, needsRoot: true, provider: 'onedrive', account: dt.doc.account, error: 'This account has no personal OneDrive. Paste the link to the folder the client shared with ' + (dt.doc.account || 'it') + '.' } };
-          throw new Error('OneDrive ' + r.status + (detail ? (': ' + detail) : ''));
+        let next = 'https://graph.microsoft.com/v1.0' + path + (path.indexOf('?') >= 0 ? '&' : '?') + '$top=300&$select=id,name,folder,file,size,lastModifiedDateTime,webUrl';
+        for (let page = 0; next; page++) {
+          if (page >= DRIVE_PAGES || items.length >= DRIVE_MAX) { truncated = true; break; }
+          const r = await fetch(next, { headers: { Authorization: 'Bearer ' + dt.at } });
+          if (!r.ok) {
+            const detail = (await r.text().catch(() => '')).slice(0, 160);
+            // No landing folder set + the account has no personal OneDrive → tell the UI to ask for the shared-folder link.
+            if (!root && (r.status === 403 || r.status === 404)) return { jsonBody: { ok: false, needsRoot: true, provider: 'onedrive', account: dt.doc.account, error: 'This account has no personal OneDrive. Paste the link to the folder the client shared with ' + (dt.doc.account || 'it') + '.' } };
+            throw new Error('OneDrive ' + r.status + (detail ? (': ' + detail) : ''));
+          }
+          const j = await r.json();
+          items = items.concat((j.value || []).map(f => ({ id: f.id, name: f.name, folder: !!f.folder, mimeType: (f.file && f.file.mimeType) || null, size: f.size || null, modified: f.lastModifiedDateTime || null, webUrl: f.webUrl || null })));
+          next = j['@odata.nextLink'] || '';
         }
-        const j = await r.json();
-        items = (j.value || []).map(f => ({ id: f.id, name: f.name, folder: !!f.folder, mimeType: (f.file && f.file.mimeType) || null, size: f.size || null, modified: f.lastModifiedDateTime || null, webUrl: f.webUrl || null }));
       }
       items.sort((a, b) => ((b.folder ? 1 : 0) - (a.folder ? 1 : 0)) || String(a.name).localeCompare(b.name));
-      return { jsonBody: { ok: true, provider: dt.doc.provider, account: dt.doc.account, folderId, items } };
+      return { jsonBody: { ok: true, provider: dt.doc.provider, account: dt.doc.account, folderId, items, truncated } };
     } catch (e) { context.error('drive-files', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
@@ -4026,9 +4001,24 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
             expensesCents: Math.round(opex * 100), netCents: Math.round(net * 100),
             source: 'qbo', syncedAt: new Date().toISOString()
           };
-          // Only record balance-sheet metrics when the BS actually loaded — a failed
-          // fetch must not persist a fake $0 (corrupts current ratio / working capital).
+          /* Only record balance-sheet metrics when the BS actually loaded — a failed fetch
+             must not persist a fake $0 (corrupts current ratio / working capital).
+             But the doc is UPSERTED whole, so omitting them did not leave the previous
+             figures alone: it erased them. One throttled BalanceSheet call and a month that
+             had cash, current assets and current liabilities came back with none of the
+             three, blanking months of cash and the current ratio for that month on every
+             dashboard until someone noticed and re-synced. Carry the stored values forward
+             instead — stale is honest here, absent is not. */
           if (bsOk) { per.cashCents = Math.round(cash * 100); per.currentAssetsCents = Math.round(ca * 100); per.currentLiabilitiesCents = Math.round(cl * 100); }
+          else {
+            const prevPer = await c.item(per.id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+            if (prevPer) {
+              if (typeof prevPer.cashCents === 'number') per.cashCents = prevPer.cashCents;
+              if (typeof prevPer.currentAssetsCents === 'number') per.currentAssetsCents = prevPer.currentAssetsCents;
+              if (typeof prevPer.currentLiabilitiesCents === 'number') per.currentLiabilitiesCents = prevPer.currentLiabilitiesCents;
+              if (per.cashCents != null) per.balanceSheetStale = true;   // carried forward, not re-read
+            }
+          }
           return { i, status, per };
         };
         // Months serial: 2 concurrent requests per realm max — never throttled, so no
@@ -5972,7 +5962,11 @@ app.http('qbo-report', {
 });
 
 /* ===== QBO write helpers shared by refs / entity / write endpoints ===== */
-async function qboResolveAccess(request, realmId) {
+/* opts.readOnly - this route is a POST for body-size reasons only and mutates nothing in the
+   client's books. Without it, a view-tier bookkeeper got a flat 403 on the monthly report's
+   PDF and AI-summary buttons, both of which only render the report they are already allowed
+   to read; the write gate below keys purely off the HTTP verb. */
+async function qboResolveAccess(request, realmId, opts) {
   const p = principal(request);
   if (!p) return { err: unauthorized() };
   if (!domainAllowed(p)) return { err: domainBlocked() };
@@ -5992,7 +5986,7 @@ async function qboResolveAccess(request, realmId) {
   // call here bypassed it entirely); the 'view' tier can read but not write.
   const tier = await bookkeepingTierFor(p);
   if (bookkeepingNoFinancials(tier)) return { err: { status: 403, jsonBody: { error: 'Your bookkeeping access level does not include financial data.' } } };
-  if (request.method !== 'GET' && bookkeepingReadOnly(tier)) return { err: { status: 403, jsonBody: { error: 'Your bookkeeping access level is view-only.' } } };
+  if (request.method !== 'GET' && !(opts && opts.readOnly) && bookkeepingReadOnly(tier)) return { err: { status: 403, jsonBody: { error: 'Your bookkeeping access level is view-only.' } } };
   const fields = await getIntegrationFields('qbo');
   const { accessToken, base } = await qboAccessForCompany(comp, fields);
   const apiGet = async (path) => {
@@ -6258,7 +6252,14 @@ app.http('qbo-write', {
       // Reference number (PO / bill no.) and payment terms — both live on the
       // document header for bills and invoices.
       if ((entity === 'bill' || entity === 'invoice') && payload) {
-        if (f.docNumber) payload.DocNumber = String(f.docNumber).slice(0, 21);
+        /* Absent means "leave it alone"; an empty string means "clear it". The old truthy
+           test collapsed the two, so a bookkeeper could SET a PO number but never remove one:
+           blanking the box sent nothing, the sparse update left the old value in the client's
+           books, and the UI still said the change had been saved. */
+        if (f.docNumber !== undefined) payload.DocNumber = String(f.docNumber).slice(0, 21);
+        /* Terms are set-only on purpose. The picker falls back to "- none -" whenever the
+           transaction's real term is inactive (or that one Term query failed), so treating a
+           blank as "clear it" would quietly strip Net 30 off a bill nobody meant to touch. */
         if (f.termId) payload.SalesTermRef = { value: String(f.termId) };
       }
       // On edit, a sparse update with Line REPLACES all lines — re-append any existing line
@@ -7354,7 +7355,7 @@ app.http('qbo-monthly-report-ai', {
   authLevel: 'anonymous',
   route: 'integrations/qbo/companies/{realmId}/monthly-report/ai-draft',
   handler: withAccessLog(async (request, context) => {
-    const ctx = await qboResolveAccess(request, request.params.realmId);
+    const ctx = await qboResolveAccess(request, request.params.realmId, { readOnly: true });   // renders what they may already read
     if (ctx.err) return ctx.err;
     try {
       const b = await request.json().catch(() => ({}));
@@ -7564,7 +7565,7 @@ app.http('qbo-monthly-report-pdf', {
   authLevel: 'anonymous',
   route: 'integrations/qbo/companies/{realmId}/monthly-report/pdf',
   handler: withAccessLog(async (request, context) => {
-    const ctx = await qboResolveAccess(request, request.params.realmId);
+    const ctx = await qboResolveAccess(request, request.params.realmId, { readOnly: true });   // renders what they may already read
     if (ctx.err) return ctx.err;
     try {
       const b = await request.json().catch(() => ({}));
@@ -7725,6 +7726,16 @@ app.http('qbo-companyinfo', {
         const who = String(p.userDetails || p.userId || '').toLowerCase();
         const allow = (comp.allowedUserUpns || []).map(u => u.toLowerCase());
         if (comp.enabled === false || (allow.length && allow.indexOf(who) < 0)) return { status: 403, jsonBody: { ok: false, error: 'no access to this company' } };
+        /* An APP-level gate as well, which this route had none of - only the per-company
+           allow-list, which is empty on most companies and therefore lets anyone signed in
+           read every connected client's legal name, address, phone and fiscal year end.
+           NOT the bookkeeping-financials gate the sibling routes use: this returns the
+           company's profile, not its books, and its other caller is CRM company enrichment
+           (crm-companies.html) - a bookkeeper on the 'tasks' tier and a CRM user with no
+           bookkeeping access both legitimately need it. Requiring view on either app closes
+           the "signed in, but uses neither" case without breaking either caller. */
+        const [bkTier, crmTier] = await Promise.all([appTierFor(p, 'bookkeeping'), appTierFor(p, 'crm')]);
+        if (!tierAtLeast(bkTier, 'view') && !tierAtLeast(crmTier, 'view')) return { status: 403, jsonBody: { ok: false, error: 'no access to this company' } };
       }
       const fields = await getIntegrationFields('qbo');
       const { accessToken, base } = await qboAccessForCompany(comp, fields);

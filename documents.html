@@ -333,6 +333,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   var qInput, folderFilter, contactFilter, engagementFilter, rowsEl, emptyEl, sublineEl;
 
   function renderList() {
+    // Belt and braces: every caller should be post-wire(), but a throw here takes the whole
+    // page down behind the global error banner.
+    if (!qInput || !rowsEl) return;
     var all = allDocs();
     var q = (qInput.value || '').trim().toLowerCase();
     var folder = folderFilter.value;
@@ -610,8 +613,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
   }
   function init() { wire(); renderList(); loadServerDocs().then(renderList); applyDocsPerms(); }
-  // Identity lands after init on a fast boot; re-apply once it does.
-  window.addEventListener('bcc-auth-ready', function () { applyDocsPerms(); renderList(); });
+  /* Identity lands after init on a fast boot; re-apply once it does. bootOnce() FIRST: on a
+     fast boot this listener fires before the 600ms fallback has run init(), and renderList
+     reads qInput/rowsEl/sublineEl, which wire() has not assigned yet - so it threw on every
+     quick load and painted the global "something went wrong" banner over a working page. */
+  window.addEventListener('bcc-auth-ready', function () { bootOnce(); applyDocsPerms(); renderList(); });
   window.addEventListener('bcc-data-ready', function () {
     // Rebuild the contact/engagement pickers too. They were built once at init, so a
     // contact created in CRM (or by a colleague) never appeared here until a reload —

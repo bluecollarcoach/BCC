@@ -850,7 +850,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       location.href = 'crm-companies.html';
     };
     document.getElementById('saveProfileBtn').onclick = function () {
-      var updated = Object.assign({}, c);
+      /* Re-read, do not use the render-time snapshot. `c` is minutes old by the time anyone
+         clicks Save, and the QuickBooks sync backfills realmId/qboCustomerId onto the stored
+         record in the meantime - saving the snapshot silently threw those away and unlinked
+         the company from its QBO customer. The `|| c` fallback is load-bearing: Object.assign
+         onto null gives {}, and saveCompany would then mint a duplicate under a fresh id. */
+      var updated = Object.assign({}, getCompany(c.id) || c);
       ['name','domain','phone','website','city','state','notes'].forEach(function (p) {
         var el = document.querySelector('[data-prop="' + p + '"]');
         if (el) updated[p] = el.innerText.trim();

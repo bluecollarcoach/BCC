@@ -998,7 +998,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       setDelta(document.getElementById('kpiNetD'), net>=0?'profitable overall':'net loss', net>=0?'up':'down');
       // YTD net across all companies, current year.
       var year = (new Date()).getFullYear().toString();
-      var yNet=0; dedupePeriods(allPeriods()).forEach(function(p){ if(p.realmId&&p.period&&p.period.indexOf(year)===0&&!periodInProgress(p.period)){ yNet += netOf(p);} });
+      // Same live[] filter the three tiles beside this one use. Without it the firm-wide YTD
+      // total kept counting clients the server no longer lists - a disconnected or removed
+      // company whose period docs are still cached locally - so the roll-up disagreed with
+      // every figure next to it and overstated the firm's year.
+      var yNet=0; dedupePeriods(allPeriods()).forEach(function(p){ if(p.realmId&&live[String(p.realmId)]&&p.period&&p.period.indexOf(year)===0&&!periodInProgress(p.period)){ yNet += netOf(p);} });
       document.getElementById('kpiYtd').textContent = dollars(yNet);
       setDelta(document.getElementById('kpiYtdD'), year + ' · closed months · all companies');
       return;
@@ -1020,9 +1024,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     document.getElementById('kpiRev').textContent = dollars(rev);
     document.getElementById('kpiExp').textContent = dollars(exp);
     document.getElementById('kpiNet').textContent = dollars(net);
-    function dlt(el, v){ if(v==null){ setDelta(el,'no prior period'); return;} setDelta(el,(v>=0?'↑ ':'↓ ')+Math.abs(v)+'% vs prior', v>0?'up':v<0?'down':'flat'); }
+    /* upIsBad: for EXPENSES a rise is bad news. The class drives the colour (.up green,
+       .down red), so without this a 40% jump in overhead was shown in green with an up arrow,
+       reading as good news on the client's own dashboard. Revenue and net keep up = good. */
+    function dlt(el, v, upIsBad){ if(v==null){ setDelta(el,'no prior period'); return;} setDelta(el,(v>=0?'↑ ':'↓ ')+Math.abs(v)+'% vs prior', v>0?(upIsBad?'down':'up'):v<0?(upIsBad?'up':'down'):'flat'); }
     dlt(document.getElementById('kpiRevD'), prev?pct(rev, prev.revenueCents):null);
-    dlt(document.getElementById('kpiExpD'), prev?pct(exp, prev.expensesCents):null);
+    dlt(document.getElementById('kpiExpD'), prev?pct(exp, prev.expensesCents):null, true);
     dlt(document.getElementById('kpiNetD'), prev?pct(net, netOf(prev)):null);
     var year = (new Date()).getFullYear().toString();
     // YTD net through the last CLOSED month ONLY — never the in-progress current month.
@@ -1972,7 +1979,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function renderForReview(d) {
     var items = d.items || [], accts = (d.accounts || []).join(', ');
     var head = '<div style="margin-bottom:10px;"><div style="font-weight:700;font-size:15px;">🔎 For review — ' + items.length + ' uncategorized transaction' + (items.length === 1 ? '' : 's') + '</div>' +
-      '<div style="font-size:12px;color:var(--muted);">' + (accts ? ('In: ' + esc(accts)) : 'No “Uncategorized” or “Ask My Accountant” accounts found in this company.') + ' · this year to date. Click <strong>Categorize</strong> to reclassify a transaction to the right account.</div></div>';
+      '<div style="font-size:12px;color:var(--muted);">' + (accts ? ('In: ' + esc(accts)) : 'No “Uncategorized” or “Ask My Accountant” accounts found in this company.') + ' · the last 24 months. Click <strong>Categorize</strong> to reclassify a transaction to the right account.</div></div>';
     if (d.capped) head += '<div style="font-size:11px;color:#8a6d2f;background:#fdf6e3;border-radius:6px;padding:5px 8px;margin-bottom:8px;">Showing the most recent transactions (large history — some older items may be beyond this view).</div>';
     if (!items.length) return head + '<div style="color:var(--muted);padding:12px 0;">Nothing to review — no transactions are sitting in an uncategorized account. 🎉</div>';
     var rows = items.map(function (it) {
@@ -2694,7 +2701,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           }).join('');
           extraRow =
             '<label>' + (entity === 'bill' ? 'PO / Bill no.' : 'PO / Ref no.') + '<input id="tx_docnum" value="' + esc(pre.DocNumber || '') + '" placeholder="optional" /></label>' +
-            '<label>Terms<select id="tx_terms">' + termOpts + '</select></label>';
+            '<label>Terms<select id="tx_terms" data-orig="' + esc((pre.SalesTermRef && pre.SalesTermRef.value) || '') + '">' + termOpts + '</select></label>';
         }
         var jobLinesHaveMixedJobs = false, jobLinesHaveMixedBillable = false;
         if (entity === 'bill' || entity === 'purchase') {
@@ -2823,8 +2830,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             g.paymentType = (edit && pre.PaymentType) ? pre.PaymentType : ((acct && /credit card/i.test(acct.type || '')) ? 'CreditCard' : 'Cash');
           } else { g.due = document.getElementById('tx_due').value; }
           // PO/ref no., payment terms, and the job the cost belongs to.
-          var dn = document.getElementById('tx_docnum'); if (dn && dn.value.trim()) g.docNumber = dn.value.trim();
-          var tm = document.getElementById('tx_terms'); if (tm && tm.value) g.termId = tm.value;
+          // Send whenever the control exists, so clearing the box actually clears the field.
+          var dn = document.getElementById('tx_docnum'); if (dn) g.docNumber = dn.value.trim();
+          /* Terms only when the user CHANGED the picker. It falls back to "- none -" whenever
+             the real term is inactive or the Term query failed, so sending it unconditionally
+             would clear a live Net 30 that nobody touched. */
+          var tm = document.getElementById('tx_terms'); if (tm && tm.value && tm.value !== (tm.getAttribute('data-orig') || '')) g.termId = tm.value;
           var jb = document.getElementById('tx_job');
           if (jb && jb.value.trim()) {
             var jobRes = txFieldId('tx_job', refs.customers);
@@ -2855,6 +2866,23 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   function submitTxn(entity, g) {
     var fields;
+    /* EVERY line with money on it needs its account (bill/purchase) or item (invoice). A row
+       with an amount and nothing picked was sent with the id as the literal string
+       "undefined" - QBO then rejected the WHOLE transaction with a validation error naming a
+       field the bookkeeper never saw, and the work they had just typed sat there unsaved.
+       A `.some()` test is not enough: it passes as soon as ONE line is complete, which is
+       exactly the case here (a filled row plus a stray amount-only row). Blank rows with no
+       amount are ignored - adding a line and not using it is normal. */
+    var lineKey = entity === 'invoice' ? 'itemId' : 'accountId';
+    if (entity === 'invoice' || entity === 'bill' || entity === 'purchase') {
+      var bad = (g.lines || []).filter(function (l) { return qbonum(l.amount) > 0 && !l[lineKey]; }).length;
+      if (bad) {
+        (window.bccNotify || alert)(bad === 1
+          ? ('One line has an amount but no ' + (entity === 'invoice' ? 'product/service' : 'account') + ' - pick one, or clear the amount.')
+          : (bad + ' lines have an amount but no ' + (entity === 'invoice' ? 'product/service' : 'account') + ' - pick one on each, or clear the amounts.'), 'warn', 7000);
+        return;
+      }
+    }
     if (entity === 'invoice') {
       if (!g.party) { (window.bccNotify || alert)('Pick a customer.', 'warn'); return; }
       fields = { customerId: g.party, txnDate: g.date, dueDate: g.due, lines: g.lines.map(function (l) {
@@ -2883,7 +2911,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // PO / Bill no. and Terms were collected by the form and never put on the wire, so both
     // silently did nothing — the server has always accepted and validated them.
     if (entity === 'bill' || entity === 'invoice') {
-      if (g.docNumber) fields.docNumber = g.docNumber;
+      if (g.docNumber != null) fields.docNumber = g.docNumber;   // '' clears it
       if (g.termId) fields.termId = g.termId;
     }
     if (g.keepLines && g.keepLines.length) fields.keepLines = g.keepLines; // preserve non-editable line types on edit
@@ -4722,7 +4750,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         }
         if (!resp || !resp.ok) { list.innerHTML = '<div style="color:var(--burgundy);font-size:13px;">' + esc((resp && resp.error) || 'Could not load drive') + '</div>'; return; }
         var items = resp.items || [];
-        var head = _driveSearch ? '<div style="font-size:12px;color:var(--muted);margin-bottom:6px;">' + items.length + ' result' + (items.length === 1 ? '' : 's') + ' for “' + esc(_driveSearch) + '” · <a href="#" id="drv_clear" style="color:var(--gold-deep);font-weight:600;">clear</a></div>' : '';
+        // Say so when the listing was cut short, instead of showing a partial folder as if it
+        // were the whole thing - the same notice the SharePoint browser already gives.
+        var head = resp.truncated ? '<div style="background:#fbf6ec;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12.5px;">This folder has more items than can be listed at once — only the first ' + items.length + ' are shown. Open a subfolder, or search, to narrow it down.</div>' : '';
+        head += _driveSearch ? '<div style="font-size:12px;color:var(--muted);margin-bottom:6px;">' + items.length + ' result' + (items.length === 1 ? '' : 's') + ' for “' + esc(_driveSearch) + '” · <a href="#" id="drv_clear" style="color:var(--gold-deep);font-weight:600;">clear</a></div>' : '';
         if (!items.length) { list.innerHTML = head + '<div style="color:var(--muted);padding:8px 0;">' + (_driveSearch ? 'No files match your search.' : 'This folder is empty.') + '</div>'; var cl0 = document.getElementById('drv_clear'); if (cl0) cl0.onclick = function (e) { e.preventDefault(); _driveSearch = ''; renderDriveBrowser(); }; return; }
         list.innerHTML = head + '<table><tbody>' + items.map(function (it) {
           if (it.folder) return '<tr><td><button type="button" class="fs-folder" data-folder="' + esc(it.id) + '" data-fname="' + esc(it.name) + '">📁 ' + esc(it.name) + '</button></td><td></td></tr>';
@@ -4876,7 +4907,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // At root the firm overlay lists EVERY notary request (firm bucket + any client-scoped
   // ones created before notary went firm-level), so in-flight work is never stranded.
   // Inside a client it stays scoped to that client's bucket.
-  function allNotary() { var pre = currentRealm ? notaryPrefix() : 'bcc-notary-'; var out = []; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (!k || k.indexOf(pre) !== 0) continue; try { var r = JSON.parse(localStorage.getItem(k)); if (r && r.id) out.push(r); } catch (e) {} } return out; }
+  /* Requests only. 'bcc-notary-contact-v1' - the firm's notary CONTACT setting - shares this
+     prefix, so it was swept into the list and painted as a phantom notarization request with
+     no document and no client, and its Delete button wiped the firm's setting. Match on the
+     docType the request writer actually stamps rather than on the prefix alone. */
+  function allNotary() { var pre = currentRealm ? notaryPrefix() : 'bcc-notary-'; var out = []; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (!k || k.indexOf(pre) !== 0) continue; if (k === NOTARY_CONTACT_KEY) continue; try { var r = JSON.parse(localStorage.getItem(k)); if (r && r.id && r.docType === 'notary-request') out.push(r); } catch (e) {} } return out; }
   function loadNotaryReq(id) { try { return JSON.parse(localStorage.getItem(id)); } catch (e) { return null; } }
   function saveNotaryReq(r) { r.updatedAt = nowIso(); r.updatedBy = myUpn(); localStorage.setItem(r.id, JSON.stringify(r)); if (window.bccAudit) window.bccAudit('client-file-upload', { key: r.id, path: '/bookkeeping.html', meta: { realmId: currentRealm || 'firm', source: 'notary' } }); }
   var NOTARY_STATUS = { requested: ['🟡 Requested', '#8a6f3c'], scheduled: ['🔵 Scheduled', '#1d5fb0'], completed: ['🟢 Completed', '#1f8a4c'] };

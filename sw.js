@@ -27,7 +27,7 @@
    branch below is cache-first with no revalidation, so without a bump a replaced logo or
    icon is served from this cache forever, on every device that ever loaded the old one.
    Date-stamped rather than numbered so it is obvious when it was last rolled. */
-const CACHE_NAME = 'bcc-offline-2026-08-18';
+const CACHE_NAME = 'bcc-offline-2026-08-18b';   // bumped: pre-cached entries now carry sw-cached-at
 /* How long a cached HTML/JS/CSS response may still be served as live code when the network
    fails. Past this, the offline page is shown instead — booting a build we cannot verify is
    current is exactly how a fixed, page-killing bug kept reappearing for hours. Assets
@@ -57,10 +57,23 @@ const STATIC_ASSETS = [
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE_NAME);
-    // Per-URL add so a single 404 / 302 (e.g. unauth at install time)
-    // doesn't tear down the whole pre-cache.
+    /* Per-URL, and STAMPED. cache.add() stores the raw response, which carries no
+       sw-cached-at header — and the freshness gate in fetch reads a missing stamp as
+       Infinity, so every pre-cached page was rejected as too old and offline support did
+       not work at all. It really was fetched at install time, so say so.
+       Still per-URL and still swallowing: a single 404, or a /*.html auth redirect hopping
+       cross-origin to login.microsoftonline.com, must not reject the whole waitUntil and
+       leave the worker uninstalled. */
     await Promise.all([...OFFLINE_PAGES, ...STATIC_ASSETS].map((url) =>
-      cache.add(new Request(url, { credentials: 'include' }))
+      fetch(new Request(url, { credentials: 'include' }))
+        .then((r) => {
+          // Only a real same-origin 200. An opaque/redirected response has no usable body
+          // and would be cached as a permanently broken entry.
+          if (!r || !r.ok || r.type !== 'basic') return;
+          const h = new Headers(r.headers);
+          h.set('sw-cached-at', String(Date.now()));
+          return r.blob().then((b) => cache.put(url, new Response(b, { status: 200, statusText: 'OK', headers: h })));
+        })
         .catch((e) => { /* swallow — best-effort precache */ })
     ));
     // Activate immediately so the user gets offline support on the
