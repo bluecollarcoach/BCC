@@ -5,7 +5,22 @@ jobs:
   dump:
     runs-on: ubuntu-latest
     steps:
-      - name: Pull the feedback queue
+      - name: Resolve the handled items
+        run: |
+          post() {
+            code=$(curl -s -m 60 -o /tmp/r.json -w "%{http_code}" -X POST \
+              -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}" \
+              -H "content-type: application/json" \
+              --data "$1" \
+              "https://connect.bluecollarcoach.us/api/cron/feedback-dump")
+            echo "HTTP $code"
+            cat /tmp/r.json
+            echo
+          }
+          post '{"id":"bcc-feedback-msz1dhsh-4uiknd","note":"Fixed. The Email tab only ever listed the Inbox, so a message you had SENT was not reachable in the app at all - which is why the attachment could not be opened. There is now an Inbox/Sent dropdown next to the mail search box. Open a sent message from Sent and its attachments preview and download exactly like incoming mail."}'
+          post '{"id":"bcc-feedback-msz1at2j-gvioxv","note":"Fixed. Certified payroll reports were being filed into client files as an .html file, and the viewer will not display HTML - that is the screen full of code you saw. They are now filed as a real PDF, the same one that goes out as the email attachment. Each existing report switches over the next time it is saved."}'
+          post '{"id":"bcc-feedback-msgj0zzr-j2d16x","note":"This is built. In the client workspace there is a Mail section: log what arrived (date received, who it is from, what it is) and attach a scan or photo. The scan files into the client Mail folder tagged postal-mail, and each entry can be ticked off as handled once it is dealt with."}'
+      - name: Pull whatever is left
         run: |
           code=$(curl -s -m 90 -o /tmp/fb.json -w "%{http_code}" \
             -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}" \
