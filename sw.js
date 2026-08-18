@@ -27,7 +27,12 @@
    branch below is cache-first with no revalidation, so without a bump a replaced logo or
    icon is served from this cache forever, on every device that ever loaded the old one.
    Date-stamped rather than numbered so it is obvious when it was last rolled. */
-const CACHE_NAME = 'bcc-offline-2026-08-11';
+const CACHE_NAME = 'bcc-offline-2026-08-18';
+/* How long a cached HTML/JS/CSS response may still be served as live code when the network
+   fails. Past this, the offline page is shown instead — booting a build we cannot verify is
+   current is exactly how a fixed, page-killing bug kept reappearing for hours. Assets
+   (images) are unaffected; they are cache-first by design and age harmlessly. */
+const STALE_CODE_MAX_MS = 24 * 60 * 60 * 1000;
 
 // Pages the user explicitly wants offline-capable. BCC doesn't have field
 // crews on remote sites, so this is light — just the dashboard + the
@@ -103,22 +108,39 @@ self.addEventListener('fetch', (event) => {
       try {
         const r = await fetch(req);
         // Only cache valid (200, basic) responses to avoid storing
-        // auth redirects (302→/login) or errors.
+        // auth redirects (302→/login) or errors. Stamp WHEN, so the fallback below can
+        // refuse a copy that is too old to be trusted as live code.
         if (r && r.ok && r.type === 'basic') {
           const clone = r.clone();
-          caches.open(CACHE_NAME).then((c) => c.put(req, clone)).catch(() => {});
+          caches.open(CACHE_NAME).then(async (c) => {
+            const body = await clone.blob();
+            const h = new Headers(clone.headers);
+            h.set('sw-cached-at', String(Date.now()));
+            await c.put(req, new Response(body, { status: 200, statusText: 'OK', headers: h }));
+          }).catch(() => {});
         }
         return r;
       } catch (e) {
+        /* A single transient fetch failure — Wi-Fi to LTE, VPN reconnect, sleep/wake, a
+           captive portal — used to hand back an UNBOUNDED-age cached copy as a 200. That is
+           how a user kept running a page-killing build for hours after the fix had shipped:
+           the stale HTML and the stale JS were served independently and silently, with no
+           way to tell. Serve a saved copy only while it is fresh enough to plausibly still
+           be the deployed build; past that, show the offline page rather than boot code we
+           know may be superseded. */
         const cached = await caches.match(req);
-        if (cached) return cached;
-        // Last-resort fallback for unknown HTML routes when offline.
-        if (isHtml) {
-          const fb = (await caches.match('/myday.html'))
-                  || (await caches.match('/index.html'))
-                  || (await caches.match('/'));
-          if (fb) return fb;
+        if (cached) {
+          const at = Number(cached.headers.get('sw-cached-at') || 0);
+          const age = at ? (Date.now() - at) : Infinity;
+          if (age <= STALE_CODE_MAX_MS) return cached;
+          // Too old to trust as code. For a document, fall through to the offline notice.
+          if (!isHtml) return new Response('', { status: 504 });
         }
+        /* NO cross-page fallback. This used to answer a request for, say, bookkeeping.html
+           with My Day's cached markup at status 200 under the requested URL — so the address
+           bar said one page and the content was another, its script ran against the wrong
+           DOM, and nothing said the device was offline. An honest offline notice is better
+           than a page pretending to be a different page. */
         return new Response(
           '<!doctype html><meta charset="utf-8"><title>Offline</title>' +
           '<body style="font:14px/1.5 system-ui;padding:30px;color:#1a1a1a;background:#f6f6f4">' +

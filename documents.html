@@ -368,7 +368,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       } else {
         actions += '<span class="pill" title="No file attached yet">metadata</span>';
       }
-      actions += '<button class="icon-btn danger" data-act="delete" title="Delete">&times;</button>';
+      // Don't offer a delete the server will refuse. The permanent, blob-and-all delete is
+      // Documents-edit only; showing the × to a view-only user just produced a 403 after the
+      // confirmation had already promised the file was gone.
+      if (docsCanEdit()) actions += '<button class="icon-btn danger" data-act="delete" title="Delete">&times;</button>';
       var linkedHtml = '';
       if (d.linkedContactId) {
         var ct = contactById(d.linkedContactId);
@@ -591,7 +594,24 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
 
   /* ===== Init ===== */
-  function init() { wire(); renderList(); loadServerDocs().then(renderList); }
+  /* Documents-edit is required to upload or delete (enforced server-side). Before identity
+     resolves bccGetAppPermission returns 'none' for everyone, so default to ALLOWED and let
+     the server decide — the opposite made every control vanish for a second on each load. */
+  function docsCanEdit() {
+    if (!window.bccCanEdit || !(window.bccUser && window.bccUser.userDetails)) return true;
+    return !!window.bccCanEdit('documents');
+  }
+  function applyDocsPerms() {
+    var up = document.getElementById('uploadBtn');
+    var box = document.getElementById('uploader');
+    if (!docsCanEdit()) {
+      if (up) up.disabled = true;
+      if (box) box.innerHTML = '<div style="color:var(--muted);font-size:13px;">Your Documents access is view-only, so you can browse and download but not add or delete files.</div>';
+    }
+  }
+  function init() { wire(); renderList(); loadServerDocs().then(renderList); applyDocsPerms(); }
+  // Identity lands after init on a fast boot; re-apply once it does.
+  window.addEventListener('bcc-auth-ready', function () { applyDocsPerms(); renderList(); });
   window.addEventListener('bcc-data-ready', function () {
     // Rebuild the contact/engagement pickers too. They were built once at init, so a
     // contact created in CRM (or by a colleague) never appeared here until a reload —

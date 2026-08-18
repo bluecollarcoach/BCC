@@ -741,7 +741,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var badge = x.source === 'client' ? 'background:#eef2ff;color:#3538cd;' : 'background:#fdecea;color:#b3261e;';
       return '<div style="border:1px solid var(--chrome-mute);border-radius:10px;padding:10px 12px;margin-bottom:8px;">' +
         '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:4px;">' +
-          '<span style="font-family:ui-monospace,monospace;font-size:12.5px;font-weight:700;">' + fbEsc(x.where || '') + '</span>' +
+          '<span style="font-family:ui-monospace,monospace;font-size:12.5px;font-weight:700;">' + fbEsc(x.where || x.wh || '') + '</span>' +
           '<span style="display:flex;gap:8px;align-items:center;"><span style="font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:999px;' + badge + '">' + fbEsc(x.source || '') + '</span><span style="font-size:11.5px;color:var(--muted);">' + fbEsc(fbWhen(x.at)) + '</span></span>' +
         '</div>' +
         '<div style="font-size:13px;color:var(--ink);white-space:pre-wrap;word-break:break-word;">' + fbEsc(x.message || '') + '</div>' +
@@ -943,9 +943,23 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           var upnLc = (tr.dataset.upn || '').toLowerCase();
           var displayName = tr.querySelector('td[data-label="Name"]').textContent.trim();
           if (blockLastAdmin(upnLc, 'Removing them')) return;
-          if (!confirm('Remove ' + displayName + ' from the team? They lose access immediately. (Their docs and history stay.)')) return;
+          /* Do NOT delete the row. Since server-side tiers landed, this record is the
+             RESTRICTION, not the membership marker: appTierFor falls back to the member
+             defaults and bookkeepingTierFor to null when no row matches. Deleting it
+             therefore GRANTED the default app set to someone being removed — the opposite of
+             what the button and its confirmation say. Mark inactive instead, which both
+             tier lookups already fail closed on, and keep appPermissions so re-activating
+             restores exactly what they had. */
+          if (!confirm('Remove ' + displayName + ' from the team? They lose access immediately. (Their docs and history stay, and their permissions are kept in case you re-activate them.)')) return;
           var cfg = loadCfg(); cfg.users = cfg.users || [];
-          cfg.users = cfg.users.filter(function (x) { return (x.upn || '').toLowerCase() !== upnLc; });
+          var _found = false;
+          cfg.users.forEach(function (x) {
+            if ((x.upn || '').toLowerCase() !== upnLc) return;
+            _found = true; x.status = 'inactive'; x.removedAt = new Date().toISOString();
+          });
+          // No row at all means they were already on defaults; add an explicit inactive one
+          // so the removal actually restricts them rather than silently doing nothing.
+          if (!_found) cfg.users.push({ upn: tr.dataset.upn, status: 'inactive', removedAt: new Date().toISOString() });
           if (!saveCfg(cfg)) return;
           if (window.bccAudit) window.bccAudit('user-remove', { key: 'bcc-admin-config-v1', path: '/admin.html', meta: { upn: tr.dataset.upn } });
           if (window.bccNotifySaved) window.bccNotifySaved(displayName + ' removed.');

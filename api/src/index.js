@@ -1625,8 +1625,12 @@ app.http('cpr-sign-request', {
       const body = await request.json().catch(() => ({}));
       const realmId = String(body.realmId || '').replace(/[^0-9a-zA-Z\-]/g, '');
       if (!realmId) return badRequest('realmId required');
-      const acc = await driveClientAccess(p, realmId);
-      if (acc.err) return { status: 403, jsonBody: { ok: false, error: 'no access to this client' } };
+      /* This mints a PUBLIC, 7-day, unauthenticated capability whose redemption OVERWRITES
+         the client's saved Statement-of-Compliance signature. That is a write, so the
+         read-only tiers must be refused — a 'view' bookkeeper could otherwise hand out a
+         link that changes a client's financial record. */
+      const acc = await driveClientAccess(p, realmId, { files: true, write: true });
+      if (acc.err) return acc.err;
       const uid = String(p.userDetails || p.userId || '').toLowerCase();
       const url = publicOrigin(request) + '/sign.html?t=' + encodeURIComponent(cprSignToken(realmId, uid));
       return { jsonBody: { ok: true, url, expiresDays: 7 } };
@@ -1804,17 +1808,31 @@ app.http('errorlog', {
       const errParams = [{ name: '@t', value: BCC_TENANT_ID }];
       let errWhere = 'c.tenantId=@t AND c.docType="errorlog"';
       if (src) { errWhere += ' AND c.source=@src'; errParams.push({ name: '@src', value: src }); }
-      const { resources } = await c.items.query({
-        /* c["where"], NOT c.where — `where` is a RESERVED WORD in Cosmos SQL, so this query
-           was a syntax error and threw on every call. The admin Errors page has therefore
-           been showing nothing at all, which is why a client-side error breaking
-           bookkeeping.html for four people went unnoticed until someone reported the banner
-           by hand. Aliased to `where` so the existing UI keeps reading the same field.
-           The stack is selected too — it was recorded on every row and never read. */
-        query: 'SELECT TOP ' + (ERR_CAP + 1) + ' c.id, c.source, c["where"] AS "where", c.message, c.stack, c.user, c.url, c.at FROM c WHERE ' + errWhere + ' ORDER BY c.at DESC',
-        parameters: errParams
-      }).fetchAll();
-      return { jsonBody: { ok: true, errors: resources.slice(0, ERR_CAP), capped: resources.length > ERR_CAP, source: src } };
+      /* `where` is a RESERVED WORD in Cosmos SQL, and it bites TWICE. The accessor must be
+         bracket-quoted (c["where"]) — that part was right. But the ALIAS must be a plain
+         identifier: Cosmos forbids aliasing onto a reserved word, and double quotes there
+         denote a string literal rather than an identifier, so `AS "where"` is a syntax error
+         and this endpoint threw on every single call. The page stayed blind, and each visit
+         wrote one more errorlog row describing why the errorlog could not be read.
+         Own try/catch so the next failure here SHOWS as a message instead of a bare 500 —
+         "could not load" and "nothing to load" must never look the same on this page. */
+      let resources;
+      try {
+        ({ resources } = await c.items.query({
+          query: 'SELECT TOP ' + (ERR_CAP + 1) + ' c.id, c.source, c["where"] AS wh, c.message, c.stack, c.user, c.url, c.at FROM c WHERE ' + errWhere + ' ORDER BY c.at DESC',
+          parameters: errParams
+        }).fetchAll());
+      } catch (e) {
+        context.error('errorlog query failed', e);
+        return { status: 500, jsonBody: { ok: false, error: 'The error log itself could not be read: ' + String((e && e.message) || e).slice(0, 300) } };
+      }
+      // wh -> where in JS, so the wire shape the UI reads is unchanged.
+      const errRows = resources.slice(0, ERR_CAP).map(r => {
+        const o = Object.assign({}, r, { where: r.wh });
+        delete o.wh;
+        return o;
+      });
+      return { jsonBody: { ok: true, errors: errRows, capped: resources.length > ERR_CAP, source: src } };
     }
     const body = await request.json().catch(() => ({}));
     await logError(String(body.where || 'client').slice(0, 200), { message: body.message, stack: body.stack }, { source: 'client', user: String(p.userDetails || '').toLowerCase(), url: String(body.url || '').slice(0, 200) });
@@ -2130,7 +2148,7 @@ app.http('bookkeeping-entry', {
 
       const b = await request.json().catch(() => ({}));
       const realmId = String(b.realmId || ''); if (!realmId) return { status: 400, jsonBody: { ok: false, error: 'realmId required' } };
-      const acc = await driveClientAccess(p, realmId);
+      const acc = await driveClientAccess(p, realmId, { files: true, write: true });
       if (acc.err) return acc.err;
 
       let minutes = Math.round(Number(b.minutes) || 0);
@@ -2561,7 +2579,13 @@ function driveConnectHandler(provider) {
     const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
     const realmId = new URL(request.url).searchParams.get('realmId');
     if (!realmId) return driveBack(null, 'missing client');
-    const acc = await driveClientAccess(p, realmId); if (acc.err) return driveBack(realmId, 'no access to this client');
+    /* Connecting (or REPOINTING) a client's shared drive is the most consequential write in
+       this family — it decides which Google/OneDrive account the client's documents live in —
+       yet it was the one route that never got the consolidated tier rule. Same opts the
+       mutating file routes use, and the refusal text is surfaced rather than a generic
+       "no access", so a blocked user is told why. */
+    const acc = await driveClientAccess(p, realmId, { files: true, write: true });
+    if (acc.err) return driveBack(realmId, (acc.err.jsonBody && acc.err.jsonBody.error) || 'no access to this client');
     const creds = await driveAppCreds(provider); if (!creds.ok) return driveBack(realmId, (provider === 'google' ? 'Google Drive' : 'OneDrive') + ' app not configured yet');
     const redirect = driveRedirect(request, provider);
     const state = driveSignState(realmId, p.userDetails || p.userId || '', provider);
@@ -8142,6 +8166,10 @@ app.http('documents-list-create', {
 
     // POST — multipart upload.
     try {
+      // Same app-tier gate as the delete branch: a View-only Documents user must not be able
+      // to add firm-wide files either (the bookkeeping check further down only covers
+      // /clients/<realm> folders).
+      if (!tierAtLeast(await appTierFor(p, 'documents'), 'edit')) return forbidden('your Documents access is view-only, so you cannot upload files');
       const form = await request.formData();
       const file = form.get('file');
       if (!file || typeof file === 'string') return badRequest('expected "file" form field');
@@ -8259,6 +8287,11 @@ app.http('document-one', {
       let meta = null;
       try { ({ resource: meta } = await c.item(id, BCC_TENANT_ID).read()); } catch (e) { if (e.code !== 404) throw e; }
       if (meta) { const allowDel = await docAccessFilter(p); if (!(await allowDel(meta))) return forbidden('no access to this client’s files'); }
+      /* App-tier gate. The bookkeeping check below is keyed on docFolderRealm, which is null
+         for every FIRM-WIDE document ('/', '/contracts', '/sops'), so a View-only Documents
+         user could permanently delete those — blob and all — with nothing stopping them.
+         This is irreversible, so it is checked before anything is touched. */
+      if (!tierAtLeast(await appTierFor(p, 'documents'), 'edit')) return forbidden('your Documents access is view-only, so you cannot delete files');
       // Deleting is a WRITE and this is permanent (Blob + Cosmos). docAccessFilter is
       // deliberately NOT the place for this rule — it also gates the GET/list/download
       // callers, and a read-only bookkeeper is still supposed to READ these files. Keyed on

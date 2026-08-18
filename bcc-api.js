@@ -307,6 +307,14 @@
     });
     if (changed) parkedWrite(all);
   }
+  /* Is a local write for this key still UNSENT, as seen by ANY tab? `pending` and `inFlight`
+     are per-tab in-memory Maps, but localStorage — and the durable outbox in it — are shared
+     by every tab. So the "don't let the server's older copy land on an unsent local write"
+     guards only ever protected the tab that made the write: a second tab's 8s poll happily
+     overwrote it with Cosmos' older copy, and the first tab then pushed that stale value.
+     Deliberately the LIVE outbox only, never the parked store — a parked entry can be weeks
+     old and must not pin a key forever. */
+  function outboxPendingAnyTab(k) { return outboxRead().items[k] !== undefined; }
   // Is this key still held anywhere unsent? The bootstrap purge must not remove the last copy.
   function outboxHas(k) {
     if (outboxRead().items[k] !== undefined) return true;
@@ -346,15 +354,27 @@
       if (m) return k.indexOf(m[1] + me + '-') === 0 || k === m[1] + me;
       return true; // not a personal key shape
     };
-    var kept = 0, drop = [], park = {};
+    /* The owner a personal key NAMES, or '' if it is not a personal key shape. Parking is
+       only useful if the entry lands in ITS OWNER's bucket: filing it under the current
+       signer meant a colleague's unsent clock-out was parked where only the wrong person
+       could ever unpark it, so it was never replayed and never recoverable — the exact loss
+       parking was introduced to prevent. Mirrors keyOwnerOk's three key shapes. */
+    var keyOwner = function (k) {
+      if (k.indexOf('bcc-mytasks-') === 0 || k.indexOf('bcc-emailsig-') === 0) return k.replace(/^bcc-(?:mytasks|emailsig)-/, '');
+      var mm = /^bcc-(?:daily-log|chat-last-read)-(.+?)(?:-\d{4}-\d{2}-\d{2})?$/.exec(k);
+      return mm ? mm[1] : '';
+    };
+    var kept = 0, drop = [], park = {}, parkOwner = {};
     keys.forEach(function (k) {
       var e = o.items[k];
       var mine = !o.upn || !me || o.upn === me;
       var personal = /^bcc-(daily-log|mytasks|emailsig|chat-last-read)-/.test(k);
       var owned = OFFLINE_OWNED_PREFIXES.some(function (p) { return k.indexOf(p) === 0; });
       // Not mine to replay — but it IS somebody's. Park it rather than destroying it.
-      if (personal && !keyOwnerOk(k)) { park[k] = e; return; }
-      if (!mine && (personal || !e.t)) { park[k] = e; return; }
+      // Park under the key's OWN owner where the key names one; only fall back to the
+      // outbox's recorded upn for shapes that name nobody.
+      if (personal && !keyOwnerOk(k)) { park[k] = e; parkOwner[k] = keyOwner(k); return; }
+      if (!mine && (personal || !e.t)) { park[k] = e; parkOwner[k] = keyOwner(k); return; }
       // Untrusted (pre-auth / offline) writes are replayable only for owner-only families.
       // This one genuinely cannot be attributed to anyone, so it is the only real drop.
       if (!e.t && !owned) { drop.push(k); return; }
@@ -363,7 +383,13 @@
     });
     var parkKeys = Object.keys(park);
     if (parkKeys.length) {
-      outboxPark(o.upn || '_unknown', park);
+      // One bucket per owner, not one bulk park under the signer.
+      var buckets = {};
+      parkKeys.forEach(function (k) {
+        var who = (parkOwner[k] || o.upn || '_unknown').toLowerCase();
+        (buckets[who] = buckets[who] || {})[k] = park[k];
+      });
+      Object.keys(buckets).forEach(function (who) { outboxPark(who, buckets[who]); });
       outboxDrop(parkKeys);          // moved, not lost
     }
     if (drop.length) outboxDrop(drop);
@@ -376,7 +402,7 @@
     var back = outboxUnpark(me), backKeys = Object.keys(back);
     if (backKeys.length) {
       o = outboxRead();                       // the drops above rewrote it
-      var now = Date.now(), stale = 0, superseded = 0, keepParked = {};
+      var now = Date.now(), stale = 0, superseded = 0, keepParked = {}, misfiled = {};
       backKeys.forEach(function (k) {
         var e = back[k];
         /* An entry parked by an EARLIER build has no `pk` — the stamp and this age check
@@ -388,7 +414,8 @@
         // outboxUnpark already DELETED the whole bucket, so anything refused below has to be
         // put back explicitly or it is destroyed — with its original stamp, never re-dated.
         if (now - pkt > PARK_MAX_AGE_MS) { stale++; keepParked[k] = { v: e.v, t: e.t, pk: pkt }; return; }
-        if (/^bcc-(daily-log|mytasks|emailsig|chat-last-read)-/.test(k) && !keyOwnerOk(k)) { keepParked[k] = { v: e.v, t: e.t, pk: pkt }; return; }
+        // Refused here too — re-park under the owner the key names, not under me.
+        if (/^bcc-(daily-log|mytasks|emailsig|chat-last-read)-/.test(k) && !keyOwnerOk(k)) { misfiled[k] = { v: e.v, t: e.t, pk: pkt }; return; }
         // A queued local write is NEWER than anything parked. Seeding `pending` with the
         // parked copy regardless meant the older value won and the newer edit was reverted.
         if (o.items[k] !== undefined) { superseded++; return; }
@@ -398,7 +425,14 @@
       });
       o.upn = me;
       outboxWrite(o);
-      if (Object.keys(keepParked).length) outboxPark(me, keepParked, true);   // preserve stamps
+      if (Object.keys(keepParked).length) outboxPark(me, keepParked, true);   // mine, just too old
+      // Someone else's, mis-filed into my bucket by an earlier build — re-home it so its
+      // real owner can actually get it back.
+      Object.keys(misfiled).forEach(function (k) {
+        var who = (keyOwner(k) || '_unknown').toLowerCase();
+        var one = {}; one[k] = misfiled[k];
+        outboxPark(who, one, true);
+      });
       if (stale) console.info('[bcc-api] left ' + stale + ' parked write(s) older than ' + Math.round(PARK_MAX_AGE_MS / 86400000) + ' day(s) parked, not replayed');
       if (superseded) console.info('[bcc-api] dropped ' + superseded + ' parked write(s) superseded by a newer local edit');
     }
@@ -763,7 +797,7 @@
         items.forEach(function (it) {
           if (!it || !it.key || it.data === undefined) return;
           if (it.updatedAt && it.updatedAt > maxUpd) maxUpd = it.updatedAt;
-          if (pending.has(it.key) || heldInFlight(it.key)) return; // an unsent — or still-saving — local write is newer
+          if (pending.has(it.key) || heldInFlight(it.key) || outboxPendingAnyTab(it.key)) return; // an unsent — or still-saving — local write is newer, in THIS tab or another
           // Never let a DEVICE preference arrive from the server. Older builds pushed
           // these, so a tenant-wide copy may still exist in Cosmos; applying it would
           // keep overwriting this browser's own value forever.
@@ -1230,7 +1264,7 @@
             if (seenKeys) seenKeys.add(it.key); // server still has this doc
             if (it.data === undefined) return;
             if (it.updatedAt && it.updatedAt > maxUpd) maxUpd = it.updatedAt;
-            if (pending.has(it.key) || heldInFlight(it.key)) return; // user has a newer local write queued (or still saving)
+            if (pending.has(it.key) || heldInFlight(it.key) || outboxPendingAnyTab(it.key)) return; // newer local write queued (or still saving), in THIS tab or another
             if (DEVICE_LOCAL_KEYS.indexOf(it.key) >= 0) return; // device preference (see setItem)
             var val = typeof it.data === 'string' ? it.data : JSON.stringify(it.data);
             // Per-item, because a QuotaExceededError on ONE document used to throw straight
@@ -1257,7 +1291,7 @@
             var gone = [];
             for (var pi = 0; pi < localStorage.length; pi++) {
               var pk = localStorage.key(pi);
-              if (!pk || seenKeys.has(pk) || pending.has(pk) || heldInFlight(pk)) continue; // queued — or still-saving — local write wins
+              if (!pk || seenKeys.has(pk) || pending.has(pk) || heldInFlight(pk) || outboxPendingAnyTab(pk)) continue; // queued — or still-saving — local write wins, any tab
               for (var px = 0; px < PRUNABLE_PREFIXES.length; px++) {
                 if (pk.indexOf(PRUNABLE_PREFIXES[px]) === 0) { gone.push(pk); break; }
               }
