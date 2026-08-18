@@ -501,22 +501,33 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     return safeColor(t && t.color);
   }
 
+  /* Every id that reaches localStorage here has to be OUR OWN namespace. Two ways a foreign
+     key got in: crm.html?id=<anything> went straight to renderDetail, and a doc's own `id`
+     field was trusted over the key it was found under. Either put an arbitrary key behind the
+     ordinary Delete / Save changes buttons, and the hooked Storage.removeItem turns that into
+     DELETE /api/data/<that key> — so one confirm on what looked like a blank contact could
+     destroy the firm's admin config. Mirrors isEventKey() in events.html. */
+  function isContactKey(id) { return typeof id === 'string' && id.indexOf(CONTACT_PREFIX) === 0; }
+  function isConvoKey(id)   { return typeof id === 'string' && id.indexOf(CONVO_PREFIX) === 0; }
+  function isWeeklyKey(id)  { return typeof id === 'string' && id.indexOf(WEEKLY_PREFIX) === 0; }
   function allContacts() {
     var out = [];
     for (var i = 0; i < localStorage.length; i++) {
       var k = localStorage.key(i);
       if (!k || k.indexOf(CONTACT_PREFIX) !== 0) continue;
-      try { var c = JSON.parse(localStorage.getItem(k)); if (c && c.id) out.push(c); } catch (e) {}
+      // Trust the KEY it was found under, not the id the document declares about itself.
+      try { var c = JSON.parse(localStorage.getItem(k)); if (c) { c.id = k; out.push(c); } } catch (e) {}
     }
     return out.sort(function (a, b) { return (b.updatedAt || '').localeCompare(a.updatedAt || ''); });
   }
   function getContact(id) {
+    if (!isContactKey(id)) return null;
     try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (e) { return null; }
   }
   function saveContact(c) {
     c.updatedAt = nowIso();
     if (!c.createdAt) c.createdAt = c.updatedAt;
-    if (!c.id) c.id = CONTACT_PREFIX + uid();
+    if (!isContactKey(c.id)) c.id = CONTACT_PREFIX + uid();   // never write through a foreign id
     if (!c.tenantId) c.tenantId = 'blue-collar-coach';
     c.docType = 'contact';
     if (!Array.isArray(c.needs)) c.needs = [];
@@ -524,6 +535,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     return c;
   }
   function deleteContact(id) {
+    if (!isContactKey(id)) return;
     localStorage.removeItem(id);
     // also remove this contact's convos
     convosFor(id).forEach(function (cv) { localStorage.removeItem(cv.id); });
@@ -540,7 +552,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       if (!k || k.indexOf(CONVO_PREFIX) !== 0) continue;
       try {
         var cv = JSON.parse(localStorage.getItem(k));
-        if (cv && cv.contactId === contactId) out.push(cv);
+        if (cv && cv.contactId === contactId) { cv.id = k; out.push(cv); }
       } catch (e) {}
     }
     return out.sort(function (a, b) { return (b.at || '').localeCompare(a.at || ''); });
@@ -549,12 +561,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     cv.updatedAt = nowIso();
     if (!cv.createdAt) cv.createdAt = cv.updatedAt;
     if (!cv.at) cv.at = cv.updatedAt;
-    if (!cv.id) cv.id = CONVO_PREFIX + uid();
+    if (!isConvoKey(cv.id)) cv.id = CONVO_PREFIX + uid();
     if (!cv.tenantId) cv.tenantId = 'blue-collar-coach';
     cv.docType = 'convo';
     localStorage.setItem(cv.id, JSON.stringify(cv));
   }
-  function deleteConvo(id) { localStorage.removeItem(id); }
+  function deleteConvo(id) { if (!isConvoKey(id)) return; localStorage.removeItem(id); }
 
   /* Weekly coaching notes — dated entries per contact (after weekly calls). */
   var WEEKLY_PREFIX = 'bcc-weeklynote-';
@@ -563,19 +575,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     for (var i = 0; i < localStorage.length; i++) {
       var k = localStorage.key(i);
       if (!k || k.indexOf(WEEKLY_PREFIX) !== 0) continue;
-      try { var w = JSON.parse(localStorage.getItem(k)); if (w && w.contactId === contactId) out.push(w); } catch (e) {}
+      try { var w = JSON.parse(localStorage.getItem(k)); if (w && w.contactId === contactId) { w.id = k; out.push(w); } } catch (e) {}
     }
     return out.sort(function (a, b) { return (b.weekOf || '').localeCompare(a.weekOf || '') || (b.createdAt || '').localeCompare(a.createdAt || ''); });
   }
   function saveWeeklyNote(w) {
     w.updatedAt = nowIso();
     if (!w.createdAt) w.createdAt = w.updatedAt;
-    if (!w.id) w.id = WEEKLY_PREFIX + uid();
+    if (!isWeeklyKey(w.id)) w.id = WEEKLY_PREFIX + uid();
     if (!w.tenantId) w.tenantId = 'blue-collar-coach';
     w.docType = 'weekly-note';
     localStorage.setItem(w.id, JSON.stringify(w));
   }
-  function deleteWeeklyNote(id) { localStorage.removeItem(id); }
+  function deleteWeeklyNote(id) { if (!isWeeklyKey(id)) return; localStorage.removeItem(id); }
   // Monday of the current week, YYYY-MM-DD (default "week of" for a new note).
   function thisMonday() {
     var d = new Date(); var day = (d.getDay() + 6) % 7; d.setDate(d.getDate() - day);
@@ -1584,9 +1596,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
 
   /* ===== Bootstrap ===== */
   function init() {
+    // ?id= is attacker-supplied (a link in a chat message is enough). Anything outside our
+    // own namespace falls through to the normal list instead of being painted as a contact.
     var id = getParam('id');
     populateTypeDropdowns();
-    if (id) {
+    if (id && isContactKey(id)) {
       show('detailMode');
       renderDetail(id);
     } else {
@@ -1618,7 +1632,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   window.addEventListener('bcc-data-ready', function () {
     populateTypeDropdowns();
     var id = getParam('id');
-    if (!id) { if (rowsEl) renderList(); return; }
+    if (!id || !isContactKey(id)) { if (rowsEl) renderList(); return; }
     var pane = document.getElementById('detailMode');
     var ae = document.activeElement;
     if (pane && ae && pane.contains(ae)) return; // caret is in the pane right now

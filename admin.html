@@ -174,6 +174,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     <button data-tab="security">Security</button>
     <button data-tab="bktime">Bookkeeping time</button>
     <button data-tab="goals">Report goals</button>
+    <button data-tab="spmap">SharePoint folders</button>
     <button data-tab="data">Data &amp; Backups</button>
     <button data-tab="feedback">Feedback<span id="fbTabBadge" style="display:none;margin-left:6px;background:#c0392b;color:#fff;font-size:10.5px;font-weight:800;min-width:16px;height:16px;line-height:16px;border-radius:999px;padding:0 5px;vertical-align:middle;"></span></button>
     <button data-tab="errors">Errors</button>
@@ -381,6 +382,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     </div>
   </section>
 
+  <section class="panel-section" id="panel-spmap">
+    <div class="card">
+      <h3>SharePoint folders</h3>
+      <p class="blurb">Which folder under <strong>Recurring Client Work</strong> belongs to which client. A client's Files tab shows its SharePoint folder only when the folder name matches the QuickBooks company name <strong>exactly</strong> (after ignoring case, punctuation and words like LLC / Inc / Services) or when you map it here by hand.</p>
+      <p class="blurb" style="color:var(--burgundy);">The app deliberately will not guess. Two different clients can look alike once those words are stripped &mdash; &ldquo;Anderson Co&rdquo; and &ldquo;Anderson Plumbing LLC&rdquo; both reduce to <em>anderson&hellip;</em> &mdash; and guessing wrong means one client's Files tab shows another client's statements, payroll and tax documents. Where a name is close but not identical, it is offered below as a suggestion for you to confirm.</p>
+      <div style="margin:12px 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <button class="btn btn-ghost" id="spmapRefresh" type="button">&#8635; Refresh</button>
+        <span id="spmapStatus" style="font-size:12px;color:var(--muted);"></span>
+      </div>
+      <div id="spmapOut"><div style="opacity:.6;">Loading&hellip;</div></div>
+    </div>
+  </section>
+
   <section class="panel-section" id="panel-feedback">
     <div class="card">
       <h3>User feedback</h3>
@@ -557,6 +571,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       if (name === 'feedback') renderFeedback();
       if (name === 'errors') renderErrors();
       if (name === 'goals') loadGoals();
+      if (name === 'spmap') loadSpMap();
     });
   });
 
@@ -634,6 +649,74 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var b = document.querySelector('.tabs button[data-tab="' + h + '"]');
     if (b) b.click();
   })();
+
+  /* ===== SharePoint folder mapping =====
+     The route existed but nothing in the app ever called it, so a client whose folder name
+     did not match exactly could not be mapped at all. The runtime used to paper over that by
+     PREFIX-matching, which is how one client's folder could be served under another client's
+     Files tab. The runtime is exact-only now, and this screen is how the rest get mapped. */
+  var _spmap = null;
+  function spmapEsc(x) { return fbEsc(x); }
+  function loadSpMap() {
+    var out = document.getElementById('spmapOut'), st = document.getElementById('spmapStatus');
+    if (!out) return;
+    out.innerHTML = '<div style="opacity:.6;">Loading&hellip;</div>';
+    if (st) st.textContent = '';
+    fetch('/api/integrations/sharepoint/map', { credentials: 'include' })
+      .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
+      .then(function (j) { _spmap = j; renderSpMap(); })
+      .catch(function (e) { out.innerHTML = '<div style="color:var(--burgundy);">Could not load the SharePoint folders: ' + spmapEsc(e.message) + '</div>'; });
+  }
+  function renderSpMap() {
+    var out = document.getElementById('spmapOut'), st = document.getElementById('spmapStatus');
+    if (!out || !_spmap) return;
+    var folders = _spmap.folders || [], rows = _spmap.companies || [];
+    var unresolved = rows.filter(function (r) { return !r.mapped && !r.auto; });
+    if (st) st.textContent = rows.length + ' client' + (rows.length === 1 ? '' : 's') + ', ' + folders.length + ' folder' + (folders.length === 1 ? '' : 's') +
+      (unresolved.length ? ' — ' + unresolved.length + ' with no folder' : ' — all resolved');
+    var opts = function (sel) {
+      return '<option value="">— not mapped —</option>' + folders.map(function (f) {
+        return '<option value="' + spmapEsc(f) + '"' + (String(sel) === String(f) ? ' selected' : '') + '>' + spmapEsc(f) + '</option>';
+      }).join('');
+    };
+    out.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:13px;">' +
+      '<thead><tr><th style="text-align:left;padding:6px 8px;">Client</th><th style="text-align:left;padding:6px 8px;">Folder in use</th><th style="text-align:left;padding:6px 8px;">Map it to</th></tr></thead><tbody>' +
+      rows.map(function (r) {
+        var inUse = r.mapped
+          ? '<strong>' + spmapEsc(r.mapped) + '</strong> <span style="color:var(--muted);">(mapped here)</span>'
+          : (r.auto
+              ? spmapEsc(r.auto) + ' <span style="color:var(--muted);">(exact name match)</span>'
+              : '<span style="color:var(--burgundy);font-weight:700;">none — its Files tab shows no SharePoint files</span>' +
+                ((r.suggest && r.suggest.length)
+                  ? '<div style="color:var(--muted);font-size:12px;margin-top:3px;">close, needs your confirmation: ' + r.suggest.map(spmapEsc).join(', ') + '</div>'
+                  : ''));
+        return '<tr style="border-top:1px solid var(--chrome-mute);">' +
+          '<td style="padding:6px 8px;">' + spmapEsc(r.companyName || r.realmId) + '</td>' +
+          '<td style="padding:6px 8px;">' + inUse + '</td>' +
+          '<td style="padding:6px 8px;"><select data-spmap="' + spmapEsc(r.realmId) + '" style="max-width:280px;">' + opts(r.mapped || '') + '</select></td>' +
+          '</tr>';
+      }).join('') + '</tbody></table>';
+    out.querySelectorAll('[data-spmap]').forEach(function (sel) {
+      sel.onchange = function () { saveSpMap(sel.getAttribute('data-spmap'), sel.value); };
+    });
+  }
+  function saveSpMap(realmId, folder) {
+    var st = document.getElementById('spmapStatus');
+    if (st) st.textContent = 'Saving…';
+    /* The route REPLACES the whole map, so send the whole map. Posting just the one changed
+       entry would have upserted a map containing only that entry - silently unmapping every
+       other client on the very screen that exists to keep them mapped. */
+    var next = Object.assign({}, (_spmap && _spmap.map) || {});
+    if (folder) next[realmId] = folder; else delete next[realmId];
+    fetch('/api/integrations/sharepoint/map', {
+      method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ map: next })
+    })
+      .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
+      .then(function () { loadSpMap(); })
+      .catch(function (e) { if (st) st.textContent = 'Could not save: ' + e.message; });
+  }
+  (function () { var b = document.getElementById('spmapRefresh'); if (b) b.onclick = loadSpMap; })();
 
   /* ===== USER FEEDBACK ===== */
   function fbEsc(s) { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c]); }); }

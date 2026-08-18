@@ -295,10 +295,30 @@
   function outboxUnpark(upn) {
     var who = String(upn || '').toLowerCase();
     if (!who) return {};
-    var all = parkedRead(); var b = all[who];
-    if (!b) return {};
-    delete all[who]; parkedWrite(all);
-    return b;
+    /* Buckets an earlier build may have filed this person's work under. keyOwner used to
+       return the SANITISED upn for mytasks/emailsig keys, so real unsent work is sitting in
+       buckets named 'lyle-bluecollarcoach-us' on live devices right now. Look under those
+       names too and merge, or fixing keyOwner alone would leave that work stranded forever.
+       Mirrors the two transforms exactly: sani() in myday.html, emSigKey()'s in
+       bookkeeping.html (which does NOT trim edge dashes or truncate). */
+    var names = [who];
+    var sani = who.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+    var sig = who.replace(/[^a-z0-9]+/g, '-') || 'x';
+    if (names.indexOf(sani) < 0) names.push(sani);
+    if (names.indexOf(sig) < 0) names.push(sig);
+    var all = parkedRead(); var out = null, changed = false;
+    names.forEach(function (n) {
+      var b = all[n];
+      if (!b) return;
+      out = out || {};
+      Object.keys(b).forEach(function (k) {
+        // The bucket under the person's REAL upn wins: it is the one the current build writes.
+        if (out[k] === undefined || n === who) out[k] = b[k];
+      });
+      delete all[n]; changed = true;
+    });
+    if (changed) parkedWrite(all);
+    return out || {};
   }
   /* Strip settled keys out of the parked store. Without this a key parked while it was
      still in `pending` became unreachable: flush's settle sweep only ever cleaned the
@@ -373,8 +393,18 @@
        could ever unpark it, so it was never replayed and never recoverable — the exact loss
        parking was introduced to prevent. Mirrors keyOwnerOk's three key shapes. */
     var keyOwner = function (k) {
-      if (k.indexOf('bcc-mytasks-') === 0 || k.indexOf('bcc-emailsig-') === 0) return k.replace(/^bcc-(?:mytasks|emailsig)-/, '');
-      var mm = /^bcc-(?:daily-log|chat-last-read)-(.+?)(?:-\d{4}-\d{2}-\d{2})?$/.exec(k);
+      /* mytasks / emailsig embed a SANITISED upn (lyle-bluecollarcoach-us), and the raw one
+         cannot be recovered from it. Returning the sanitised form parked the entry under a
+         bucket name outboxUnpark(me) — which looks up the RAW upn — could never match, so the
+         colleague's unsent work sat there permanently unreachable: the same loss this
+         function was added to prevent, just moved. Return '' for those shapes and let the
+         caller fall back to the outbox's own recorded upn, which IS the raw upn of the person
+         whose queue it was. */
+      if (k.indexOf('bcc-mytasks-') === 0 || k.indexOf('bcc-emailsig-') === 0) return '';
+      // daily-log carries '-YYYY-MM-DD'; chat-last-read carries '-v1' (see chat.html). The
+      // pattern has to strip EITHER, or 'bcc-chat-last-read-lyle@x.com-v1' yielded the owner
+      // 'lyle@x.com-v1' — again a bucket nothing can ever match.
+      var mm = /^bcc-(?:daily-log|chat-last-read)-(.+?)(?:-\d{4}-\d{2}-\d{2}|-v\d+)?$/.exec(k);
       return mm ? mm[1] : '';
     };
     var kept = 0, drop = [], park = {}, parkOwner = {};

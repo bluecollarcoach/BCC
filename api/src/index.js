@@ -2799,6 +2799,31 @@ async function spDriveId() {
 // "Howard Lake Tire & Auto Service LLC" and "Howard Lake Tire and Auto" must match,
 // so fold & -> and BEFORE stripping punctuation, then drop entity suffixes.
 function spNorm(s) { return String(s || '').toLowerCase().replace(/&/g, 'and').replace(/\b(llc|llp|inc|co|company|corp|ltd|the|service|services)\b/g, '').replace(/[^a-z0-9]+/g, ''); }
+/* ONE matcher, shared by the runtime and by the admin mapping screen.
+   A PREFIX match across two different companies is not evidence of anything: spNorm strips
+   the entity words (llc, co, inc, services...), so "Anderson Co" normalises to "anderson"
+   and prefix-matches "Anderson Plumbing LLC". The runtime used that silently and served one
+   client's SharePoint folder — statements, payroll registers, tax documents — through
+   another client's Files tab, and import-all copied the whole tree into the wrong client's
+   records permanently. spItemBelongsToClient could not catch it: it is handed the already-
+   wrong folder and dutifully confirms the item is inside it.
+   So: EXACT is the only thing the runtime acts on. A prefix hit is returned separately, as a
+   SUGGESTION for an admin to approve on the mapping screen — which now runs this same
+   function, so a client the runtime cannot resolve is exactly the client the admin sees a
+   suggestion for. Ambiguity (more than one candidate) suggests nothing. */
+function spMatch(name, folders) {
+  const target = spNorm(name);
+  if (!target) return { exact: null, suggestions: [] };
+  const exact = (folders || []).filter(f => spNorm(f) === target);
+  if (exact.length === 1) return { exact: exact[0], suggestions: [] };
+  // Two folders normalising the same way is a real ambiguity — refuse rather than pick one.
+  if (exact.length > 1) return { exact: null, suggestions: exact.slice() };
+  const near = (folders || []).filter(f => {
+    const n = spNorm(f);
+    return n && (target.indexOf(n) === 0 || n.indexOf(target) === 0);
+  });
+  return { exact: null, suggestions: near };
+}
 async function spFolderNames() {
   const access = await getGraphToken();
   const driveId = await spDriveId();
@@ -2817,10 +2842,8 @@ async function spFolderFor(realmId) {
   const name = comp && comp.companyName;
   if (!name) return null;
   const folders = await spFolderNames();
-  const target = spNorm(name);
-  let hit = folders.find(f => spNorm(f) === target);
-  if (!hit) hit = folders.find(f => spNorm(f) && (target.indexOf(spNorm(f)) === 0 || spNorm(f).indexOf(target) === 0));
-  return hit || null;
+  // EXACT only. Anything less is a suggestion for an admin, never a silent resolution.
+  return spMatch(name, folders).exact;
 }
 // Path inside the library for a client (optionally a subpath under their folder).
 // Rejects '..' / '.' segments outright — a bare slash-trim left them intact, and
@@ -3127,8 +3150,17 @@ app.http('sharepoint-map', {
       // Include the auto-match so the UI can show what it WOULD use.
       const rows = [];
       for (const co of comps) {
-        const auto = map[co.realmId] ? null : (folders.find(f => spNorm(f) === spNorm(co.companyName)) || null);
-        rows.push({ realmId: co.realmId, companyName: co.companyName, mapped: map[co.realmId] || null, auto });
+        // Same matcher the runtime uses, so `auto` is literally what would be resolved and
+        // `suggest` names the folders an admin may want to map by hand. Previously this
+        // screen used an exact-only rule of its own while the runtime quietly prefix-matched,
+        // so it showed "no auto-match" for precisely the clients that were being mis-served.
+        const m = map[co.realmId] ? null : spMatch(co.companyName, folders);
+        rows.push({
+          realmId: co.realmId, companyName: co.companyName,
+          mapped: map[co.realmId] || null,
+          auto: m ? m.exact : null,
+          suggest: m ? m.suggestions : []
+        });
       }
       return { jsonBody: { ok: true, folders, map, companies: rows } };
     } catch (e) { context.error('sharepoint-map', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
@@ -7088,7 +7120,11 @@ app.http('qbo-monthly-report', {
                 ? { accrual: existingObs.observations } : {});
         const obsByMethod = Object.assign({}, priorByMethod);
         obsByMethod[obsMethod] = observations;
-        const obsDoc = Object.assign({}, existingObs || {}, { id: docId(period), tenantId: BCC_TENANT_ID, docType: 'monthly-report', realmId, period, observations, observationsByMethod: obsByMethod, updatedAt: new Date().toISOString(), updatedBy: who });
+        /* The flat field tracks the ACCRUAL narrative only. Writing the just-saved basis into
+           it meant a cash save left cash notes in the field an older client renders as the
+           report's commentary, whatever basis it asked for. */
+        const flatObs = obsMethod === 'accrual' ? observations : (obsByMethod.accrual || []);
+        const obsDoc = Object.assign({}, existingObs || {}, { id: docId(period), tenantId: BCC_TENANT_ID, docType: 'monthly-report', realmId, period, observations: flatObs, observationsByMethod: obsByMethod, updatedAt: new Date().toISOString(), updatedBy: who });
         await c.items.upsert(obsDoc);
         logAudit('report-save', { user: who, path: '/api/integrations/qbo/companies/' + realmId + '/monthly-report', meta: { realmId, period } });
         return { jsonBody: { ok: true, period, observations } };
@@ -7180,7 +7216,14 @@ app.http('qbo-monthly-report', {
       const byM = (saved && saved.observationsByMethod) || {};
       const legacyFlat = (saved && Array.isArray(saved.observations)) ? saved.observations : [];
       const mLc = String(method).toLowerCase();
-      const savedObs = byM[mLc] || (mLc === 'accrual' ? legacyFlat : []);
+      /* The flat field is the accrual narrative ONLY on a document written before the keyed
+         store existed. The save path overwrites it with whatever basis was last saved, so on
+         a document whose FIRST notes were cash-basis, falling back to it printed the cash
+         commentary — cash figures and all — underneath the accrual statements. Once
+         observationsByMethod exists it is authoritative, and a basis missing from it means
+         this basis genuinely has no notes yet. */
+      const hasKeyed = !!(saved && saved.observationsByMethod);
+      const savedObs = byM[mLc] || ((!hasKeyed && mLc === 'accrual') ? legacyFlat : []);
       data.observations = (savedObs && savedObs.length) ? savedObs : factObservations(data.kpis);
       // Only claim "notes saved" when THIS basis actually has some.
       data.observationsUpdatedAt = (saved && savedObs.length) ? saved.updatedAt : null;

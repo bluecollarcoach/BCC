@@ -277,26 +277,32 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function nowIso() { return new Date().toISOString(); }
   function esc(s) { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
 
+  /* A document's own `id` field is NOT a storage key. Every employee can write in this app,
+     so a doc whose body claims id:"bcc-admin-config-v1" made the list render a row that
+     Delete/Save then applied to THAT key - and the hooked Storage.removeItem turns it into
+     DELETE /api/data/bcc-admin-config-v1. Trust the key it was found under, and refuse any
+     id outside our namespace. Mirrors isEventKey() in events.html. */
+  function isCourseKey(id) { return typeof id === 'string' && id.indexOf(COURSE_PREFIX) === 0; }
   function allCourses() {
     var out = [];
     for (var i = 0; i < localStorage.length; i++) {
       var k = localStorage.key(i); if (!k || k.indexOf(COURSE_PREFIX) !== 0) continue;
-      try { var c = JSON.parse(localStorage.getItem(k)); if (c && c.id) out.push(c); } catch (_) {}
+      try { var c = JSON.parse(localStorage.getItem(k)); if (c) { c.id = k; out.push(c); } } catch (_) {}
     }
     return out.sort(function (a, b) { return (b.updatedAt || '').localeCompare(a.updatedAt || ''); });
   }
-  function getCourse(id) { try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (_) { return null; } }
+  function getCourse(id) { if (!isCourseKey(id)) return null; try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (_) { return null; } }
   function saveCourse(c) {
     c.updatedAt = nowIso();
     if (!c.createdAt) c.createdAt = c.updatedAt;
-    if (!c.id) c.id = COURSE_PREFIX + uid();
+    if (!isCourseKey(c.id)) c.id = COURSE_PREFIX + uid();
     if (!c.tenantId) c.tenantId = 'blue-collar-coach';
     c.docType = 'course';
     if (!Array.isArray(c.lessons)) c.lessons = [];
     localStorage.setItem(c.id, JSON.stringify(c));
     return c;
   }
-  function deleteCourse(id) { localStorage.removeItem(id); }
+  function deleteCourse(id) { if (!isCourseKey(id)) return; localStorage.removeItem(id); }
 
   function totalMinutes(lessons) {
     return (lessons || []).reduce(function (s, l) { return s + (parseInt(l.durationMin, 10) || 0); }, 0);
@@ -504,8 +510,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
 
   function route() {
+    // ?id= is attacker-supplied; anything outside our namespace falls through to the catalog.
     var id = getParam('id');
-    if (id) {
+    if (id && isCourseKey(id)) {
       showMode('learner');
       renderLearner(id);
     } else {

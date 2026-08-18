@@ -169,26 +169,32 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     return safe;
   }
 
+  /* A document's own `id` field is NOT a storage key. Every employee can write in this app,
+     so a doc whose body claims id:"bcc-admin-config-v1" made the list render a row that
+     Delete/Save then applied to THAT key - and the hooked Storage.removeItem turns it into
+     DELETE /api/data/bcc-admin-config-v1. Trust the key it was found under, and refuse any
+     id outside our namespace. Mirrors isEventKey() in events.html. */
+  function isKbKey(id) { return typeof id === 'string' && id.indexOf(KB_PREFIX) === 0; }
   function allArticles() {
     var out = [];
     for (var i = 0; i < localStorage.length; i++) {
       var k = localStorage.key(i); if (!k || k.indexOf(KB_PREFIX) !== 0) continue;
-      try { var a = JSON.parse(localStorage.getItem(k)); if (a && a.id) out.push(a); } catch (_) {}
+      try { var a = JSON.parse(localStorage.getItem(k)); if (a) { a.id = k; out.push(a); } } catch (_) {}
     }
     return out.sort(function (a, b) { return (b.updatedAt || '').localeCompare(a.updatedAt || ''); });
   }
-  function getArticle(id) { try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (_) { return null; } }
+  function getArticle(id) { if (!isKbKey(id)) return null; try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (_) { return null; } }
   function saveArticle(a) {
     a.updatedAt = nowIso();
     if (!a.createdAt) a.createdAt = a.updatedAt;
-    if (!a.id) a.id = KB_PREFIX + uid();
+    if (!isKbKey(a.id)) a.id = KB_PREFIX + uid();
     if (!a.tenantId) a.tenantId = 'blue-collar-coach';
     a.docType = 'kb-article';
     if (!a.slug) a.slug = slugify(a.title || 'untitled');
     localStorage.setItem(a.id, JSON.stringify(a));
     return a;
   }
-  function deleteArticle(id) { localStorage.removeItem(id); }
+  function deleteArticle(id) { if (!isKbKey(id)) return; localStorage.removeItem(id); }
 
   var currentId = null;
   var qInput, tagFilter, listEl, readerEl;
