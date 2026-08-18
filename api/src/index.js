@@ -1840,6 +1840,24 @@ app.http('errorlog', {
   })
 });
 
+/* TEMPORARY feedback dump — cron-secret gated, headless read only. REMOVED after this
+   sweep pulls the queue; it exists because there is no way to sign in as an admin here. */
+app.http('tmp-feedback-dump', {
+  methods: ['GET'], authLevel: 'anonymous', route: 'tmp-feedback-dump',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    const given = request.headers.get('x-bcc-cron-secret') || '';
+    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    try {
+      const { resources } = await container().items.query({
+        query: 'SELECT TOP 400 c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-feedback-") ORDER BY c.updatedAt DESC',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+      }, { partitionKey: BCC_TENANT_ID }).fetchAll();
+      return { jsonBody: { ok: true, count: resources.length, items: resources } };
+    } catch (e) { return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  }
+});
+
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
