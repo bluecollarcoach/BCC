@@ -1850,7 +1850,7 @@ app.http('tmp-feedback-dump', {
     if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
     try {
       const { resources } = await container().items.query({
-        query: 'SELECT TOP 400 c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-feedback-") ORDER BY c.updatedAt DESC',
+        query: 'SELECT TOP 400 c.id, c.type, c.message, c.rating, c.page, c.userUpn, c.userName, c.status, c.createdAt, c.reply, c.repliedAt, c.repliedBy, c.resolvedAt FROM c WHERE c.tenantId = @t AND c.docType = "feedback" AND (NOT IS_DEFINED(c.status) OR c.status != "resolved") ORDER BY c.createdAt DESC',
         parameters: [{ name: '@t', value: BCC_TENANT_ID }]
       }, { partitionKey: BCC_TENANT_ID }).fetchAll();
       return { jsonBody: { ok: true, count: resources.length, items: resources } };
