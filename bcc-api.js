@@ -243,7 +243,15 @@
     }
     if (who) o.upn = who;
     if (!o.items[key] && Object.keys(o.items).length >= OUTBOX_MAX) return; // bounded
-    o.items[key] = { v: value, t: !!trusted };
+    /* qt = when this was queued. The PARKED store has always been age-checked; the LIVE
+       queue was not, so a whole-document key (bcc-chat-messages-v1, bcc-schedule-v1) queued
+       on a laptop that then stayed shut for a week was replayed verbatim at the next
+       sign-in and PUT as a whole-document replace, wiping every change the firm had made in
+       between - and outboxPendingAnyTab then blocked the bootstrap pull from repairing it.
+       Re-queues after a failed push deliberately KEEP the original stamp: the write is as
+       old as when the user made it, not as old as the last retry. */
+    var prevQt = o.items[key] && o.items[key].qt;
+    o.items[key] = { v: value, t: !!trusted, qt: (typeof prevQt === 'number' && prevQt > 0) ? prevQt : Date.now() };
     outboxWrite(o);
   }
   function outboxDrop(keys) {
@@ -417,7 +425,22 @@
       // Park under the key's OWN owner where the key names one; only fall back to the
       // outbox's recorded upn for shapes that name nobody.
       if (personal && !keyOwnerOk(k)) { park[k] = e; parkOwner[k] = keyOwner(k); return; }
-      if (!mine && (personal || !e.t)) { park[k] = e; parkOwner[k] = keyOwner(k); return; }
+      /* ANY key belonging to a different signer, trusted or not. The old rule replayed a
+         previous signer's TRUSTED non-personal write (a CRM contact, the schedule) under
+         whoever signed in next: at best the document is upserted with their name on it and
+         an audit row for a change they never made, at worst the server refuses it, flush
+         blacklists the key and the settle sweep drops it — the other person's work destroyed
+         while its author is told nothing. Freshness was never the question; whose
+         credentials carry the write is. */
+      if (!mine) { park[k] = e; parkOwner[k] = keyOwner(k) || o.upn; return; }
+      /* Too old to replay. A queue entry is meant to live for seconds; one this old is a
+         snapshot of a world that has moved on, and these are whole-document writes. Parked
+         rather than dropped so it is still recoverable by hand, and parked WITH its original
+         stamp so it ages out there instead of looking brand new (which would make it
+         immortal — re-parked and re-offered on every single sign-in). */
+      if (typeof e.qt === 'number' && e.qt > 0 && (Date.now() - e.qt) > PARK_MAX_AGE_MS) {
+        park[k] = { v: e.v, t: e.t, pk: e.qt }; parkOwner[k] = keyOwner(k) || o.upn || me; return;
+      }
       // Untrusted (pre-auth / offline) writes are replayable only for owner-only families.
       // This one genuinely cannot be attributed to anyone, so it is the only real drop.
       if (!e.t && !owned) { drop.push(k); return; }

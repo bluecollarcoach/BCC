@@ -2006,7 +2006,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       if (over && v.is1099) { status = v.hasTaxId ? '✅ 1099-NEC' : '⚠ need W-9 (no tax ID)'; color = v.hasTaxId ? '#1f8a4c' : '#c0392b'; }
       else if (over && !v.is1099) { status = '⚠ over $' + TH + ' — mark 1099-eligible?'; color = '#b7791f'; }
       else { status = v.is1099 ? 'under $' + TH : '—'; color = 'var(--muted)'; }
-      return '<tr><td>' + esc(v.name) + '</td><td class="num">' + m(v.ytdPaid) + '</td>' +
+      // A vendor deactivated in QuickBooks still needs a 1099 for what they were paid this
+      // year. They are on the list now, so say which ones they are - otherwise the name just
+      // looks unfamiliar and gets skipped.
+      var nm = esc(v.name) + (v.active === false ? ' <span style="color:var(--muted);font-size:11px;">(inactive in QuickBooks)</span>' : '');
+      return '<tr><td>' + nm + '</td><td class="num">' + m(v.ytdPaid) + '</td>' +
         '<td style="text-align:center;">' + (v.is1099 ? '✓' : '') + '</td>' +
         '<td style="text-align:center;">' + (v.hasTaxId ? '✓' : '<span style="color:#c0392b;">✗</span>') + '</td>' +
         '<td style="color:' + color + ';font-weight:' + (over ? '600' : '400') + ';">' + status + '</td></tr>';
@@ -2760,7 +2764,23 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         var linesEl = document.getElementById('tx_lines');
         var draft = [];
         if (pre.Line && pre.Line.length) pre.Line.forEach(function (l) {
-          if (entity === 'invoice' && l.DetailType === 'SalesItemLineDetail') draft.push({ itemId: (l.SalesItemLineDetail && l.SalesItemLineDetail.ItemRef && l.SalesItemLineDetail.ItemRef.value) || '', desc: l.Description || '', amount: l.Amount || '' });
+          /* Qty and UnitPrice are carried through. An update is a sparse PUT where a present
+             Line array FULLY REPLACES the lines, and this form only ever sent itemId/desc/
+             amount - so re-saving an ordinary invoice (item, Qty 40, Rate 125) flattened every
+             line in the client's live books to a bare amount, losing the quantities and rates
+             the customer was billed on.
+             `amount0` is what was loaded. On save, qty/rate ride along ONLY while the amount
+             is still that value: QBO recomputes Amount from Qty x UnitPrice when both are
+             present, so sending them alongside an EDITED amount would silently revert the
+             bookkeeper's edit - worse than the flattening. Edit an amount and that one line
+             falls back to amount-only, exactly as today; every untouched line keeps its
+             detail. */
+          if (entity === 'invoice' && l.DetailType === 'SalesItemLineDetail') draft.push({
+            itemId: (l.SalesItemLineDetail && l.SalesItemLineDetail.ItemRef && l.SalesItemLineDetail.ItemRef.value) || '',
+            desc: l.Description || '', amount: l.Amount || '', amount0: l.Amount || '',
+            qty: (l.SalesItemLineDetail && l.SalesItemLineDetail.Qty) || '',
+            unitPrice: (l.SalesItemLineDetail && l.SalesItemLineDetail.UnitPrice) || ''
+          });
           else if ((entity === 'bill' || entity === 'purchase') && l.DetailType === 'AccountBasedExpenseLineDetail') draft.push({ accountId: (l.AccountBasedExpenseLineDetail && l.AccountBasedExpenseLineDetail.AccountRef && l.AccountBasedExpenseLineDetail.AccountRef.value) || '', desc: l.Description || '', amount: l.Amount || '' });
         });
         if (!draft.length && seed && seed.lines && seed.lines.length) draft = seed.lines.map(function (l) { return { desc: l.desc || '', amount: l.amount || '', accountId: l.accountId || '', itemId: l.itemId || '' }; });
@@ -2835,7 +2855,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   function submitTxn(entity, g) {
     var fields;
-    if (entity === 'invoice') { if (!g.party) { (window.bccNotify || alert)('Pick a customer.', 'warn'); return; } fields = { customerId: g.party, txnDate: g.date, dueDate: g.due, lines: g.lines.map(function (l) { return { itemId: l.itemId, desc: l.desc, amount: l.amount }; }) }; }
+    if (entity === 'invoice') {
+      if (!g.party) { (window.bccNotify || alert)('Pick a customer.', 'warn'); return; }
+      fields = { customerId: g.party, txnDate: g.date, dueDate: g.due, lines: g.lines.map(function (l) {
+        var out = { itemId: l.itemId, desc: l.desc, amount: l.amount };
+        // Untouched amount -> the original Qty/Rate still describe it, so keep them.
+        // Edited amount -> send the amount alone, or QBO would recompute it back from them.
+        if (String(l.amount) === String(l.amount0 == null ? '' : l.amount0)) {
+          if (l.qty) out.qty = l.qty;
+          if (l.unitPrice) out.unitPrice = l.unitPrice;
+        }
+        return out;
+      }) };
+    }
     else if (entity === 'bill') { if (!g.party) { (window.bccNotify || alert)('Pick a vendor.', 'warn'); return; } fields = { vendorId: g.party, txnDate: g.date, dueDate: g.due, lines: g.lines.map(function (l) { return { accountId: l.accountId, desc: l.desc, amount: l.amount }; }) }; }
     else if (entity === 'purchase') { if (!g.paymentAccountId) { (window.bccNotify || alert)('Pick the bank / credit-card account it was paid from.', 'warn'); return; } if (!(g.lines || []).some(function (l) { return qbonum(l.amount) > 0 && l.accountId; })) { (window.bccNotify || alert)('Add at least one expense line (amount + account).', 'warn'); return; } fields = { vendorId: g.party || '', paymentAccountId: g.paymentAccountId, paymentType: g.paymentType || 'Cash', txnDate: g.date, lines: g.lines.map(function (l) { return { accountId: l.accountId, desc: l.desc, amount: l.amount }; }) }; }
     else { if (!g.party || !g.amount) { (window.bccNotify || alert)('Customer and amount required.', 'warn'); return; } fields = { customerId: g.party, totalAmt: g.amount, txnDate: g.date, depositAccountId: g.deposit, invoiceId: g.invoiceId }; }

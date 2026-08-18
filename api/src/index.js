@@ -2409,6 +2409,19 @@ async function appTierFor(p, appKey) {
   } catch (_) {}
   return MEMBER_DEFAULT_EDIT_APPS.has(appKey) ? 'edit' : 'none';
 }
+/* The tier an admin EXPLICITLY set for this user on this app, or null when they simply have
+   the default. admin.html stores only non-default overrides, so a stored value is always a
+   deliberate decision — which matters where an any-of rule would otherwise talk over it. */
+async function appTierExplicit(p, appKey) {
+  try {
+    const cfg = await getAdminCfg();
+    const who = String((p && (p.userDetails || p.userId)) || '').toLowerCase();
+    const rec = (cfg && Array.isArray(cfg.users) ? cfg.users : []).find(u => String(u.upn || u.email || '').toLowerCase() === who);
+    const perm = rec && rec.appPermissions && rec.appPermissions[appKey];
+    if (perm && ['none', 'tasks', 'view', 'edit', 'admin'].includes(String(perm))) return String(perm);
+  } catch (_) {}
+  return null;
+}
 const APP_TIER_RANK = { none: 0, tasks: 1, view: 1, edit: 2, admin: 3 };
 function tierAtLeast(tier, min) { return (APP_TIER_RANK[tier] || 0) >= (APP_TIER_RANK[min] || 0); }
 // Doc-id prefixes exclusively owned (write-wise) by ONE app — confirmed by reading
@@ -2502,6 +2515,13 @@ const ALL_TIERED_APPS = Array.from(new Set([
 async function appAccessChecker(p) {
   const tiers = {};
   for (const app of ALL_TIERED_APPS) tiers[app] = await appTierFor(p, app);
+  /* A contact is reachable from several apps, so writing one is allowed by ANY of them — but
+     that let "CRM = View" mean nothing at all: myday and documents are member-default 'edit',
+     so a user an admin had deliberately restricted could still edit and permanently delete
+     every contact in the firm's CRM. An EXPLICIT crm setting below the bar is an instruction,
+     not a coincidence, and now overrides the any-of. Users with no crm override are unaffected,
+     so jobs/scheduler/sessions keep writing contacts exactly as before. */
+  const crmExplicit = (await isAppAdmin(p)) ? null : await appTierExplicit(p, 'crm');
   return function (id, minTier) {
     id = String(id || '');
     const exactApp = SINGLE_APP_EXACT_KEYS[id];
@@ -2514,7 +2534,10 @@ async function appAccessChecker(p) {
       if (minTier === 'view' && readApps) return readApps.some(a => tierAtLeast(tiers[a], minTier));
       return false;
     }
-    if (id.startsWith('bcc-contact-')) return CONTACT_APPS.some(app => tierAtLeast(tiers[app], minTier));
+    if (id.startsWith('bcc-contact-')) {
+      if (crmExplicit !== null && !tierAtLeast(crmExplicit, minTier)) return false;
+      return CONTACT_APPS.some(app => tierAtLeast(tiers[app], minTier));
+    }
     return null;
   };
 }
@@ -2583,10 +2606,21 @@ async function docAccessFilter(p) {
   // client's monthly financial report, certified payroll and everything else in their
   // folder. Mirrors the rule /api/data and qbo-periods already enforce.
   const noFin = bookkeepingNoFinancials(await bookkeepingTierFor(p));
+  /* FIRM-WIDE documents ('/', '/contracts', '/sops', ...) have no realm, so the client-access
+     rule below never applied to them and every read path returned them to anyone signed in —
+     including a user an admin had explicitly set to Documents = None, and a departing employee
+     left on status 'inactive'/'hidden' (appTierFor resolves both to 'none'). documents.html's
+     own overlay is client-side only; the API handed over contracts, SOPs and signed agreements
+     to a still-valid session cookie.
+     The check is deliberately scoped to firm-wide docs. CLIENT-folder documents stay governed
+     by driveClientAccess below, so bookkeeping.html's client files and CRM's contact documents
+     keep working for a bookkeeper whose Documents tier is None — setting that tier is meant to
+     hide the Documents page, not to break the Bookkeeping and CRM tabs. */
+  const canSeeFirmWide = tierAtLeast(await appTierFor(p, 'documents'), 'view');
   const cache = new Map(); // realm -> boolean
   return async (meta) => {
     const realm = docFolderRealm(meta);
-    if (!realm) return true;                    // non-client docs remain team-visible
+    if (!realm) return canSeeFirmWide;          // non-client docs: the Documents tier decides
     if (noFin) return false;                    // 'tasks'/'none' see no client financial docs
     if (cache.has(realm)) return cache.get(realm);
     const acc = await driveClientAccess(p, realm);
@@ -4041,8 +4075,16 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
         }
         try { await c.items.upsert({ id: 'bcc-qbo-debug-sync-' + comp.realmId, tenantId: BCC_TENANT_ID, docType: 'qbo-debug', at: new Date().toISOString(), realmId: comp.realmId, env, base, periodsBuilt: periods.length, failedMonths, firstStatus: diag.firstStatus, firstBody: diag.firstBody }); } catch (_) {}
         return { realmId: comp.realmId, companyName: comp.companyName,
-          periodsBuilt: periods.length - failedWrites, failedWrites,
+          periodsBuilt: built, failedWrites,
           partial: failedMonths > 0 || failedWrites > 0,
+          /* Report the failure this function already computed. Without `error`, a night where
+             every ProfitAndLoss call was throttled returned partial:true and NO error, so the
+             `anyOk` test below saw a healthy run, the endpoint answered 200 { ok: true }, the
+             GitHub workflow went green and the logError loop - keyed on `error` - wrote
+             nothing to the Errors page. Nobody was told the client's figures had not moved.
+             syncStatus is 'failed' in exactly this case and is already stored on the company
+             doc; this makes the two agree. */
+          error: built > 0 ? undefined : ('no periods synced' + (diag.firstStatus ? ' (first response HTTP ' + diag.firstStatus + (diag.firstBody ? ': ' + String(diag.firstBody).slice(0, 200) : '') + ')' : '')),
           firstStatus: diag.firstStatus, firstBody: diag.firstBody, periods };
   }
 }
@@ -5873,7 +5915,15 @@ app.http('qbo-report', {
           // plus each vendor's 1099-eligible flag and whether a tax ID (W-9) is on file.
           const year = url.searchParams.get('year') || String(new Date().getFullYear());
           const from = year + '-01-01', to = year + '-12-31';
-          let vendors = []; { let vs = 1; for (let vp = 0; vp < 8; vp++) { const jv = await apiGet('/query?query=' + encodeURIComponent('SELECT Id, DisplayName, Vendor1099, TaxIdentifier FROM Vendor WHERE Active = true STARTPOSITION ' + vs + ' MAXRESULTS 1000')); const va = (jv.QueryResponse && jv.QueryResponse.Vendor) || []; vendors = vendors.concat(va); if (va.length < 1000) break; vs += 1000; } }
+          /* NOT filtered to Active. Deactivating a subcontractor once the job ends is normal
+             housekeeping, and the payment scan below still finds every check written to them —
+             but the row set was built from the vendor list, so they vanished from the worklist
+             entirely: not shown as under-threshold, just absent. A sub paid $18,000 during the
+             year produced no 1099-NEC and no warning, which is the exact failure this screen
+             exists to prevent. `Active` is SELECTed explicitly (QBO returns only requested
+             columns, so v.Active would otherwise be undefined and every vendor would be
+             labelled active — including the ones this fix exists to surface). */
+          let vendors = []; { let vs = 1; for (let vp = 0; vp < 8; vp++) { const jv = await apiGet('/query?query=' + encodeURIComponent('SELECT Id, DisplayName, Vendor1099, TaxIdentifier, Active FROM Vendor STARTPOSITION ' + vs + ' MAXRESULTS 1000')); const va = (jv.QueryResponse && jv.QueryResponse.Vendor) || []; vendors = vendors.concat(va); if (va.length < 1000) break; vs += 1000; } }
           const paid = {}; let vCapped = false;
           const pageScan = async (name, sumFn) => {
             let start = 1;
@@ -5888,8 +5938,11 @@ app.http('qbo-report', {
           };
           await pageScan('Purchase', r => { if (String(r.PaymentType) === 'CreditCard') return; const e = r.EntityRef; if (e && e.type === 'Vendor' && e.value) paid[e.value] = (paid[e.value] || 0) + (Number(r.TotalAmt) || 0); });
           await pageScan('BillPayment', r => { if (String(r.PayType) === 'CreditCard') return; const v = r.VendorRef && r.VendorRef.value; if (v) paid[v] = (paid[v] || 0) + (Number(r.TotalAmt) || 0); });
-          const list = vendors.map(v => ({ id: v.Id, name: v.DisplayName, is1099: !!v.Vendor1099, hasTaxId: !!v.TaxIdentifier, ytdPaid: Math.round((paid[v.Id] || 0) * 100) / 100 }))
-            .filter(v => v.ytdPaid > 0 || v.is1099).sort((a, b) => b.ytdPaid - a.ytdPaid);
+          const list = vendors.map(v => ({ id: v.Id, name: v.DisplayName, is1099: !!v.Vendor1099, hasTaxId: !!v.TaxIdentifier, active: v.Active !== false, ytdPaid: Math.round((paid[v.Id] || 0) * 100) / 100 }))
+            /* An INACTIVE vendor only earns a row if they were actually paid this year.
+               Without that, un-filtering Active would drag every long-dead 1099 vendor with
+               no payments back onto the list and bury the ones that matter. */
+            .filter(v => v.ytdPaid > 0 || (v.is1099 && v.active)).sort((a, b) => b.ytdPaid - a.ytdPaid);
           data = { kind: 'vendors-1099', year, vendors: list, capped: vCapped }; break;
         }
         case 'payments': {

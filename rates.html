@@ -495,10 +495,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
 
   /* ===== Send for review (via Graph mail) ===== */
   function isGraphConnected() {
-    try {
-      var rec = JSON.parse(localStorage.getItem('bcc-integration-msgraph') || 'null');
-      return !!(rec && rec.status === 'connected');
-    } catch (e) { return false; }
+    /* Microsoft Graph is tenant-wide (app-only, admin-consented) and works for every
+       signed-in user - there is no per-user Connect step, and nothing in the app has ever
+       written 'bcc-integration-msgraph'. So this returned false forever and "Send for review"
+       sent every coach to Admin -> Integrations, where the Graph card correctly says it is
+       connected automatically and offers no control that could change anything. Same call
+       sessions.html:528 already makes; let the server's own response report a real failure. */
+    return true;
   }
   function buildEmailHtml(sheet, cfg) {
     var co = (cfg && cfg.company) || {};

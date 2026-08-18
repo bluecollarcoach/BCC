@@ -507,6 +507,36 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      ordinary Delete / Save changes buttons, and the hooked Storage.removeItem turns that into
      DELETE /api/data/<that key> — so one confirm on what looked like a blank contact could
      destroy the firm's admin config. Mirrors isEventKey() in events.html. */
+  /* "CRM = View" restricted nothing: this page carried no permission check at all, so a
+     view-only user saw the row delete, the editable profile fields and every add form - and
+     the writes were accepted, because a contact is writable through ANY of several apps and
+     myday/documents are member-default 'edit'. Both halves are fixed; this is the UI half.
+     Default OPEN before identity arrives, exactly like documents.html: bcc-auth-ready fires
+     after the first paint, and defaulting closed would flash a read-only page at everyone. */
+  function crmCanEdit() {
+    if (!window.bccCanEdit || !(window.bccUser && window.bccUser.userDetails)) return true;
+    return !!window.bccCanEdit('crm');
+  }
+  /* Re-applied after EVERY render: renderList and renderDetail both rebuild innerHTML, so a
+     one-shot pass at init would be wiped by the next repaint. */
+  function applyCrmPerms(root) {
+    if (crmCanEdit()) return;
+    var scope = root || document;
+    scope.querySelectorAll('[data-act="delete"], #delBtn, #saveProfileBtn').forEach(function (b) { b.remove(); });
+    scope.querySelectorAll('[contenteditable="true"]').forEach(function (el) {
+      el.setAttribute('contenteditable', 'false');
+      el.classList.remove('editable');
+    });
+    var note = document.getElementById('crmViewOnlyNote');
+    if (!note) {
+      note = document.createElement('div');
+      note.id = 'crmViewOnlyNote';
+      note.style.cssText = 'margin:10px 0;padding:8px 10px;border:1px solid var(--chrome-mute);border-radius:8px;background:var(--gold-fade);font-size:13px;color:var(--muted);';
+      note.textContent = 'Your CRM access is view-only, so you can read contacts but not change or delete them.';
+      var host = document.querySelector('main') || document.body;
+      host.insertBefore(note, host.firstChild);
+    }
+  }
   function isContactKey(id) { return typeof id === 'string' && id.indexOf(CONTACT_PREFIX) === 0; }
   function isConvoKey(id)   { return typeof id === 'string' && id.indexOf(CONVO_PREFIX) === 0; }
   function isWeeklyKey(id)  { return typeof id === 'string' && id.indexOf(WEEKLY_PREFIX) === 0; }
@@ -681,6 +711,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         '</tr>';
     });
     rowsEl.innerHTML = html;
+    applyCrmPerms(rowsEl);   // the repaint just restored the delete buttons
 
     var regions = {};
     all.forEach(function (c) { var r = regionOf(c.state); if (r) regions[r] = true; });
@@ -868,6 +899,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           '</div>' +
         '</div>' +
       '</div>';
+    applyCrmPerms(el);   // ...and the editable fields, Save and Delete
 
     // wire detail-mode events
     document.getElementById('printBtn').onclick = function () { window.print(); };
@@ -1645,6 +1677,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      audit rows, two writes). Route both boot paths through one guarded entry point. */
   function bootOnce() { if (document.body.dataset.didInit) return; document.body.dataset.didInit = '1'; init(); }
   window.addEventListener('bcc-auth-ready', bootOnce);
+  /* ...and once identity lands, re-apply the permission pass over whatever is already on
+     screen. bootOnce is a no-op the second time, so without this a page painted by the 600ms
+     timeout (before /.auth/me answered) would keep showing edit controls to a view-only user. */
+  window.addEventListener('bcc-auth-ready', function () { applyCrmPerms(document); });
   setTimeout(bootOnce, 600);
 })();
 </script>
