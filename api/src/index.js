@@ -1822,62 +1822,6 @@ app.http('errorlog', {
   })
 });
 
-/* TEMPORARY — headless diagnostics: recent client/server errors (WITH stack) + the
-   feedback queue, so a live error can be read without a browser session. Removed again at
-   the end of this pass. Same CRON_SECRET gate as every other headless endpoint. */
-app.http('cron-diag', {
-  methods: ['GET', 'POST'], authLevel: 'anonymous', route: 'cron/diag',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    if (!secret || (request.headers.get('x-bcc-cron-secret') || '') !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
-    try {
-      const c = container();
-      if (request.method === 'POST') {
-        const b = await request.json().catch(() => ({}));
-        const id = String(b.id || '');
-        if (id.indexOf('bcc-feedback-') !== 0) return badRequest('bad id');
-        const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-        if (!doc) return { status: 404, jsonBody: { ok: false, error: 'not found' } };
-        const st = String(b.status || 'resolved').toLowerCase();
-        if (['new', 'reviewed', 'resolved'].indexOf(st) < 0) return badRequest('bad status');
-        const note = String(b.note || '').trim().slice(0, 2000);
-        const wasResolved = doc.status === 'resolved';
-        doc.status = st; doc.reviewedBy = String(b.by || 'lyle@bluecollarcoach.us').toLowerCase(); doc.updatedAt = new Date().toISOString();
-        if (note) { doc.resolutionNote = note; doc.resolutionBy = doc.reviewedBy; doc.resolutionAt = new Date().toISOString(); }
-        await c.items.upsert(doc);
-        let notified = false;
-        if (doc.userUpn && st === 'resolved' && !wasResolved) {
-          notified = await notifyUser(c, doc.userUpn, {
-            title: '✅ Your feedback was addressed',
-            body: note || String(doc.message || '').slice(0, 90),
-            url: safeNotifyPath(doc.page), tag: 'fbdone-' + doc.id
-          });
-        }
-        return { jsonBody: { ok: true, id: doc.id, status: doc.status, notified } };
-      }
-      // Each query in its own try so one failure still yields the other, and `where` is
-      // accessed with bracket notation — it is a RESERVED WORD in Cosmos SQL, which is what
-      // made the first attempt fail outright.
-      let errs = [], errErr = null, fb = [], fbErr = null;
-      try {
-        const r = await c.items.query({
-          query: 'SELECT TOP 60 c.id, c.source, c["where"] AS wh, c.message, c.stack, c.user, c.url, c.at FROM c WHERE c.tenantId=@t AND c.docType="errorlog" ORDER BY c.at DESC',
-          parameters: [{ name: '@t', value: BCC_TENANT_ID }]
-        }).fetchAll();
-        errs = r.resources;
-      } catch (e) { errErr = String((e && e.message) || e).slice(0, 300); }
-      try {
-        const r = await c.items.query({
-          query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC',
-          parameters: [{ name: '@t', value: BCC_TENANT_ID }]
-        }).fetchAll();
-        fb = r.resources;
-      } catch (e) { fbErr = String((e && e.message) || e).slice(0, 300); }
-      return { jsonBody: { ok: true, errors: errs, errErr, feedbackCount: fb.length, feedback: fb, fbErr } };
-    } catch (e) { context.error('cron-diag', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
-  }
-});
-
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
