@@ -9,7 +9,7 @@ jobs:
         run: |
           code=$(curl -s -m 90 -o /tmp/fb.json -w "%{http_code}" \
             -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}" \
-            "https://connect.bluecollarcoach.us/api/tmp-feedback-dump")
+            "https://connect.bluecollarcoach.us/api/cron/feedback-dump")
           echo "HTTP $code"
           wc -c /tmp/fb.json
       - uses: actions/upload-artifact@v4

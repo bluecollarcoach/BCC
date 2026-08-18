@@ -1843,7 +1843,7 @@ app.http('errorlog', {
 /* TEMPORARY feedback dump — cron-secret gated, headless read only. REMOVED after this
    sweep pulls the queue; it exists because there is no way to sign in as an admin here. */
 app.http('tmp-feedback-dump', {
-  methods: ['GET'], authLevel: 'anonymous', route: 'tmp-feedback-dump',
+  methods: ['GET'], authLevel: 'anonymous', route: 'cron/feedback-dump',
   handler: async (request, context) => {
     const secret = process.env.CRON_SECRET || '';
     const given = request.headers.get('x-bcc-cron-secret') || '';
