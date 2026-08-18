@@ -5073,8 +5073,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   var _emMeta = {};          // { msgId: {tags,assignedTo,archived,readBy,repliedBy} }
   var _emMsgs = [];          // loaded mailbox messages
   var _emFilter = 'all';     // all | unread | mine | tagged | archived
+  /* Which mail FOLDER is showing. Renee reported she could not go back into an email she had
+     sent to view its certified-payroll attachment - the list route is inbox-only, so a sent
+     message was not reachable in the app at all. Sent is its own view rather than being mixed
+     back into the inbox (mixing them is what an earlier fix removed, for good reason). */
+  var _emFolder = 'inbox';   // inbox | sentitems
   var _emSearch = '';
-  var _emLoadedFor = null;   // realm whose messages are cached in _emMsgs
+  var _emLoadedFor = null;   // realm+folder whose messages are cached in _emMsgs
   // Files staged for the compose box. Module-scoped (not local to renderEmail)
   // because the compose <details> persists across multiple sends without a
   // re-render — sendClientEmail clears this array IN PLACE (.length = 0) after
@@ -5172,6 +5177,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       '</details>' +
       '<div class="em-toolbar">' +
         '<input id="em_search" type="search" autocomplete="off" placeholder="🔍 Search mail…" />' +
+        '<select id="em_folder" title="Inbox, or mail sent from this client mailbox"><option value="inbox">Inbox</option><option value="sentitems">Sent</option></select>' +
         '<select id="em_filter"><option value="all">All mail</option><option value="unread">Unread by me</option><option value="mine">Assigned to me</option><option value="tagged">Tagged</option><option value="archived">Archived</option></select>' +
         '<button class="btn btn-ghost" id="em_refresh" type="button" style="font-size:12px;">↻ Refresh</button>' +
         '<span id="em_count" class="fl-count"></span>' +
@@ -5193,6 +5199,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     document.getElementById('em_refresh').onclick = function () { loadInbox(true); };
     var sb = document.getElementById('em_search'); sb.value = _emSearch; sb.addEventListener('input', function () { _emSearch = this.value; renderEmailList(); });
     var ff = document.getElementById('em_filter'); ff.value = _emFilter; ff.addEventListener('change', function () { _emFilter = this.value; renderEmailList(); });
+    var fo = document.getElementById('em_folder');
+    if (fo) { fo.value = _emFolder; fo.addEventListener('change', function () { _emFolder = this.value; loadInbox(true); }); }
     if (_emLoadedFor !== currentRealm) _emMsgs = []; // drop the previous client's cached mail
     _clientMailbox = null;                            // unknown until the per-client config resolves
     loadEmailMeta();
@@ -5299,7 +5307,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
 
   function loadInbox(force) {
     var list = document.getElementById('em_list'); if (!list) return;
-    if (!force && _emLoadedFor === currentRealm && _emMsgs.length) { renderEmailList(); return; }
+    // Keyed by realm AND folder: without the folder in the key, switching Inbox->Sent
+    // re-rendered the inbox's cached messages under the Sent heading.
+    var cacheKey = currentRealm + '|' + _emFolder;
+    if (!force && _emLoadedFor === cacheKey && _emMsgs.length) { renderEmailList(); return; }
     list.innerHTML = '<div style="color:var(--muted);">Loading mail…</div>';
     var realmAt = currentRealm;
     // No mailbox for this client means there is no client mail — NOT "show me my own".
@@ -5308,21 +5319,23 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // emMetaOp then wrote those message ids into the shared per-client meta doc.
     if (!mailboxActive()) {
       list.innerHTML = '<div style="color:var(--muted);padding:10px 0;">No mailbox is set up for this client yet, so there’s no client mail to show. An admin can add one in the client’s settings.</div>';
-      _emMsgs = []; _emLoadedFor = currentRealm; _emUnread[currentRealm] = 0; updateWsNav(); return;
+      _emMsgs = []; _emLoadedFor = cacheKey; _emUnread[currentRealm] = 0; updateWsNav(); return;
     }
     var rid = '&realmId=' + encodeURIComponent(currentRealm);
-    fetch('/api/integrations/msgraph/messages?top=50' + rid, { credentials: 'include' })
+    var folderAt = _emFolder;
+    fetch('/api/integrations/msgraph/messages?top=50' + rid + '&folder=' + encodeURIComponent(folderAt), { credentials: 'include' })
       .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
       .then(function (resp) {
-        if (currentRealm !== realmAt) return;
+        if (currentRealm !== realmAt || _emFolder !== folderAt) return; // client or folder switched mid-flight
         if (resp && resp.ok && resp.pendingMailbox) {
           list.innerHTML = '<div style="background:var(--gold-fade);border:1px solid var(--chrome-mute);border-radius:8px;padding:12px 14px;font-size:13px;color:var(--ink);">📬 <strong>' + esc((_clientMailbox && _clientMailbox.mailbox) || 'This mailbox') + '</strong> is set up in the app but hasn’t been created in Microsoft 365 yet. An admin can create it as a <strong>shared mailbox</strong> in the M365 admin center — mail will appear here automatically once it exists.</div>';
           _emMsgs = []; _emUnread[currentRealm] = 0; updateWsNav(); return;
         }
         if (!resp || !resp.ok) { list.innerHTML = '<div style="color:var(--burgundy);">Mailbox unavailable: ' + esc((resp && resp.error) || 'error') + '</div>'; return; }
-        _emMsgs = resp.messages || []; _emLoadedFor = currentRealm; renderEmailList();
-        // Keep the nav/overview unread badge in sync with what we just loaded.
-        recomputeUnreadBadge();
+        _emMsgs = resp.messages || []; _emLoadedFor = cacheKey; renderEmailList();
+        // The badge counts UNREAD CLIENT MAIL. Sent Items has no bearing on it, and
+        // recomputing it from the sent list would zero a real unread count.
+        if (folderAt === 'inbox') recomputeUnreadBadge();
       })
       .catch(function () { if (currentRealm === realmAt) list.innerHTML = '<div style="color:var(--burgundy);">Could not load mail.</div>'; });
   }
@@ -6580,16 +6593,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var realm = currentRealm; if (!realm) return;
     // silent = the automatic save alongside an explicit action that already asked.
     if (!silent && !cprConfirmRates(r, 'File it to the client')) return;
-    var html, fname;
-    try {
-      html = cprDocHtml(r, false);
-      // Include the job/project in the file name so the Files search finds CPRs by job.
-      var job = String(r.projectName || '').replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
-      fname = 'Certified Payroll' + (r.payrollNo ? ' #' + r.payrollNo : '') + (job ? ' — ' + job : '') + (r.weekStart ? ' (week of ' + r.weekStart + ')' : '') + '.html';
-    } catch (e) { if (!silent) (window.bccNotify || alert)('Saved locally (couldn’t build the file).', 'warn'); return; }
+    /* Filed as a REAL PDF, not .html. Renee: opening a certified payroll from client files
+       "prompts you to download it but then opens a screen full of coding" - the stored file
+       was the HTML document, and the viewer will not render HTML inline (correctly: an
+       .html file served from our own origin would run inside the bookkeeper's session), so
+       she got the markup as text. Jenna hit the same thing on EMAILED copies and those were
+       moved to PDF then; the FILED copy was missed. cprDliBuild is the same builder the
+       email attachment uses, so the filed copy and the emailed copy are now identical. */
+    var job = String(r.projectName || '').replace(/[\\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+    var fname = 'Certified Payroll' + (r.payrollNo ? ' #' + r.payrollNo : '') + (job ? ' — ' + job : '') + (r.weekStart ? ' (week of ' + r.weekStart + ')' : '') + '.pdf';
+    var fileBlob = null;
     function upload() {
       var fd = new FormData();
-      fd.append('file', new Blob([html], { type: 'text/html' }), fname);
+      fd.append('file', fileBlob, fname);
       fd.append('folder', '/clients/' + realm); // use the realm CAPTURED above, not clientFolder() — that reads currentRealm live and would refile this into whatever client is active by the time the delete/upload round trip finishes
       fd.append('tags', 'Certified Payroll, payroll');
       fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
@@ -6606,7 +6622,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         })
         .catch(function (e) { (window.bccNotify || alert)('Saved locally, but couldn’t file it to the client: ' + e.message, 'warn', 8000); });
     }
-    upload(); // the old copy is retired inside upload(), after the new one lands
+    /* Build first, then upload. cprEnsurePdfLib + cprDliBuild are async, so this function
+       is now asynchronous where it used to be synchronous; every caller already treats it as
+       fire-and-forget. A build failure must NOT retire the previously filed copy - upload()
+       is what deletes it, and on this path it never runs. */
+    cprEnsurePdfLib()
+      .then(function (PDFLib) { return cprDliBuild(r, PDFLib); })
+      .then(function (files) {
+        if (!files || !files.length) throw new Error('no PDF was produced');
+        fileBlob = new Blob([files[0].bytes], { type: 'application/pdf' });
+        upload(); // the old copy is retired inside upload(), after the new one lands
+      })
+      .catch(function (e) {
+        (window.bccNotify || alert)('Saved locally, but couldn’t build the PDF to file it to the client: ' + (e && e.message ? e.message : 'error'), 'warn', 8000);
+      });
   }
 
   function cprDocHtml(r, forPrint) {
