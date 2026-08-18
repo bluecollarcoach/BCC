@@ -860,7 +860,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // wire detail-mode events
     document.getElementById('printBtn').onclick = function () { window.print(); };
     document.getElementById('delBtn').onclick = function () {
-      if (!confirm('Delete this contact and all its conversations? This cannot be undone.')) return;
+      /* Same honesty as the row-level delete: count what goes, and say it is firm-wide. */
+      var _dc = convosFor(c.id).length, _dw = weeklyNotesFor(c.id).length;
+      if (!confirm('Delete ' + (c.firstName || c.lastName ? ((c.firstName || '') + ' ' + (c.lastName || '')).trim() : 'this contact')
+            + (_dc ? ', ' + _dc + ' logged conversation' + (_dc === 1 ? '' : 's') : '')
+            + (_dw ? ' and ' + _dw + ' weekly coaching note' + (_dw === 1 ? '' : 's') : '')
+            + '?\n\nThis deletes them for everyone at the firm and cannot be undone.')) return;
       deleteContact(c.id);
       if (window.bccAudit) window.bccAudit('contact-delete', { key: c.id, path: '/crm.html' });
       location.href = 'crm.html';
@@ -1403,7 +1408,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var id = tr.dataset.id;
       if (btn && btn.dataset.act === 'delete') {
         e.stopPropagation();
-        if (!confirm('Delete this contact? This removes them from the cloud sync too.')) return;
+        /* Name what actually goes. This delete also removes every logged conversation and
+           weekly coaching note for the contact — for the whole firm — and the old wording
+           mentioned none of it, so the row-level × read as far more minor than it is. */
+        var _nc = convosFor(id).length, _nw = weeklyNotesFor(id).length;
+        if (!confirm('Delete this contact'
+              + (_nc ? ', ' + _nc + ' logged conversation' + (_nc === 1 ? '' : 's') : '')
+              + (_nw ? ' and ' + _nw + ' weekly coaching note' + (_nw === 1 ? '' : 's') : '')
+              + '?\n\nThis deletes them for everyone at the firm and cannot be undone.')) return;
         deleteContact(id);
         if (window.bccAudit) window.bccAudit('contact-delete', { key: id, path: '/crm.html' });
         renderList();

@@ -2662,7 +2662,9 @@ app.http('drive-status', {
   handler: withAccessLog(async (request, context) => {
     const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
     const realmId = request.params.realmId;
-    const acc = await driveClientAccess(p, realmId, { files: true }); if (acc.err) return acc.err;
+    // GET is status, DELETE disconnects the client's drive — so the write flag has to
+    // follow the verb. Gated read-only, a 'view' bookkeeper could sever the connection.
+    const acc = await driveClientAccess(p, realmId, { files: true, write: request.method === 'DELETE' }); if (acc.err) return acc.err;
     const c = container(); const id = 'bcc-clientdrive-' + realmId;
     if (request.method === 'DELETE') { try { await c.item(id, BCC_TENANT_ID).delete(); } catch (e) { if (e.code !== 404) throw e; } return { jsonBody: { ok: true, connected: false } }; }
     const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
@@ -2795,11 +2797,17 @@ async function spItemBelongsToClient(access, driveId, itemId, folder) {
     if (!r.ok) return false;
     const j = await r.json();
     const parentPath = (j.parentReference && j.parentReference.path) || '';
-    const marker = '/root:/' + SP_ROOT_FOLDER + '/' + folder;
-    const idx = parentPath.indexOf(marker);
-    if (idx < 0) return false;
-    const after = parentPath.slice(idx + marker.length);
-    return after === '' || after.charAt(0) === '/'; // exactly this folder, or a real subfolder — not a name-prefix collision
+    /* ANCHORED at the drive root, not found anywhere in the path. indexOf matched the marker
+       at any depth, and anyone with SharePoint access can create folders: a folder named
+       "<SP_ROOT_FOLDER>" holding one named after another client, nested anywhere at all,
+       made every file under it read as that client's — a cross-client document read from a
+       path a user controls. Take the segment after "/root:" and require it to BE the
+       client's folder or sit underneath it. */
+    const rootIdx = parentPath.indexOf('/root:');
+    if (rootIdx < 0) return false;
+    const rel = parentPath.slice(rootIdx + 6);            // '/root:'.length
+    const base = '/' + SP_ROOT_FOLDER + '/' + folder;
+    return rel === base || rel.indexOf(base + '/') === 0; // exactly this folder, or a real subfolder — not a name-prefix collision
   } catch (_) { return false; }
 }
 app.http('sharepoint-list', {
@@ -6009,7 +6017,9 @@ app.http('qbo-write', {
          preserved line let an update through with no renderable lines at all — and on an
          invoice, QBO's own SubTotalLine is always present, so the guard was unconditionally
          satisfied and a blank invoice could be posted to the client's books. */
-      const KEEP_NONMONEY = { SubTotalLineDetail: 1, DescriptionOnly: 1, GroupLineDetail: 1 };
+      // GroupLineDetail is NOT a non-money line: it bundles real charges in its children, so
+      // excluding it made an invoice built entirely from QBO bundles look line-less.
+      const KEEP_NONMONEY = { SubTotalLineDetail: 1, DescriptionOnly: 1 };
       const keep = ((b.op === 'update' && Array.isArray(f.keepLines)) ? f.keepLines : [])
         .filter(l => l && !KEEP_NONMONEY[l.DetailType]);
       if (entity === 'invoice') {
@@ -7013,7 +7023,16 @@ app.http('qbo-monthly-report', {
            frozenByMethod already keys the numbers. The flat field is still written so
            existing documents and any older client keep rendering. */
         const obsMethod = String(b.method || '').toLowerCase() === 'cash' ? 'cash' : 'accrual';
-        const obsByMethod = Object.assign({}, (existingObs && existingObs.observationsByMethod) || {});
+        /* Seed the keyed store from the legacy flat field the FIRST time a document is
+           converted. Without this, saving cash-basis notes on a pre-keyed document created
+           observationsByMethod = {cash: ...} and the existing accrual narrative — the flat
+           field — was orphaned on the spot: the read below prefers the keyed store, finds no
+           accrual entry, and falls through to bare facts. The coach's written accrual
+           commentary silently disappeared the moment anyone touched the cash view. */
+        const priorByMethod = (existingObs && existingObs.observationsByMethod)
+          || ((existingObs && Array.isArray(existingObs.observations) && existingObs.observations.length)
+                ? { accrual: existingObs.observations } : {});
+        const obsByMethod = Object.assign({}, priorByMethod);
         obsByMethod[obsMethod] = observations;
         const obsDoc = Object.assign({}, existingObs || {}, { id: docId(period), tenantId: BCC_TENANT_ID, docType: 'monthly-report', realmId, period, observations, observationsByMethod: obsByMethod, updatedAt: new Date().toISOString(), updatedBy: who });
         await c.items.upsert(obsDoc);
@@ -7100,10 +7119,14 @@ app.http('qbo-monthly-report', {
          a cash-basis table, and the next save then cemented it into the cash slot. Once a
          document is in the new format, a basis with nothing saved falls through to
          factObservations instead. */
-      const byM = saved && saved.observationsByMethod;
-      const savedObs = byM
-        ? (byM[String(method).toLowerCase()] || [])
-        : ((saved && Array.isArray(saved.observations)) ? saved.observations : []);
+      /* The flat field is the ACCRUAL narrative by definition — it predates the keyed store,
+         and accrual was the only basis then. So it backs the accrual slot specifically,
+         rather than either being ignored once the keyed store exists (which orphaned it) or
+         being served under cash (which printed accrual figures beside a cash table). */
+      const byM = (saved && saved.observationsByMethod) || {};
+      const legacyFlat = (saved && Array.isArray(saved.observations)) ? saved.observations : [];
+      const mLc = String(method).toLowerCase();
+      const savedObs = byM[mLc] || (mLc === 'accrual' ? legacyFlat : []);
       data.observations = (savedObs && savedObs.length) ? savedObs : factObservations(data.kpis);
       // Only claim "notes saved" when THIS basis actually has some.
       data.observationsUpdatedAt = (saved && savedObs.length) ? saved.updatedAt : null;

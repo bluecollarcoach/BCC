@@ -167,6 +167,14 @@
      grace period matters too: a poll GET whose read happened before the upsert can still
      be PROCESSED after the PUT resolves. Map of key -> hold-until timestamp. */
   var inFlight = new Map();
+  /* Keys this tab took from the SHARED outbox (localStorage) rather than writing itself.
+     `pending` is a per-tab Map, so rehydrating snapshots the shared queue into tab 2 while
+     tab 1 still owns those same writes: tab 1 pushes k=v3 and drops it, tab 2 later flushes
+     the v2 it snapshotted at boot, and the client's live value silently reverts. For these
+     keys — and ONLY these, since a key this tab typed itself is authoritative even when the
+     outbox refused it (OUTBOX_MAX) — the shared outbox is the source of truth at flush time.
+     A local write to the same key supersedes the snapshot and clears the mark. */
+  var _rehydrated = new Set();
   function heldInFlight(key) {
     var until = inFlight.get(key);
     if (until === undefined) return false;
@@ -275,7 +283,9 @@
     var pnow = Date.now();
     ks.forEach(function (k) {
       var it = items[k];
-      var pk = (preserveStamp && typeof it.pk === 'number' && it.pk > 0) ? it.pk : pnow;
+      // An existing stamp is ALWAYS preserved — a genuinely new write from outboxPut has no
+      // `pk` and still gets `pnow`, so the flag is no longer what decides it.
+      var pk = (typeof it.pk === 'number' && it.pk > 0) ? it.pk : pnow;
       b[k] = { v: it.v, t: it.t, pk: pk };
     });
     var have = Object.keys(b);                       // same bound as the outbox itself
@@ -299,12 +309,15 @@
      park it was just asked to perform. */
   function outboxUnparkKeys(keys) {
     if (!keys || !keys.length) return;
-    var all = parkedRead(), changed = false;
-    Object.keys(all).forEach(function (w) {
-      var b = all[w]; if (!b) return;
-      keys.forEach(function (k) { if (b[k] !== undefined) { delete b[k]; changed = true; } });
-      if (!Object.keys(b).length) { delete all[w]; changed = true; }
-    });
+    /* MY bucket only. Sweeping every bucket meant that when I pushed my own copy of a shared
+       key, a colleague's still-unsent parked copy of that same key was deleted too — their
+       edit destroyed by my successful save. What settled here is only ever mine. */
+    var me = String((user && user.userDetails) || '').toLowerCase() || '_unknown';
+    var all = parkedRead(), b = all[me];
+    if (!b) return;
+    var changed = false;
+    keys.forEach(function (k) { if (b[k] !== undefined) { delete b[k]; changed = true; } });
+    if (!Object.keys(b).length) { delete all[me]; changed = true; }
     if (changed) parkedWrite(all);
   }
   /* Is a local write for this key still UNSENT, as seen by ANY tab? `pending` and `inFlight`
@@ -378,7 +391,7 @@
       // Untrusted (pre-auth / offline) writes are replayable only for owner-only families.
       // This one genuinely cannot be attributed to anyone, so it is the only real drop.
       if (!e.t && !owned) { drop.push(k); return; }
-      pending.set(k, e.v);
+      pending.set(k, e.v); _rehydrated.add(k);
       kept++;
     });
     var parkKeys = Object.keys(park);
@@ -419,7 +432,10 @@
         // A queued local write is NEWER than anything parked. Seeding `pending` with the
         // parked copy regardless meant the older value won and the newer edit was reverted.
         if (o.items[k] !== undefined) { superseded++; return; }
-        o.items[k] = { v: e.v, t: e.t };
+        // Carry `pk` through the outbox too. Dropping it meant an ACCEPTED parked entry
+        // came back stampless, so if it were ever parked again it would look brand new and
+        // the age check could never retire it.
+        o.items[k] = { v: e.v, t: e.t, pk: pkt };
         pending.set(k, e.v);
         kept++;
       });
@@ -545,7 +561,7 @@
       // guarantee than an access check on data that IS stored. Do not "enable sync"
       // for these on the grounds that the gate now exists.
       if (key.indexOf('bcc-email-') === 0) return;
-      pending.set(key, value);
+      pending.set(key, value); _rehydrated.delete(key); // typed here: ours, not a snapshot
       outboxPut(key, value, true); // survives a reload or a tab close before the flush lands
       schedulePush();
       // Admin user list / status changed → re-filter bccPeople immediately so
@@ -566,7 +582,7 @@
       if (key.indexOf('bcc-financial-period-') === 0) return; // server-owned (see setItem)
       if (key.indexOf('bcc-cpr-sends-') === 0) return; // device-local (see setItem)
       if (key.indexOf('bcc-email-') === 0) return;     // device-local (see setItem)
-      pending.set(key, null); // null marks deletion
+      pending.set(key, null); _rehydrated.delete(key); // ours, not a snapshot
       outboxPut(key, null, true);
       schedulePush();
     }
@@ -603,6 +619,20 @@
     if (!signedIn || pending.size === 0) return;
     var entries = Array.from(pending.entries());
     pending.clear();
+    /* Reconcile the snapshot against the shared outbox before anything goes over the wire.
+       Gone from the outbox = another tab pushed it successfully; sending our older copy
+       would undo that. Different value = another tab queued a newer one; send theirs. */
+    if (_rehydrated.size) {
+      var shared = outboxRead().items || {};
+      entries = entries.filter(function (e) {
+        if (!_rehydrated.has(e[0])) return true;
+        var cur = shared[e[0]];
+        if (cur === undefined) { _rehydrated.delete(e[0]); return false; }
+        if (cur.v !== e[1]) e[1] = cur.v;
+        return true;
+      });
+      if (!entries.length) return;
+    }
     // 0 = "no expiry yet, the request is still open"; a real timestamp is stamped when
     // the flush settles, below.
     entries.forEach(function (e) { inFlight.set(e[0], 0); });

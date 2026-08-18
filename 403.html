@@ -134,7 +134,11 @@
     e.preventDefault();
     try {
       Object.keys(localStorage).forEach(function (k) {
-        if (k.indexOf('bcc-') === 0) localStorage.removeItem(k);
+        /* Two families live ONLY on this device — the sent-client-email log and the
+           certified-payroll send history are both push-excluded, so there is no server copy
+           to restore them from. Sweeping them here destroyed them permanently while the
+           button only promised to clear a stuck session. */
+        if (k.indexOf('bcc-') === 0 && k.indexOf('bcc-email-') !== 0 && k.indexOf('bcc-cpr-sends-') !== 0) localStorage.removeItem(k);
       });
       sessionStorage.clear();
     } catch (err) {}
