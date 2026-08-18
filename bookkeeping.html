@@ -5079,7 +5079,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      back into the inbox (mixing them is what an earlier fix removed, for good reason). */
   var _emFolder = 'inbox';   // inbox | sentitems
   var _emSearch = '';
-  var _emLoadedFor = null;   // realm+folder whose messages are cached in _emMsgs
+  var _emLoadedFor = null;   // realm whose messages are cached in _emMsgs (recomputeUnreadBadge compares against it)
+  var _emLoadedFolder = null; // ...and which folder they came from. Kept SEPARATE: folding it
+                              // into _emLoadedFor made that guard never match, which switched
+                              // the unread badge off altogether.
   // Files staged for the compose box. Module-scoped (not local to renderEmail)
   // because the compose <details> persists across multiple sends without a
   // re-render — sendClientEmail clears this array IN PLACE (.length = 0) after
@@ -5266,6 +5269,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // final number, regardless of which happened to finish first.
   function recomputeUnreadBadge() {
     if (_emLoadedFor !== currentRealm) return; // _emMsgs isn't for this realm yet
+    if (_emLoadedFolder !== 'inbox') return;   // ...nor is it the inbox — Sent Items has no unread count
     // m.isRead is the MAILBOX's flag, and nothing in this app ever sets it — reading a
     // message here stamps our own per-person readBy instead. Counting isRead meant the
     // badge never cleared no matter how much mail the bookkeeper worked through.
@@ -5307,10 +5311,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
 
   function loadInbox(force) {
     var list = document.getElementById('em_list'); if (!list) return;
-    // Keyed by realm AND folder: without the folder in the key, switching Inbox->Sent
-    // re-rendered the inbox's cached messages under the Sent heading.
-    var cacheKey = currentRealm + '|' + _emFolder;
-    if (!force && _emLoadedFor === cacheKey && _emMsgs.length) { renderEmailList(); return; }
+    // Realm AND folder: without the folder in the test, switching Inbox->Sent re-rendered
+    // the inbox's cached messages under the Sent heading.
+    if (!force && _emLoadedFor === currentRealm && _emLoadedFolder === _emFolder && _emMsgs.length) { renderEmailList(); return; }
     list.innerHTML = '<div style="color:var(--muted);">Loading mail…</div>';
     var realmAt = currentRealm;
     // No mailbox for this client means there is no client mail — NOT "show me my own".
@@ -5319,7 +5322,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // emMetaOp then wrote those message ids into the shared per-client meta doc.
     if (!mailboxActive()) {
       list.innerHTML = '<div style="color:var(--muted);padding:10px 0;">No mailbox is set up for this client yet, so there’s no client mail to show. An admin can add one in the client’s settings.</div>';
-      _emMsgs = []; _emLoadedFor = cacheKey; _emUnread[currentRealm] = 0; updateWsNav(); return;
+      _emMsgs = []; _emLoadedFor = currentRealm; _emLoadedFolder = _emFolder; _emUnread[currentRealm] = 0; updateWsNav(); return;
     }
     var rid = '&realmId=' + encodeURIComponent(currentRealm);
     var folderAt = _emFolder;
@@ -5332,10 +5335,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           _emMsgs = []; _emUnread[currentRealm] = 0; updateWsNav(); return;
         }
         if (!resp || !resp.ok) { list.innerHTML = '<div style="color:var(--burgundy);">Mailbox unavailable: ' + esc((resp && resp.error) || 'error') + '</div>'; return; }
-        _emMsgs = resp.messages || []; _emLoadedFor = cacheKey; renderEmailList();
-        // The badge counts UNREAD CLIENT MAIL. Sent Items has no bearing on it, and
-        // recomputing it from the sent list would zero a real unread count.
-        if (folderAt === 'inbox') recomputeUnreadBadge();
+        _emMsgs = resp.messages || []; _emLoadedFor = currentRealm; _emLoadedFolder = folderAt; renderEmailList();
+        // Keep the nav/overview unread badge in sync with what we just loaded.
+        recomputeUnreadBadge();
       })
       .catch(function () { if (currentRealm === realmAt) list.innerHTML = '<div style="color:var(--burgundy);">Could not load mail.</div>'; });
   }
