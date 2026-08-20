@@ -460,9 +460,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     <h3>Add a manual period</h3>
     <div class="grid">
       <label>Period (YYYY-MM)<input type="month" id="p-period" /></label>
-      <label>Revenue (USD)<input type="number" id="p-rev" min="0" step="0.01" /></label>
-      <label>COGS (USD)<input type="number" id="p-cogs" min="0" step="0.01" /></label>
-      <label>Operating expenses (USD)<input type="number" id="p-exp" min="0" step="0.01" /></label>
+      <label>Revenue (USD)<input type="text" inputmode="decimal" id="p-rev" placeholder="125,430.18" /></label>
+      <label>COGS (USD)<input type="text" inputmode="decimal" id="p-cogs" placeholder="0.00" /></label>
+      <label>Operating expenses (USD)<input type="text" inputmode="decimal" id="p-exp" placeholder="0.00" /></label>
     </div>
     <div class="actions">
       <button class="btn btn-ghost" id="cancelBtn" type="button">Cancel</button>
@@ -1415,9 +1415,23 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // Without a realm, savePeriod mints an orphan key that no table renders and no
     // Delete button can reach — while the firm-wide KPIs still count it.
     if (!currentRealm) { (window.bccNotify || alert)('Open a company first — a period has to belong to one.', 'warn'); return; }
-    var rev = parseFloat(document.getElementById('p-rev').value || '0') || 0;
-    var cogs = parseFloat(document.getElementById('p-cogs').value || '0') || 0;
-    var exp = parseFloat(document.getElementById('p-exp').value || '0') || 0;
+    /* These were type="number", which a browser BLANKS when the pasted text is not a bare
+       numeral — so '125,430.18' or '$125,430.18', the exact formats QuickBooks reports and
+       this app's own tables render, read back as '' and saved as $0. A manual period overrides
+       the QuickBooks-synced month everywhere it appears, so that zero propagated to the KPI
+       tiles, the firm roll-up and the client's monthly report. Strip, then REFUSE anything
+       that still will not parse rather than silently booking zero. */
+    var pnum = function (id) {
+      var raw = String(document.getElementById(id).value || '').trim();
+      if (!raw) return 0;
+      var n = parseFloat(raw.replace(/[^0-9.\-]/g, ''));
+      return isFinite(n) ? n : null;
+    };
+    var rev = pnum('p-rev'), cogs = pnum('p-cogs'), exp = pnum('p-exp');
+    if (rev === null || cogs === null || exp === null) {
+      (window.bccNotify || alert)('One of those figures could not be read as an amount. Use digits, e.g. 125430.18 or 125,430.18.', 'warn', 8000);
+      return;
+    }
     var p = {
       period: period,
       realmId: currentRealm,
@@ -3875,6 +3889,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // whenever no client was selected (the workspace-back path), creating an orphan record
     // that belongs to nobody and syncs to every device.
     if (!realm) return;
+    // Checked at write time, not render time — identity lands after the first paint.
+    if (bkRefuseIfReadOnly()) { var s0 = document.getElementById('ci_status'); if (s0) s0.textContent = ''; return; }
     var d = { id: 'bcc-client-info-' + realm, tenantId: 'blue-collar-coach', docType: 'client-info', realmId: realm, updatedAt: nowIso(), updatedBy: myUpn() };
     ['legalName','dba','contactName','email','phone','website','ein','fiscalYearEnd','payrollSchedule','address','notes'].forEach(function (k) { var el = document.getElementById('ci_' + k); if (el) d[k] = el.value; });
     localStorage.setItem(d.id, JSON.stringify(d));
@@ -3889,6 +3905,24 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      wrong test here (it says no to 'tasks' as well). Check the level directly. Without this
      the page happily ticked the box and the refused PUT surfaced as a bare "that change
      wasn't saved" toast some time later, with the checkbox already moved. */
+  /* The FINANCIAL write tier, as distinct from tasks. The page had exactly one tier check and
+     it covered tasks only, so a user set to Bookkeeping = View was offered Client Info, WIP,
+     the month-end Close checklist, certified payroll and pay applications, told "Saved", and
+     then silently refused by the server — the sync layer blacklisting each key for the rest of
+     the session. Same identity guard canWriteTasks documents below: until identity lands
+     bccGetAppPermission answers 'none' for everyone, and guarding on the function alone would
+     tell a legitimate bookkeeper they were view-only for the first moment of every load. */
+  function bkCanEditFinancials() {
+    if (!window.bccGetAppPermission || !(window.bccUser && window.bccUser.userDetails)) return true;
+    var lvl = window.bccGetAppPermission('bookkeeping');
+    return lvl === 'edit' || lvl === 'admin';
+  }
+  // One place to refuse, so every financial write path says the same true thing.
+  function bkRefuseIfReadOnly() {
+    if (bkCanEditFinancials()) return false;
+    (window.bccNotify || alert)('Your Bookkeeping access is view-only, so that was not saved. Ask an admin for edit access.', 'warn', 8000);
+    return true;
+  }
   function canWriteTasks() {
     // The function exists from the moment bcc-api.js parses; it is the IDENTITY that lands
     // later, and until it does bccGetAppPermission returns 'none' for everyone. Guarding on
@@ -5963,8 +5997,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
 
   function cprPrefix() { return 'bcc-cpr-' + currentRealm + '-'; }
   function allCpr() { var out = []; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (!k || k.indexOf(cprPrefix()) !== 0) continue; try { var r = JSON.parse(localStorage.getItem(k)); if (r && r.id) out.push(r); } catch (e) {} } return out; }
-  function cnum(v) { var n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')); return isNaN(n) ? 0 : n; }
-  function money(v) { var n = cnum(v); return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  /* A NUMBER passes through untouched. cnum() used to stringify everything, and any |x| under
+     1e-6 stringifies in exponential notation - String(9.094947017729282e-13) is
+     '9.094947017729282e-13'. The character class strips the 'e' but keeps the digits and the
+     exponent's minus, leaving '9.094947017729282-13', which parseFloat reads as 9.09. So a
+     floating-point residual on a fully-billed schedule-of-values line printed as $9.09 on the
+     client's AIA G702/G703 pay application and on the MN DLI certified payroll. Same shape
+     qbonum()/qboAmount() already use. */
+  function cnum(v) { if (typeof v === 'number') return isFinite(v) ? v : 0; var n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')); return isNaN(n) ? 0 : n; }
+  // ...and round to cents before display, so an accumulated sub-cent residual collapses to 0.00.
+  function money(v) { var n = Math.round(cnum(v) * 100) / 100; return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
   function sumArr(a) { return (a || []).reduce(function (s, x) { return s + cnum(x); }, 0); }
   function computeEmp(e) {
     var stH = sumArr(e.st), otH = sumArr(e.ot), totalHrs = stH + otH;
@@ -6737,6 +6779,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   });
 
   function cprSave(silent) {
+    if (bkRefuseIfReadOnly()) return;
     if (!cprDraft) return;
     cprDraft.updatedAt = nowIso(); cprDraft.updatedBy = myUpn();
     localStorage.setItem(cprDraft.id, JSON.stringify(cprDraft));
@@ -7506,6 +7549,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
   }
   function payappSave(silent) {
+    if (bkRefuseIfReadOnly()) return;
     if (!payappDraft) return;
     payappDraft.updatedAt = nowIso(); payappDraft.updatedBy = myUpn();
     localStorage.setItem(payappDraft.id, JSON.stringify(payappDraft));
@@ -7625,7 +7669,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (!doc.steps) doc.steps = {}; if (!doc.recon) doc.recon = {};
     return doc;
   }
-  function saveClose() { if (!_close) return; _close.updatedAt = nowIso(); _close.updatedBy = myUpn(); localStorage.setItem(_close.id, JSON.stringify(_close)); }
+  function saveClose() { if (!_close) return; if (bkRefuseIfReadOnly()) return; _close.updatedAt = nowIso(); _close.updatedBy = myUpn(); localStorage.setItem(_close.id, JSON.stringify(_close)); }
   /* Read-modify-write for every Close mutation. _close is a module global captured when the
      tab was opened, so writing straight through it replaced the WHOLE checklist document —
      two bookkeepers closing the same month in the same session silently erased each other's
@@ -7790,12 +7834,21 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (catEl) {
       catEl.textContent = 'Checking uncategorized…';
       fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/report?type=for-review', { credentials: 'include' })
-        .then(function (r) { return r.json(); }).then(function (j) {
+        /* Status-checked. The server's failure bodies are valid JSON with no `data`, so an
+           unread response produced n = 0 and the checklist printed the green
+           "✓ nothing sitting in an uncategorized account" — telling a bookkeeper closing the
+           month that QuickBooks was clean when we had simply failed to ask it. Same shape the
+           reconcile helper below already uses. */
+        .then(function (r) { return r.json().then(function (j) { return r.ok && j && j.ok !== false ? j : Promise.reject(new Error((j && j.error) || ('HTTP ' + r.status))); }); })
+        .then(function (j) {
           if (currentRealm !== realmAt) return;
           var n = ((j && j.data && j.data.items) || []).length;
           catEl.innerHTML = n ? ('<strong style="color:#c0392b;">' + n + ' transaction' + (n === 1 ? '' : 's') + '</strong> to categorize — open <a href="#" data-goreview="1">🔎 For review</a>.') : '✓ nothing sitting in an uncategorized account.';
           var g = catEl.querySelector('[data-goreview]'); if (g) g.onclick = function (e) { e.preventDefault(); closeGoReport('for-review'); };
-        }).catch(function () { if (currentRealm === realmAt) catEl.textContent = ''; });
+        }).catch(function (e) {
+          // Say we could not check. Blanking the line (what this used to do) reads as "fine".
+          if (currentRealm === realmAt) catEl.innerHTML = '<span style="color:var(--burgundy);">Couldn’t check uncategorized transactions — ' + esc(e && e.message ? e.message : 'QuickBooks did not answer') + '. Check it in QuickBooks before closing.</span>';
+        });
     }
     var ar = document.querySelector('.close-help[data-help="ar"]'); if (ar) ar.innerHTML = 'Open the <a href="#" data-gorpt="ar-aging">A/R Aging</a> report.';
     var ap = document.querySelector('.close-help[data-help="ap"]'); if (ap) ap.innerHTML = 'Open the <a href="#" data-gorpt="ap-aging">A/P Aging</a> report.';
@@ -7847,7 +7900,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   /* ---- Job costing / WIP (over-under billing) ---- */
   var _wip = null;
   function loadWipDoc() { var id = 'bcc-wip-' + currentRealm, d = null; try { d = JSON.parse(localStorage.getItem(id)); } catch (e) {} if (!d || !d.id) d = { id: id, tenantId: 'blue-collar-coach', docType: 'wip', realmId: currentRealm, jobs: {}, createdAt: nowIso() }; if (!d.jobs) d.jobs = {}; return d; }
-  function saveWip() { if (!_wip) return; _wip.updatedAt = nowIso(); _wip.updatedBy = myUpn(); localStorage.setItem(_wip.id, JSON.stringify(_wip)); }
+  function saveWip() { if (!_wip) return; if (bkRefuseIfReadOnly()) return; _wip.updatedAt = nowIso(); _wip.updatedBy = myUpn(); localStorage.setItem(_wip.id, JSON.stringify(_wip)); }
   function wipCalc(job, ov) {
     var num = function (v) { return parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')) || 0; };
     var cost = job.cost || 0, billed = job.income || 0;

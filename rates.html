@@ -281,7 +281,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         '</div>' +
         '<div class="controls">' +
           '<input type="text" data-edit="name" value="' + esc(p.name) + '" />' +
-          '<input type="number" data-edit="priceDollars" value="' + ((p.priceCents || 0) / 100) + '" min="0" step="1" />' +
+          '<input type="text" inputmode="decimal" data-edit="priceDollars" value="' + ((p.priceCents || 0) / 100) + '" />' +
           '<select data-edit="cadence">' +
             ['monthly','quarterly','annual','one-time'].map(function (c) {
               return '<option value="' + c + '"' + (c === p.cadence ? ' selected' : '') + '>' + c + '</option>';
@@ -318,7 +318,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     document.querySelectorAll('#pkgList .pkg').forEach(function (el) {
       var id = el.dataset.id;
       var name = el.querySelector('input[data-edit=name]').value.trim() || 'Untitled package';
-      var dollars = parseFloat(el.querySelector('input[data-edit=priceDollars]').value || '0') || 0;
+      /* type="number" BLANKS a pasted '1,250', so the package silently republished at $0 on
+          the rate sheet a prospect reads. Strip first; an unreadable figure keeps the stored
+          price rather than zeroing it. */
+      var rawPrice = String(el.querySelector('input[data-edit=priceDollars]').value || '').trim();
+      var parsedPrice = rawPrice ? parseFloat(rawPrice.replace(/[^0-9.\-]/g, '')) : 0;
+      var dollars = isFinite(parsedPrice) ? parsedPrice : ((p.priceCents || 0) / 100);
       var cadence = el.querySelector('select[data-edit=cadence]').value;
       var blurb = el.querySelector('textarea[data-edit=blurb]').value.trim();
       pkgs.push({ id: id, name: name, priceCents: Math.round(dollars * 100), cadence: cadence, blurb: blurb });

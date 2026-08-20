@@ -3999,6 +3999,15 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
              at the top of a multi-company run, so upserting it whole reverted anything changed
              in between — access lists, the private lock, even the sync stamps written later in
              this same run. */
+          /* Intuit ROTATES the refresh token on every grant, so failing to persist the new one
+             silently kills the client's QuickBooks connection at the next run. Two exits used
+             to leave it unpersisted while throwing nothing — an unreadable doc, and three lost
+             ETag races — so the catch below never fired and nothing anywhere recorded it.
+             Track whether it actually landed and report the failure on the Errors page.
+             Deliberately NOT stamped onto the returned per-company result: `error` drives the
+             cron's anyOk test and the "needs reconnecting" banner, so a run whose twelve months
+             all synced would go red and tell an admin to re-authorise a live connection. */
+          let tokenPersisted = false;
           try {
             for (let a = 0; a < 3; a++) {
               const fresh = await c.item(comp.id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
@@ -4006,11 +4015,21 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
               fresh.refreshToken = tok.refresh_token;
               fresh.updatedAt = new Date().toISOString();
               const opts = fresh._etag ? { accessCondition: { type: 'IfMatch', condition: fresh._etag } } : undefined;
-              try { await c.items.upsert(fresh, opts); break; }
+              try { await c.items.upsert(fresh, opts); tokenPersisted = true; break; }
               catch (e) { if (e && e.code !== 412) throw e; }
             }
           }
           catch (e) { console.error('qbo-sync refresh-token persist FAILED for realm ' + comp.realmId + ':', e && e.message || e); }
+          if (!tokenPersisted) {
+            const why = 'the company document could not be read, or three ETag races were lost';
+            console.error('qbo-sync refresh-token persist FAILED for realm ' + comp.realmId + ': ' + why);
+            try {
+              await logError('cron/qbo-sync refresh-token', {
+                message: 'Rotated Intuit refresh token was NOT saved for ' + (comp.companyName || comp.realmId) +
+                  ' (' + why + '). The QuickBooks connection will need reconnecting if the old token is now invalid.'
+              }, { user: 'cron' });
+            } catch (_) {}
+          }
         }
 
         // Each month = P&L + Balance Sheet, with a per-request timeout so one hung
@@ -7930,10 +7949,34 @@ app.http('qbo-cashflow', {
           const rev12 = (findByGroup(pl12, 'Income') ?? findByLabel(pl12, /total income/i)) || 0;
           const cogs12 = (findByGroup(pl12, 'COGS') ?? findByLabel(pl12, /total cost of goods sold|total cogs/i)) || 0;
           const opex12 = (findByGroup(pl12, 'Expenses') ?? findByLabel(pl12, /total expenses/i)) || 0;
-          const avgRevenue = round(rev12 / 12), avgCOGS = round(cogs12 / 12), avgOverhead = round(opex12 / 12);
+          /* Divide by the months that actually carry activity, not a hard-coded 12. A client
+             connected mid-year — or whose books simply start mid-year — has real revenue in
+             only a few of those twelve months, and dividing by 12 cut the run-rate to a
+             fraction of reality. The forecast then showed $0 of new revenue collected across
+             the whole quarter on a report the CLIENT reads. Counted from the monthly columns;
+             if that call fails we fall back to 12, which is the old behaviour rather than a
+             new failure mode. */
+          let activeMonths = 12;
+          try {
+            const pl12m = await apiGet('/reports/ProfitAndLoss?start_date=' + isoDay(r12Start) + '&end_date=' + isoDay(r12End) + '&accounting_method=Accrual&summarize_column_by=Month');
+            const cols = (pl12m && pl12m.Columns && pl12m.Columns.Column) || [];
+            // Every column except the account label and the Total column is one month.
+            const monthCols = cols.filter(c => c && c.ColType === 'Money' && !/total/i.test(String(c.ColTitle || '')));
+            // flattenQboReport returns { columns, rows:[{ label, cells }] } — `cells`, and it
+            // returns the WHOLE object, so the rows live under .rows.
+            const flatM = flattenQboReport(pl12m);
+            const incomeRow = (flatM.rows || []).find(r => /^(total income|income)$/i.test(String(r.label || '')));
+            if (incomeRow && Array.isArray(incomeRow.cells) && incomeRow.cells.length) {
+              const nonZero = incomeRow.cells.slice(0, monthCols.length).filter(v => Math.abs(Number(v) || 0) > 0.005).length;
+              if (nonZero > 0) activeMonths = Math.min(12, nonZero);
+            } else if (monthCols.length) {
+              activeMonths = Math.min(12, monthCols.length);
+            }
+          } catch (_) { activeMonths = 12; }
+          const avgRevenue = round(rev12 / activeMonths), avgCOGS = round(cogs12 / activeMonths), avgOverhead = round(opex12 / activeMonths);
           const monthlyBurn = avgOverhead;
           const cogsRatio = rev12 > 0 ? Math.round((cogs12 / rev12) * 1000) / 1000 : 0;
-          const historyMonths = 12;
+          const historyMonths = activeMonths;   // published so the report can caveat a short history
           // Average collection / payment delays from the current open balances.
           const arBalance = round(inflow[0] + inflow[1] + inflow[2] + inLater);
           const apBalance = round(outflow[0] + outflow[1] + outflow[2] + outLater);

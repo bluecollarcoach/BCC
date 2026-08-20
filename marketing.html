@@ -236,8 +236,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           <option value="completed">Completed</option>
         </select>
       </label>
-      <label>Budget (USD)<input type="number" id="m-budget" min="0" step="50" placeholder="2000" /></label>
-      <label>Spend to date (USD)<input type="number" id="m-spent" min="0" step="50" placeholder="0" /></label>
+      <label>Budget (USD)<input type="text" inputmode="decimal" id="m-budget" placeholder="2,000" /></label>
+      <label>Spend to date (USD)<input type="text" inputmode="decimal" id="m-spent" placeholder="0" /></label>
       <label>Start<input type="date" id="m-start" /></label>
       <label>End<input type="date" id="m-end" /></label>
       <label>Impressions<input type="number" id="m-imp" min="0" step="1" placeholder="0" /></label>
@@ -415,8 +415,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     c.name      = document.getElementById('m-name').value.trim() || '(unnamed)';
     c.channel   = document.getElementById('m-channel').value;
     c.status    = document.getElementById('m-status').value;
-    c.budgetCents = Math.round(parseFloat(document.getElementById('m-budget').value || '0') * 100) || 0;
-    c.spentCents  = Math.round(parseFloat(document.getElementById('m-spent').value || '0') * 100) || 0;
+    /* Strip before parsing. These were type="number", which BLANKS a pasted '2,000', so a
+       campaign's budget and spend silently saved as $0 and every spend-vs-budget figure on
+       the page read zero. An unreadable figure keeps what was stored rather than zeroing it. */
+    var mnum = function (id, fallbackCents) {
+      var raw = String(document.getElementById(id).value || '').trim();
+      if (!raw) return 0;
+      var n = parseFloat(raw.replace(/[^0-9.\-]/g, ''));
+      return isFinite(n) ? Math.round(n * 100) : (fallbackCents || 0);
+    };
+    c.budgetCents = mnum('m-budget', c.budgetCents);
+    c.spentCents  = mnum('m-spent', c.spentCents);
     c.startAt   = document.getElementById('m-start').value || null;
     c.endAt     = document.getElementById('m-end').value || null;
     c.metrics   = {

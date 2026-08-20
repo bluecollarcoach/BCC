@@ -378,7 +378,24 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     todo.forEach(function (e) { localStorage.setItem(e.key, JSON.stringify(e.doc)); });
     return todo.length;
   }
+  /* crm-companies.html maps to the same 'crm' app key as crm.html but had no tier check at
+     all, so a CRM=View user could edit and delete companies: the write queued, the toast said
+     saved, and the server then refused it and blacklisted the key for the session.
+     Gated at the STORE rather than by disabling controls: much of this page is static markup
+     that renderList() never rebuilds, so crm.html's disable-only pass would lock a real admin
+     out for the rest of the session the moment it ran once before identity landed. Default
+     OPEN until identity arrives, exactly like crm.html's helper. */
+  function ccCanEdit() {
+    if (!window.bccCanEdit || !(window.bccUser && window.bccUser.userDetails)) return true;
+    return !!window.bccCanEdit('crm');
+  }
+  function ccRefuseIfReadOnly() {
+    if (ccCanEdit()) return false;
+    (window.bccNotify || alert)('Your CRM access is view-only, so that was not saved.', 'warn', 8000);
+    return true;
+  }
   function saveCompany(c) {
+    if (ccRefuseIfReadOnly()) return c;
     c.updatedAt = nowIso();
     if (!c.createdAt) c.createdAt = c.updatedAt;
     if (!isCompanyKey(c.id)) c.id = COMPANY_PREFIX + uid();
@@ -387,7 +404,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     localStorage.setItem(c.id, JSON.stringify(c));
     return c;
   }
-  function deleteCompany(id) { if (!isCompanyKey(id)) return; localStorage.removeItem(id); }
+  function deleteCompany(id) { if (!isCompanyKey(id)) return; if (ccRefuseIfReadOnly()) return; localStorage.removeItem(id); }
 
   /* ===== Sync from Bookkeeping (QuickBooks companies → CRM companies) ===== */
   var _bkSyncRan = false;
