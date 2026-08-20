@@ -2786,9 +2786,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             itemId: (l.SalesItemLineDetail && l.SalesItemLineDetail.ItemRef && l.SalesItemLineDetail.ItemRef.value) || '',
             desc: l.Description || '', amount: l.Amount || '', amount0: l.Amount || '',
             qty: (l.SalesItemLineDetail && l.SalesItemLineDetail.Qty) || '',
-            unitPrice: (l.SalesItemLineDetail && l.SalesItemLineDetail.UnitPrice) || ''
+            unitPrice: (l.SalesItemLineDetail && l.SalesItemLineDetail.UnitPrice) || '',
+            // The refs this form does not render (class, tax code, service date). The server
+            // rebuilds the line detail from scratch on save, so without carrying them a
+            // re-save stripped them off every line in the client's live books.
+            extra: l.SalesItemLineDetail || null
           });
-          else if ((entity === 'bill' || entity === 'purchase') && l.DetailType === 'AccountBasedExpenseLineDetail') draft.push({ accountId: (l.AccountBasedExpenseLineDetail && l.AccountBasedExpenseLineDetail.AccountRef && l.AccountBasedExpenseLineDetail.AccountRef.value) || '', desc: l.Description || '', amount: l.Amount || '' });
+          else if ((entity === 'bill' || entity === 'purchase') && l.DetailType === 'AccountBasedExpenseLineDetail') draft.push({ accountId: (l.AccountBasedExpenseLineDetail && l.AccountBasedExpenseLineDetail.AccountRef && l.AccountBasedExpenseLineDetail.AccountRef.value) || '', desc: l.Description || '', amount: l.Amount || '', extra: l.AccountBasedExpenseLineDetail || null });
         });
         if (!draft.length && seed && seed.lines && seed.lines.length) draft = seed.lines.map(function (l) { return { desc: l.desc || '', amount: l.amount || '', accountId: l.accountId || '', itemId: l.itemId || '' }; });
         if (!draft.length) draft.push({});
@@ -2886,7 +2890,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (entity === 'invoice') {
       if (!g.party) { (window.bccNotify || alert)('Pick a customer.', 'warn'); return; }
       fields = { customerId: g.party, txnDate: g.date, dueDate: g.due, lines: g.lines.map(function (l) {
-        var out = { itemId: l.itemId, desc: l.desc, amount: l.amount };
+        var out = { itemId: l.itemId, desc: l.desc, amount: l.amount, extra: l.extra || undefined };
         // Untouched amount -> the original Qty/Rate still describe it, so keep them.
         // Edited amount -> send the amount alone, or QBO would recompute it back from them.
         if (String(l.amount) === String(l.amount0 == null ? '' : l.amount0)) {
@@ -2896,8 +2900,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         return out;
       }) };
     }
-    else if (entity === 'bill') { if (!g.party) { (window.bccNotify || alert)('Pick a vendor.', 'warn'); return; } fields = { vendorId: g.party, txnDate: g.date, dueDate: g.due, lines: g.lines.map(function (l) { return { accountId: l.accountId, desc: l.desc, amount: l.amount }; }) }; }
-    else if (entity === 'purchase') { if (!g.paymentAccountId) { (window.bccNotify || alert)('Pick the bank / credit-card account it was paid from.', 'warn'); return; } if (!(g.lines || []).some(function (l) { return qbonum(l.amount) > 0 && l.accountId; })) { (window.bccNotify || alert)('Add at least one expense line (amount + account).', 'warn'); return; } fields = { vendorId: g.party || '', paymentAccountId: g.paymentAccountId, paymentType: g.paymentType || 'Cash', txnDate: g.date, lines: g.lines.map(function (l) { return { accountId: l.accountId, desc: l.desc, amount: l.amount }; }) }; }
+    else if (entity === 'bill') { if (!g.party) { (window.bccNotify || alert)('Pick a vendor.', 'warn'); return; } fields = { vendorId: g.party, txnDate: g.date, dueDate: g.due, lines: g.lines.map(function (l) { return { accountId: l.accountId, desc: l.desc, amount: l.amount, extra: l.extra || undefined }; }) }; }
+    else if (entity === 'purchase') { if (!g.paymentAccountId) { (window.bccNotify || alert)('Pick the bank / credit-card account it was paid from.', 'warn'); return; } if (!(g.lines || []).some(function (l) { return qbonum(l.amount) > 0 && l.accountId; })) { (window.bccNotify || alert)('Add at least one expense line (amount + account).', 'warn'); return; } fields = { vendorId: g.party || '', paymentAccountId: g.paymentAccountId, paymentType: g.paymentType || 'Cash', txnDate: g.date, lines: g.lines.map(function (l) { return { accountId: l.accountId, desc: l.desc, amount: l.amount, extra: l.extra || undefined }; }) }; }
     else { if (!g.party || !g.amount) { (window.bccNotify || alert)('Customer and amount required.', 'warn'); return; } fields = { customerId: g.party, totalAmt: g.amount, txnDate: g.date, depositAccountId: g.deposit, invoiceId: g.invoiceId }; }
     // Was being collected from the form but never actually sent — bills/purchases
     // silently never got job-costed even when a job was picked. Fixed 2026-08-06.
@@ -5156,6 +5160,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // a send, since the file input's change listener is closured over this exact
   // array object, not whatever renderEmail last handed out.
   var _emAttachments = [];
+  /* Bumped whenever the Email section repaints. A send takes seconds (base64-encoding several
+     MB of attachments, then the Graph call), and the completion handler re-resolves em_subject
+     / em_body / em_file_list by id — so leaving the section and coming back, then starting the
+     next message, meant the FIRST send's completion cleared what had just been typed. */
+  var _emComposeGen = 0;
   function suggestMailbox() { var n = companyName(currentRealm) || ''; var local = n.toLowerCase().replace(/[^a-z0-9]+/g, ''); return local ? (local + '@bluecollarcoach.us') : ''; }
   function mailboxActive() { return !!(_clientMailbox && _clientMailbox.mailbox && _clientMailbox.enabled !== false); }
   function emSigKey() { return 'bcc-emailsig-' + (myUpn().replace(/[^a-z0-9]+/g, '-') || 'x'); }
@@ -5227,6 +5236,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function readByMe(id) { var m = metaFor(id); return !!(m.readBy && m.readBy[myUpn()]); }
 
   function renderEmail() {
+    _emComposeGen++;   // this repaint replaces the compose box; older sends must not touch it
     var body = document.getElementById('email-body'); if (!body) return;
     var info = {}; try { info = JSON.parse(localStorage.getItem('bcc-client-info-' + currentRealm)) || {}; } catch (e) {}
     body.innerHTML =
@@ -5819,6 +5829,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     document.getElementById('em_files').disabled = true; if (filesBtn) filesBtn.style.pointerEvents = 'none';
     var usingMailbox = mailboxActive();
     var realmAt = currentRealm; // capture at Send-click time — a client switch during the async encode/send below must not misattribute this email
+    var composeAt = _emComposeGen;  // ...and the compose box this send belongs to (see below)
     var mailboxAt = _clientMailbox; // same reason — _clientMailbox is reloaded on every client switch
     Promise.all(_emAttachments.map(emFileToAttachment))
       .then(function (attachments) {
@@ -5842,7 +5853,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         // _emAttachments here — by now that array may already hold files staged
         // after the send started.
         var attNames = result.attachments.map(function (a) { return a.name; });
-        localStorage.setItem(id, JSON.stringify({ id: id, tenantId: 'blue-collar-coach', docType: 'client-email', realmId: realmAt, from: (usingMailbox && mailboxAt ? mailboxAt.mailbox : myUpn()), to: to, cc: cc, subject: subject, bodyText: bodyText, attachmentNames: attNames, sentAt: nowIso(), sentBy: myUpn(), status: 'sent' }));
+        /* The mail has ALREADY gone at this point. localStorage.setItem is hooked and throws
+           on a full store, and this sits inside the same try region as the Graph call — so a
+           quota failure landed in the .catch below and told the bookkeeper the send had
+           failed. They re-send, and a real client gets the email twice. Keep the record write
+           in its own try so it can never be mistaken for a send failure, and say plainly that
+           the mail went but the local record did not. */
+        try {
+          localStorage.setItem(id, JSON.stringify({ id: id, tenantId: 'blue-collar-coach', docType: 'client-email', realmId: realmAt, from: (usingMailbox && mailboxAt ? mailboxAt.mailbox : myUpn()), to: to, cc: cc, subject: subject, bodyText: bodyText, attachmentNames: attNames, sentAt: nowIso(), sentBy: myUpn(), status: 'sent' }));
+        } catch (recErr) {
+          (window.bccNotify || alert)('The email WAS sent, but this device could not save its copy to the sent log (' + (recErr && recErr.message ? recErr.message : 'storage full') + '). Do not re-send.', 'warn', 12000);
+        }
         if (window.bccAudit) window.bccAudit('client-email-send', { key: id, path: '/bookkeeping.html', meta: { realmId: realmAt, recipients: to.length, attachments: attNames.length } });
         if (window.bccNotifySaved) window.bccNotifySaved('Email sent' + (attNames.length ? ' with ' + attNames.length + ' attachment' + (attNames.length === 1 ? '' : 's') : '') + '.');
         btn.disabled = false; btn.textContent = ot;
@@ -5852,14 +5873,29 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         // textarea or a queued dialog callback could theoretically still land one) is
         // deliberately dropped here too — it was never encoded into result.attachments, so
         // it was never sent, and keeping it staged for the NEXT email would misattribute it.
-        document.getElementById('em_subject').value = ''; seedSig(document.getElementById('em_body'));
-        _emAttachments.length = 0; renderEmAttachments(_emAttachments, 'em_file_list'); // clear IN PLACE — the change listener above is closured over this exact array
-        var comp = document.getElementById('em_compose'); if (comp) comp.open = false;
+        /* ...only if this is still the compose box the send came from. Otherwise the user has
+           left the section and come back, and what is in there now is a NEW message they are
+           part-way through typing — clearing it would throw their work away. */
+        if (_emComposeGen === composeAt) {
+          document.getElementById('em_subject').value = ''; seedSig(document.getElementById('em_body'));
+          _emAttachments.length = 0; renderEmAttachments(_emAttachments, 'em_file_list'); // clear IN PLACE — the change listener above is closured over this exact array
+          var comp = document.getElementById('em_compose'); if (comp) comp.open = false;
+        }
         setTimeout(function () { loadInbox(true); }, 1500);
       })
       .catch(function (e) {
-        st.textContent = 'Send failed: ' + e.message; btn.disabled = false; btn.textContent = ot;
-        document.getElementById('em_files').disabled = false; if (filesBtn) filesBtn.style.pointerEvents = '';
+        /* `st` and the buttons belong to the compose box this send started from. If the
+           section has been repainted since, those nodes are detached and writing to them put
+           the failure message nowhere at all — the bookkeeper was told nothing and assumed
+           the mail had gone. Restore the controls only for the live box, and always toast, so
+           the failure is visible whichever box is on screen. */
+        if (_emComposeGen === composeAt) {
+          if (st) st.textContent = 'Send failed: ' + e.message;
+          btn.disabled = false; btn.textContent = ot;
+          var ff = document.getElementById('em_files'); if (ff) ff.disabled = false;
+          if (filesBtn) filesBtn.style.pointerEvents = '';
+        }
+        (window.bccNotify || alert)('That client email could not be sent: ' + (e && e.message ? e.message : 'unknown error'), 'error', 10000);
       });
   }
 

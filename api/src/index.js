@@ -775,7 +775,31 @@ app.http('data', {
         // Whenever bcc-admin-config-v1 changes, drop our cache so the next
         // admin check sees the new user/role list immediately (otherwise an
         // admin demotion could take up to 15 s to take effect).
-        if (touchesAdminKey) invalidateAdminCfgCache();
+        if (touchesAdminKey) {
+          invalidateAdminCfgCache();
+          /* ...and actually REVOKE what deactivation is supposed to revoke. Skipping the
+             subscriptions of an inactive user at send time (loadAllPushSubs) stops the
+             notifications, but the row lingers indefinitely on a device the firm no longer
+             controls; if that filter is ever relaxed the reminders resume. Best-effort and
+             deliberately non-fatal: an admin saving the user list must not fail because a
+             cleanup query did. */
+          try {
+            const cfgNow = await getAdminCfg();
+            const gone = (cfgNow && Array.isArray(cfgNow.users) ? cfgNow.users : [])
+              .filter(u => { const st = u && String(u.status || '').toLowerCase(); return st === 'inactive' || st === 'hidden'; })
+              .map(u => String(u.upn || u.email || '').toLowerCase())
+              .filter(Boolean);
+            for (const upn of gone) {
+              const { resources: subs } = await c.items.query({
+                query: 'SELECT c.id FROM c WHERE c.tenantId = @t AND c.docType = "push-sub" AND LOWER(c.user) = @u',
+                parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@u', value: upn }]
+              }).fetchAll();
+              for (const r of subs) {
+                try { await c.item(r.id, BCC_TENANT_ID).delete(); } catch (e) { if (e.code !== 404) throw e; }
+              }
+            }
+          } catch (e) { context.error && context.error('push-sub cleanup after admin write (non-fatal)', e); }
+        }
         // Same idea for integration credential writes — the OAuth /connect
         // endpoints read getIntegrationFields() immediately on the next
         // request, and we don't want that to return cached empty fields
@@ -1396,14 +1420,32 @@ const REM_DAY_MS = 24 * 60 * 60 * 1000;
 const REM_MIN15_MS = 15 * 60 * 1000;
 const REM_SENT_ID = 'bcc-reminder-sent-v1';
 
+/* Deactivating someone in Admin locks them out of every in-app surface, but their push
+   subscription was untouched — nothing deletes push-sub docs on that transition and this
+   helper had no filter — so a departed employee's phone kept receiving client session and
+   event reminders indefinitely. Mirrors the `u.status !== 'inactive'` filter that
+   loadNotifyRecipients already applies.
+   Scoped to users EXPLICITLY marked inactive or hidden. A user with no admin-config row at
+   all is the documented ACTIVE default (appTierFor falls back to the member defaults, and
+   admin.html only persists a row once an admin saves one), so excluding "not in the config"
+   would silently cut reminders off from ordinary staff — trading a leak for a quiet loss. */
 async function loadAllPushSubs() {
   const c = container();
+  let blocked = new Set();
+  try {
+    const cfg = await getAdminCfg();
+    (cfg && Array.isArray(cfg.users) ? cfg.users : []).forEach(u => {
+      const st = u && String(u.status || '').toLowerCase();
+      if (st === 'inactive' || st === 'hidden') blocked.add(String(u.upn || u.email || '').toLowerCase());
+    });
+  } catch (_) { blocked = new Set(); }   // config unreadable: behave as before rather than silently stopping every reminder
   const q = {
     query: 'SELECT c.id, c.user, c.subscription FROM c WHERE c.tenantId = @t AND c.docType = "push-sub"',
     parameters: [{ name: '@t', value: BCC_TENANT_ID }]
   };
   const { resources } = await c.items.query(q).fetchAll();
-  return resources;
+  if (!blocked.size) return resources;
+  return resources.filter(r => !blocked.has(String((r && r.user) || '').toLowerCase()));
 }
 
 function remFmtTime(t) {
@@ -6160,12 +6202,28 @@ app.http('qbo-write', {
       // GroupLineDetail is NOT a non-money line: it bundles real charges in its children, so
       // excluding it made an invoice built entirely from QBO bundles look line-less.
       const KEEP_NONMONEY = { SubTotalLineDetail: 1, DescriptionOnly: 1 };
+      /* Line refs the editor does not render, carried through verbatim so a re-save does not
+         strip them. An update REPLACES the Line array, and these were rebuilt from scratch —
+         so editing one description dropped the class, the tax code and the service date off
+         EVERY line, in books where class tracking or sales tax is the norm.
+         A WHITELIST, deliberately, not the whole original detail: copying that wholesale
+         would drag Qty/UnitPrice back onto an invoice line whose amount the bookkeeper just
+         edited (QBO recomputes Amount from them and would revert the edit), and would
+         reinstate CustomerRef/BillableStatus on an expense line the job rule below is
+         supposed to own. Those two are managed above and must stay managed. */
+      const LINE_EXTRA_KEYS = ['ClassRef', 'TaxCodeRef', 'ServiceDate', 'MarkupInfo', 'TaxInclusiveAmt'];
+      const lineExtras = (l) => {
+        const src = (l && l.extra) || {};
+        const out = {};
+        LINE_EXTRA_KEYS.forEach(k => { if (src[k] !== undefined && src[k] !== null) out[k] = src[k]; });
+        return out;
+      };
       const keep = ((b.op === 'update' && Array.isArray(f.keepLines)) ? f.keepLines : [])
         .filter(l => l && !KEEP_NONMONEY[l.DetailType]);
       if (entity === 'invoice') {
         const lines = (f.lines || []).filter(l => l && (l.amount || l.itemId)).map(l => ({
           DetailType: 'SalesItemLineDetail', Amount: qboAmount(l.amount), Description: l.desc || undefined,
-          SalesItemLineDetail: Object.assign({ ItemRef: { value: String(l.itemId) } }, l.qty ? { Qty: Number(l.qty) } : {}, l.unitPrice ? { UnitPrice: Number(l.unitPrice) } : {})
+          SalesItemLineDetail: Object.assign(lineExtras(l), { ItemRef: { value: String(l.itemId) } }, l.qty ? { Qty: Number(l.qty) } : {}, l.unitPrice ? { UnitPrice: Number(l.unitPrice) } : {})
         }));
         if (!f.customerId || !(lines.length + keep.length)) return badRequest('customer and at least one line required');
         payload = { CustomerRef: { value: String(f.customerId) }, Line: lines };
@@ -6175,6 +6233,7 @@ app.http('qbo-write', {
           DetailType: 'AccountBasedExpenseLineDetail', Amount: qboAmount(l.amount), Description: l.desc || undefined,
           // A job/customer on the line books the cost to that job (and makes it billable).
           AccountBasedExpenseLineDetail: Object.assign(
+            lineExtras(l),
             { AccountRef: { value: String(l.accountId) } },
             // BillableStatus comes from the CALLER. Hard-coding 'Billable' meant that merely
             // re-saving a job-costed bill flipped a NotBillable or already-HasBeenBilled line
@@ -6195,6 +6254,7 @@ app.http('qbo-write', {
           // A job/customer on the line books the cost to that job (and makes it billable),
           // same as a Bill.
           AccountBasedExpenseLineDetail: Object.assign(
+            lineExtras(l),
             { AccountRef: { value: String(l.accountId) } },
             // BillableStatus comes from the CALLER. Hard-coding 'Billable' meant that merely
             // re-saving a job-costed bill flipped a NotBillable or already-HasBeenBilled line

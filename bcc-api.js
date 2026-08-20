@@ -432,14 +432,32 @@
          blacklists the key and the settle sweep drops it — the other person's work destroyed
          while its author is told nothing. Freshness was never the question; whose
          credentials carry the write is. */
-      if (!mine) { park[k] = e; parkOwner[k] = keyOwner(k) || o.upn; return; }
+      /* Hand outboxPark an explicit `pk`. A live entry carries `qt`, not `pk`, so passing it
+         through raw meant outboxPark stamped pk = now and the entry's real queue time was
+         lost: a week-old whole-document write came back looking brand new, was replayed on
+         the owner's next sign-in and wiped everything the firm had changed since. Mirrors the
+         age-park below, which already preserves the stamp. */
+      if (!mine) {
+        park[k] = { v: e.v, t: e.t, pk: (typeof e.pk === 'number' && e.pk > 0) ? e.pk : e.qt };
+        parkOwner[k] = keyOwner(k) || o.upn;
+        return;
+      }
       /* Too old to replay. A queue entry is meant to live for seconds; one this old is a
          snapshot of a world that has moved on, and these are whole-document writes. Parked
          rather than dropped so it is still recoverable by hand, and parked WITH its original
          stamp so it ages out there instead of looking brand new (which would make it
          immortal — re-parked and re-offered on every single sign-in). */
-      if (typeof e.qt === 'number' && e.qt > 0 && (Date.now() - e.qt) > PARK_MAX_AGE_MS) {
-        park[k] = { v: e.v, t: e.t, pk: e.qt }; parkOwner[k] = keyOwner(k) || o.upn || me; return;
+      /* Either stamp. A live write carries `qt`; an entry re-admitted from the parked store
+         carries `pk` (see the unpark below) and nothing else — so reading `qt` alone let a
+         round-tripped entry escape this check permanently. Deliberately NOT solved by writing
+         `qt` back on re-admission: outboxPut inherits a previous `qt` onto the next write of
+         that key, so a genuinely fresh edit would inherit a stamp up to a week old and be
+         parked as stale — silent loss of new work, which is the damage this check exists to
+         prevent. The age we act on is also the age we preserve. */
+      var qAge = (typeof e.qt === 'number' && e.qt > 0) ? e.qt
+               : ((typeof e.pk === 'number' && e.pk > 0) ? e.pk : 0);
+      if (qAge && (Date.now() - qAge) > PARK_MAX_AGE_MS) {
+        park[k] = { v: e.v, t: e.t, pk: qAge }; parkOwner[k] = keyOwner(k) || o.upn || me; return;
       }
       // Untrusted (pre-auth / offline) writes are replayable only for owner-only families.
       // This one genuinely cannot be attributed to anyone, so it is the only real drop.
