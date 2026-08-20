@@ -522,7 +522,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function applyCrmPerms(root) {
     if (crmCanEdit()) return;
     var scope = root || document;
-    scope.querySelectorAll('[data-act="delete"], #delBtn, #saveProfileBtn').forEach(function (b) { b.remove(); });
+    /* Hidden and disabled, NOT removed. Removing them meant the very next line of
+       renderDetail - document.getElementById('delBtn').onclick = ... - dereferenced null and
+       threw, aborting the rest of the function: Save, the stage/type/company selects, the
+       needs checkboxes, the conversation form, the weekly-note form and the Documents panel
+       were all left unwired, and the 8-second live poll re-threw it forever. The contact page
+       was inert for exactly the CRM=View user this pass was written to protect. A disabled
+       button fires no click, and the server refuses the write regardless. */
+    scope.querySelectorAll('[data-act="delete"], #delBtn, #saveProfileBtn').forEach(function (b) {
+      b.disabled = true;
+      b.style.display = 'none';
+    });
     scope.querySelectorAll('[contenteditable="true"]').forEach(function (el) {
       el.setAttribute('contenteditable', 'false');
       el.classList.remove('editable');
@@ -899,7 +909,6 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           '</div>' +
         '</div>' +
       '</div>';
-    applyCrmPerms(el);   // ...and the editable fields, Save and Delete
 
     // wire detail-mode events
     document.getElementById('printBtn').onclick = function () { window.print(); };
@@ -1064,6 +1073,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     });
     var upBtn = document.getElementById('upDocBtn');
     if (upBtn) upBtn.onclick = function () { location.href = 'documents.html?contact=' + encodeURIComponent(c.id); };
+    // LAST, once every handler above is attached — belt and braces alongside the pass being
+    // non-destructive, so neither ordering nor a future getElementById can be broken by it.
+    applyCrmPerms(el);
     loadContactDocs(c.id);
   }
   // Documents linked to a contact — fetched scoped (metadata is no longer synced

@@ -281,7 +281,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     };
   }
   function loadDoc(id) {
-    try { var d = JSON.parse(localStorage.getItem(DASH_PREFIX + id)); if (d && d.companyId) return d; } catch (e) {}
+    /* REPAIR the identity fields to match the key it was found under. `bcc-dashboard-` is
+       member-writable and syncs firm-wide, and doSave writes through d.id — so a planted doc
+       carrying id:'bcc-rate-sheet-v1' redirected a colleague's autosave onto that key, one
+       keystroke at a time. companyId is re-stamped for the same reason: it is equally
+       attacker-controlled and the conflict check reads it. Repair rather than discard, so a
+       genuinely malformed record still opens with its content instead of appearing blank.
+       Mirrors isEngKey/isContactKey/isCompanyKey on the sibling pages. */
+    try {
+      var d = JSON.parse(localStorage.getItem(DASH_PREFIX + id));
+      if (d && typeof d === 'object') { d.id = DASH_PREFIX + id; d.companyId = id; return d; }
+    } catch (e) {}
     return blankDoc(id);
   }
 
@@ -371,6 +381,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     } catch (e) {}
     d.updatedAt = new Date().toISOString();
     d.updatedBy = (window.bccUser && window.bccUser.userDetails) || '';
+    // Derived from the client actually open, never from the document body.
+    if (currentId) { d.id = DASH_PREFIX + currentId; d.companyId = currentId; }
     localStorage.setItem(d.id, JSON.stringify(d));
     // The form now matches stored state again. Without this, `dirty` latched true on
     // the first keystroke and never cleared, so resync() refused to pick up a

@@ -6534,11 +6534,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // .disabled property, so the busy state is expressed via pointer-events/opacity
     // instead (otherwise clicking it mid-request would silently reopen the file picker).
     if (btn) { btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; btn.textContent = 'Reading…'; }
+    /* Pin the report AND the client this was started from. The extraction takes several
+       seconds, and cprApplyExtract writes into the module-level cprDraft at callback time —
+       so opening a different report, or switching client and opening one of theirs, meant one
+       payroll's employees, hours and rates were poured into a completely different report,
+       which the editor then saved. Same guard scanReceipt already uses. */
+    var draftAt = cprEditingId, realmAt = currentRealm;
+    var stale = function () { return cprEditingId !== draftAt || currentRealm !== realmAt || !cprDraft; };
     var fd = new FormData(); fd.append('file', file);
     fetch('/api/ai/extract-cpr', { method: 'POST', credentials: 'include', body: fd })
       .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'Server error.' }; }); })
       .then(function (j) {
         if (btn) { btn.style.pointerEvents = ''; btn.style.opacity = ''; btn.textContent = ot; }
+        if (stale()) { (window.bccNotify || alert)('Payroll auto-fill dropped — you opened a different report while that file was being read. Re-run it on the report you want.', 'warn', 9000); return; }
         if (!j || !j.ok) { (window.bccNotify || alert)((j && (j.error || (j.needsKey ? 'AI is not configured — an admin needs to add the AI key.' : ''))) || 'Could not read that file.', 'error', 8000); return; }
         var n = cprApplyExtract(j.data);
         if (!n) { (window.bccNotify || alert)('No employees were found in that file. Try the payroll register that lists each employee and their hours.', 'warn', 8000); return; }
@@ -6557,7 +6565,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           window.bccNotify(msg + ' Please review every value (especially daily hours and rates) before saving.', mm.conflicts ? 'warn' : 'success', mm.conflicts ? 12000 : 9000);
         }
       })
-      .catch(function (e) { if (btn) { btn.style.pointerEvents = ''; btn.style.opacity = ''; btn.textContent = ot; } (window.bccNotify || alert)('Could not read that file: ' + e.message, 'error', 8000); });
+      // ...and a stale FAILURE must not toast over whatever report is open now either.
+      .catch(function (e) { if (btn) { btn.style.pointerEvents = ''; btn.style.opacity = ''; btn.textContent = ot; } if (stale()) return; (window.bccNotify || alert)('Could not read that file: ' + e.message, 'error', 8000); });
   }
 
   function cprEmpCard(e, i, wd) {

@@ -729,6 +729,13 @@ app.http('data', {
           if (it.key.startsWith(DOC_DOC_PREFIX)) {
             const existingDoc = await c.item(it.key, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
             if (isServerOwnedDocMeta(existingDoc)) return forbidden('this file record is managed by the Documents API and cannot be written here');
+            /* A file record must not NAME a different key. The whole family is member-writable,
+               and documents.html used to render each row under the id inside the payload — so a
+               record claiming id:'bcc-chat-messages-v1' put an unrelated document behind an
+               ordinary Delete button. The client no longer trusts that field; refusing the
+               inconsistent write here stops such a record existing in the first place. */
+            const claimed = it.data && it.data.id;
+            if (claimed !== undefined && String(claimed) !== it.key) return forbidden('a file record cannot name a different document id');
           }
           if (ADMIN_KEYS.has(it.key)) touchesAdminKey = true;
           if (it.key.startsWith('bcc-integration-')) touchesIntegration = true;
@@ -6252,11 +6259,16 @@ app.http('qbo-write', {
       // Reference number (PO / bill no.) and payment terms — both live on the
       // document header for bills and invoices.
       if ((entity === 'bill' || entity === 'invoice') && payload) {
-        /* Absent means "leave it alone"; an empty string means "clear it". The old truthy
-           test collapsed the two, so a bookkeeper could SET a PO number but never remove one:
-           blanking the box sent nothing, the sparse update left the old value in the client's
-           books, and the UI still said the change had been saved. */
-        if (f.docNumber !== undefined) payload.DocNumber = String(f.docNumber).slice(0, 21);
+        /* On an UPDATE: absent means "leave it alone", an empty string means "clear it".
+           The old truthy test collapsed the two, so a bookkeeper could SET a PO number but
+           never remove one — blanking the box sent nothing and the UI still claimed success.
+           On a CREATE there is nothing to clear, and the form always sends the field now, so
+           an empty string would post DocNumber:"" on every new invoice and bill — suppressing
+           QuickBooks' own auto-numbering and leaving the client with unnumbered documents.
+           Empty on create means "let QuickBooks number it": omit it. */
+        if (f.docNumber !== undefined && (b.op === 'update' || String(f.docNumber) !== '')) {
+          payload.DocNumber = String(f.docNumber).slice(0, 21);
+        }
         /* Terms are set-only on purpose. The picker falls back to "- none -" whenever the
            transaction's real term is inactive (or that one Term query failed), so treating a
            blank as "clear it" would quietly strip Net 30 off a bill nobody meant to touch. */
