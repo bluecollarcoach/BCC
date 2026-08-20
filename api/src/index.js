@@ -1840,51 +1840,6 @@ app.http('errorlog', {
   })
 });
 
-/* TEMPORARY feedback dump + resolve — cron-secret gated, headless. REMOVED again in the
-   cleanup commit at the end of this sweep; it exists only because there is no way to sign in
-   as an admin here, and the real /api/feedback routes require an interactive admin session. */
-app.http('tmp-feedback-dump', {
-  methods: ['GET', 'POST'], authLevel: 'anonymous', route: 'cron/feedback-dump',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    const given = request.headers.get('x-bcc-cron-secret') || '';
-    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
-    const c = container();
-    try {
-      if (request.method === 'POST') {
-        // Mirrors the admin path in app.http('feedback') exactly.
-        const b = await request.json().catch(() => ({}));
-        const fid = String(b.id || '');
-        if (fid.indexOf('bcc-feedback-') !== 0) return { status: 400, jsonBody: { ok: false, error: 'bad id' } };
-        const doc = await c.item(fid, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-        if (!doc) return { status: 404, jsonBody: { ok: false, error: 'not found' } };
-        const note = String(b.note || '').trim().slice(0, 2000);
-        const wasResolved = doc.status === 'resolved';
-        doc.status = 'resolved'; doc.reviewedBy = 'lyle@bluecollarcoach.us'; doc.updatedAt = new Date().toISOString();
-        if (note) { doc.resolutionNote = note; doc.resolutionBy = 'lyle@bluecollarcoach.us'; doc.resolutionAt = new Date().toISOString(); }
-        await c.items.upsert(doc);
-        let notified = false;
-        if (doc.userUpn && !wasResolved) {
-          try {
-            await notifyUser(c, doc.userUpn, {
-              title: 'Your feedback was addressed',
-              body: note || String(doc.message || '').slice(0, 90),
-              url: safeNotifyPath(doc.page), tag: 'fbdone-' + doc.id
-            });
-            notified = true;
-          } catch (ne) { context.error && context.error('tmp resolve notify failed', ne); }
-        }
-        return { jsonBody: { ok: true, id: doc.id, status: doc.status, notified } };
-      }
-      const { resources } = await c.items.query({
-        query: 'SELECT TOP 400 c.id, c.type, c.message, c.rating, c.page, c.userUpn, c.userName, c.status, c.createdAt, c.resolutionNote FROM c WHERE c.tenantId = @t AND c.docType = "feedback" AND (NOT IS_DEFINED(c.status) OR c.status != "resolved") ORDER BY c.createdAt DESC',
-        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
-      }, { partitionKey: BCC_TENANT_ID }).fetchAll();
-      return { jsonBody: { ok: true, count: resources.length, items: resources } };
-    } catch (e) { return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
-  }
-});
-
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
