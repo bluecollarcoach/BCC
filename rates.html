@@ -592,8 +592,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
              genuinely went — say what did and did not happen instead of claiming both. */
           var canLogCrm = !window.bccCanEdit || window.bccCanEdit('crm');
           if (canLogCrm) {
-            localStorage.setItem(convo.id, JSON.stringify(convo));
-            if (window.bccAudit) window.bccAudit('convo-add', { key: convo.id, path: '/rates.html', meta: { type: 'email', sentTo: contact.email } });
+            /* Own try. localStorage.setItem is hooked and throws on a full store, and this sits
+               inside the same try as the send — so a quota failure landed in the .catch below
+               and toasted "Send failed" seconds after "Rate sheet sent". The prospect had the
+               email; the coach was told it failed and re-sent. */
+            try {
+              localStorage.setItem(convo.id, JSON.stringify(convo));
+              if (window.bccAudit) window.bccAudit('convo-add', { key: convo.id, path: '/rates.html', meta: { type: 'email', sentTo: contact.email } });
+            } catch (crmErr) {
+              (window.bccNotify || alert)('The rate sheet WAS sent. This device could not add the CRM timeline entry (' + (crmErr && crmErr.message ? crmErr.message : 'storage full') + '). Do not re-send.', 'warn', 12000);
+            }
           } else if (window.bccNotify) {
             window.bccNotify('Sent. It was not added to the contact’s CRM timeline — that needs CRM edit access.', 'info', 7000);
           }

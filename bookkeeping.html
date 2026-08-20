@@ -4872,13 +4872,21 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .catch(function (e) { (window.bccNotify || alert)('Upload failed: ' + e.message, 'error', 7000); });
   }
   var _intFiles = [];
+  /* Why the list is empty. A 403 or 500 was substituted with { items: [] }, so the Files tab
+     told the bookkeeper "No files yet for this client" when the client's documents simply
+     could not be read — and a failed REFRESH left the previous list in memory for the next
+     search keystroke to repaint over the error. Cleared and recorded together. */
+  var _intFilesError = '';
   function fileTags(it) { return String(it.tags || '').split(',').map(function (t) { return t.trim(); }).filter(Boolean); }
   function loadFiles() {
     var list = document.getElementById('fl_list'); if (!list) return;
     var realmAt = currentRealm;
     var folder = clientFolder();
-    fetch('/api/documents?folder=' + encodeURIComponent(folder), { credentials: 'include' }).then(function (r) { return r.ok ? r.json() : { items: [] }; }).then(function (d) {
+    fetch('/api/documents?folder=' + encodeURIComponent(folder), { credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+      .then(function (d) {
       if (currentRealm !== realmAt) return;
+      _intFilesError = '';
       _intFiles = ((d && d.items) || []).filter(function (it) { return (it.folder || '') === folder; });
       // Distinct categories/tags across this client's files → filter dropdown + upload autocomplete.
       var seen = {}, tags = [];
@@ -4888,7 +4896,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       if (sel) { var keep = sel.value; sel.innerHTML = '<option value="">All categories</option>' + tags.map(function (t) { return '<option value="' + esc(t.toLowerCase()) + '">' + esc(t) + '</option>'; }).join(''); if (tags.some(function (t) { return t.toLowerCase() === keep; })) sel.value = keep; }
       var dl = document.getElementById('fl_taglist'); if (dl) dl.innerHTML = tags.map(function (t) { return '<option value="' + esc(t) + '">'; }).join('');
       renderIntFiles();
-    }).catch(function () { list.innerHTML = '<div style="color:var(--burgundy);">Could not load files.</div>'; });
+    }).catch(function (e) {
+      if (currentRealm !== realmAt) return;
+      /* Clear the previous list too. Leaving it in memory meant one keystroke in the search
+         box repainted the stale files straight over this error, so a failed refresh looked
+         like a successful one. */
+      _intFiles = [];
+      _intFilesError = 'This client’s files could not be read (' + (e && e.message ? e.message : 'no response') + ').';
+      list.innerHTML = '<div style="color:var(--burgundy);">' + esc(_intFilesError) + '</div>';
+    });
   }
   function renderIntFiles() {
     var list = document.getElementById('fl_list'); if (!list) return;
@@ -4896,6 +4912,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var countEl = document.getElementById('fl_count');
     if (!_intFiles.length) {
       if (bar) bar.style.display = 'none';
+      // "No files yet" is a claim about the client. Only make it when we actually read them.
+      if (_intFilesError) { list.innerHTML = '<div style="color:var(--burgundy);padding:8px 0;">' + esc(_intFilesError) + '</div>'; return; }
       list.innerHTML = '<div style="color:var(--muted);padding:8px 0;">No files yet for this client. Upload one above.</div>';
       return;
     }
@@ -5219,6 +5237,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      messages yet" — telling the bookkeeper the client's Sent folder is empty when we simply
      could not read it. Remember WHY it is empty and say that instead. */
   var _emLoadError = '';
+  var _emLoadErrorFor = '';   // realm|folder the error belongs to — see renderEmailList
   var _emSearch = '';
   var _emLoadedFor = null;   // realm whose messages are cached in _emMsgs (recomputeUnreadBadge compares against it)
   var _emLoadedFolder = null; // ...and which folder they came from. Kept SEPARATE: folding it
@@ -5485,10 +5504,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           // Drop the other folder's cache AND record why, so nothing can repaint it later.
           _emMsgs = []; _emLoadedFolder = null;
           _emLoadError = 'Mailbox unavailable: ' + ((resp && resp.error) || 'error');
+          _emLoadErrorFor = realmAt + '|' + folderAt;
           list.innerHTML = '<div style="color:var(--burgundy);">' + esc(_emLoadError) + '</div>';
           return;
         }
-        _emLoadError = '';
+        _emLoadError = ''; _emLoadErrorFor = '';
         _emMsgs = resp.messages || []; _emLoadedFor = currentRealm; _emLoadedFolder = folderAt; renderEmailList();
         // Keep the nav/overview unread badge in sync with what we just loaded.
         recomputeUnreadBadge();
@@ -5502,6 +5522,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         if (currentRealm !== realmAt || _emFolder !== folderAt) return;
         _emMsgs = []; _emLoadedFolder = null;
         _emLoadError = 'Could not load mail.';
+        _emLoadErrorFor = realmAt + '|' + folderAt;
         list.innerHTML = '<div style="color:var(--burgundy);">' + esc(_emLoadError) + '</div>';
       });
   }
@@ -5526,7 +5547,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       + (_emMsgs.length >= 50 ? ' (of the 50 most recent — older mail isn’t loaded, so search only covers these)' : '');
     if (!rows.length) {
       // "No messages yet" is a claim about the mailbox. Only make it when we actually read it.
-      if (_emLoadError) { list.innerHTML = '<div style="color:var(--burgundy);padding:10px 0;">' + esc(_emLoadError) + '</div>'; return; }
+      // ...and only for the client and folder it actually happened on. A global flag followed
+      // the user to the NEXT client and told them that mailbox was unavailable too.
+      if (_emLoadError && _emLoadErrorFor === (currentRealm + '|' + _emFolder)) {
+        list.innerHTML = '<div style="color:var(--burgundy);padding:10px 0;">' + esc(_emLoadError) + '</div>'; return;
+      }
       list.innerHTML = '<div style="color:var(--muted);padding:10px 0;">No messages' + (q || _emFilter !== 'all' ? ' match this view' : ' yet') + '.</div>'; return;
     }
     list.innerHTML = rows.map(function (m) {

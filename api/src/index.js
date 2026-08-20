@@ -1782,7 +1782,11 @@ app.http('notify-user', {
       // outside addresses, no doc garbage for users that don't exist.
       const cfgN = await getAdminCfg();
       const recN = (cfgN && Array.isArray(cfgN.users) ? cfgN.users : []).find(u => String(u.upn || u.email || '').toLowerCase() === toUpn);
-      if (!recN || recN.status === 'inactive' || recN.status === 'hidden') return badRequest('recipient is not an active user');
+      /* A MISSING row is the documented ACTIVE default — appTierFor falls back to the member
+     defaults, and admin.html only persists a users row once an admin saves one. Requiring a
+     row here silently dropped every task-assignment notification to ordinary staff who had
+     never been edited in Admin. Reject only an EXPLICIT deactivation. */
+  if (recN && (recN.status === 'inactive' || recN.status === 'hidden')) return badRequest('recipient is not an active user');
       const c = container();
       const from = String(p.userDetails || p.userId || '').toLowerCase();
       const delivered = await notifyUser(c, toUpn, { title, body: msg, url, tag: String(body.tag || '').slice(0, 60) });
@@ -2481,7 +2485,17 @@ const SINGLE_APP_KEY_PREFIXES = [
   // Enrollment/progress records live alongside courses and were missed when the
   // course gate went in — without this, someone set to training='none' still
   // received every colleague's progress and could write or delete it.
-  { re: /^bcc-enrollment-/, app: 'training' },
+  /* An ENROLLMENT is the learner's own progress record, not course content. Gating its write
+     on the authoring tier meant a training='view' user could not tick a lesson complete: the
+     write queued, the server refused it, and the key was blacklisted for the session.
+     writeTier lets the record be written by anyone who may READ the app, while the course
+     documents around it still need 'edit'. */
+  { re: /^bcc-enrollment-/, app: 'training', writeTier: 'view' },
+  /* documents.html's own file records had NO entry here, so appAccessChecker returned null for
+     them and a user set to Documents = None still received every one in the bulk pull and
+     could delete them — while the firm-wide read gate and both write gates were careful to
+     stop exactly that. */
+  { re: /^bcc-document-/, app: 'documents' },
   { re: /^bcc-kb-article-/, app: 'kb' },
   // Covers bcc-chat-channels-v1, bcc-chat-messages-v1 and the per-user
   // bcc-chat-last-read- marks (those stay owner-scoped via ownsPersonalKey as
@@ -2539,11 +2553,15 @@ async function appAccessChecker(p) {
     id = String(id || '');
     const exactApp = SINGLE_APP_EXACT_KEYS[id];
     if (exactApp) return tierAtLeast(tiers[exactApp], minTier);
-    for (const { re, app, readApps } of SINGLE_APP_KEY_PREFIXES) {
+    for (const { re, app, readApps, writeTier } of SINGLE_APP_KEY_PREFIXES) {
       if (!re.test(id)) continue;
+      /* writeTier lowers the bar for a doc type that is the USER'S OWN record rather than
+         app content (see bcc-enrollment- above). It only ever loosens a write; reads are
+         unchanged, and ownership is still enforced separately by ownsPersonalKey. */
+      const need = (minTier === 'edit' && writeTier) ? writeTier : minTier;
       // Writing requires the OWNING app. Reading is also satisfied by any app that
       // legitimately references this doc type (see readApps above).
-      if (tierAtLeast(tiers[app], minTier)) return true;
+      if (tierAtLeast(tiers[app], need)) return true;
       if (minTier === 'view' && readApps) return readApps.some(a => tierAtLeast(tiers[a], minTier));
       return false;
     }

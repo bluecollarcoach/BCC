@@ -1210,7 +1210,13 @@
     var label = ({home:'Home',myday:'My Day',sessions:'Sessions',crm:'CRM',jobs:'Engagements',scheduler:'Scheduler',marketing:'Marketing',bookkeeping:'Bookkeeping',documents:'Documents',rates:'Rate Sheet',chat:'Team Chat',training:'Training',events:'Events',kb:'Knowledge Base',admin:'Admin'})[appKey] || appKey;
     overlay.innerHTML =
       '<div style="font-family:\'Source Serif 4\',Georgia,serif;font-size:26px;font-weight:700;letter-spacing:0.4px;margin-bottom:10px;">Access restricted</div>' +
-      '<div style="color:rgba(255,255,255,0.7);max-width:420px;line-height:1.5;font-size:14px;">Your account doesn\'t have permission to open <strong>' + label + '</strong>. Ask an admin in Admin &rsaquo; Users &amp; Roles to grant access.</div>' +
+      /* Word it for the REAL state. Deliberately still blocking when the pull failed: neither
+         admin.html nor activity.html has a gate of its own, so skipping this on a transient
+         500 would render Admin > Users & Roles to any signed-in member - fail-open, and worse
+         than the message being wrong. */
+      (window._bccBootPullFailed
+        ? '<div style="color:rgba(255,255,255,0.7);max-width:420px;line-height:1.5;font-size:14px;">Your permissions could not be loaded just now, so <strong>' + label + '</strong> is closed as a precaution. Reload the page — if this keeps happening, tell an admin.</div>'
+        : '<div style="color:rgba(255,255,255,0.7);max-width:420px;line-height:1.5;font-size:14px;">Your account doesn\'t have permission to open <strong>' + label + '</strong>. Ask an admin in Admin &rsaquo; Users &amp; Roles to grant access.</div>') +
       '<a href="/index.html" style="margin-top:22px;color:#d4b67a;text-decoration:none;border:1px solid rgba(168,136,74,0.4);border-radius:8px;padding:9px 18px;font-weight:600;font-size:13px;">Back to home</a>';
     document.body.appendChild(overlay);
     // Prevent further scripts from operating on the page (best-effort).
@@ -1349,6 +1355,10 @@
       }
       var dataPromise = fetch(dataUrl).catch(function (e) {
         console.warn('[bcc-api] initial pull failed', e);
+        // Remember it. The permission overlay asserts "your account doesn't have permission"
+        // from whatever config happens to be in localStorage — which, on a cold browser after
+        // a failed pull, is nothing at all. That reads as a deliberate denial.
+        window._bccBootPullFailed = true;
         return null;
       });
       var usersPromise = fetch(API_BASE + '/users').catch(function (e) {
@@ -2217,7 +2227,17 @@
       var nowOther = Date.now();
       if (nowOther - _lastPermissionToastAt < 4000) return;
       _lastPermissionToastAt = nowOther;
-      if (window.bccNotify) window.bccNotify('That change wasn’t saved (error ' + status + ') — please try again, and let an admin know if it keeps happening.', 'warn', 8000);
+      /* A TRANSIENT failure (408/429/5xx) has already been re-queued by flush() and will
+         retry on its own, so telling the user their change "wasn't saved" made them re-type
+         work that was never lost. Checked HERE, after the 401 branch above — a 401 is also
+         flagged transient, and it needs its own "sign back in" message, not this one. */
+      if (window.bccNotify) {
+        window.bccNotify(
+          (ev.detail && ev.detail.transient)
+            ? ('Saving is taking a moment (error ' + status + ') — your change is still queued and will retry automatically.')
+            : ('That change wasn’t saved (error ' + status + ') — please try again, and let an admin know if it keeps happening.'),
+          'warn', 8000);
+      }
     }
   });
 
