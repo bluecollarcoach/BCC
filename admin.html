@@ -1644,14 +1644,22 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        stored credentials. */
     if (!renderIntegrations._ready) {
       (window.bccNotify || alert)('Still loading the saved credentials — give it a second and try again.', 'warn', 6000);
-      return;
+      return false;   // the caller MUST NOT then claim success
     }
     rec.id = INT_PREFIX + rec.channel;
     rec.tenantId = 'blue-collar-coach';
     rec.docType = 'integration';
     rec.updatedAt = nowIso();
     localStorage.setItem(rec.id, JSON.stringify(rec));
+    /* Reseat the prime cache. loadIntegration prefers it over localStorage, and it was
+       written once at page load and never again — so the repaint straight after a save
+       re-rendered the card from the PRE-save snapshot (old secret, old timestamp), and the
+       next Save merged those now-stale inputs and wrote them back to Cosmos: a rotated
+       credential silently reverted, under two success toasts. primeCfg's sibling saveCfg
+       has always done this; saveIntegration copied the setItem and dropped the cache line. */
+    _intPrimed[rec.channel] = JSON.parse(JSON.stringify(rec));
     if (window.bccAudit) window.bccAudit('integration-save', { key: rec.id, path: '/admin.html', meta: { channel: rec.channel, status: rec.status } });
+    return true;
   }
 
   function statusDot(status) {
@@ -1774,7 +1782,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           });
           // After a save, mark as not-tested-yet
           if (rec.status !== 'connected') rec.status = 'disconnected';
-          saveIntegration(rec);
+          // Only claim it was saved if it was. The refusal already explained itself.
+          if (!saveIntegration(rec)) return;
           if (window.bccNotifySaved) window.bccNotifySaved(channel + ' credentials saved.');
           else (window.bccNotify || alert)('Saved.', 'success');
           renderIntegrations();
@@ -1784,6 +1793,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           if (!confirm('Clear all stored credentials for this connector?')) return;
           var k = INT_PREFIX + channel;
           localStorage.removeItem(k);
+          /* ...and drop the prime cache with it. loadIntegration prefers that cache, so
+             without this the card repainted showing every credential still present, and the
+             next Save on it re-uploaded them — undoing the clear the admin just confirmed. */
+          delete _intPrimed[channel];
           // The OAuth status lives in a separate in-memory map, so clearing the stored
           // credentials left the card still reading "Connected" until a reload — with
           // nothing behind it.
@@ -1809,7 +1822,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             notify('Paste Client ID and Client Secret for ' + label + ', then click Connect.', 'error');
             return;
           }
-          saveIntegration(rec);
+          // Refused = the credentials were NOT written, so /connect would read the old ones
+          // out of Cosmos and start an OAuth flow against the wrong app. Stop here.
+          if (!saveIntegration(rec)) return;
           // 3) Force-flush the local debounced sync so the Cosmos doc has the
           //    new credentials BEFORE the server's /connect handler reads it.
           //    Without this, the redirect can hit Cosmos before the PUT lands.

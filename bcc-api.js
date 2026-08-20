@@ -291,9 +291,16 @@
     var pnow = Date.now();
     ks.forEach(function (k) {
       var it = items[k];
-      // An existing stamp is ALWAYS preserved — a genuinely new write from outboxPut has no
-      // `pk` and still gets `pnow`, so the flag is no longer what decides it.
-      var pk = (typeof it.pk === 'number' && it.pk > 0) ? it.pk : pnow;
+      /* An existing stamp is ALWAYS preserved — a genuinely new write from outboxPut has no
+         `pk` and still gets `pnow`, so the flag is no longer what decides it.
+         `qt` counts as an existing stamp. A LIVE outbox entry is stamped with qt, never pk,
+         so every call site that hands one straight to this function was silently re-dating
+         somebody's queued work to now — which let a genuinely old write escape the 7-day
+         retirement and be replayed over everything changed since. One call site was fixed
+         individually; normalising HERE means none of the others (or any future one) can get
+         it wrong. */
+      var pk = (typeof it.pk === 'number' && it.pk > 0) ? it.pk
+             : ((typeof it.qt === 'number' && it.qt > 0) ? it.qt : pnow);
       b[k] = { v: it.v, t: it.t, pk: pk };
     });
     var have = Object.keys(b);                       // same bound as the outbox itself

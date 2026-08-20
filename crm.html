@@ -529,7 +529,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        were all left unwired, and the 8-second live poll re-threw it forever. The contact page
        was inert for exactly the CRM=View user this pass was written to protect. A disabled
        button fires no click, and the server refuses the write regardless. */
-    scope.querySelectorAll('[data-act="delete"], #delBtn, #saveProfileBtn').forEach(function (b) {
+    /* The conversation and weekly-note controls use their own attributes and were never in
+       this list, so a CRM=View user could add and delete timeline entries all day: the write
+       queued, the toast said saved, then /api/data refused it, the sync layer blacklisted the
+       key for the session and popped a permission toast over work that looked filed. */
+    scope.querySelectorAll('[data-act="delete"], #delBtn, #saveProfileBtn, #convoAdd, #weeklyAdd, [data-convo-del], [data-weekly-del]').forEach(function (b) {
       b.disabled = true;
       b.style.display = 'none';
     });
@@ -1024,6 +1028,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     });
 
     document.getElementById('convoAdd').onclick = function () {
+      // Checked HERE, at click time: the page can render before identity lands (bootOnce runs
+      // on a 600ms timeout) and crmCanEdit() is deliberately default-open in that window, so a
+      // render-time guard would wire these fully open for a view-only user.
+      if (!crmCanEdit()) return;
       var summary = document.getElementById('convoSummary').value.trim();
       if (!summary) { (window.bccNotify || alert)('Add a one-line summary first.', 'warn'); return; }
       var cv = {
@@ -1043,12 +1051,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     document.querySelectorAll('[data-convo-del]').forEach(function (btn) {
       btn.onclick = function (e) {
         e.stopPropagation();
+        if (!crmCanEdit()) return;
         if (!confirm('Delete this conversation entry?')) return;
         deleteConvo(btn.getAttribute('data-convo-del'));
         renderDetail(c.id);
       };
     });
     document.getElementById('weeklyAdd').onclick = function () {
+      if (!crmCanEdit()) return;   // click time, not render time — see convoAdd above
       var note = document.getElementById('weeklyNote').value.trim();
       if (!note) { (window.bccNotify || alert)('Write the note first.', 'warn'); return; }
       var w = {
@@ -1066,6 +1076,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     document.querySelectorAll('[data-weekly-del]').forEach(function (btn) {
       btn.onclick = function (e) {
         e.stopPropagation();
+        if (!crmCanEdit()) return;
         if (!confirm('Delete this weekly note?')) return;
         deleteWeeklyNote(btn.getAttribute('data-weekly-del'));
         renderDetail(c.id);

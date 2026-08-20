@@ -2630,7 +2630,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var desc = '<input data-l="desc" placeholder="description" value="' + esc(ln.desc || '') + '" style="flex:2;min-width:120px;border:1px solid var(--chrome-mute);border-radius:7px;padding:7px;" />';
     var rm = '<button class="btn btn-ghost" data-lremove="' + i + '" type="button" style="font-size:11px;min-height:30px;">×</button>';
     if (entity === 'invoice') {
-      return '<div class="ws-row" data-lrow="' + i + '" style="gap:8px;flex-wrap:wrap;"><select data-l="itemId" style="flex:2;min-width:140px;border:1px solid var(--chrome-mute);border-radius:7px;padding:7px;">' + txOpt(refs.items, ln.itemId) + '</select>' + desc + amt + rm + '</div>';
+      /* Same repair the expense picker below gets. refs.items carries ACTIVE items only, so a
+         line billed against a since-retired service ("Excavation - 2025 rate") matched no
+         option, the browser selected the first one, and saving re-billed that line against a
+         different product in the client's live books. */
+      var itemList = refs.items || [];
+      if (ln.itemId && !itemList.some(function (x) { return String(x.id) === String(ln.itemId); })) {
+        itemList = itemList.concat([{ id: ln.itemId, name: '(product/service not in the list — kept as-is)' }]);
+      }
+      return '<div class="ws-row" data-lrow="' + i + '" style="gap:8px;flex-wrap:wrap;"><select data-l="itemId" style="flex:2;min-width:140px;border:1px solid var(--chrome-mute);border-radius:7px;padding:7px;">' + txOpt(itemList, ln.itemId) + '</select>' + desc + amt + rm + '</div>';
     }
     var expAccts = (refs.accounts || []).filter(function (a) { return a.classification === 'Expense' || /expense|cost of goods/i.test(a.type || ''); });
     /* Keep the line's ACTUAL account selectable. The list is filtered to expense accounts, so
@@ -5451,7 +5459,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         // Keep the nav/overview unread badge in sync with what we just loaded.
         recomputeUnreadBadge();
       })
-      .catch(function () { if (currentRealm === realmAt) list.innerHTML = '<div style="color:var(--burgundy);">Could not load mail.</div>'; });
+      /* The SAME guard the success path uses — realm AND folder. Without the folder test,
+         a late rejection from an abandoned request would wipe a cache that a newer, successful
+         load had already filled, and pin an error over it. With it, only the folder still on
+         screen is touched. Clearing matters: leaving the other folder's messages cached meant
+         a later search or filter repainted Inbox mail under the Sent heading. */
+      .catch(function () {
+        if (currentRealm !== realmAt || _emFolder !== folderAt) return;
+        _emMsgs = []; _emLoadedFolder = null;
+        _emLoadError = 'Could not load mail.';
+        list.innerHTML = '<div style="color:var(--burgundy);">' + esc(_emLoadError) + '</div>';
+      });
   }
   function renderEmailList() {
     var list = document.getElementById('em_list'); if (!list) return;
