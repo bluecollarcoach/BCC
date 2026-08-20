@@ -432,6 +432,7 @@ function shouldLogAccess(ip, path) {
   }
   return true;
 }
+const ACCESS_LOG_TTL_SECONDS = 30 * 24 * 3600;   // the 30-day policy cron/cleanup states
 function logAccess(request, response, p) {
   try {
     const url = new URL(request.url);
@@ -447,6 +448,14 @@ function logAccess(request, response, p) {
       id,
       tenantId: BCC_TENANT_ID,
       docType: 'access',
+      /* Cosmos expires these for free. The nightly cleanup caps at 3000 deletes per run,
+         an order of magnitude below the write rate, so the 30-day policy was never actually
+         enforced and the container grew without bound. A module-level constant deliberately:
+         cron-cleanup's RETENTION_DAYS is a handler-local const ~3,700 lines below, and
+         referencing it here would throw inside logAccess — whose body swallows exceptions, so
+         every access row would simply stop being written and the Activity Log would go quiet
+         with nothing to show why. */
+      ttl: ACCESS_LOG_TTL_SECONDS,
       ts,
       method: request.method,
       path,
@@ -6296,7 +6305,9 @@ app.http('qbo-write', {
         payload = { Name: String(f.name), Type: String(f.itemType) };
         if (f.incomeAccountId) payload.IncomeAccountRef = { value: String(f.incomeAccountId) };
         if (f.expenseAccountId) payload.ExpenseAccountRef = { value: String(f.expenseAccountId) };
-        if (f.unitPrice) payload.UnitPrice = Number(f.unitPrice);
+        // qboAmount, not Number: "$1,250.00" is NaN to Number, so the price silently vanished
+        // from the new item and every invoice line built from it billed at zero.
+        if (f.unitPrice) payload.UnitPrice = qboAmount(f.unitPrice);
       } else if (entity === 'journalentry') {
         // Adjusting/reclass entries. Each line is a Debit or Credit to an account;
         // QBO requires total debits == total credits (we validate before posting).

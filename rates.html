@@ -580,8 +580,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             at: nowIso(),
             createdBy: (window.bccUser && window.bccUser.userDetails) || ''
           };
-          localStorage.setItem(convo.id, JSON.stringify(convo));
-          if (window.bccAudit) window.bccAudit('convo-add', { key: convo.id, path: '/rates.html', meta: { type: 'email', sentTo: contact.email } });
+          /* Only if this user may actually write a CRM record. bcc-convo- is owned by the
+             'crm' app for writes (rates is a READ app for it), so for a rates-only user the
+             queued PUT comes back 403: the sync layer blacklists the key for the session and
+             pops a permission toast, seconds after we said the send was logged. The email
+             genuinely went — say what did and did not happen instead of claiming both. */
+          var canLogCrm = !window.bccCanEdit || window.bccCanEdit('crm');
+          if (canLogCrm) {
+            localStorage.setItem(convo.id, JSON.stringify(convo));
+            if (window.bccAudit) window.bccAudit('convo-add', { key: convo.id, path: '/rates.html', meta: { type: 'email', sentTo: contact.email } });
+          } else if (window.bccNotify) {
+            window.bccNotify('Sent. It was not added to the contact’s CRM timeline — that needs CRM edit access.', 'info', 7000);
+          }
         } else {
           (window.bccNotify || alert)('Send failed: ' + (resp.error || 'unknown'), 'error');
         }

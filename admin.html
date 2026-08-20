@@ -700,21 +700,31 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       sel.onchange = function () { saveSpMap(sel.getAttribute('data-spmap'), sel.value); };
     });
   }
+  /* SERIALIZED. The route REPLACES the whole map, so each save must build on the result of
+     the last one — mapping a second client before the first round trip finished sent a
+     snapshot that still lacked the first, silently unmapping it on the very screen that
+     exists to keep them mapped. Chaining also means `next` is built inside the callback,
+     after the previous save has reseated the snapshot. */
+  var _spmapSaving = Promise.resolve();
   function saveSpMap(realmId, folder) {
     var st = document.getElementById('spmapStatus');
     if (st) st.textContent = 'Saving…';
-    /* The route REPLACES the whole map, so send the whole map. Posting just the one changed
-       entry would have upserted a map containing only that entry - silently unmapping every
-       other client on the very screen that exists to keep them mapped. */
-    var next = Object.assign({}, (_spmap && _spmap.map) || {});
-    if (folder) next[realmId] = folder; else delete next[realmId];
-    fetch('/api/integrations/sharepoint/map', {
-      method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ map: next })
-    })
-      .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
-      .then(function () { loadSpMap(); })
-      .catch(function (e) { if (st) st.textContent = 'Could not save: ' + e.message; });
+    _spmapSaving = _spmapSaving.then(function () {
+      var next = Object.assign({}, (_spmap && _spmap.map) || {});
+      if (folder) next[realmId] = folder; else delete next[realmId];
+      return fetch('/api/integrations/sharepoint/map', {
+        method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ map: next })
+      })
+        .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
+        .then(function (j) {
+          // Reseat from the SERVER's own copy, and only on success — a rejected save must not
+          // leave its entry in the snapshot for the next save to commit silently.
+          if (_spmap) _spmap.map = (j && j.map) || next;
+          loadSpMap();
+        })
+        .catch(function (e) { if (st) st.textContent = 'Could not save: ' + e.message; });
+    });
   }
   (function () { var b = document.getElementById('spmapRefresh'); if (b) b.onclick = loadSpMap; })();
 
@@ -1601,12 +1611,41 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
   ];
 
+  /* Integration docs are REDACTED for non-admins on the way down, so the copy sitting in
+     localStorage can be a redacted one (or simply absent on a fresh browser). Save then
+     round-tripped that copy straight back to Cosmos, replacing the real QuickBooks client
+     secret with a blank while toasting success — and every client's QBO sync stops at the
+     next token refresh. An ADMIN reading /api/data/<key> gets the unredacted document
+     (keyRedact is false for admins), so prime from there and only ever save on top of what
+     the server actually holds. Same pattern as primeCfg above. */
+  var _intPrimed = {};
+  function primeIntegrations() {
+    return Promise.all(CONNECTORS.map(function (conn) {
+      return fetch('/api/data/' + encodeURIComponent(INT_PREFIX + conn.channel), { credentials: 'include' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (j) {
+          var d = j && j.data;
+          if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { d = null; } }
+          if (d && typeof d === 'object') _intPrimed[conn.channel] = d;
+        })
+        .catch(function () {});
+    }));
+  }
   function loadIntegration(channel) {
     var k = INT_PREFIX + channel;
+    // The server copy wins — it is the only one guaranteed not to be redacted.
+    if (_intPrimed[channel]) { try { return JSON.parse(JSON.stringify(_intPrimed[channel])); } catch (e) {} }
     try { var raw = localStorage.getItem(k); if (raw) return JSON.parse(raw); } catch (e) {}
     return { id: k, tenantId: 'blue-collar-coach', docType: 'integration', channel: channel, status: 'disconnected', fields: {}, updatedAt: '' };
   }
   function saveIntegration(rec) {
+    /* Never write a connector whose real values were never read back. Without this, a Save
+       clicked in the first moments after page load persists the redacted/local copy over the
+       stored credentials. */
+    if (!renderIntegrations._ready) {
+      (window.bccNotify || alert)('Still loading the saved credentials — give it a second and try again.', 'warn', 6000);
+      return;
+    }
     rec.id = INT_PREFIX + rec.channel;
     rec.tenantId = 'blue-collar-coach';
     rec.docType = 'integration';
@@ -1630,6 +1669,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function renderIntegrations() {
     var listEl = document.getElementById('integrationsList');
     if (!listEl) return;
+    /* Read the authoritative copies first, then repaint. Until they land the cards render
+       from whatever is local, which is exactly the redacted copy Save must not persist —
+       so the Save buttons stay disabled until priming finishes. */
+    if (!renderIntegrations._primed) {
+      renderIntegrations._primed = true;
+      primeIntegrations().then(function () { renderIntegrations._ready = true; renderIntegrations(); });
+    }
     listEl.innerHTML = CONNECTORS.map(function (conn) {
       var rec = loadIntegration(conn.channel);
       var fieldsHtml = conn.fields.map(function (f) {

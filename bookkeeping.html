@@ -2633,6 +2633,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       return '<div class="ws-row" data-lrow="' + i + '" style="gap:8px;flex-wrap:wrap;"><select data-l="itemId" style="flex:2;min-width:140px;border:1px solid var(--chrome-mute);border-radius:7px;padding:7px;">' + txOpt(refs.items, ln.itemId) + '</select>' + desc + amt + rm + '</div>';
     }
     var expAccts = (refs.accounts || []).filter(function (a) { return a.classification === 'Expense' || /expense|cost of goods/i.test(a.type || ''); });
+    /* Keep the line's ACTUAL account selectable. The list is filtered to expense accounts, so
+       a bill booked to anything else — or to an account since made inactive, which drops out
+       of refs entirely — matched no option and the browser fell back to the first one. The row
+       read "— select —" and saving silently re-booked that cost to whatever was first in the
+       list, in the client's live books. */
+    if (ln.accountId && !(expAccts.length ? expAccts : (refs.accounts || [])).some(function (a) { return String(a.id) === String(ln.accountId); })) {
+      var known = (refs.accounts || []).filter(function (a) { return String(a.id) === String(ln.accountId); })[0];
+      expAccts = (expAccts.length ? expAccts : (refs.accounts || [])).concat([
+        known || { id: ln.accountId, name: '(account not in the expense list — kept as-is)' }
+      ]);
+    }
     return '<div class="ws-row" data-lrow="' + i + '" style="gap:8px;flex-wrap:wrap;"><select data-l="accountId" style="flex:2;min-width:140px;border:1px solid var(--chrome-mute);border-radius:7px;padding:7px;">' + txOpt(expAccts.length ? expAccts : refs.accounts, ln.accountId) + '</select>' + desc + amt + rm + '</div>';
   }
   function openTxnForm(entity, edit, seed) {
@@ -2879,7 +2890,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        amount are ignored - adding a line and not using it is normal. */
     var lineKey = entity === 'invoice' ? 'itemId' : 'accountId';
     if (entity === 'invoice' || entity === 'bill' || entity === 'purchase') {
-      var bad = (g.lines || []).filter(function (l) { return qbonum(l.amount) > 0 && !l[lineKey]; }).length;
+      /* ANY amount, not just a positive one. qbonum returns the signed value, so a credit or
+         a refund line ("-500") read as <= 0 and slipped through — and the server keeps any
+         line with a truthy amount, then stringifies the missing ref as the literal
+         "undefined", which QuickBooks rejects with a validation error naming a field the
+         bookkeeper never saw. A blank row (amount undefined) and a cleared one ('') are still
+         ignored: adding a line and not using it is normal. */
+      var bad = (g.lines || []).filter(function (l) { return l.amount !== '' && l.amount != null && !l[lineKey]; }).length;
       if (bad) {
         (window.bccNotify || alert)(bad === 1
           ? ('One line has an amount but no ' + (entity === 'invoice' ? 'product/service' : 'account') + ' - pick one, or clear the amount.')
@@ -3622,6 +3639,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
 
   /* ---- Activity (recent changes to this client, from the audit log) ---- */
   var _actDays = 7, _actMine = false;
+  // Changing the range or the "just me" box fires another fetch while the first is open; the
+  // slower earlier response then repainted over the newer one. Same guard admin.html uses.
+  var _actGen = 0;
   function actDayLabel(d) {
     var t = new Date(); t.setHours(0, 0, 0, 0);
     var y = new Date(t); y.setDate(t.getDate() - 1);
@@ -3682,12 +3702,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   function loadActivity() {
     var list = document.getElementById('act_list'); if (!list) return;
+    var myGen = ++_actGen;
     list.innerHTML = '<div style="color:var(--muted);padding:10px;">Loading recent activity…</div>';
     // Ask the SERVER to filter by user. Filtering here ran over a capped page, so on a
     // busy client "Just me" hid your own older activity inside a range that had it.
     fetch('/api/audit/client/' + encodeURIComponent(currentRealm) + '?days=' + _actDays + (_actMine ? '&user=' + encodeURIComponent(myUpn()) : ''), { credentials: 'include' })
       .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
       .then(function (resp) {
+        if (myGen !== _actGen) return;   // a newer range/filter is already loading
         if (!resp || !resp.ok) { list.innerHTML = '<div style="color:var(--muted);padding:10px;">Activity unavailable.</div>'; return; }
         var rows = resp.rows || [];
         if (!rows.length) { list.innerHTML = '<div style="color:var(--muted);padding:14px;">No changes in this range.</div>'; return; }
@@ -5149,6 +5171,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      message was not reachable in the app at all. Sent is its own view rather than being mixed
      back into the inbox (mixing them is what an earlier fix removed, for good reason). */
   var _emFolder = 'inbox';   // inbox | sentitems
+  /* Set when a folder load FAILS. Without it, a failed Sent load left the inbox's messages in
+     _emMsgs, so the next search or filter change repainted Inbox mail under the Sent heading.
+     Clearing the cache alone is not enough either: renderEmailList would then affirm "No
+     messages yet" — telling the bookkeeper the client's Sent folder is empty when we simply
+     could not read it. Remember WHY it is empty and say that instead. */
+  var _emLoadError = '';
   var _emSearch = '';
   var _emLoadedFor = null;   // realm whose messages are cached in _emMsgs (recomputeUnreadBadge compares against it)
   var _emLoadedFolder = null; // ...and which folder they came from. Kept SEPARATE: folding it
@@ -5411,7 +5439,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           list.innerHTML = '<div style="background:var(--gold-fade);border:1px solid var(--chrome-mute);border-radius:8px;padding:12px 14px;font-size:13px;color:var(--ink);">📬 <strong>' + esc((_clientMailbox && _clientMailbox.mailbox) || 'This mailbox') + '</strong> is set up in the app but hasn’t been created in Microsoft 365 yet. An admin can create it as a <strong>shared mailbox</strong> in the M365 admin center — mail will appear here automatically once it exists.</div>';
           _emMsgs = []; _emUnread[currentRealm] = 0; updateWsNav(); return;
         }
-        if (!resp || !resp.ok) { list.innerHTML = '<div style="color:var(--burgundy);">Mailbox unavailable: ' + esc((resp && resp.error) || 'error') + '</div>'; return; }
+        if (!resp || !resp.ok) {
+          // Drop the other folder's cache AND record why, so nothing can repaint it later.
+          _emMsgs = []; _emLoadedFolder = null;
+          _emLoadError = 'Mailbox unavailable: ' + ((resp && resp.error) || 'error');
+          list.innerHTML = '<div style="color:var(--burgundy);">' + esc(_emLoadError) + '</div>';
+          return;
+        }
+        _emLoadError = '';
         _emMsgs = resp.messages || []; _emLoadedFor = currentRealm; _emLoadedFolder = folderAt; renderEmailList();
         // Keep the nav/overview unread badge in sync with what we just loaded.
         recomputeUnreadBadge();
@@ -5437,7 +5472,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // missing entirely. Say so when the cap was hit.
     if (cnt) cnt.textContent = rows.length + (rows.length === 1 ? ' message' : ' messages')
       + (_emMsgs.length >= 50 ? ' (of the 50 most recent — older mail isn’t loaded, so search only covers these)' : '');
-    if (!rows.length) { list.innerHTML = '<div style="color:var(--muted);padding:10px 0;">No messages' + (q || _emFilter !== 'all' ? ' match this view' : ' yet') + '.</div>'; return; }
+    if (!rows.length) {
+      // "No messages yet" is a claim about the mailbox. Only make it when we actually read it.
+      if (_emLoadError) { list.innerHTML = '<div style="color:var(--burgundy);padding:10px 0;">' + esc(_emLoadError) + '</div>'; return; }
+      list.innerHTML = '<div style="color:var(--muted);padding:10px 0;">No messages' + (q || _emFilter !== 'all' ? ' match this view' : ' yet') + '.</div>'; return;
+    }
     list.innerHTML = rows.map(function (m) {
       var mt = metaFor(m.id);
       var unread = !readByMe(m.id);
