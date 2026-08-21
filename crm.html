@@ -513,6 +513,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      myday/documents are member-default 'edit'. Both halves are fixed; this is the UI half.
      Default OPEN before identity arrives, exactly like documents.html: bcc-auth-ready fires
      after the first paint, and defaulting closed would flash a read-only page at everyone. */
+  var _crmRefusedAt = 0;
+  function crmRefusedToast() {
+    var now = Date.now();
+    if (now - _crmRefusedAt < 4000) return;   // one message per burst, not one per field
+    _crmRefusedAt = now;
+    (window.bccNotify || alert)('Your CRM access is view-only, so that was not saved.', 'warn', 7000);
+  }
   function crmCanEdit() {
     if (!window.bccCanEdit || !(window.bccUser && window.bccUser.userDetails)) return true;
     return !!window.bccCanEdit('crm');
@@ -569,6 +576,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (e) { return null; }
   }
   function saveContact(c) {
+    /* The CHOKEPOINT, not the buttons. The first pass guarded four handlers and left the
+       stage, type, company and needs controls writing freely — a CRM=View user changed a
+       contact's stage, was told nothing, and the server refused it and blacklisted the key.
+       Every write on this page goes through these six functions, so gating here cannot miss a
+       sibling the way a per-handler guard did. */
+    if (!crmCanEdit()) { crmRefusedToast(); return c; }
     c.updatedAt = nowIso();
     if (!c.createdAt) c.createdAt = c.updatedAt;
     if (!isContactKey(c.id)) c.id = CONTACT_PREFIX + uid();   // never write through a foreign id
@@ -580,6 +593,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   function deleteContact(id) {
     if (!isContactKey(id)) return;
+    if (!crmCanEdit()) { crmRefusedToast(); return; }
     localStorage.removeItem(id);
     // also remove this contact's convos
     convosFor(id).forEach(function (cv) { localStorage.removeItem(cv.id); });
@@ -602,6 +616,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     return out.sort(function (a, b) { return (b.at || '').localeCompare(a.at || ''); });
   }
   function saveConvo(cv) {
+    if (!crmCanEdit()) { crmRefusedToast(); return; }
     cv.updatedAt = nowIso();
     if (!cv.createdAt) cv.createdAt = cv.updatedAt;
     if (!cv.at) cv.at = cv.updatedAt;
@@ -610,7 +625,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     cv.docType = 'convo';
     localStorage.setItem(cv.id, JSON.stringify(cv));
   }
-  function deleteConvo(id) { if (!isConvoKey(id)) return; localStorage.removeItem(id); }
+  function deleteConvo(id) { if (!isConvoKey(id)) return; if (!crmCanEdit()) { crmRefusedToast(); return; } localStorage.removeItem(id); }
 
   /* Weekly coaching notes — dated entries per contact (after weekly calls). */
   var WEEKLY_PREFIX = 'bcc-weeklynote-';
@@ -624,6 +639,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     return out.sort(function (a, b) { return (b.weekOf || '').localeCompare(a.weekOf || '') || (b.createdAt || '').localeCompare(a.createdAt || ''); });
   }
   function saveWeeklyNote(w) {
+    if (!crmCanEdit()) { crmRefusedToast(); return; }
     w.updatedAt = nowIso();
     if (!w.createdAt) w.createdAt = w.updatedAt;
     if (!isWeeklyKey(w.id)) w.id = WEEKLY_PREFIX + uid();
@@ -631,7 +647,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     w.docType = 'weekly-note';
     localStorage.setItem(w.id, JSON.stringify(w));
   }
-  function deleteWeeklyNote(id) { if (!isWeeklyKey(id)) return; localStorage.removeItem(id); }
+  function deleteWeeklyNote(id) { if (!isWeeklyKey(id)) return; if (!crmCanEdit()) { crmRefusedToast(); return; } localStorage.removeItem(id); }
   // Monday of the current week, YYYY-MM-DD (default "week of" for a new note).
   function thisMonday() {
     var d = new Date(); var day = (d.getDay() + 6) % 7; d.setDate(d.getDate() - day);
@@ -1217,7 +1233,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         )));
         isUpdate = true;
       }
-      saveContact(c);
+      // Only claim it, and only clear the form, if it actually saved. Returning the record
+      // on refusal made this toast "Contact saved." over a contact that was never written.
+      if (!saveContact(c)) return;
       if (window.bccAudit) window.bccAudit(isUpdate ? 'contact-update' : 'contact-create', { key: c.id, path: '/crm.html' });
       if (window.bccNotifySaved) window.bccNotifySaved(isUpdate ? 'Updated the existing contact with this email instead of creating a duplicate.' : 'Contact saved.');
       else (window.bccNotify || alert)('Saved.', 'success');
@@ -1456,7 +1474,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             c.needs = existingRec.needs || []; c.tags = existingRec.tags || [];
             isUpdate = true;
           }
-          saveContact(c); // mutates c in place, assigning c.id
+          if (!saveContact(c)) return;   // refused - do not count a row that was never written
+          // (saveContact mutates c in place, assigning c.id)
           // Index CREATES too, not just matches. Two new cards with the same email both
           // took the create branch and made two contacts — then each later write to that
           // email clobbered whichever one it happened to find.

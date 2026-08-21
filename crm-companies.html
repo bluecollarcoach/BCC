@@ -395,7 +395,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     return true;
   }
   function saveCompany(c) {
-    if (ccRefuseIfReadOnly()) return c;
+    // NULL on refusal, not the object. Returning `c` gave callers something that looked like a
+    // saved record — the new-company form cleared itself and toasted "Company saved." over a
+    // company that was never written and no longer existed anywhere.
+    if (ccRefuseIfReadOnly()) return null;
     c.updatedAt = nowIso();
     if (!c.createdAt) c.createdAt = c.updatedAt;
     if (!isCompanyKey(c.id)) c.id = COMPANY_PREFIX + uid();
@@ -439,6 +442,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
                    || existing.filter(function (c) { return !c.realmId && normName(c.name) === normName(q.companyName); })[0];
           if (!match) {
             var nc = saveCompany({ name: q.companyName || ('Company ' + q.realmId), realmId: String(q.realmId), source: 'bookkeeping' });
+            if (!nc) return;   // refused — nc.id would throw, and the count would be a lie
             existing.push(nc); created++; toFill.push(nc.id);
           } else if (!match.realmId) {
             match.realmId = String(q.realmId); if (!match.source) match.source = 'bookkeeping'; saveCompany(match); linked++;
@@ -539,6 +543,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             contactName: cu.contactName || '', qboCustomerId: String(cu.qboId),
             source: 'qbo-customer'
           });
+          if (!nc) return;   // refused — see saveCompany
           byQbo[String(cu.qboId)] = nc; byName[normName(nm)] = nc; byRaw[rawKey(nm)] = nc; created++;
         });
         setSyncMeta('');
@@ -860,6 +865,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       });
     };
     document.getElementById('delBtn').onclick = function () {
+      /* Refuse FIRST. unlinkContactsFrom ran before deleteCompany's gate, so a view-only user
+         confirmed the dialog, every linked contact was unlinked (a real write the server
+         accepts through the contact family), the delete was then refused, and the redirect
+         fired past the toast — company still there, links gone, nothing said. */
+      if (ccRefuseIfReadOnly()) return;
       if (!confirm('Delete this company? Linked contacts/engagements keep their data but lose the link.')) return;
       unlinkContactsFrom(c.id);
       deleteCompany(c.id);
@@ -936,7 +946,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         state:    document.getElementById('f-state').value.trim(),
         notes:    document.getElementById('f-notes').value.trim()
       };
-      saveCompany(c);
+      // Only claim it, clear the form and close the panel if it actually saved. The refusal
+      // already explained itself; wiping what they typed on top of that is the real damage.
+      if (!saveCompany(c)) return;
       if (window.bccAudit) window.bccAudit('company-create', { key: c.id, path: '/crm-companies.html' });
       if (window.bccNotifySaved) window.bccNotifySaved('Company saved.');
       panel.classList.remove('open');
@@ -953,6 +965,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var id = tr.dataset.id;
       if (btn && btn.dataset.act === 'delete') {
         e.stopPropagation();
+        /* Refuse BEFORE unlinking, exactly as the detail-view handler does — this is the
+           sibling that was left behind, and it does the same damage: contacts unlinked,
+           the delete then refused, nothing said. */
+        if (ccRefuseIfReadOnly()) return;
         if (!confirm('Delete this company?\n\nLinked contacts and engagements keep their data but lose the link.')) return;
         // The detail view unlinks referencing contacts before deleting; this row handler
         // did not, so a company deleted from the list left its contacts pointing at an id

@@ -782,7 +782,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           (window.bccNotify || alert)(name + ' was disconnected, but ' + j.leftBehind.length + ' stored record(s) could not be removed. Tell an admin to check the error log.', 'warn', 12000);
         }
         // Drop the company's cached financial-period snapshots locally too.
-        try { Object.keys(localStorage).forEach(function (k) { if (k.indexOf(PER_PREFIX + realm + '-') === 0 || k.indexOf(MPER_PREFIX + realm + '-') === 0) localStorage.removeItem(k); }); } catch (_) {}
+        /* PER_ only — the SERVER-owned QuickBooks cache, which is what the comment above
+            describes and what a reconnect rebuilds. MPER_ is the bookkeeper's own MANUAL month
+            corrections, typed by hand and synced to Cosmos: removeItem is hooked, so sweeping
+            them here hard-deleted every one of them firm-wide, and reconnecting cannot bring
+            them back. Stale MPER keys for a dead realm are harmless — every consumer already
+            filters on the live company list. */
+        try { Object.keys(localStorage).forEach(function (k) { if (k.indexOf(PER_PREFIX + realm + '-') === 0) localStorage.removeItem(k); }); } catch (_) {}
         if (currentRealm === realm) currentRealm = '';
         if (window.bccNotifySaved) window.bccNotifySaved(name + ' disconnected.');
         return loadCompanies();
@@ -1578,7 +1584,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
       .then(function (j) {
         if (!j.ok) throw new Error(j.error || 'parse failed');
-        _pi.tasks = j.tasks || []; _pi.labels = j.labels || []; _pi.map = {};
+        // The WHOLE object, not three of its four fields. unlabeledRealm survived a
+         // "← Different file", so the next import filed every unmapped task under the client
+         // chosen for the PREVIOUS file.
+        _pi.tasks = j.tasks || []; _pi.labels = j.labels || []; _pi.map = {}; _pi.unlabeledRealm = '';
         _pi.labels.forEach(function (l) { _pi.map[l.label] = plannerSuggestRealm(l.label); });
         piRenderMap(j);
       })
@@ -3524,7 +3533,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (typeof emCloseModal === 'function') emCloseModal(); // never leave an email reader open across a realm/section change
     var tabbar = document.getElementById('wsTabs');
     var newRealm = currentRealm !== _wsLastRealm;
-    if (newRealm) { currentTab = taskOnly ? 'tasks' : 'overview'; _wsLastRealm = currentRealm; }
+    // _taskEdit pins the live task refresh to a row that no longer exists once the client
+    // changes, so it stayed pinned for the rest of the session.
+    if (newRealm) { currentTab = taskOnly ? 'tasks' : 'overview'; _wsLastRealm = currentRealm; _taskEdit = null; }
     if (taskOnly && currentTab !== 'tasks') currentTab = 'tasks'; // tasks-only tier never renders another section
     if (tabbar) tabbar.style.display = currentRealm ? '' : 'none';
     // Persistent desktop rail + content shift only while inside a client.
@@ -4420,6 +4431,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     return { id: mailKey(), tenantId: 'blue-collar-coach', docType: 'client-mail', realmId: currentRealm, items: [] };
   }
   function saveMailDoc(d) {
+    /* `false` from here means STORAGE failed — both callers print "free up some space". A
+       permission refusal is a different thing and must not borrow that message, so it returns
+       its own value and the callers check the tier BEFORE doing any work (addMail uploads the
+       scan first, and refusing after that would have left an orphan file with no log entry). */
     d.id = mailKey(); d.realmId = currentRealm; d.docType = 'client-mail';
     d.tenantId = 'blue-collar-coach'; d.updatedAt = nowIso(); d.updatedBy = myUpn();
     try { localStorage.setItem(d.id, JSON.stringify(d)); return true; } catch (e) { return false; }
@@ -4507,6 +4522,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var doc = loadMailDoc();
     var m = (doc.items || []).filter(function (x) { return x.id === id; })[0];
     if (!m) { (window.bccNotify || alert)('That entry is no longer in the log.', 'warn'); renderMailList(); return; }
+    // Tier check BEFORE the mutation, and with its own message — `false` from saveMailDoc
+    // means storage failed, which is a different thing to say.
+    if (bkRefuseIfReadOnly()) return;
     if (act === 'del') doc.items = doc.items.filter(function (x) { return x.id !== id; });
     else if (act === 'done') { m.handled = true; m.handledBy = myUpn(); m.handledAt = nowIso(); }
     else if (act === 'reopen') { m.handled = false; m.handledBy = ''; m.handledAt = ''; }
@@ -4523,6 +4541,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var what = ((document.getElementById('ml_what') || {}).value || '').trim();
     if (!received) { (window.bccNotify || alert)('Put in the date it arrived.', 'warn'); return; }
     if (!what && !from) { (window.bccNotify || alert)('Say who it is from, or what it is — otherwise nobody can tell what this entry means.', 'warn'); return; }
+    /* Refuse BEFORE the upload. addMail sends the scan to /api/documents first, so checking
+       the tier only at save time left an orphan file in the client's folder with no log entry
+       pointing at it — and told the bookkeeper their storage was full. */
+    if (bkRefuseIfReadOnly()) return;
     var realmAt = currentRealm;
     var fi = document.getElementById('ml_file');
     var f = fi && fi.files && fi.files[0];
@@ -5166,7 +5188,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     notaryMsg(id, 'Sending…');
     var body = 'Hello ' + esc(r.signerName || '') + ',<br><br>Your document <strong>' + esc(r.docName) + '</strong> is ready for online notarization with ' + esc(notaryOrgName()) + '.<br><br>Join your notary session here: <a href="' + esc(r.sessionUrl) + '">' + esc(r.sessionUrl) + '</a><br><br>You will verify your identity and meet the notary by live video. Please have a valid government photo ID ready.<br><br>Thank you.';
     var payload = { to: [r.signerEmail], subject: 'Online notarization link — ' + r.docName, bodyHtml: body };
-    if (mailboxActive && mailboxActive()) payload.realmId = currentRealm;
+      // The SERVER decides which mailbox — it is the only place that knows this client's
+      // config. Gating on mailboxActive() here read a cache only the Email tab fills.
+      if (currentRealm) { payload.realmId = currentRealm; payload.fallbackToSender = true; }
     fetch('/api/integrations/msgraph/send-mail', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
       .then(function (rr) { return rr.json().catch(function () { return { ok: rr.ok }; }); })
       .then(function (resp) { if (resp && resp.ok === false) throw new Error(resp.error || 'send failed'); notaryMsg(id, '✓ Link emailed to ' + r.signerEmail); })
@@ -5223,6 +5247,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
    * with collaboration metadata (per-user read, who replied, tags, assignment,
    * archive) stored server-side per message. Full read + reply happen in-app. */
   var _clientMailbox = null;
+  /* Which client _clientMailbox belongs to. It is loaded ONLY by renderEmail, but read by the
+     certified-payroll email panel — so opening client A's Email tab and then sending a CPR for
+     client B sent it from A's shared mailbox, and a client whose Email tab was never opened
+     read as "no mailbox" and refused to send at all. */
+  var _clientMailboxRealm = null;
   var _emMeta = {};          // { msgId: {tags,assignedTo,archived,readBy,repliedBy} }
   var _emMsgs = [];          // loaded mailbox messages
   var _emFilter = 'all';     // all | unread | mine | tagged | archived
@@ -5255,7 +5284,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      next message, meant the FIRST send's completion cleared what had just been typed. */
   var _emComposeGen = 0;
   function suggestMailbox() { var n = companyName(currentRealm) || ''; var local = n.toLowerCase().replace(/[^a-z0-9]+/g, ''); return local ? (local + '@bluecollarcoach.us') : ''; }
-  function mailboxActive() { return !!(_clientMailbox && _clientMailbox.mailbox && _clientMailbox.enabled !== false); }
+  /* The EMAIL TAB's predicate — true only when the per-client config for the client on
+     screen has been loaded and is live. Everything OUTSIDE the Email tab (certified
+     payroll, the notary signer link) must NOT gate its send on this: the config is
+     loaded only by renderEmail, so a client whose Email tab was never opened read as
+     "no mailbox", and a client opened EARLIER read as the wrong mailbox. Those paths
+     pass the realm to the server with fallbackToSender and let it decide. */
+  function mailboxActive() { return !!(_clientMailbox && _clientMailboxRealm === currentRealm && _clientMailbox.mailbox && _clientMailbox.enabled !== false); }
   function emSigKey() { return 'bcc-emailsig-' + (myUpn().replace(/[^a-z0-9]+/g, '-') || 'x'); }
   function getSig() { try { var d = JSON.parse(localStorage.getItem(emSigKey()) || 'null'); return (d && d.sig) || ''; } catch (e) { return ''; } }
   // Reports whether the write actually landed. It used to swallow a localStorage
@@ -5371,7 +5406,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var fo = document.getElementById('em_folder');
     if (fo) { fo.value = _emFolder; fo.addEventListener('change', function () { _emFolder = this.value; loadInbox(true); }); }
     if (_emLoadedFor !== currentRealm) _emMsgs = []; // drop the previous client's cached mail
-    _clientMailbox = null;                            // unknown until the per-client config resolves
+    _clientMailbox = null; _clientMailboxRealm = null;                            // unknown until the per-client config resolves
     loadEmailMeta();
     // Load the mailbox config FIRST, then the inbox — so inbox routing uses the
     // RIGHT client mailbox (mailboxActive() depends on _clientMailbox).
@@ -5385,8 +5420,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var realmAt = currentRealm;
     fetch('/api/integrations/msgraph/client-mailbox/' + encodeURIComponent(currentRealm), { credentials: 'include' })
       .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
-      .then(function (cfg) { if (currentRealm !== realmAt) return; _clientMailbox = (cfg && cfg.ok) ? { mailbox: cfg.mailbox, enabled: cfg.enabled } : { mailbox: '', enabled: false }; renderMailboxSection(info); if (done) done(); })
-      .catch(function () { if (currentRealm !== realmAt) return; _clientMailbox = { mailbox: '', enabled: false }; renderMailboxSection(info); if (done) done(); });
+      .then(function (cfg) { if (currentRealm !== realmAt) return; _clientMailbox = (cfg && cfg.ok) ? { mailbox: cfg.mailbox, enabled: cfg.enabled } : { mailbox: '', enabled: false }; _clientMailboxRealm = realmAt; renderMailboxSection(info); if (done) done(); })
+      .catch(function () { if (currentRealm !== realmAt) return; _clientMailbox = { mailbox: '', enabled: false }; _clientMailboxRealm = realmAt; renderMailboxSection(info); if (done) done(); });
   }
   function renderMailboxSection(info) {
     var el = document.getElementById('em_mailbox'); if (!el) return;
@@ -5421,7 +5456,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var st = document.getElementById('cm_status'); if (st) st.textContent = 'Saving…';
     fetch('/api/integrations/msgraph/client-mailbox/' + encodeURIComponent(currentRealm), { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mailbox: mailbox, enabled: enabled }) })
       .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
-      .then(function (resp) { if (!resp.ok) throw new Error(resp.error || 'save failed'); _clientMailbox = { mailbox: resp.mailbox, enabled: resp.enabled }; if (window.bccAudit) window.bccAudit('client-mailbox-set', { path: '/bookkeeping.html', meta: { realmId: currentRealm, mailbox: resp.mailbox, enabled: resp.enabled } }); _emLoadedFor = null; renderEmail(); })
+      .then(function (resp) { if (!resp.ok) throw new Error(resp.error || 'save failed'); _clientMailbox = { mailbox: resp.mailbox, enabled: resp.enabled }; _clientMailboxRealm = currentRealm; if (window.bccAudit) window.bccAudit('client-mailbox-set', { path: '/bookkeeping.html', meta: { realmId: currentRealm, mailbox: resp.mailbox, enabled: resp.enabled } }); _emLoadedFor = null; renderEmail(); })
       .catch(function (e) { if (st) st.textContent = 'Save failed: ' + e.message; });
   }
 
@@ -6381,7 +6416,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var box = document.getElementById('cpr_emailbox'); if (!box || !cprDraft) return;
     if (box.style.display !== 'none') { box.style.display = 'none'; box.innerHTML = ''; return; }
     var info = {}; try { info = JSON.parse(localStorage.getItem('bcc-client-info-' + currentRealm)) || {}; } catch (e) {}
-    var from = (mailboxActive && mailboxActive() && _clientMailbox && _clientMailbox.mailbox) ? _clientMailbox.mailbox : (myUpn() || 'your account');
+    /* Only name a mailbox we have actually loaded FOR THIS CLIENT. It used to print
+       whichever client's address happened to be cached. */
+    var from = (mailboxActive && mailboxActive() && _clientMailbox && _clientMailbox.mailbox)
+      ? _clientMailbox.mailbox
+      : ((companyName(currentRealm) || 'this client') + '’s shared mailbox if one is set up, otherwise ' + (myUpn() || 'your account'));
     var subj = 'Certified Payroll' + (cprDraft.payrollNo ? ' #' + cprDraft.payrollNo : '') + (cprDraft.projectName ? ' — ' + cprDraft.projectName : '');
     // Autofill from the last CPR emailed for this same job (Jenna's request), and show history.
     // Skip when the job can't be identified (no project/contract) so unrelated drafts don't
@@ -6480,7 +6519,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       if (st) st.textContent = 'Sending…';
       var payload = { to: to, subject: subject, bodyHtml: esc(bodyText).replace(/\n/g, '<br>'), attachments: atts };
       if (cc.length) payload.cc = cc;
-      if (mailboxActive && mailboxActive()) payload.realmId = realmAt;
+      // Same: name the realm and let the server pick the mailbox.
+      if (realmAt) { payload.realmId = realmAt; payload.fallbackToSender = true; }
       return fetch('/api/integrations/msgraph/send-mail', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
         .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
         .then(function (resp) {
@@ -6549,6 +6589,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     };
     b = document.getElementById('cpr_sigsave'); if (b) b.onclick = function () {
       if (!cprDraft.signatureSrc) return;
+      // bcc-cprsig-<realm> is a client-scoped record like the rest; without this a view-tier
+      // user was told "Signature saved for <company>" over a write the server then refused.
+      if (bkRefuseIfReadOnly()) return;
       localStorage.setItem(cprSigKey(), JSON.stringify({
         id: cprSigKey(), tenantId: 'blue-collar-coach', docType: 'cpr-signature', realmId: currentRealm,
         src: cprDraft.signatureSrc, name: cprDraft.socName || '', title: cprDraft.socTitle || '',

@@ -1353,11 +1353,17 @@
         if (!isNaN(sinceTs)) dataUrl += '?since=' + encodeURIComponent(new Date(sinceTs - 5 * 60 * 1000).toISOString());
         else useDelta = false;
       }
-      var dataPromise = fetch(dataUrl).catch(function (e) {
+      /* Remember a failed pull. The permission overlay asserts "your account doesn't have
+         permission" from whatever config happens to be in localStorage - which, on a cold
+         browser after a failed pull, is nothing at all. That reads as a deliberate denial.
+         BOTH failure shapes: fetch only REJECTS on a network error, so catching alone missed
+         the HTTP 500 the comment was written for - the overlay stayed wrong in exactly the
+         case it was meant to fix. */
+      var dataPromise = fetch(dataUrl).then(function (r) {
+        if (!r || !r.ok) window._bccBootPullFailed = true;
+        return r;
+      }).catch(function (e) {
         console.warn('[bcc-api] initial pull failed', e);
-        // Remember it. The permission overlay asserts "your account doesn't have permission"
-        // from whatever config happens to be in localStorage — which, on a cold browser after
-        // a failed pull, is nothing at all. That reads as a deliberate denial.
         window._bccBootPullFailed = true;
         return null;
       });

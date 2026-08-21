@@ -350,7 +350,14 @@ let msgs = loadMsgs();
 let read = loadRead();
 let who = localStorage.getItem(LS_WHO) || '';
 let active = chans[0].id;
-let pendingPhoto = null;
+/* Clearing a staged photo belongs with the channel change, not with one of the four places
+   that assign `active` — patching a single call site is how this class of bug keeps coming
+   back here. Every assignment goes through this. */
+let pendingPhoto = null;   // declared before setActive, which clears it
+function setActive(id) {
+  if (active !== id) pendingPhoto = null;   // a photo staged for the old channel is not for this one
+  active = id;
+}
 
 function init() {
   // Identity comes from Entra SSO (bcc-api.js seeds LS_WHO from the signed-in
@@ -372,7 +379,7 @@ function init() {
     // and (for a non-admin) it could never be edited again.
     if (!whoUpn()) { alert('Still signing you in — give it a second and create that channel again.'); return; }
     mutateChans(cs => { cs.push({ id, name:id, desc:'', members:[whoUpn()], createdBy: whoUpn() }); });
-    active = id;
+    setActive(id);
     render();
     openMembersModal(id);
   };
@@ -391,7 +398,7 @@ function render() {
   who = localStorage.getItem(LS_WHO) || who;
   // Keep the active channel valid against what this user can actually see.
   var vis = visibleChans();
-  if (!vis.some(function (c) { return c.id === active; })) active = vis.length ? vis[0].id : null;
+  if (!vis.some(function (c) { return c.id === active; })) setActive(vis.length ? vis[0].id : null);
   renderSidebar();
   renderThread();
 }
@@ -457,7 +464,7 @@ function renderSidebar() {
   }).join('');
   document.querySelectorAll('.chan').forEach(el => {
     el.onclick = () => {
-      active = el.dataset.id;
+      setActive(el.dataset.id);
       read[active] = Date.now(); saveRead(read);
       document.getElementById('sidebar').classList.remove('open');
       render();
@@ -666,12 +673,28 @@ function openMembersModal(chId) {
   const isOpen = !Array.isArray(c.members);
   const memberSet = new Set((Array.isArray(c.members) ? c.members : []).map(s => String(s).toLowerCase()));
 
-  const rows = people.length ? people.map(p => {
+  /* Seed the list with anyone ALREADY a member, even if the directory filter dropped them
+     (bccFilterActive hides inactive and hidden users). Without this the modal only rendered
+     the people it could see, and Save rebuilt the member list from the checkboxes — silently
+     removing a colleague who had merely been marked inactive, with nothing on screen to
+     suggest they had been in the channel at all. */
+  const shown = new Set(people.map(p => String(p.upn).toLowerCase()));
+  /* ...but only once the directory has actually ARRIVED. With people empty (it loads async),
+     every current member fell into `missing` and was labelled "no longer in the directory" —
+     a confident false statement about live colleagues, replacing the honest "still loading"
+     hint that used to be there. */
+  const dirLoaded = people.length > 0;
+  const missing = dirLoaded
+    ? Array.from(memberSet).filter(u => !shown.has(u)).map(u => ({ upn: u, displayName: u, _notInDirectory: true }))
+    : [];
+  const allPeople = people.concat(missing);
+
+  const rows = allPeople.length ? allPeople.map(p => {
     const u = String(p.upn).toLowerCase();
     const checked = memberSet.has(u) || u === meUpn;
     return `<label style="display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid #f3f3f1;cursor:pointer;font-size:14px;">
       <input type="checkbox" data-upn="${escapeHtml(u)}"${checked?' checked':''}${u===meUpn?' disabled':''} style="width:auto;margin:0;" />
-      <span>${escapeHtml(p.displayName||p.upn)}${u===meUpn?' <em style="color:#a8a79e;font-style:normal;">(you)</em>':''}</span></label>`;
+      <span>${escapeHtml(p.displayName||p.upn)}${u===meUpn?' <em style="color:#a8a79e;font-style:normal;">(you)</em>':''}${p._notInDirectory?' <em style="color:#a8a79e;font-style:normal;">(no longer in the directory)</em>':''}</span></label>`;
   }).join('') : '<div style="padding:14px 4px;color:#8a877e;font-size:13px;">User directory still loading… you can reopen this in a moment.</div>';
 
   const ov = document.createElement('div');
@@ -706,6 +729,13 @@ function openMembersModal(chId) {
   };
   ov.querySelector('#m-save').onclick = () => {
     const wantOpen = openChk.checked;
+    /* Refuse rather than saving an empty list built from a directory that never arrived —
+       the same reason saveIntegration refuses before its prime completes. Without this,
+       opening the modal early and clicking Save emptied the channel's membership. */
+    if (!wantOpen && !allPeople.length) {
+      alert('The user directory has not loaded yet — close this and reopen it in a moment.');
+      return;
+    }
     let sel = null;
     if (!wantOpen) {
       sel = [meUpn];

@@ -450,8 +450,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   function updatePullState() {
     var has = !!$('sel_qbo').value;
-    $('btn_pull').disabled = !has || !current;
-    $('btn_pull').style.opacity = (!has || !current) ? '0.5' : '';
+    /* /api/integrations/qbo/companies/{realm}/kpis is admin-only by design, so offering this
+       to everyone meant a non-admin clicked it and got a failure. Default OPEN until identity
+       lands — bccIsAdmin answers false before /.auth/me resolves, and disabling on that would
+       grey the button out for a real admin on every load. */
+    var adminOk = !window.bccIsAdmin || !(window.bccUser && window.bccUser.userDetails) || window.bccIsAdmin();
+    var off = !has || !current || !adminOk;
+    $('btn_pull').disabled = off;
+    $('btn_pull').style.opacity = off ? '0.5' : '';
+    // Only speak when refusing. Blanking it otherwise wiped whatever the markup set.
+    if (!adminOk) $('btn_pull').title = 'Pulling financials from QuickBooks is limited to administrators.';
+    else if ($('btn_pull').title.indexOf('limited to administrators') >= 0) $('btn_pull').title = '';
   }
   function pullFinancials() {
     if (!current) return;
@@ -475,7 +484,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         if (current !== clientAt) return; // user switched clients while this was in flight
         var resp = res.body || {};
         var k = resp.kpis || {};
-        if (!res.httpOk || resp.ok === false || !resp.kpis) { (window.bccNotify||alert)('Could not pull from QuickBooks.', 'error'); return; }
+        /* Say what the SERVER said. /kpis is deliberately admin-only, so a non-admin clicking
+           this got "Could not pull from QuickBooks" — blaming QuickBooks for a permission rule
+           and sending them to chase a connection that is perfectly healthy. */
+        if (!res.httpOk || resp.ok === false || !resp.kpis) {
+          (window.bccNotify||alert)((resp && resp.error) || 'Could not pull from QuickBooks.', 'error', 8000);
+          return;
+        }
         // Only overwrite a field the pull actually returned. Blanking on a missing
         // value silently destroyed figures a bookkeeper had typed in by hand.
         if (k.currentRatio != null) $('f_fin_cr').value = Number(k.currentRatio).toFixed(2);
@@ -538,7 +553,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // the figures it just fetched.
     if (docMayHaveChanged && !dirty && !pulling) openClient(currentId);
   }
-  window.addEventListener('bcc-auth-ready', function () { resync(true); });
+  // ...and re-evaluate the admin-only Pull button once identity lands: updatePullState
+  // deliberately defaults OPEN before that, so it has to be re-run when the answer is known.
+  window.addEventListener('bcc-auth-ready', function () { resync(true); updatePullState(); });
   window.addEventListener('bcc-users-ready', function () { resync(false); });
   // A live poll that lands a newer copy of the open dashboard leaves `current`
   // just as stale as the pre-sync paint did, so it goes through the same guard.

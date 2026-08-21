@@ -569,6 +569,15 @@ app.http('data', {
       // (which let whoever opened a channel first clear EVERYONE's unread badge).
       // The client builds this from a lowercased userDetails, so match that exactly.
       if (/^bcc-chat-last-read-/.test(id)) return id === 'bcc-chat-last-read-' + me + '-v1';
+      /* Training progress. Lowering the WRITE bar to 'view' (so a learner on the view tier can
+         tick a lesson complete) would otherwise have let ANY of them overwrite or delete a
+         COLLEAGUE'S record — the enrollment id embeds the owner, so bind it here.
+         training.html builds this with userSlug(): lowercased, non-alphanumerics collapsed to
+         '-', edges trimmed. Matched byte-for-byte rather than approximately. */
+      if (/^bcc-enrollment-/.test(id)) {
+        const slug = me.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase();
+        return id.indexOf('bcc-enrollment-' + slug + '-') === 0;
+      }
       return true; // not a personal key → not restricted here
     };
 
@@ -2519,6 +2528,8 @@ const SINGLE_APP_EXACT_KEYS = { 'bcc-rate-sheet-v1': 'rates' };
 // closes the real gap (someone with no qualifying access at all) without breaking
 // any app that currently works.
 const CONTACT_APPS = ['crm', 'jobs', 'scheduler', 'sessions', 'events', 'documents', 'myday'];
+// Apps that READ a contact but must never write or delete one (see the check in appAccessChecker).
+const CONTACT_READ_APPS = ['rates'];
 // Returns true/false when `id` is a tier-gated doc type, or null when it isn't
 // (i.e. this check doesn't apply and the caller should fall through to whatever
 // other rules govern that key).
@@ -2538,6 +2549,7 @@ const ALL_TIERED_APPS = Array.from(new Set([
   ...SINGLE_APP_KEY_PREFIXES.flatMap(x => x.readApps || []), // must be resolved too, or a read-app tier is undefined
   ...Object.values(SINGLE_APP_EXACT_KEYS),
   ...CONTACT_APPS,
+  ...CONTACT_READ_APPS,   // or tiers['rates'] is undefined and the read check silently never passes
 ]));
 async function appAccessChecker(p) {
   const tiers = {};
@@ -2567,6 +2579,11 @@ async function appAccessChecker(p) {
     }
     if (id.startsWith('bcc-contact-')) {
       if (crmExplicit !== null && !tierAtLeast(crmExplicit, minTier)) return false;
+      /* READS may come from a wider set than writes. rates.html reads bcc-contact- records to
+         address a rate sheet, but adding it to CONTACT_APPS would also hand every rates='edit'
+         user write and permanent-delete on every contact in the tenant (this same array gates
+         the PUT and DELETE paths). Read-only apps go here. */
+      if (minTier === 'view' && CONTACT_READ_APPS.some(app => tierAtLeast(tiers[app], 'view'))) return true;
       return CONTACT_APPS.some(app => tierAtLeast(tiers[app], minTier));
     }
     return null;
@@ -3051,7 +3068,13 @@ app.http('sharepoint-import', {
           const now = new Date().toISOString();
           const stamp = now.replace(/[:.]/g, '').slice(0, 15);
           const fname = safeFilename(it.name || 'file');
-          const storageKey = (BCC_TENANT_ID + folder + '/' + stamp + '-' + fname).replace(/\/+/g, '/').replace(/^\//, '');
+          /* The uniquifier /api/documents already uses. The stamp is second-resolution, so two
+             files with the same name imported in the same second — or, far more commonly, the
+             SAME name imported from two different subfolders — produced the same blob key and
+             the second silently overwrote the first's bytes while both Cosmos rows survived,
+             pointing at one file. */
+          const uniq = Math.random().toString(36).slice(2, 8);
+          const storageKey = (BCC_TENANT_ID + folder + '/' + stamp + '-' + uniq + '-' + fname).replace(/\/+/g, '/').replace(/^\//, '');
           const ct = r.headers.get('content-type') || 'application/octet-stream';
           await cont.getBlockBlobClient(storageKey).uploadData(buf, { blobHTTPHeaders: { blobContentType: ct } });
           const docId = DOC_DOC_PREFIX + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
@@ -3151,7 +3174,9 @@ app.http('sharepoint-import-all', {
           const tags = (rel ? rel.split('/').map(s => s.trim()).filter(Boolean) : []).concat(['SharePoint']).join(', ').slice(0, 200);
           const now = new Date().toISOString();
           const stamp = now.replace(/[:.]/g, '').slice(0, 15);
-          const storageKey = (BCC_TENANT_ID + dest + '/' + stamp + '-' + safeFilename(f.name)).replace(/\/+/g, '/').replace(/^\//, '');
+          // Same uniquifier as the other two upload paths — see the drive import above.
+          const spUniq = Math.random().toString(36).slice(2, 8);
+          const storageKey = (BCC_TENANT_ID + dest + '/' + stamp + '-' + spUniq + '-' + safeFilename(f.name)).replace(/\/+/g, '/').replace(/^\//, '');
           const ct = dr.headers.get('content-type') || 'application/octet-stream';
           await cont.getBlockBlobClient(storageKey).uploadData(buf, { blobHTTPHeaders: { blobContentType: ct } });
           const docId = DOC_DOC_PREFIX + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
@@ -4596,8 +4621,17 @@ app.http('msgraph-send-mail', {
       if (body.realmId) {
         const rc = await resolveClientMailbox(p, String(body.realmId), { mutating: true }); // sends AS the client's mailbox
         if (rc.err) return rc.err;
-        if (!rc.cfg || !rc.cfg.mailbox || rc.cfg.enabled === false) return badRequest('no client mailbox configured for this client');
-        upn = encodeURIComponent(rc.cfg.mailbox);
+        const noMailbox = !rc.cfg || !rc.cfg.mailbox || rc.cfg.enabled === false;
+        /* fallbackToSender: "use the client's shared mailbox if it has one, otherwise mine".
+           The certified-payroll and notary panels promise exactly that ("sends from the client's
+           dedicated mailbox when one is live, otherwise from the signed-in user's"), but they
+           could only honour it by deciding client-side from a config ONLY the Email tab loads —
+           so opening client A's Email tab and then emailing client B's payroll sent it from the
+           wrong place. They pass the realm unconditionally now and let the server decide, which
+           is the only place that actually knows. Without the flag an unconfigured client still
+           gets the hard error, so the Email tab's own behaviour is unchanged. */
+        if (noMailbox && !body.fallbackToSender) return badRequest('no client mailbox configured for this client');
+        upn = encodeURIComponent(noMailbox ? (p.userDetails || p.userId) : rc.cfg.mailbox);
       } else {
         upn = encodeURIComponent(p.userDetails || p.userId);
       }
@@ -7983,9 +8017,35 @@ app.http('qbo-cashflow', {
             // flattenQboReport returns { columns, rows:[{ label, cells }] } — `cells`, and it
             // returns the WHOLE object, so the rows live under .rows.
             const flatM = flattenQboReport(pl12m);
-            const incomeRow = (flatM.rows || []).find(r => /^(total income|income)$/i.test(String(r.label || '')));
-            if (incomeRow && Array.isArray(incomeRow.cells) && incomeRow.cells.length) {
-              const nonZero = incomeRow.cells.slice(0, monthCols.length).filter(v => Math.abs(Number(v) || 0) > 0.005).length;
+            /* The SUMMARY row, not the section header. flattenQboReport emits a header row
+               labelled "Income" whose cells are blank, and .find() hit that first — so nonZero
+               was 0, the `nonZero > 0` guard never fired and activeMonths stayed 12. The fix
+               was inert. Take the summary row (that is where QBO puts the monthly totals),
+               falling back to any row actually labelled "Total Income". */
+            const mRows = flatM.rows || [];
+            /* The SUMMARY row, not the section header. flattenQboReport emits a header row
+               labelled "Income" whose cells are blank, and .find() hit that first — so nonZero
+               was 0 and the divisor stayed 12. */
+            const pickRow = (rx, grp) =>
+              mRows.find(r => r.type === 'summary' && rx.test(String(r.label || ''))) ||
+              mRows.find(r => r.type === 'summary' && String(r.group || '') === grp) ||
+              mRows.find(r => rx.test(String(r.label || '')));
+            /* Count a month ACTIVE if it carries income OR spend. Dividing overhead and COGS by
+               the number of months with INCOME understates them whenever a client had costs in
+               a month that billed nothing — a real pattern in construction, where a job's
+               materials land weeks before the invoice — and the same divisor feeds all three
+               averages, so the forecast would have shown expenses far lower than reality. */
+            const cellsOf = (row) => (row && Array.isArray(row.cells)) ? row.cells.slice(0, monthCols.length) : [];
+            const incCells = cellsOf(pickRow(/^total income$/i, 'Income'));
+            const cogsCells = cellsOf(pickRow(/^total cost of goods sold$|^total cogs$/i, 'COGS'));
+            const opexCells = cellsOf(pickRow(/^total expenses$/i, 'Expenses'));
+            const width = Math.max(incCells.length, cogsCells.length, opexCells.length);
+            if (width) {
+              const live = (arr, i) => Math.abs(Number(arr[i]) || 0) > 0.005;
+              let nonZero = 0;
+              for (let i = 0; i < width; i++) {
+                if (live(incCells, i) || live(cogsCells, i) || live(opexCells, i)) nonZero++;
+              }
               if (nonZero > 0) activeMonths = Math.min(12, nonZero);
             } else if (monthCols.length) {
               activeMonths = Math.min(12, monthCols.length);

@@ -2058,7 +2058,26 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       });
     }
     if (touched(TYPES_KEY) && !panelHasFocus('panel-types')) renderTypes();
-    if (intTouched && !panelHasFocus('panel-integrations')) renderIntegrations();
+    if (intTouched && !panelHasFocus('panel-integrations')) {
+      /* Drop the primed copies FIRST. loadIntegration prefers that cache, so repainting
+         without refreshing it re-rendered the page-load snapshot over a change that had just
+         arrived from another admin — and the next Save merged those stale inputs back.
+         `keys` is null on the bootstrap dispatch (bcc-api.js sends detail:{keys:null}), so
+         a bare keys.forEach would throw and abort the rest of this handler. */
+      if (!keys) { _intPrimed = {}; }
+      else keys.forEach(function (k) {
+        var kk = String(k);
+        if (kk.indexOf(INT_PREFIX) === 0) delete _intPrimed[kk.slice(INT_PREFIX.length)];
+      });
+      renderIntegrations._ready = false;
+      primeIntegrations().then(function () {
+        renderIntegrations._ready = true;
+        /* Re-check focus HERE. It was evaluated when the event arrived, but the repaint now
+           happens a network round trip later — long enough for the admin to have clicked into
+           the panel and started typing a secret, which this would then wipe. */
+        if (!panelHasFocus('panel-integrations')) renderIntegrations();
+      });
+    }
     renderDataPanel(); // read-only key counts — nothing here to clobber
   });
   window.addEventListener('bcc-users-ready', renderUsers);
