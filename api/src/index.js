@@ -2019,7 +2019,7 @@ app.http('cron-feedback-dump', {
       const { resources } = await c.items.query({
         // Named fields, not SELECT * — this prints into a CI log, so it ships only what the
         // triage actually reads.
-        query: 'SELECT c.id, c.createdAt, c.status, c.page, c.kind, c.rating, c.text, c.userUpn, c.reply, c.repliedAt FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC',
+        query: 'SELECT c.id, c.createdAt, c.status, c.page, c.type, c.rating, c.message, c.userUpn, c.resolutionNote, c.resolutionAt FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC',
         parameters: [{ name: '@t', value: BCC_TENANT_ID }]
       }).fetchAll();
       return { jsonBody: { ok: true, count: resources.length, feedback: resources } };
