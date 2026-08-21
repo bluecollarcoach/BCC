@@ -490,7 +490,18 @@
        ago would revert everything that happened in the meantime. A week is long enough to
        cover an offline Friday punch collected the following Monday, and short enough that a
        genuinely stale value never silently overwrites live data. */
-    var back = outboxUnpark(me), backKeys = Object.keys(back);
+    var back = outboxUnpark(me);
+    /* '_unknown' is where an entry lands when neither the key nor the outbox names an owner
+       (a write queued before /.auth/me resolved, on a device nobody had signed into yet).
+       outboxUnpark is only ever called with a upn, so that bucket was never asked for back:
+       those writes sat there forever, which is the exact loss parking exists to prevent —
+       just filed under a name no one would ever look up. Swept in here alongside my own, and
+       every entry still faces the same three tests below: too old to replay, owner-scoped to
+       someone else (re-homed to their bucket, not replayed), or superseded by a local write. */
+    var orphaned = outboxUnpark('_unknown');
+    var fromOrphan = {};
+    Object.keys(orphaned).forEach(function (k) { if (back[k] === undefined) { back[k] = orphaned[k]; fromOrphan[k] = true; } });
+    var backKeys = Object.keys(back);
     if (backKeys.length) {
       o = outboxRead();                       // the drops above rewrote it
       var now = Date.now(), stale = 0, superseded = 0, keepParked = {}, misfiled = {};
@@ -514,12 +525,21 @@
         // came back stampless, so if it were ever parked again it would look brand new and
         // the age check could never retire it.
         o.items[k] = { v: e.v, t: e.t, pk: pkt };
-        pending.set(k, e.v);
+        // Marked like every other key taken from the SHARED store rather than typed in this
+        // tab. Without the mark, _flushOnce skips the cross-tab reconcile for these: another
+        // tab that had already pushed a newer value would be silently reverted by this one.
+        pending.set(k, e.v); _rehydrated.add(k);
         kept++;
       });
       o.upn = me;
       outboxWrite(o);
-      if (Object.keys(keepParked).length) outboxPark(me, keepParked, true);   // mine, just too old
+      /* Put back what came OUT of the ownerless bucket, rather than filing it under my name:
+         it is not mine, I only swept it in to see whether it could be replayed. Re-parked
+         with its original stamp, so it ages exactly as it would have. */
+      var keepMine = {}, keepOrphan = {};
+      Object.keys(keepParked).forEach(function (k) { (fromOrphan[k] ? keepOrphan : keepMine)[k] = keepParked[k]; });
+      if (Object.keys(keepMine).length) outboxPark(me, keepMine, true);         // mine, just too old
+      if (Object.keys(keepOrphan).length) outboxPark('_unknown', keepOrphan, true);
       // Someone else's, mis-filed into my bucket by an earlier build — re-home it so its
       // real owner can actually get it back.
       Object.keys(misfiled).forEach(function (k) {
@@ -574,7 +594,10 @@
                             per-device sync bookkeeping + identity. Already written via
                             _origSetItem elsewhere; listed so no other write path can
                             reintroduce the push. */
-  var DEVICE_LOCAL_KEYS = ['bcc-last-realm', 'bcc-push-enabled', 'bcc-sync-since-v1', 'bcc-sync-fullpull-at', 'bcc-field-who', 'bcc-device-last-upn',
+  var ACCESS_STAMP_KEY = 'bcc-access-stamp-v1';   // what the SERVER last said this account may see
+  // Spelled out rather than interpolated: this list is a literal by design (it is read and
+  // checked as one), and ACCESS_STAMP_KEY above must stay in step with the entry here.
+  var DEVICE_LOCAL_KEYS = ['bcc-last-realm', 'bcc-push-enabled', 'bcc-sync-since-v1', 'bcc-sync-fullpull-at', 'bcc-field-who', 'bcc-device-last-upn', 'bcc-access-stamp-v1',
     // Dismissing the "turn on notifications" prompt is a per-BROWSER choice. It was
     // being pushed as a tenant-wide doc, so the first person to tap "Not now" turned the
     // prompt off for everyone, permanently — and any tenant copy already in Cosmos would
@@ -605,6 +628,26 @@
      moment their access is restored the next pull brings everything back. Do not
      extend this list to anything whose server copy could be destroyed by pruning. */
   var PRUNABLE_PREFIXES = ['bcc-kb-article-', 'bcc-event-', 'bcc-course-'];
+
+  /* Store a value LOCALLY without queueing a push. For the one shape that legitimately
+     needs it: a page that GETs a server document itself (to prove it holds the real copy
+     before allowing an autosave) and wants to cache what the server just gave it. Writing
+     that through the hooked setItem queues a PUT of the server's own copy straight back —
+     wasted on every page open, and a hard 403 for a view-tier bookkeeper, whose refused key
+     then poisons the rest of that push batch. Returns false if the write itself failed
+     (quota), so the caller can refuse to treat the document as primed. */
+  window.bccStoreLocal = function (key, value) {
+    /* Never land a server copy on top of an UNSENT local write — the pull path has always
+       applied exactly this rule (pending / heldInFlight / outboxPendingAnyTab), and a caller
+       priming a document it is about to autosave would otherwise reinstate the server's older
+       copy over an edit that has not been flushed yet. Answers true either way: the caller is
+       asking "do I hold the authoritative copy?", and an unsent local write IS that copy. */
+    try {
+      if (pending.has(key) || heldInFlight(key) || outboxPendingAnyTab(key)) return true;
+      _origSetItem.call(localStorage, key, value);
+      return true;
+    } catch (e) { return false; }
+  };
 
   /* ---------- hooks ---------- */
   Storage.prototype.setItem = function (key, value) {
@@ -890,6 +933,34 @@
    * values are ignored, so your own pushes never echo back as "changes". */
   var LIVE_POLL_MS = 8000;
   var _livePollStarted = false, _liveBusy = false;
+  /* APP-level permissions live in bcc-admin-config-v1, and a delta pull only ever asks for
+     docs that changed AFTER the cursor — so the moment an admin grants someone a new app,
+     every record that just became visible to them is OLDER than their cursor and never
+     arrives: the newly-granted page shows nothing until the daily full pull happens to run.
+     Watch our OWN row in that document and re-pull when it changes.
+     Deliberately only the APP half: per-CLIENT access lives in bcc-qbo-company- docs, which
+     are protected and never synced, so this cannot see it. That half is caught by the
+     accessStamp the server publishes on /api/profile (see ACCESS_STAMP_KEY above) — do not
+     re-word this comment to claim it covers client grants. */
+  function myAccessFp() {
+    try {
+      var who = (window.bccUser && window.bccUser.userDetails) || '';
+      if (!who) return '';
+      var rec = _findUserRec(who);
+      return rec ? JSON.stringify(rec) : '';
+    } catch (e) { return ''; }
+  }
+  function forceFullPull() {
+    try {
+      // Rewind the cursor rather than clearing it: livePoll returns early when there is no
+      // cursor, so clearing would leave this tab with no live updates at all until a reload.
+      _origSetItem.call(localStorage, 'bcc-sync-since-v1', new Date(0).toISOString());
+      // A rewound delta still can't carry legacy docs that have no updatedAt at all, so drop
+      // the full-pull stamp too and let the next load do the real thing.
+      _origRemoveItem.call(localStorage, 'bcc-sync-fullpull-at');
+    } catch (e) {}
+    setTimeout(function () { try { livePoll(); } catch (e) {} }, 250);   // after this poll's .finally clears _liveBusy
+  }
   function livePoll() {
     if (!signedIn || _liveBusy || document.hidden) return;
     var since = ''; try { since = localStorage.getItem('bcc-sync-since-v1') || ''; } catch (e) {}
@@ -901,6 +972,9 @@
       .then(function (j) {
         var items = (j && j.items) || [];
         if (!items.length) return;
+        var cfgIncoming = false;
+        for (var ci = 0; ci < items.length; ci++) { if (items[ci] && items[ci].key === 'bcc-admin-config-v1') { cfgIncoming = true; break; } }
+        var fpBefore = cfgIncoming ? myAccessFp() : '';
         var changed = [], maxUpd = since, pollFailed = 0, minFailedUpd = '';
         items.forEach(function (it) {
           if (!it || !it.key || it.data === undefined) return;
@@ -930,6 +1004,8 @@
         if (changed.length) {
           if (changed.indexOf('bcc-admin-config-v1') >= 0) {
             try { recomputePcPeople(); } catch (e) {}
+            // Our own access just changed — anything it opened up predates the cursor.
+            if (myAccessFp() !== fpBefore) forceFullPull();
           }
           window.dispatchEvent(new CustomEvent('bcc-data-ready', { detail: { keys: changed, live: true } }));
         }
@@ -1290,6 +1366,8 @@
       } catch (e) {}
     }
 
+    var _accessChanged = false;   // set from /api/profile's accessStamp, read by the pull below
+    var _pendingStamp = '';       // ...and only written once that pull has actually landed
     // 1b) Ask the server for its admin verdict (honors BCC_OWNER_UPNS and
     //     SWA 'administrator' role server-side, which the client wouldn't
     //     otherwise know about). Best-effort; if the call fails, the
@@ -1301,6 +1379,27 @@
           var pj = await pr.json();
           if (pj && typeof pj.isAppAdmin === 'boolean') {
             window.__pcServerIsAdmin = pj.isAppAdmin;
+          }
+          /* accessStamp changes whenever the set of clients this account may see (or its
+             bookkeeping tier, or its admin flag) changes. A delta pull only asks for docs
+             changed AFTER the cursor, so everything a NEW grant just opened up is older than
+             the cursor and would never arrive — the client would read as empty until the daily
+             full pull. Per-client access lives in bcc-qbo-company- docs, which are protected
+             and never synced, so the browser cannot detect this on its own; the server tells
+             us. Read here, one step BEFORE the pull below chooses delta or full. */
+          if (pj && pj.accessStamp) {
+            var prevStamp = '';
+            try { prevStamp = localStorage.getItem(ACCESS_STAMP_KEY) || ''; } catch (e) {}
+            // Only on a CHANGE — a first-ever stamp must not send every device in the firm
+            // into a full pull on the deploy that ships this.
+            if (prevStamp && prevStamp !== pj.accessStamp) _accessChanged = true;
+            /* Held, NOT stored yet. Storing it here consumed the signal even when the pull it
+               was supposed to force then FAILED (offline, HTTP 500) — the next load would see
+               a matching stamp, take the delta path again, and the newly granted client would
+               stay empty until the daily full pull. It is written below, once a full pull has
+               actually landed. */
+            _pendingStamp = pj.accessStamp;
+            if (!prevStamp) { try { _origSetItem.call(localStorage, ACCESS_STAMP_KEY, pj.accessStamp); } catch (e) {} }
           }
         }
       } catch (e) { /* swallow — fall back to client-side check */ }
@@ -1345,7 +1444,9 @@
       var SYNC_SINCE_KEY = 'bcc-sync-since-v1', SYNC_FULL_KEY = 'bcc-sync-fullpull-at';
       var _since = '', _lastFull = 0;
       try { _since = localStorage.getItem(SYNC_SINCE_KEY) || ''; _lastFull = +(localStorage.getItem(SYNC_FULL_KEY) || 0) || 0; } catch (e) {}
-      var useDelta = !!_since && (Date.now() - _lastFull) < 24 * 60 * 60 * 1000;
+      // _accessChanged: a delta cannot carry records that were already there when access
+      // was granted, so this load has to be a full one.
+      var useDelta = !!_since && !_accessChanged && (Date.now() - _lastFull) < 24 * 60 * 60 * 1000;
       var dataUrl = API_BASE + '/data';
       if (useDelta) {
         // 5-minute overlap absorbs clock skew between writers.
@@ -1447,7 +1548,12 @@
             // Likewise, only record a completed full pull if it actually completed. With
             // failures, the next load legitimately does another full pull — harmless now
             // that the items which DID fit have already been applied.
-            if (!useDelta && !pullFailed) _origSetItem.call(localStorage, SYNC_FULL_KEY, String(Date.now()));
+            if (!useDelta && !pullFailed) {
+              _origSetItem.call(localStorage, SYNC_FULL_KEY, String(Date.now()));
+              // The full pull that the access change asked for has landed — only now is the
+              // new stamp true of what this device holds.
+              if (_pendingStamp) { try { _origSetItem.call(localStorage, ACCESS_STAMP_KEY, _pendingStamp); } catch (e) {} }
+            }
           } catch (e) {}
           if (pullFailed) console.warn('[bcc-api] ' + pullFailed + ' record(s) could not be stored locally (storage full?) — they will be retried');
         }
@@ -2258,6 +2364,20 @@
     if (!window.bccNotify) { try { alert(onlineMsg); } catch (e) {} return; }
     if (navigator.onLine) {
       window.bccNotify(onlineMsg || 'Saved.', 'success', ttl);
+    } else if (!signedIn) {
+      /* Offline AND unauthenticated. The setItem hook captures only the four
+         OFFLINE_OWNED_PREFIXES families before sign-in (My Day's time log, my tasks, time
+         entries, field forms) — those ARE queued and replayed at the next sign-in. Everything
+         else (contacts, sessions, the schedule) is written to this device and nowhere else,
+         and the next full pull writes the server's older copy straight over it.
+         So ASK the outbox rather than assuming: telling a field crew their clock-in will not
+         sync and to enter it again is its own kind of data loss, and the previous wording did
+         exactly that. The write that triggered this toast has already happened, so a non-empty
+         queue means it was captured. */
+      /* Both halves, stated plainly. Deciding from "is ANYTHING in the outbox" was worse than
+         either wording alone: this function is not told which key was written, so a queue left
+         over from a different page promised a sync for a save that was never captured. */
+      window.bccNotify((onlineMsg ? onlineMsg + ' ' : '') + 'Saved on this device. You are not signed in: your time log, tasks and field forms are queued and will sync when you sign in — anything else stays on this device only, so make those changes again once you are signed in.', 'warn', 12000);
     } else {
       window.bccNotify((onlineMsg ? onlineMsg + ' ' : '') + 'Saved locally — will sync when reconnected.', 'warn', ttl || 5000);
     }
@@ -2280,6 +2400,15 @@
       bar.textContent = '⚠ You are offline. Your changes will sync when the connection returns.';
       (document.body || document.documentElement).appendChild(bar);
     }
+    /* Re-worded every time it is shown, not just when first created — the banner outlives the
+       state that produced it, and a flat "will sync" is false when we never authenticated.
+       Signed out, the truth is split: the offline-owned families (time log, my tasks, time
+       entries, field forms) are queued and replayed; nothing else is. Say both halves rather
+       than a blanket "will NOT sync" that would send a field crew back to re-enter work that
+       is safely queued. */
+    bar.textContent = signedIn
+      ? '⚠ You are offline. Your changes will sync when the connection returns.'
+      : '⚠ You are offline and not signed in. Your time log, tasks and field forms are saved and will sync when you sign in; other changes stay on this device only.';
     bar.classList.add('show');
   }
   window.addEventListener('online',  refreshOnlineState);

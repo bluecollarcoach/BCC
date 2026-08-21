@@ -139,6 +139,14 @@
            to restore them from. Sweeping them here destroyed them permanently while the
            button only promised to clear a stuck session. */
         if (k.indexOf('bcc-') === 0 && k.indexOf('bcc-email-') !== 0 && k.indexOf('bcc-cpr-sends-') !== 0) localStorage.removeItem(k);
+        /* 'bccnc-' too — the notification centre's items and its fired/seen markers are
+           per-PERSON but deliberately not bcc- keys, so this sweep walked straight past
+           them and the wrong account's bell survived a hard-clear. Worse, the sweep also
+           removes bcc-device-last-upn, which is the ONLY thing bcc-api.js compares to
+           notice a different person on this device — so it disabled the one pass that
+           would otherwise have cleared them on the next sign-in. Same prefix rule as that
+           pass uses, kept in step with it. */
+        if (k.indexOf('bccnc-') === 0) localStorage.removeItem(k);
       });
       sessionStorage.clear();
     } catch (err) {}

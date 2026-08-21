@@ -581,7 +581,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        contact's stage, was told nothing, and the server refused it and blacklisted the key.
        Every write on this page goes through these six functions, so gating here cannot miss a
        sibling the way a per-handler guard did. */
-    if (!crmCanEdit()) { crmRefusedToast(); return c; }
+    /* NULL on refusal, not the record. Returning `c` gave callers something that looked
+       saved: both `if (!saveContact(c)) return;` guards were dead code, so the New-contact
+       form still toasted "Contact saved." and cleared itself over a contact never written. */
+    if (!crmCanEdit()) { crmRefusedToast(); return null; }
     c.updatedAt = nowIso();
     if (!c.createdAt) c.createdAt = c.updatedAt;
     if (!isContactKey(c.id)) c.id = CONTACT_PREFIX + uid();   // never write through a foreign id
@@ -1579,7 +1582,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var types = loadTypes(); var typeIds = types.map(function (t) { return t.id; });
     var stages = ['lead','qualified','customer','inactive'];
 
-    var created = 0, updated = 0, skipped = 0, unmapped = {};
+    var created = 0, updated = 0, skipped = 0, unmapped = {}, refused = false;
     for (var r = 1; r < rows.length; r++) {
       var raw = rows[r];
       var rec = { tags: [] };
@@ -1645,16 +1648,25 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         merged.createdAt = existingRec.createdAt;
         merged.needs = existingRec.needs || [];
         merged.tags = Array.from(new Set((existingRec.tags || []).concat(rec.tags)));
-        saveContact(merged);
+        /* Count only what was actually WRITTEN. saveContact returns null when the CRM tier
+           refuses the write, and counting regardless reported "42 added, 8 updated" for an
+           import that stored nothing — over a refusal toast the numbers appeared to
+           contradict. One refusal means every row will be refused, so stop on the first. */
+        if (!saveContact(merged)) { refused = true; break; }
         if (emailLc) byEmail[emailLc] = merged; // keep the dedupe index current within this file
         updated++;
       } else {
-        saveContact(rec); // mutates rec in place, assigning its id
+        if (!saveContact(rec)) { refused = true; break; } // mutates rec in place, assigning its id
         if (emailLc) byEmail[emailLc] = rec;   // a later row with the same email merges instead of duplicating
         created++;
       }
     }
 
+    if (refused) {
+      // crmRefusedToast() has already said why; do not follow it with an import summary.
+      renderList();
+      return;
+    }
     var msg = created + ' added, ' + updated + ' updated' + (skipped ? ', ' + skipped + ' skipped' : '');
     if (unknownCols.length) msg += '. Ignored columns: ' + unknownCols.join(', ');
     // Say which customer types the file used that this tenant does not have. Those rows

@@ -954,7 +954,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     p.docType = 'financial-period';
     localStorage.setItem(p.id, JSON.stringify(p));
   }
-  function deletePeriod(id) { localStorage.removeItem(id); }
+  // ...and the matching delete, same tier.
+  // Returns whether it actually deleted: the caller writes an audit row and repaints, and
+  // both were happening for deletions the tier had refused.
+  function deletePeriod(id) { if (bkRefuseIfReadOnly()) return false; localStorage.removeItem(id); return true; }
   // Net = Revenue − COGS − Operating Expenses (COGS is 0 for legacy/manual periods).
   // Prefer QBO's authoritative Net Income (includes other income/expense); fall
   // back to Revenue − COGS − OpEx for manual/legacy periods without netCents.
@@ -1328,7 +1331,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         ev.stopPropagation();
         var tr = b.closest('tr'); if (!tr) return;
         if (!confirm('Delete this period?')) return;
-        deletePeriod(tr.dataset.id);
+        // A refused delete (view tier) must not be audited as one, and must not repaint as
+        // though the row had gone — bkRefuseIfReadOnly has already said why.
+        if (!deletePeriod(tr.dataset.id)) return;
         if (window.bccAudit) window.bccAudit('financial-period-delete', { key: tr.dataset.id, path: '/bookkeeping.html', meta: { realmId: currentRealm } });
         renderAll();
       });
@@ -1421,6 +1426,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // Without a realm, savePeriod mints an orphan key that no table renders and no
     // Delete button can reach — while the firm-wide KPIs still count it.
     if (!currentRealm) { (window.bccNotify || alert)('Open a company first — a period has to belong to one.', 'warn'); return; }
+    /* The tier gate. A manual period overrides the QuickBooks-synced month everywhere it
+       appears — the KPI tiles, the firm roll-up, the client's monthly report — so a view-tier
+       bookkeeper could book wrong money over a synced month and be told "Period saved". */
+    if (bkRefuseIfReadOnly()) return;
     /* These were type="number", which a browser BLANKS when the pasted text is not a bare
        numeral — so '125,430.18' or '$125,430.18', the exact formats QuickBooks reports and
        this app's own tables render, read back as '' and saved as $0. A manual period overrides
@@ -3853,8 +3862,108 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   /* ---- Client info ---- */
   var _infoTimer = null;
   function infoId() { return 'bcc-client-info-' + currentRealm; }
+  /* Realms whose client-info doc this page has CONFIRMED it holds. saveInfo writes the whole
+     document from the form, so rendering a blank form over an absent local copy — a failed or
+     still-in-flight pull, or a full localStorage that skipped this key — and letting the
+     500ms autosave fire replaced the real record in Cosmos with a nearly empty one. The form
+     is now primed from the server first, and the autosave refuses until that answers. */
+  /* realm -> true (server answered) | 'busy' (in flight) | 'fail' (it did not answer).
+     Anything other than true keeps the autosave shut. The three states matter: the render
+     callback re-renders, which calls this again, so a bare boolean meant a failing endpoint
+     was re-fetched in a tight loop for as long as the tab stayed open. */
+  var _infoPrimed = {};
+  function primeInfo(realm, done) {
+    if (!realm || _infoPrimed[realm]) { if (done) done(); return; }
+    _infoPrimed[realm] = 'busy';
+    fetch('/api/data/' + encodeURIComponent('bcc-client-info-' + realm), { credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+      .then(function (j) {
+        var dd = j && j.data;
+        if (typeof dd === 'string') { try { dd = JSON.parse(dd); } catch (e) { dd = null; } }
+        // data:null is a real answer — this client genuinely has no record yet.
+        /* bccStoreLocal, NOT localStorage.setItem: the plain setter is HOOKED by bcc-api.js,
+           so caching what the server just handed us queued a PUT of the server's own copy
+           back at it on every open — and a 403 for a view-tier bookkeeper, whose refused key
+           then poisons the whole push batch. And if the store itself fails (quota), the realm
+           must NOT be marked primed: the autosave would then write the form over a document
+           we do not actually hold, which is the entire thing this guard exists to stop. */
+        var stored = true;
+        if (dd && typeof dd === 'object') {
+          var raw = JSON.stringify(dd);
+          stored = window.bccStoreLocal ? window.bccStoreLocal('bcc-client-info-' + realm, raw)
+            : (function () { try { localStorage.setItem('bcc-client-info-' + realm, raw); return true; } catch (e) { return false; } })();
+        }
+        _infoPrimed[realm] = stored ? true : 'fail';
+        if (done) done();
+      })
+      .catch(function () { _infoPrimed[realm] = 'fail'; if (done) done(); });   // unprimed: the autosave refuses
+  }
+  /* Marking the realm primed is NOT the same as the FORM holding the primed document, and
+     conflating the two is how the guard became the bug: when the prime landed while someone
+     was typing, the repaint was skipped (correctly - it would have thrown their keystrokes
+     away) but the save was unlocked anyway, so the blank form they were looking at was
+     written over the client's real record. Adopt the document into the form instead: fill
+     every field the user has NOT touched and is not standing in, and leave theirs alone. */
+  function adoptInfo(realm) {
+    var d = {};
+    try { d = JSON.parse(localStorage.getItem('bcc-client-info-' + realm)) || {}; } catch (e) { d = {}; }
+    var ae = document.activeElement;
+    ['legalName','dba','contactName','email','phone','website','ein','fiscalYearEnd','payrollSchedule','address','notes'].forEach(function (k) {
+      var el = document.getElementById('ci_' + k);
+      if (!el || el === ae) return;
+      if (String(el.value || '').trim()) return;   // they typed something here - it wins
+      el.value = d[k] == null ? '' : d[k];
+    });
+  }
+  // Same for the job schedule: its inputs are per-job cells, so fill the empty ones from the
+  // document that just arrived rather than leaving the bookkeeper typing over figures the
+  // table is not showing.
+  function adoptWip(realm) {
+    var d = {};
+    try { d = JSON.parse(localStorage.getItem('bcc-wip-' + realm)) || {}; } catch (e) { d = {}; }
+    var jobs = d.jobs || {}, ae = document.activeElement, last = null;
+    document.querySelectorAll('#wip-body [data-wrow]').forEach(function (row) {
+      var name = row.getAttribute('data-job'), j = jobs[name];
+      if (!j) return;
+      row.querySelectorAll('[data-wf]').forEach(function (inp) {
+        if (inp === ae || String(inp.value || '').trim()) return;
+        var v = j[inp.getAttribute('data-wf')];
+        if (v != null && String(v).trim()) { inp.value = v; last = inp; }
+      });
+    });
+    _wip = loadWipDoc();
+    /* recalcAll lives inside renderWipTable, so it cannot be called from here. Fire the
+       table's own input handler on one adopted cell instead: it re-reads the document,
+       writes back the value it just took FROM that document (a no-op in content) and
+       recomputes % complete / earned / over-under for every row. */
+    if (last) { try { last.dispatchEvent(new Event('input')); } catch (e) {} }
+  }
+  /* One retry per 5s per form, so a failing endpoint is not re-fetched on every keystroke.
+     The refusal path below re-primes deliberately: without it a single transient blip left
+     the client unsaveable for the life of the page. */
+  var _primeRetryAt = {};
+  function primeRetryOk(what) {
+    var now = Date.now();
+    if (_primeRetryAt[what] && now - _primeRetryAt[what] < 5000) return false;
+    _primeRetryAt[what] = now; return true;
+  }
   function renderInfo() {
     var body = document.getElementById('info-body'); if (!body) return;
+    var realmForPrime = currentRealm;
+    if (realmForPrime && !_infoPrimed[realmForPrime]) {
+      /* Re-render only if nobody is typing in the form. renderInfo rebuilds body.innerHTML,
+         so an unconditional repaint when the prime lands (a few hundred ms in) threw away
+         whatever had been typed by then — and the pending 500ms autosave would have gone on
+         to report "Saved". Same guard crm.html uses around its live repaint. */
+      primeInfo(realmForPrime, function () {
+        if (currentRealm !== realmForPrime) return;
+        var pane = document.getElementById('info-body'), ae = document.activeElement;
+        // Typing? Adopt the record into the untouched fields rather than repainting over
+        // them — and NEVER just return, which would leave a blank form marked saveable.
+        if (pane && ae && pane.contains(ae)) { adoptInfo(realmForPrime); return; }
+        renderInfo();
+      });
+    }
     var d = {}; try { d = JSON.parse(localStorage.getItem(infoId())) || {}; } catch (e) { d = {}; }
     var F = [['legalName','Legal name'],['dba','DBA / display name'],['contactName','Primary contact'],['email','Email'],['phone','Phone'],['website','Website'],['ein','EIN / Tax ID'],['fiscalYearEnd','Fiscal year end'],['payrollSchedule','Payroll schedule']];
     body.innerHTML = '<div class="ws-form">' +
@@ -3890,7 +3999,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         setIf('ci_website', ci.website);
         setIf('ci_address', ci.address);
         setIf('ci_fiscalYearEnd', ci.fiscalYearEnd);
-        if (filled) { saveInfo(realmAt); var s = document.getElementById('ci_status'); if (s) s.textContent = 'Blank fields filled from QuickBooks'; }
+        // Only claim success if the save actually happened — saveInfo writes its own refusal
+    // into this very element, and overwriting it with "filled from QuickBooks" told the
+    // bookkeeper their details were saved when nothing was.
+    if (filled && saveInfo(realmAt)) { var s = document.getElementById('ci_status'); if (s) s.textContent = 'Blank fields filled from QuickBooks'; }
       })
       .catch(function () {});
   }
@@ -3899,14 +4011,29 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // No realm, no write. Without this the id fell back to the literal 'bcc-client-info-'
     // whenever no client was selected (the workspace-back path), creating an orphan record
     // that belongs to nobody and syncs to every device.
-    if (!realm) return;
+    if (!realm) return false;
     // Checked at write time, not render time — identity lands after the first paint.
-    if (bkRefuseIfReadOnly()) { var s0 = document.getElementById('ci_status'); if (s0) s0.textContent = ''; return; }
+    if (bkRefuseIfReadOnly()) { var s0 = document.getElementById('ci_status'); if (s0) s0.textContent = ''; return false; }
+    /* Never write a whole document we have not confirmed we hold. Without this, a blank form
+       rendered over an absent local copy autosaved a near-empty record over the real one. */
+    if (_infoPrimed[realm] !== true) {
+      var sp = document.getElementById('ci_status');
+      if (sp) sp.textContent = 'Not saved — this client’s details could not be loaded. Reloading them; try again in a moment.';
+      // Retryable: one transient blip must not disable saving for the life of the page.
+      if (_infoPrimed[realm] === 'fail' && primeRetryOk('info:' + realm)) {
+        _infoPrimed[realm] = undefined;
+        // ADOPT on success. An empty callback re-opened the save with the blank form still on
+        // screen, so the next keystroke wrote it over the record we had just fetched.
+        primeInfo(realm, function () { if (currentRealm === realm && _infoPrimed[realm] === true) adoptInfo(realm); });
+      }
+      return false;
+    }
     var d = { id: 'bcc-client-info-' + realm, tenantId: 'blue-collar-coach', docType: 'client-info', realmId: realm, updatedAt: nowIso(), updatedBy: myUpn() };
     ['legalName','dba','contactName','email','phone','website','ein','fiscalYearEnd','payrollSchedule','address','notes'].forEach(function (k) { var el = document.getElementById('ci_' + k); if (el) d[k] = el.value; });
     localStorage.setItem(d.id, JSON.stringify(d));
     var s = document.getElementById('ci_status'); if (s) s.textContent = 'Saved';
     if (window.bccAudit) window.bccAudit('client-info-update', { key: d.id, path: '/bookkeeping.html', meta: { realmId: realm } });
+    return true;   // callers that print their own status must not print it over a refusal
   }
 
   /* ---- Tasks ---- */
@@ -4843,6 +4970,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         // Say so when the listing was cut short, instead of showing a partial folder as if it
         // were the whole thing - the same notice the SharePoint browser already gives.
         var head = resp.truncated ? '<div style="background:#fbf6ec;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12.5px;">This folder has more items than can be listed at once — only the first ' + items.length + ' are shown. Open a subfolder, or search, to narrow it down.</div>' : '';
+        /* A search runs across the whole connected account, so hits that live outside THIS
+           client's folder are dropped server-side. Say so: a silent drop reads as "the file
+           isn't there", and the count was being reported to nobody. */
+        if (resp.filteredOut) head += '<div style="background:#fbf6ec;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12.5px;">' + resp.filteredOut + ' result' + (resp.filteredOut === 1 ? '' : 's') + ' matched elsewhere on the connected account and ' + (resp.filteredOut === 1 ? 'was' : 'were') + ' not shown — only files inside this client’s folder are listed here.</div>';
         head += _driveSearch ? '<div style="font-size:12px;color:var(--muted);margin-bottom:6px;">' + items.length + ' result' + (items.length === 1 ? '' : 's') + ' for “' + esc(_driveSearch) + '” · <a href="#" id="drv_clear" style="color:var(--gold-deep);font-weight:600;">clear</a></div>' : '';
         if (!items.length) { list.innerHTML = head + '<div style="color:var(--muted);padding:8px 0;">' + (_driveSearch ? 'No files match your search.' : 'This folder is empty.') + '</div>'; var cl0 = document.getElementById('drv_clear'); if (cl0) cl0.onclick = function (e) { e.preventDefault(); _driveSearch = ''; renderDriveBrowser(); }; return; }
         list.innerHTML = head + '<table><tbody>' + items.map(function (it) {
@@ -6210,14 +6341,31 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     body.querySelectorAll('[data-cpr-del]').forEach(function (b) { b.onclick = function () { if (!confirm('Delete this payroll report?')) return; localStorage.removeItem(b.getAttribute('data-cpr-del')); if (window.bccAudit) window.bccAudit('cpr-delete', { key: b.getAttribute('data-cpr-del'), path:'/bookkeeping.html', meta: { realmId: currentRealm } }); renderPayroll(); }; });
   }
 
+  /* Certified payrolls are numbered PER PROJECT: an agency reading one contract's file
+     expects #1, #2, #3 consecutively for that job. Numbering across every job the client
+     has - what this did - makes a second, concurrent project's payrolls read 1, 4, 7 on a
+     form filed with a public agency, which looks like missing weeks. Scoped with
+     cprJobKey, the same key the per-job send history and header autofill already use.
+     `skipId` keeps the draft's own number out of its own maximum. */
+  function cprNextNo(sample, skipId) {
+    var jk = sample ? cprJobKey(sample) : null, max = 0;
+    allCpr().forEach(function (r) {
+      if (skipId && r.id === skipId) return;
+      if (jk && cprJobKey(r) !== jk) return;
+      max = Math.max(max, cnum(r.payrollNo));
+    });
+    return max + 1;
+  }
   function cprNew() {
     var info = {}; try { info = JSON.parse(localStorage.getItem('bcc-client-info-' + currentRealm)) || {}; } catch (e) {}
-    var reports = allCpr(); var maxNo = 0; reports.forEach(function (r) { maxNo = Math.max(maxNo, cnum(r.payrollNo)); });
+    // No job is chosen yet, so this is the client-wide next number; it is re-scoped to the
+    // job the moment one is entered (see cprJobAutofill).
+    var nextNo = cprNextNo(null, null);
     cprDraft = {
       id: cprPrefix() + uid2(), tenantId: 'blue-collar-coach', docType: 'cpr', realmId: currentRealm,
       contractorName: info.legalName || companyName(currentRealm) || '', contractorAddress: info.address || '', contractorPhone: info.phone || '',
       primeName: '', primeAddress: '', primePhone: '', contractName: '', contractNumber: '',
-      payPeriodEnd: '', projectName: '', payrollNo: String(maxNo + 1), isFinal: false, weekStart: '',
+      payPeriodEnd: '', projectName: '', payrollNo: String(nextNo), autoNo: true, isFinal: false, weekStart: '',
       contractingAuthority: '', generalContractor: '', typeOfWork: '',
       socName: '', socTitle: '', socBusiness: info.legalName || companyName(currentRealm) || '', socDate: new Date().toISOString().slice(0,10),
       socCommence: '', socEnd: '', fringe: '', fringeExceptions: '', fringePrograms: '',
@@ -6232,9 +6380,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // dates, daily hours, gross, deductions) for the new pay period. (Jenna's ask.)
   function cprDuplicate(id) {
     var src; try { src = JSON.parse(localStorage.getItem(id)); } catch (e) {} if (!src) return;
-    var reports = allCpr(); var maxNo = 0; reports.forEach(function (r) { maxNo = Math.max(maxNo, cnum(r.payrollNo)); });
     var d = JSON.parse(JSON.stringify(src));
-    d.id = cprPrefix() + uid2(); d.payrollNo = String(maxNo + 1); d.isFinal = false;
+    // Continues the SOURCE report's job, so it takes that job's next number.
+    d.id = cprPrefix() + uid2(); d.payrollNo = String(cprNextNo(src, null)); d.autoNo = true; d.isFinal = false;
     d.payPeriodEnd = ''; d.weekStart = ''; d.socCommence = ''; d.socEnd = ''; d.socDate = bizToday();
     d.docId = null; // don't overwrite the source's filed copy
     d.createdAt = nowIso(); d.updatedAt = nowIso();
@@ -6318,6 +6466,24 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // Fill the header + compliance block from a prior report for the same job.
   function cprJobAutofill() {
     if (!cprDraft) return;
+    cprFillFromJobHistory();
+    /* Re-scope the payroll number to this job - and do it AFTER the header fill above, never
+       before. cprJobKey is projectName + contractNumber, and the contract number is one of
+       the fields that fill supplies: renumbering first compared a project-ONLY key against
+       prior reports for the same job that carry both, matched none of them, and restarted the
+       job at #1 - the exact defect the per-job numbering exists to prevent, in a new disguise.
+       Only while the number is still the one we assigned (autoNo); once the bookkeeper types
+       their own, it is theirs. */
+    if (cprDraft.autoNo) {
+      var jobNo = String(cprNextNo(cprDraft, cprDraft.id));
+      if (jobNo !== String(cprDraft.payrollNo || '')) {
+        cprDraft.payrollNo = jobNo;
+        var noInp = document.querySelector('[data-cf="payrollNo"]'); if (noInp) noInp.value = jobNo;
+        var h3 = document.querySelector('#tab-payroll h3'); if (h3) h3.textContent = 'Payroll #' + jobNo + ' \u2014 ' + companyName(currentRealm);
+      }
+    }
+  }
+  function cprFillFromJobHistory() {
     var hist = cprJobHistory(cprDraft.projectName); if (!hist) return;
     var fields = ['contractorName', 'contractorAddress', 'contractorPhone', 'primeName', 'primeAddress', 'primePhone',
       'contractName', 'contractNumber', 'mndotSp', 'mndotFed', 'contractingAuthority', 'typeOfWork',
@@ -6399,8 +6565,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // as `silent`, which is truthy — so Save shows no "saved & filed" confirmation and
     // a report that fails to build is dropped with no warning and no file filed.
     document.getElementById('cpr_save').onclick = document.getElementById('cpr_save2').onclick = function () { cprSave(false); };
-    document.getElementById('cpr_print').onclick = function () { cprSave(true); printCpr(cprDraft); };
-    document.getElementById('cpr_mndot').onclick = function () { cprSave(true); cprMndotDownload(cprDraft); };
+    // Ask BEFORE the save that files it, and tell the action not to ask a second time.
+    document.getElementById('cpr_print').onclick = function () { if (!cprConfirmRates(cprDraft, 'Print it')) return; cprSave(true, true); printCpr(cprDraft, true); };
+    document.getElementById('cpr_mndot').onclick = function () { if (!cprConfirmRates(cprDraft, 'Build the MnDOT forms')) return; cprSave(true, true); cprMndotDownload(cprDraft, true); };
     document.getElementById('cpr_email').onclick = function () { cprSave(true); cprEmailPanel(); };
     cprRenderSig();
     // "Auto-fill from a file" is now a <label for="cpr_file"> in the markup — the
@@ -6528,6 +6695,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           // Remember this send first (so nothing downstream can lose it), then audit/notify.
           cprSendsRecord({ jobKey: cprJobKey(draftAt), projectName: draftAt.projectName || '', to: to, cc: cc, subject: subject, forms: { mndot: wantMndot, dli: wantDli }, payrollNo: draftAt.payrollNo || '', at: new Date().toISOString() }, realmAt);
           if (window.bccAudit) window.bccAudit('client-email-send', { key: draftAt.id, path: '/bookkeeping.html', meta: { realmId: realmAt, what: 'certified-payroll', recipients: to.length } });
+          // The panel-open save deliberately did NOT file a report with missing rates; now
+          // that it has actually gone to the agency with the warning accepted, file the copy
+          // so the client's documents match what was sent.
+          /* ratesConfirmed only when the warning was actually SHOWN, which is exactly when a
+             form was attached (see the cprConfirmRates call above). Passing true
+             unconditionally filed a $0.00 payroll off the back of a covering note nobody was
+             warned about — the very thing the up-front confirm was added to prevent. */
+          if (currentRealm === realmAt) cprSaveToFiles(draftAt, true, !!(wantMndot || wantDli));
           if (window.bccNotifySaved) window.bccNotifySaved('Payroll report emailed.');
           var box = document.getElementById('cpr_emailbox'); if (box) { box.style.display = 'none'; box.innerHTML = ''; }
         });
@@ -6651,12 +6826,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
 
   // ===== CPR auto-fill: upload a payroll register/timesheet → AI pre-fills the form for review =====
-  function cprEmpFromExtract(x) {
+  function cprEmpFromExtract(x, dowShift) {
     x = x || {};
+    dowShift = (Math.round(Number(dowShift)) % 7 + 7) % 7 || 0;
     var e = blankEmp();
     var s = function (v) { return (v === 0 || v == null || v === '') ? '' : String(v).trim(); };
     var money = function (v) { var n = parseFloat(v); return (isNaN(n) || n === 0) ? '' : String(Math.round(n * 100) / 100); };
-    var days = function (arr) { var out = ['', '', '', '', '', '', '']; if (Array.isArray(arr)) { for (var i = 0; i < 7; i++) { var n = parseFloat(arr[i]); out[i] = (!isNaN(n) && n !== 0) ? String(n) : ''; } } return out; };
+    /* The extraction is ALWAYS Sunday-indexed (index 0 = Sunday, as the tool schema demands),
+       but the form's columns run from the week-start date, which the field does not force to
+       be a Sunday - weekDows() rotates the day letters for exactly that reason. Without the
+       matching rotation here, a Monday-start week put every worker's hours one day off on a
+       form filed with a public agency: Sunday's hours printed under Monday, and Saturday's
+       vanished off the end. */
+    var days = function (arr) { var out = ['', '', '', '', '', '', '']; if (Array.isArray(arr)) { for (var i = 0; i < 7; i++) { var n = parseFloat(arr[(i + dowShift) % 7]); out[i] = (!isNaN(n) && n !== 0) ? String(n) : ''; } } return out; };
     e.name = s(x.name); e.address = s(x.address); e.idNumber = s(x.idNumber);
     e.exemptions = s(x.exemptions); e.classification = s(x.classification); e.apprentice = !!x.apprentice;
     e.st = days(x.st); e.ot = days(x.ot);
@@ -6702,7 +6884,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function cprApplyExtract(data) {
     data = data || {};
     ['weekStart', 'payPeriodEnd', 'projectName'].forEach(function (f) { if (!String(cprDraft[f] || '').trim() && data[f]) cprDraft[f] = String(data[f]).trim(); });
-    var emps = (data.employees || []).map(cprEmpFromExtract).filter(function (e) { return (e.name || '').trim(); });
+    // Read the shift AFTER the weekStart fill above, and never pass cprEmpFromExtract
+    // straight to .map - map would hand it the array INDEX as the rotation.
+    var wsD = cprDraft.weekStart ? new Date(cprDraft.weekStart + 'T00:00:00') : null;
+    var dowShift = (wsD && !isNaN(wsD)) ? wsD.getDay() : 0;
+    var emps = (data.employees || []).map(function (x) { return cprEmpFromExtract(x, dowShift); }).filter(function (e) { return (e.name || '').trim(); });
     if (!emps.length) return 0;
     var existing = (cprDraft.employees || []).filter(function (e) { return !cprEmpIsBlank(e); });
     var byKey = {}; existing.forEach(function (e) { var k = cprEmpKey(e.name); if (k) byKey[k] = e; });
@@ -6823,6 +7009,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function cprCollectField(ev) {
     var el = ev.target; var f = el.getAttribute('data-cf');
     cprDraft[f] = (el.type === 'checkbox') ? el.checked : el.value;
+    if (f === 'payrollNo') cprDraft.autoNo = false;   // typed by hand - never renumber it
     if (f === 'weekStart') renderPayroll(); // refresh day headers
   }
   function cprEmpField(ev) {
@@ -6846,13 +7033,23 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     cprDraft.employees.splice(i, 1); renderPayroll();
   });
 
-  function cprSave(silent) {
+  /* Clearing autoNo on SAVE is what stops a filed report renumbering itself. The flag is
+     persisted with the draft, so without this, opening a payroll from weeks ago and touching
+     the project name re-derived a "next" number for that job and re-filed the PDF under it —
+     silently changing the number on a form already sent to a public agency. The set-up flow
+     is unaffected: cprNew and cprDuplicate both hand the draft to the editor and the project
+     name is entered (and renumbered) before anyone presses Save. */
+  function cprSave(silent, ratesConfirmed) {
     if (bkRefuseIfReadOnly()) return;
     if (!cprDraft) return;
     cprDraft.updatedAt = nowIso(); cprDraft.updatedBy = myUpn();
+    // ...but only once the JOB is named: the number is meaningless until then, and clearing
+    // it on a save made before the project name was typed froze the client-wide number and
+    // permanently disabled the per-job renumbering for that report.
+    if (String(cprDraft.projectName || '').trim()) cprDraft.autoNo = false;
     localStorage.setItem(cprDraft.id, JSON.stringify(cprDraft));
     if (window.bccAudit) window.bccAudit('cpr-save', { key: cprDraft.id, path:'/bookkeeping.html', meta:{ realmId: currentRealm, payrollNo: cprDraft.payrollNo } });
-    cprSaveToFiles(cprDraft, silent); // also file a copy in the client's documents
+    cprSaveToFiles(cprDraft, silent, ratesConfirmed); // also file a copy in the client's documents
   }
   // File the certified-payroll report into the client's private documents, tagged
   // "Certified Payroll". Replaces the prior copy so there's one current file/report.
@@ -6871,10 +7068,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (!miss.length) return true;
     return confirm(miss.length + ' employee' + (miss.length === 1 ? ' has' : 's have') + ' hours on this job but no pay rate, so they will print at $0.00:\n\n' + miss.slice(0, 8).join(', ') + (miss.length > 8 ? ', …' : '') + '\n\n' + what + ' anyway?');
   }
-  function cprSaveToFiles(r, silent) {
+  function cprSaveToFiles(r, silent, ratesConfirmed) {
     var realm = currentRealm; if (!realm) return;
-    // silent = the automatic save alongside an explicit action that already asked.
-    if (!silent && !cprConfirmRates(r, 'File it to the client')) return;
+    /* `silent` used to mean "skip the missing-pay-rate check entirely", and Print / MnDOT
+       forms / Email each ran cprSave(true) BEFORE asking - so declining the "they will print
+       at $0.00" warning still left that $0 report filed in the client's documents, under the
+       name of a form filed with a public agency. Now a silent save with missing rates files
+       nothing at all, and the three actions ask ONCE up front and pass ratesConfirmed. */
+    if (!ratesConfirmed) {
+      if (silent) { if (cprMissingRates(r).length) return; }
+      else if (!cprConfirmRates(r, 'File it to the client')) return;
+    }
     /* Filed as a REAL PDF, not .html. Renee: opening a certified payroll from client files
        "prompts you to download it but then opens a screen full of coding" - the stored file
        was the HTML document, and the viewer will not render HTML inline (correctly: an
@@ -6985,8 +7189,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       (forPrint ? '<script>window.onload=function(){window.print();}<\/script>' : '') + '</body></html>';
     return doc;
   }
-  function printCpr(r) {
-    if (!cprConfirmRates(r, 'Print it')) return;
+  function printCpr(r, ratesConfirmed) {
+    if (!ratesConfirmed && !cprConfirmRates(r, 'Print it')) return;
     var w = window.open('', '_blank');
     if (!w) { (window.bccNotify || alert)('Allow pop-ups to print the payroll form.', 'warn'); return; }
     w.document.open(); w.document.write(cprDocHtml(r, true)); w.document.close();
@@ -7366,8 +7570,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     return [{ name: fname, bytes: await doc.save() }];
   }
 
-  function cprMndotDownload(r) {
-    if (!cprConfirmRates(r, 'Build the MnDOT forms')) return;
+  function cprMndotDownload(r, ratesConfirmed) {
+    if (!ratesConfirmed && !cprConfirmRates(r, 'Build the MnDOT forms')) return;
     if (window.bccNotify) window.bccNotify('Building the MnDOT forms…', 'info', 3000);
     Promise.all([
       cprEnsurePdfLib(),
@@ -7624,21 +7828,53 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (window.bccAudit) window.bccAudit('payapp-save', { key: payappDraft.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, appNo: payappDraft.appNo } });
     payappSaveToFiles(payappDraft, silent);
   }
+  /* Filed as a REAL PDF, not .html — the same fix certified payroll got. The document
+     viewer will not render an .html file inline (an .html file served from our own origin
+     would run inside the reader's session), so a client opening their pay application got
+     a screen of markup. The server lays it out from the figures computed HERE, so the PDF
+     and the on-screen form can never disagree. */
+  function payappPdfPayload(r) {
+    var pc = computePayapp(r);
+    return {
+      appNo: r.appNo || '', ownerName: r.ownerName || '', contractorName: r.contractorName || '',
+      projectName: r.projectName || '', architectName: r.architectName || '',
+      projectAddress: r.projectAddress || '', contractFor: r.contractFor || '',
+      periodTo: r.periodTo || '', appDate: r.appDate || '', projectNo: r.projectNo || '',
+      contractDate: r.contractDate || '', isFinal: !!r.isFinal,
+      socName: r.socName || '', socTitle: r.socTitle || '', socDate: r.socDate || '',
+      retPctWork: cnum(r.retPctWork) || 0, retPctStored: cnum(r.retPctStored) || 0,
+      coAdd: pc.coAdd, coDed: pc.coDed, netCO: pc.netCO,
+      line1: pc.line1, line3: pc.line3, line4: pc.line4, ret5a: pc.ret5a, ret5b: pc.ret5b,
+      line5: pc.line5, line6: pc.line6, line7: pc.line7, line8: pc.line8, line9: pc.line9,
+      lines: (r.lines || []).map(function (l, i) {
+        var c = pc.lines[i] || {};
+        return { item: l.item || '', desc: l.desc || '', scheduled: c.scheduled, prev: c.prev, period: c.period, stored: c.stored, total: c.total, pct: c.pct, balance: c.balance, retain: c.retain };
+      }),
+      totals: pc.totals
+    };
+  }
+  function payappFetchPdf(r, realm) {
+    return fetch('/api/payapp/' + encodeURIComponent(realm) + '/pdf', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payappPdfPayload(r)) })
+      .then(function (rr) {
+        if (!rr.ok) return rr.json().catch(function () { return {}; }).then(function (j) { throw new Error((j && j.error) || ('HTTP ' + rr.status)); });
+        return rr.blob();
+      });
+  }
   function payappSaveToFiles(r, silent) {
     var realm = currentRealm; if (!realm) return;
-    var html, fname;
-    try { html = payappDocHtml(r); fname = 'Pay Application' + (r.appNo ? ' #' + r.appNo : '') + (r.periodTo ? ' (to ' + r.periodTo + ')' : '') + '.html'; }
-    catch (e) { if (!silent) (window.bccNotify || alert)('Saved locally (couldn’t build the file).', 'warn'); return; }
+    var fname = 'Pay Application' + (r.appNo ? ' #' + r.appNo : '') + (r.periodTo ? ' (to ' + r.periodTo + ')' : '') + '.pdf';
+    var fileBlob = null;
     function upload() {
       var fd = new FormData();
-      fd.append('file', new Blob([html], { type: 'text/html' }), fname);
+      fd.append('file', fileBlob, fname);
       fd.append('folder', '/clients/' + realm); // use the realm CAPTURED above, not clientFolder() — that reads currentRealm live and would refile this into whatever client is active by the time upload finishes
       fd.append('tags', 'Pay Application, billing');
       fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
         .then(function (rr) { return rr.json().then(function (j) { return rr.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + rr.status))); }); })
         .then(function (j) {
           // Retire the PREVIOUS filing only now that the replacement is stored. Deleting
-          // it first meant a failed upload left the client with neither copy.
+          // it first meant a failed upload left the client with neither copy. (This is
+          // also what clears the old .html copy the first time one is re-saved.)
           var prev = r.docId;
           if (j && j.id) { r.docId = j.id; localStorage.setItem(r.id, JSON.stringify(r)); }
           if (prev && j && j.id && prev !== j.id) fetch('/api/documents/' + encodeURIComponent(prev), { method: 'DELETE', credentials: 'include' }).catch(function () {});
@@ -7648,7 +7884,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         })
         .catch(function (e) { (window.bccNotify || alert)('Saved locally, but couldn’t file it to the client: ' + e.message, 'warn', 8000); });
     }
-    upload(); // the old copy is retired inside upload(), after the new one lands
+    /* Build first, then upload — a build failure must NOT retire the previously filed copy,
+       and upload() is what deletes it, so on this path it never runs. */
+    payappFetchPdf(r, realm)
+      .then(function (blob) { fileBlob = blob; upload(); })
+      .catch(function (e) {
+        (window.bccNotify || alert)('Saved locally, but couldn’t build the PDF to file it to the client: ' + (e && e.message ? e.message : 'error'), 'warn', 8000);
+      });
   }
   function payappDocHtml(r) {
     var pc = computePayapp(r);
@@ -7911,7 +8153,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         .then(function (j) {
           if (currentRealm !== realmAt) return;
           var n = ((j && j.data && j.data.items) || []).length;
-          catEl.innerHTML = n ? ('<strong style="color:#c0392b;">' + n + ' transaction' + (n === 1 ? '' : 's') + '</strong> to categorize — open <a href="#" data-goreview="1">🔎 For review</a>.') : '✓ nothing sitting in an uncategorized account.';
+          /* The scan is BOUNDED (6 pages per entity, 24 months) and says so with data.capped
+             — which the report view already prints. Ignoring it here meant a busy client
+             whose scan ran out of pages printed the green "nothing uncategorized" on the
+             month-end checklist, which is precisely the assurance this line is read for. */
+          var capped = !!(j && j.data && j.data.capped);
+          catEl.innerHTML = n
+            ? ('<strong style="color:#c0392b;">' + n + ' transaction' + (n === 1 ? '' : 's') + '</strong> to categorize — open <a href="#" data-goreview="1">🔎 For review</a>.' + (capped ? ' <span style="color:#8a6d2f;">Large history — only the most recent transactions were scanned, so there may be more.</span>' : ''))
+            : (capped
+                ? '<span style="color:#8a6d2f;">Nothing uncategorized in the most recent transactions — this client has too much history to scan in full, so check further back in QuickBooks before closing.</span>'
+                : '✓ nothing sitting in an uncategorized account.');
           var g = catEl.querySelector('[data-goreview]'); if (g) g.onclick = function (e) { e.preventDefault(); closeGoReport('for-review'); };
         }).catch(function (e) {
           // Say we could not check. Blanking the line (what this used to do) reads as "fine".
@@ -7928,13 +8179,22 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/reconcile-accounts?asOf=' + periodEndDate(period), { credentials: 'include' })
         .then(function (r) { return r.json(); }).then(function (j) {
           if (currentRealm !== realmAt) return;
-          if (!j || !j.ok) { if (bankEl) bankEl.textContent = ''; if (ccEl) ccEl.textContent = ''; return; }
+          /* Blanking the line on failure (what this did) leaves the reconcile step looking
+             like every other completed one — an unreadable QuickBooks read as a clean
+             reconciliation on the month-end checklist. Say what happened instead, the same
+             way the categorize helper above does. */
+          if (!j || !j.ok) { reconFailed(bankEl, ccEl, (j && j.error) || 'QuickBooks did not answer'); return; }
           var banks = j.accounts.filter(function (a) { return a.type === 'Bank'; });
           var ccs = j.accounts.filter(function (a) { return a.type === 'Credit Card'; });
           if (bankEl) { bankEl.innerHTML = reconPanel(banks, period); wireRecon(bankEl); }
           if (ccEl) { ccEl.innerHTML = reconPanel(ccs, period); wireRecon(ccEl); }
-        }).catch(function () { if (currentRealm !== realmAt) return; if (bankEl) bankEl.textContent = ''; if (ccEl) ccEl.textContent = ''; });
+        }).catch(function (e) { if (currentRealm !== realmAt) return; reconFailed(bankEl, ccEl, (e && e.message) || 'QuickBooks did not answer'); });
     }
+  }
+  function reconFailed(bankEl, ccEl, why) {
+    var msg = '<span style="color:var(--burgundy);">Couldn’t load the book balances — ' + esc(why) + '. Check these accounts in QuickBooks before closing.</span>';
+    if (bankEl) bankEl.innerHTML = msg;
+    if (ccEl) ccEl.innerHTML = msg;
   }
   function reconPanel(accts) {
     if (!accts.length) return '<span style="color:var(--muted);">no accounts of this type.</span>';
@@ -7968,7 +8228,61 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   /* ---- Job costing / WIP (over-under billing) ---- */
   var _wip = null;
   function loadWipDoc() { var id = 'bcc-wip-' + currentRealm, d = null; try { d = JSON.parse(localStorage.getItem(id)); } catch (e) {} if (!d || !d.id) d = { id: id, tenantId: 'blue-collar-coach', docType: 'wip', realmId: currentRealm, jobs: {}, createdAt: nowIso() }; if (!d.jobs) d.jobs = {}; return d; }
-  function saveWip() { if (!_wip) return; if (bkRefuseIfReadOnly()) return; _wip.updatedAt = nowIso(); _wip.updatedBy = myUpn(); localStorage.setItem(_wip.id, JSON.stringify(_wip)); }
+  /* Same shape as primeInfo: loadWipDoc() mints a BLANK { jobs: {} } whenever this device
+     has no local copy - a cold browser, a failed pull, a full localStorage - and the first
+     contract/estimate typed then wrote that empty document over the real one in Cosmos,
+     taking every job's contract and estimated cost with it. Confirm what the server holds
+     before allowing a write; until it answers, the schedule stays read-only and says so. */
+  var _wipPrimed = {};   // realm -> true | 'busy' | 'fail', exactly as _infoPrimed above
+  var _wipWarned = {};   // one refusal message per realm, not one per keystroke
+  function primeWip(realm, done) {
+    if (!realm || _wipPrimed[realm]) { if (done) done(); return; }
+    _wipPrimed[realm] = 'busy';
+    fetch('/api/data/' + encodeURIComponent('bcc-wip-' + realm), { credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+      .then(function (j) {
+        var dd = j && j.data;
+        if (typeof dd === 'string') { try { dd = JSON.parse(dd); } catch (e) { dd = null; } }
+        // data:null is a real answer - this client genuinely has no WIP record yet.
+        // Local-only store, and unprimed if it failed — see primeInfo for both reasons.
+        var stored = true;
+        if (dd && typeof dd === 'object') {
+          var raw = JSON.stringify(dd);
+          stored = window.bccStoreLocal ? window.bccStoreLocal('bcc-wip-' + realm, raw)
+            : (function () { try { localStorage.setItem('bcc-wip-' + realm, raw); return true; } catch (e) { return false; } })();
+        }
+        _wipPrimed[realm] = stored ? true : 'fail';
+        if (done) done();
+      })
+      .catch(function () { _wipPrimed[realm] = 'fail'; if (done) done(); });   // unprimed: saveWip refuses
+  }
+  function saveWip() {
+    if (!_wip) return;
+    if (bkRefuseIfReadOnly()) return;
+    var realm = _wip.realmId || currentRealm;
+    if (_wipPrimed[realm] !== true) {
+      /* saveWip is wired to oninput, one call per KEYSTROKE — an unlatched toast here meant
+         nine seconds of warning per character (and a blocking alert() with no bccNotify).
+         Warn once per realm, and clear a 'fail' so the next keystroke re-primes rather than
+         leaving one transient blip to disable this client for the life of the page. */
+      if (!_wipWarned[realm]) {
+        _wipWarned[realm] = true;
+        (window.bccNotify || alert)('Not saved \u2014 this client\u2019s job schedule could not be loaded, and saving now would overwrite it. It is being reloaded; try again in a moment.', 'warn', 9000);
+      }
+      if (_wipPrimed[realm] === 'fail' && primeRetryOk('wip:' + realm)) {
+        _wipPrimed[realm] = undefined;
+        primeWip(realm, function () {
+          // Only re-arm the warning when the retry SUCCEEDED — clearing it on failure brought
+          // the per-keystroke toast storm straight back.
+          if (_wipPrimed[realm] !== true) return;
+          _wipWarned[realm] = false;
+          if (currentRealm === realm) adoptWip(realm);
+        });
+      }
+      return;
+    }
+    _wip.updatedAt = nowIso(); _wip.updatedBy = myUpn(); localStorage.setItem(_wip.id, JSON.stringify(_wip));
+  }
   function wipCalc(job, ov) {
     var num = function (v) { return parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')) || 0; };
     var cost = job.cost || 0, billed = job.income || 0;
@@ -7988,6 +8302,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   function renderWip() {
     var body = document.getElementById('wip-body'); if (!body) return;
+    var realmForPrime = currentRealm;
+    if (realmForPrime && !_wipPrimed[realmForPrime]) {
+      // Re-render once the server answers: the priming fetch may have just replaced the
+      // local copy, and the table below is built from it.
+      // Same rule as renderInfo: never rebuild the table under someone's cursor.
+      primeWip(realmForPrime, function () {
+        if (currentRealm !== realmForPrime) return;
+        var pane = document.getElementById('wip-body'), ae = document.activeElement;
+        if (pane && ae && pane.contains(ae)) { adoptWip(realmForPrime); return; }
+        _wip = null; renderWip();
+      });
+    }
     if (!_wip || _wip.realmId !== currentRealm) _wip = loadWipDoc();
     var realmAt = currentRealm; // realm-race guard — the job-costs fetch below can take a few seconds
     body.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px;">' +

@@ -429,6 +429,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // fill detail from CompanyInfo. opts.full = also refill existing un-detailed ones.
   function syncFromBookkeeping(opts) {
     opts = opts || {};
+    /* The boot pull is what puts the firm's existing bcc-company- docs into localStorage.
+       When it FAILED (offline, or an HTTP 500 - bcc-auth-ready fires either way) the local
+       store is empty, so every QuickBooks customer reads as brand new and this creates a
+       SECOND copy of the whole company list, each one a real synced document that then has
+       to be deleted by hand. Gated here rather than at the caller so the manual "Sync from
+       Bookkeeping" button is covered by the same rule. */
+    if (window._bccBootPullFailed) {
+      setSyncMeta('Not synced - could not load the company list from the server. Reload once you are back online.');
+      // Only the person who CLICKED gets a toast; the automatic pass on page load leaves just
+      // the line above, since a failed pull already shows its own banner.
+      if (!opts.auto) (window.bccNotify || function () {})('Can’t sync right now: this device could not load the existing companies, and syncing would duplicate every one of them. Reload once you are back online.', 'warn', 9000);
+      return Promise.resolve();
+    }
     var btn = document.getElementById('bkSyncBtn'); if (btn) btn.disabled = true;
     if (opts.full) setSyncMeta('Syncing from Bookkeeping…');
     return fetch('/api/integrations/qbo/companies', { credentials: 'include' })
@@ -889,7 +902,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       });
       updated.industry = document.getElementById('d-industry').value;
       updated.size = document.getElementById('d-size').value;
-      saveCompany(updated);
+      // saveCompany returns null when the CRM tier refuses the write. Without this, a
+      // view-only user got "Company updated." and a repaint from the record they never
+      // changed — the sibling of the guard already on the new-company form.
+      if (!saveCompany(updated)) return;
       if (window.bccAudit) window.bccAudit('company-update', { key: updated.id, path: '/crm-companies.html' });
       if (window.bccNotifySaved) window.bccNotifySaved('Company updated.');
       else (window.bccNotify || alert)('Saved.', 'success');
@@ -1004,6 +1020,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // new and gets duplicated. bcc-auth-ready fires AFTER that pull, so trigger here only.
   function maybeAutoSync() {
     if (_bkSyncRan || getParam('id') || !rowsEl) return;
+    /* _bkSyncRan is deliberately NOT set when the pull failed, so a later load still syncs.
+       checkOwnBooks still runs: it only reveals the owner's "Import customers from
+       QuickBooks" control and does not write anything, so returning early past it hid that
+       button for the whole page load over an unrelated failure. */
+    if (window._bccBootPullFailed) { syncFromBookkeeping({ auto: true }); checkOwnBooks(); return; }
     _bkSyncRan = true;
     syncFromBookkeeping({ auto: true });
     checkOwnBooks(); // reveals "Import customers from QuickBooks" for the owner only

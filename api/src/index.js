@@ -623,6 +623,18 @@ app.http('data', {
             // (/api/documents/{id} + /download, both behind docAccessFilter) and can
             // name a /clients/<realm> folder, so never serve it from here.
             if (isServerOwnedDocMeta(resource)) return { jsonBody: { key, data: null } };
+            /* Same rule as the bulk pull: a dashboard doc linked to a client carries that
+               client's QBO financials, and its realm lives in the DOCUMENT rather than the
+               key. Gating only the bulk path would leave this one open — the sibling shape
+               that keeps recurring here. */
+            if (String(key).startsWith('bcc-dashboard-') && resource) {
+              const dRealm = dashboardDocRealm(resource.data);
+              if (dRealm) {
+                const dAcc = await companyAccessMap(p);
+                if (!dAcc.allowed(dRealm)) return forbidden('no access to this client');
+                if (bookkeepingNoFinancials(await bookkeepingTierFor(p))) return forbidden('your bookkeeping access does not include this client’s financials');
+              }
+            }
             const data = resource
               ? (keyRedact ? redactIntegrationData(resource.data) : adminCfgRedact ? redactAdminConfigData(resource.data, false, me) : resource.data)
               : null;
@@ -649,10 +661,16 @@ app.http('data', {
           // are owner-scoped: only the caller's own rows come back, so one
           // person's tasks/hours/signature are never shipped to another
           // signed-in user.
-          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND NOT STARTSWITH(c.id, "bcc-bkentry-") AND NOT STARTSWITH(c.id, "bcc-report-") AND NOT STARTSWITH(c.id, "bcc-cpr-sends-") AND NOT STARTSWITH(c.id, "bcc-email-") AND (NOT STARTSWITH(c.id, "bcc-mytasks-") OR LOWER(c.data.upn) = @me) AND (NOT STARTSWITH(c.id, "bcc-daily-log-") OR LOWER(c.data.userUpn) = @me) AND (NOT STARTSWITH(c.id, "bcc-emailsig-") OR LOWER(c.data.upn) = @me) AND (NOT STARTSWITH(c.id, "bcc-chat-last-read-") OR c.id = @myChatRead) AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "bk-entry" AND c.docType != "monthly-report" AND c.docType != "client-drive" AND c.docType != "document" AND c.docType != "access" AND c.docType != "audit" AND c.docType != "oauthstate-used"))' + (sinceOk ? ' AND c.updatedAt > @since' : ''),
-          parameters: sinceOk
-            ? [{ name: '@t', value: BCC_TENANT_ID }, { name: '@me', value: me }, { name: '@myChatRead', value: 'bcc-chat-last-read-' + me + '-v1' }, { name: '@since', value: sinceD }]
-            : [{ name: '@t', value: BCC_TENANT_ID }, { name: '@me', value: me }, { name: '@myChatRead', value: 'bcc-chat-last-read-' + me + '-v1' }]
+          query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-") AND NOT STARTSWITH(c.id, "bcc-financial-period-") AND NOT STARTSWITH(c.id, "bcc-usernotif-") AND NOT STARTSWITH(c.id, "bcc-feedback-") AND NOT STARTSWITH(c.id, "bcc-errorlog-") AND NOT STARTSWITH(c.id, "bcc-bkentry-") AND NOT STARTSWITH(c.id, "bcc-report-") AND NOT STARTSWITH(c.id, "bcc-cpr-sends-") AND NOT STARTSWITH(c.id, "bcc-email-") AND (NOT STARTSWITH(c.id, "bcc-mytasks-") OR LOWER(c.data.upn) = @me) AND (NOT STARTSWITH(c.id, "bcc-daily-log-") OR LOWER(c.data.userUpn) = @me) AND (NOT STARTSWITH(c.id, "bcc-emailsig-") OR LOWER(c.data.upn) = @me) AND (NOT STARTSWITH(c.id, "bcc-chat-last-read-") OR c.id = @myChatRead) AND (NOT STARTSWITH(c.id, "bcc-enrollment-") OR STARTSWITH(c.id, @myEnroll)) AND (NOT IS_DEFINED(c.docType) OR (c.docType != "bk-time" AND c.docType != "bk-entry" AND c.docType != "monthly-report" AND c.docType != "client-drive" AND c.docType != "document" AND c.docType != "access" AND c.docType != "audit" AND c.docType != "oauthstate-used"))' + (sinceOk ? ' AND c.updatedAt > @since' : ''),
+          /* Training progress is a PERSONAL record — the id embeds the owner's slug, and the
+             write side (ownsPersonalKey) has always bound it to that owner. The read side
+             did not, so every colleague's course progress rode along in the routine sync.
+             Built with training.html's own userSlug() transform, byte-for-byte. */
+          parameters: (function () {
+            const myEnroll = 'bcc-enrollment-' + me.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() + '-';
+            const base = [{ name: '@t', value: BCC_TENANT_ID }, { name: '@me', value: me }, { name: '@myChatRead', value: 'bcc-chat-last-read-' + me + '-v1' }, { name: '@myEnroll', value: myEnroll }];
+            return sinceOk ? base.concat([{ name: '@since', value: sinceD }]) : base;
+          })()
         };
         const { resources: rawResources } = await c.items.query(q).fetchAll();
         // Belt-and-suspenders on top of the SQL exclusions above: the SQL list and
@@ -671,9 +689,24 @@ app.http('data', {
         // Only pay for the extra company-access query when this batch actually has
         // any client-scoped docs in it.
         const hasClientScoped = resources.some(r => dataKeyClientRealm(r.id));
-        const coAccess = hasClientScoped ? await companyAccessMap(p) : null;
+        /* bcc-dashboard-<crmCompanyId> holds a client's QBO financials but is keyed by CRM
+           company, so dataKeyClientRealm cannot see the realm — it is inside the DOCUMENT, as
+           data.qboRealmId. The app-tier lever the old comment relied on is no lever at all:
+           'dashboard' is in MEMBER_DEFAULT_EDIT_APPS, so every plain member resolved 'edit'
+           and the routine sync shipped every client's cash, current ratio and months-of-cash
+           to people on no client's access list. Read the realm off the stored doc.
+           Computed on ITS OWN condition, not on hasClientScoped: keying it off that would
+           leave coAccess null in a batch of dashboard docs alone, and the gate would never
+           fire — the looks-right-does-nothing shape. */
+        const dashRealmOf = (r) => String(r.id).startsWith('bcc-dashboard-') ? dashboardDocRealm(r.data) : null;
+        const hasDashRealm = resources.some(r => dashRealmOf(r));
+        const needAccess = hasClientScoped || hasDashRealm;
+        const coAccess = needAccess ? await companyAccessMap(p) : null;
         const gated = coAccess
-          ? resources.filter(r => { const realm = dataKeyClientRealm(r.id); return !realm || coAccess.allowed(realm); })
+          ? resources.filter(r => {
+              const realm = dataKeyClientRealm(r.id) || dashRealmOf(r);
+              return !realm || coAccess.allowed(realm);
+            })
           : resources;
         // Integration docs hold secrets — redact credential fields for non-admins
         // (status flags stay so connection badges keep working).
@@ -690,11 +723,14 @@ app.http('data', {
         const appCheck = await appAccessChecker(p);
         // Same reasoning as appCheck: resolve the bookkeeping tier ONCE, then filter
         // synchronously. Admins short-circuit to 'admin' and are unaffected.
-        const bkTier = hasClientScoped ? await bookkeepingTierFor(p) : null;
+        const bkTier = needAccess ? await bookkeepingTierFor(p) : null;
         const items = [];
         for (const r of gated) {
           if (appCheck(r.id, 'view') === false) continue;
           if (dataKeyClientRealm(r.id) && !bkDataAllowed(bkTier, r.id, 'view')) continue;
+          // A dashboard doc linked to a client carries that client's FINANCIALS, so the same
+          // no-financials rule applies even though the realm is not in its key.
+          if (dashRealmOf(r) && bookkeepingNoFinancials(bkTier)) continue;
           const isInt = String(r.id).startsWith('bcc-integration-');
           const isAdminCfg = ADMIN_KEYS.has(r.id);
           const data = isInt ? (dataAdmin ? r.data : redactIntegrationData(r.data))
@@ -736,6 +772,34 @@ app.http('data', {
             if (realmAccessCache.get(clientRealm).err) return forbidden('no access to this client');
             if (putBkTier === undefined) putBkTier = await bookkeepingTierFor(p);
             if (!bkDataAllowed(putBkTier, it.key, 'edit')) return forbidden('your access level does not include this record');
+          }
+          /* A dashboard doc linked to a client carries that client's QBO figures and is now
+             WITHHELD from anyone without access to that client — so it must also be
+             unwritable by them, or the read gate is worse than no gate: dashboard.html falls
+             back to a blank document when the key is absent and autosaves it, replacing the
+             client's whole strategic plan. Read the realm off the STORED doc (the payload's
+             own qboRealmId is attacker-controlled and is exactly what a blank save clears). */
+          if (it.key.startsWith('bcc-dashboard-')) {
+            const exDash = await c.item(it.key, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+            /* An EMPTY payload over a document that has content is never a real edit — it is
+               the blank-form autosave from a device that does not hold the document. Refused
+               for every dashboard, linked or not, because the read gate below makes that case
+               MORE likely, not less: the people it withholds the document from are exactly
+               the ones whose page would fall back to a blank one. */
+            if (exDash && dashboardIsEmpty(it.data) && !dashboardIsEmpty(exDash.data)) {
+              return badRequest('this would replace an existing dashboard with an empty one — reload the page and try again');
+            }
+            const dRealm = exDash ? dashboardDocRealm(exDash.data) : null;
+            if (dRealm) {
+              if (!realmAccessCache.has(dRealm)) realmAccessCache.set(dRealm, await driveClientAccess(p, dRealm));
+              if (realmAccessCache.get(dRealm).err) return forbidden('no access to this client');
+              if (putBkTier === undefined) putBkTier = await bookkeepingTierFor(p);
+              /* bookkeepingReadOnly, not bookkeepingNoFinancials: this is a WRITE. 'view' is
+                 defined as read-only for every other client-scoped record, and a plain member
+                 resolves dashboard='edit' by default (MEMBER_DEFAULT_EDIT_APPS), so the app
+                 tier alone would let a view-tier bookkeeper overwrite a client's plan. */
+              if (bookkeepingReadOnly(putBkTier)) return forbidden('your bookkeeping access is view-only, so you cannot change this client’s dashboard');
+            }
           }
           // CRM/Engagements/Marketing/Rate-Sheet records — only someone with 'edit'+
           // on the owning app (bcc-contact- requires it on at least one sharing app).
@@ -834,6 +898,16 @@ app.http('data', {
         const delRealm = dataKeyClientRealm(key);
         if (delRealm && (await driveClientAccess(p, delRealm)).err) return forbidden('no access to this client');
         if (delRealm && !bkDataAllowed(await bookkeepingTierFor(p), key, 'edit')) return forbidden('your access level does not include this record');
+        // Same as the PUT above: a client-linked dashboard belongs to that client.
+        if (key.startsWith('bcc-dashboard-')) {
+          const exDash = await c.item(key, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+          const dRealm = exDash ? dashboardDocRealm(exDash.data) : null;
+          if (dRealm) {
+            if ((await driveClientAccess(p, dRealm)).err) return forbidden('no access to this client');
+            // Deleting is a write too — same rule as the PUT above.
+            if (bookkeepingReadOnly(await bookkeepingTierFor(p))) return forbidden('your bookkeeping access is view-only, so you cannot delete this client’s dashboard');
+          }
+        }
         if ((await appAccessForKey(p, key, 'edit')) === false) return forbidden('you do not have edit access for this');
         if (key.startsWith(DOC_DOC_PREFIX)) {
           const existingDoc = await c.item(key, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
@@ -865,7 +939,24 @@ app.http('profile', {
     // principal shape so existing consumers keep working.
     let isAdmin = false;
     try { isAdmin = await isAppAdmin(p); } catch (e) { isAdmin = false; }
-    return { jsonBody: Object.assign({}, p, { isAppAdmin: isAdmin }) };
+    /* A stamp of WHAT THIS CALLER MAY SEE. The browser's delta pull only ever asks for docs
+       changed after its cursor, so the moment an admin adds someone to a client, every record
+       that just became visible to them is OLDER than that cursor and never arrives — the newly
+       granted client reads as empty until the daily full pull happens to run. The client half
+       watches bcc-admin-config-v1 for app-permission changes, but per-CLIENT access lives in
+       bcc-qbo-company- docs, which are protected and never synced, so the browser cannot see
+       that half by itself. Hashing it here is the only place that knows. Cheap: one query the
+       same handler's callers already make, and it changes only when access changes. */
+    let accessStamp = '';
+    try {
+      const map = await companyAccessMap(p);
+      const mine = map.realms.filter(r => map.allowed(r)).sort();
+      const bk = await bookkeepingTierFor(p);
+      accessStamp = crypto.createHash('sha256')
+        .update(JSON.stringify([isAdmin, bk, mine]))
+        .digest('hex').slice(0, 32);
+    } catch (_) { accessStamp = ''; }   // never fail the profile call over this
+    return { jsonBody: Object.assign({}, p, { isAppAdmin: isAdmin, accessStamp }) };
   })
 });
 
@@ -1020,7 +1111,7 @@ const ALLOWED_AUDIT_ACTIONS = new Set([
   // set; keep doing that whenever an action is added, or the event just disappears.
   'client-task-update', 'weekly-note-add', 'notify-user',
   'report-save', 'report-freeze', 'report-pdf', 'report-goals-save',
-  'payapp-save', 'payapp-delete', 'payapp-print',
+  'payapp-save', 'payapp-delete', 'payapp-print', 'payapp-pdf',
   'cpr-extract', 'cpr-remote-sign',
   'client-mail-add', 'client-mail-done', 'client-mail-reopen', 'client-mail-del'
 ]);
@@ -1911,6 +2002,31 @@ app.http('errorlog', {
   })
 });
 
+/* TEMPORARY — reads the in-app feedback queue headlessly during a sweep, and is REMOVED in
+   the follow-up commit. The /api/feedback GET is admin-only behind the SWA Entra cookie,
+   which a headless run has no way to present; this mirrors the cron routes' CRON_SECRET
+   header instead. Read-only: it never writes, never resolves, and never notifies. */
+app.http('cron-feedback-dump', {
+  methods: ['GET', 'POST'],
+  authLevel: 'anonymous',
+  route: 'cron/feedback-dump',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    const given = request.headers.get('x-bcc-cron-secret') || '';
+    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    try {
+      const c = container();
+      const { resources } = await c.items.query({
+        // Named fields, not SELECT * — this prints into a CI log, so it ships only what the
+        // triage actually reads.
+        query: 'SELECT c.id, c.createdAt, c.status, c.page, c.kind, c.rating, c.text, c.userUpn, c.reply, c.repliedAt FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+      }).fetchAll();
+      return { jsonBody: { ok: true, count: resources.length, feedback: resources } };
+    } catch (e) { context.error('cron-feedback-dump', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  }
+});
+
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
@@ -2193,6 +2309,14 @@ app.http('bookkeeping-entry', {
         if (!realmId) return { status: 400, jsonBody: { ok: false, error: 'realmId required' } };
         const acc = await driveClientAccess(p, realmId);
         if (acc.err) return acc.err;
+        /* Company access alone is not enough here, exactly as on every other bookkeeping
+           route: these rows are the client's billable-time ledger — who worked their file,
+           for how long, on what — and a 'tasks' or 'none' bookkeeper is meant to see only
+           that client's task list. The POST side has always required a bookkeeper; the read
+           side never checked the tier at all. */
+        if (bookkeepingNoFinancials(await bookkeepingTierFor(p))) {
+          return forbidden('your Bookkeeping access does not include this client’s time records');
+        }
         const { resources } = await c.items.query({
           query: 'SELECT c.id, c.realmId, c.companyName, c.userUpn, c.userName, c.day, c.minutes, c.note, c.source, c.start, c["end"], c.createdAt FROM c WHERE c.tenantId=@t AND c.docType="bk-entry" AND c.realmId=@r',
           parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@r', value: realmId }]
@@ -2384,6 +2508,41 @@ async function bookkeepingTierFor(p) {
 // inactive/hidden user now resolves to — both predicates have to deny it, or "None"
 // would read as full access. null stays permissive: it means no row exists yet.
 function bookkeepingNoFinancials(tier) { return tier === 'tasks' || tier === 'none'; }
+/* bcc-dashboard-<crmCompanyId> is the one client-scoped family whose realm is NOT in its key
+   — it sits in the document, as data.qboRealmId. Used by the /api/data GET, PUT and DELETE
+   paths alike: gating only the reads would turn a read-denial into silent destruction, since
+   dashboard.html mints a BLANK document whenever the key is missing locally and autosaves it
+   straight back over the real one. */
+/* Is this payload an EMPTY dashboard? dashboard.html mints blankDoc() whenever the key is
+   missing from localStorage and autosaves it on the first keystroke, so a device that never
+   received the document replaces the client's whole plan with empty strings. A real edit
+   never produces this: clearing one field at a time still leaves the others. */
+function dashboardIsEmpty(data) {
+  let dd = data;
+  if (typeof dd === 'string') { try { dd = JSON.parse(dd); } catch (_) { return false; } }
+  if (!dd || typeof dd !== 'object') return false;
+  const any = (v) => String(v == null ? '' : v).trim() !== '';
+  const TXT = ['vision', 'coreValues', 'why', 'ninetyDay', 'bottleneck', 'kpis', 'marketingPlan', 'flavorOfLean', 'sne', 'books', 'pulse_notes'];
+  if (TXT.some(k => any(dd[k]))) return false;
+  const sw = dd.swot || {};
+  if (['strengths', 'weaknesses', 'opportunities', 'threats'].some(k => any(sw[k]))) return false;
+  const fin = dd.financials || {};
+  if (['currentRatio', 'monthsCash', 'netMargin'].some(k => any(fin[k]))) return false;
+  /* CONTENT, not presence. dashboard.html's collect() rebuilds BOTH of these on every save
+     from the fixed PULSE (5 checkboxes) and PEOPLE (a fixed label list) arrays, so a blank
+     form still ships `pulse` with five false values and `people` with five { done:false,
+     note:'' } rows — testing `.length` alone made this function unable to ever return true,
+     and the refusal it guards dead code. */
+  if (Array.isArray(dd.people) && dd.people.some(pp => pp && (pp.done === true || any(pp.note)))) return false;
+  if (dd.pulse && typeof dd.pulse === 'object' && Object.keys(dd.pulse).some(k => dd.pulse[k])) return false;
+  return true;
+}
+function dashboardDocRealm(data) {
+  let dd = data;
+  if (typeof dd === 'string') { try { dd = JSON.parse(dd); } catch (_) { dd = null; } }
+  const rid = dd && dd.qboRealmId;
+  return rid ? String(rid) : null;
+}
 function bookkeepingReadOnly(tier) { return tier === 'tasks' || tier === 'view' || tier === 'none'; }
 
 /* Client-scoped bookkeeping records flow through the GENERIC /api/data endpoint, which
@@ -2627,6 +2786,9 @@ async function companyAccessMap(p) {
   }).fetchAll();
   const byRealm = new Map(resources.map(co => [String(co.realmId), co]));
   return {
+    // Every realm that EXISTS, so a caller can ask which of them it may see without
+    // running the same query a second time (the profile handler's access stamp does).
+    realms: Array.from(byRealm.keys()),
     allowed(realmId) {
       const co = byRealm.get(String(realmId));
       if (companyPrivateBlocked(co, p)) return false;
@@ -3308,6 +3470,76 @@ async function driveDocAndToken(realmId) {
   return { doc, at };
 }
 
+/* A Drive/OneDrive connection can be pinned to a landing FOLDER, and one account often
+   serves several clients from different landing folders. Proving access to `realmId`
+   therefore does NOT prove that a given file id sits inside THAT client's folder: ids are
+   globally addressable on the account. These walk the real parent chain before bytes are
+   served or written, exactly as spItemBelongsToClient does for the shared SharePoint drive.
+   Ids are compared, never paths - Graph percent-encodes path segments but not `name`, so a
+   folder called "Client Files" would never have matched a path built from the two. When no
+   landing folder is pinned the whole drive is that client's and they answer true. */
+const DRIVE_ANCESTOR_HOPS = 24;
+/* Thrown when the provider could not be asked at all. Kept DISTINCT from "this file is not
+   under the client's folder": a transient 429/500 from Drive is not evidence about ownership,
+   and reporting it as one told a bookkeeper their own client's file belonged to someone else
+   and to stop trying. Callers turn this into "could not verify — try again", and still refuse
+   the operation either way. */
+const DRIVE_VERIFY_FAILED = 'drive-verify-failed';
+async function gParentOf(at, id, memo) {
+  if (memo.has(id)) return memo.get(id);
+  const r = await fetch('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(id) + '?fields=parents&supportsAllDrives=true', { headers: { Authorization: 'Bearer ' + at } })
+    .catch(() => null);
+  if (!r) throw new Error(DRIVE_VERIFY_FAILED);
+  let par = null;
+  /* 404 only. Drive returns 403 for rateLimitExceeded / userRateLimitExceeded far more often
+     than for anything about this file, and with the firm's own token a file that genuinely is
+     not visible answers 404 — so reading 403 as "not ours" put a rate limit back in the exact
+     bucket DRIVE_VERIFY_FAILED was added to keep it out of. */
+  if (r.status === 404) par = null;                               // not there = not ours
+  else if (!r.ok) throw new Error(DRIVE_VERIFY_FAILED);
+  else par = (((await r.json()).parents) || [])[0] || null;
+  memo.set(id, par);   // only a real ANSWER is cached; a failure must stay retryable
+  return par;
+}
+async function gUnderFolder(at, fileId, rootId, memo, knownParents) {
+  if (!rootId) return true;
+  if (!fileId) return false;
+  if (fileId === rootId) return true;
+  // Search results already carry `parents`, so the first hop of each result costs no call,
+  // and the memo means a folder chain is resolved once however many results share it.
+  if (knownParents && knownParents.length && !memo.has(fileId)) memo.set(fileId, knownParents[0] || null);
+  let id = fileId;
+  for (let hop = 0; hop < DRIVE_ANCESTOR_HOPS; hop++) {
+    const par = await gParentOf(at, id, memo);
+    if (!par) return false;          // reached a drive root that is not the client's folder
+    if (par === rootId) return true;
+    id = par;
+  }
+  return false;
+}
+async function odUnderRoot(at, driveId, itemId, rootItemId) {
+  if (!rootItemId || !driveId) return true;
+  let id = String(itemId || ''); if (!id) return false;
+  for (let hop = 0; hop < DRIVE_ANCESTOR_HOPS && id; hop++) {
+    if (id === String(rootItemId)) return true;
+    const r = await fetch('https://graph.microsoft.com/v1.0/drives/' + driveId + '/items/' + encodeURIComponent(id) + '?$select=id,parentReference', { headers: { Authorization: 'Bearer ' + at } })
+      .catch(() => null);
+    if (!r) throw new Error(DRIVE_VERIFY_FAILED);
+    if (r.status === 404) return false;                          // not there = not ours
+    if (!r.ok) throw new Error(DRIVE_VERIFY_FAILED);              // 403 included: throttling, not a verdict
+    const j = await r.json();
+    id = (j.parentReference && j.parentReference.id) || '';
+  }
+  return false;
+}
+// One place that turns either answer into a response, so all three call sites agree.
+function driveOwnershipError(e, what) {
+  if (e && String(e.message) === DRIVE_VERIFY_FAILED) {
+    return { status: 502, jsonBody: { ok: false, error: 'Could not check whether ' + what + ' belongs to this client — the storage provider did not answer. Try again in a moment.' } };
+  }
+  return null;
+}
+
 // List files in the client's drive (root or a folder).
 app.http('drive-files', {
   methods: ['GET'], authLevel: 'anonymous', route: 'integrations/drive/{realmId}/files',
@@ -3328,9 +3560,24 @@ app.http('drive-files', {
          sharepoint-list is bounded. */
       const DRIVE_MAX = 1000, DRIVE_PAGES = 5;
       let truncated = false;
+      let gDropped = 0;   // search hits that live outside this client's folder (reported, not hidden)
       const root = dt.doc.root || null;
+      /* The BROWSE path takes its folder id straight from the query string, so ?folderId=
+         listed any folder on the account — the same hole the search, download and upload
+         paths were just closed against, one call site further along. */
+      if (folderId) {
+        let browseOwned;
+        try {
+          browseOwned = dt.doc.provider === 'google'
+            ? await gUnderFolder(dt.at, folderId, (root && root.folderId) || '', new Map())
+            : await odUnderRoot(dt.at, root && root.driveId, folderId, root && root.itemId);
+        } catch (e) { return driveOwnershipError(e, 'that folder') || { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+        if (!browseOwned) return { status: 403, jsonBody: { ok: false, error: 'That folder does not belong to this client.' } };
+      }
       if (dt.doc.provider === 'google') {
         const start = folderId || (root && root.folderId) || 'root';
+        const gRootId = (root && root.folderId) || '';
+        const gMemo = new Map();
         // When searching, match by name across the accessible drive; otherwise list this folder.
         const gq = search
           ? "name contains '" + search.replace(/['\\]/g, ' ') + "' and trashed=false"
@@ -3340,13 +3587,31 @@ app.http('drive-files', {
         // which is why the page token was never even available to loop on.
         let pageToken = '';
         for (let page = 0; page < DRIVE_PAGES; page++) {
-          const r = await fetch('https://www.googleapis.com/drive/v3/files?q=' + q + '&fields=nextPageToken,files(id,name,mimeType,modifiedTime,size,webViewLink)&pageSize=300&orderBy=folder,name&supportsAllDrives=true&includeItemsFromAllDrives=true' + (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : ''), { headers: { Authorization: 'Bearer ' + dt.at } });
+          // `parents` is requested so a search can be constrained to the client's own folder
+          // below — Drive omits it unless it is named in `fields`.
+          const r = await fetch('https://www.googleapis.com/drive/v3/files?q=' + q + '&fields=nextPageToken,files(id,name,mimeType,modifiedTime,size,webViewLink,parents)&pageSize=300&orderBy=folder,name&supportsAllDrives=true&includeItemsFromAllDrives=true' + (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : ''), { headers: { Authorization: 'Bearer ' + dt.at } });
           if (!r.ok) {
             if (r.status === 403) return { jsonBody: { ok: false, needsReconnect: true, provider: 'google', account: dt.doc.account, error: 'Google Drive access isn’t authorized for this connection (the Drive permission was not granted). Disconnect and reconnect ' + (dt.doc.account || 'the account') + ', approving “See, edit, create and delete all your Google Drive files.”' } };
             throw new Error('Google Drive ' + r.status);
           }
           const j = await r.json();
-          items = items.concat((j.files || []).map(f => ({ id: f.id, name: f.name, folder: f.mimeType === 'application/vnd.google-apps.folder', mimeType: f.mimeType || null, size: f.size ? Number(f.size) : null, modified: f.modifiedTime || null, webUrl: f.webViewLink || null })));
+          let batch = j.files || [];
+          /* Drive has no recursive "under this folder" query, so a name search runs across the
+             whole account. Filter the results down to the client's own tree; without this,
+             client A's Files tab searched up client B's documents and handed back ids the
+             download endpoint then accepted. */
+          if (search && gRootId) {
+            const keep = [];
+            for (const f of batch) {
+              let ok = false;
+              // A blip on ONE result must not fail the whole search; it is counted as filtered
+              // out (reported as filteredOut) rather than shown unverified.
+              try { ok = await gUnderFolder(dt.at, f.id, gRootId, gMemo, f.parents); } catch (_) { ok = false; }
+              if (ok) keep.push(f); else gDropped++;
+            }
+            batch = keep;
+          }
+          items = items.concat(batch.map(f => ({ id: f.id, name: f.name, folder: f.mimeType === 'application/vnd.google-apps.folder', mimeType: f.mimeType || null, size: f.size ? Number(f.size) : null, modified: f.modifiedTime || null, webUrl: f.webViewLink || null })));
           pageToken = j.nextPageToken || '';
           if (!pageToken || items.length >= DRIVE_MAX) break;
         }
@@ -3354,7 +3619,13 @@ app.http('drive-files', {
       } else {
         let path;
         if (search) {
-          if (root && root.driveId) path = "/drives/" + root.driveId + "/root/search(q='" + encodeURIComponent(search) + "')";
+          /* Search UNDER the client's pinned folder, not from the drive root. Several clients
+             can be connected through the same account with different landing folders, so a
+             drive-root search from client A's Files tab listed client B's documents — and the
+             ids it returned then passed the download endpoint's realm check. Graph's
+             items/{id}/search is recursive, so subfolders are still covered. */
+          if (root && root.driveId && root.itemId) path = "/drives/" + root.driveId + "/items/" + encodeURIComponent(root.itemId) + "/search(q='" + encodeURIComponent(search) + "')";
+          else if (root && root.driveId) path = "/drives/" + root.driveId + "/root/search(q='" + encodeURIComponent(search) + "')";
           else path = "/me/drive/root/search(q='" + encodeURIComponent(search) + "')";
         } else if (root && root.driveId) { path = '/drives/' + root.driveId + '/items/' + encodeURIComponent(folderId || root.itemId) + '/children'; }
         else { path = folderId ? ('/me/drive/items/' + encodeURIComponent(folderId) + '/children') : '/me/drive/root/children'; }
@@ -3374,7 +3645,7 @@ app.http('drive-files', {
         }
       }
       items.sort((a, b) => ((b.folder ? 1 : 0) - (a.folder ? 1 : 0)) || String(a.name).localeCompare(b.name));
-      return { jsonBody: { ok: true, provider: dt.doc.provider, account: dt.doc.account, folderId, items, truncated } };
+      return { jsonBody: { ok: true, provider: dt.doc.provider, account: dt.doc.account, folderId, items, truncated, filteredOut: gDropped } };
     } catch (e) { context.error('drive-files', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
@@ -3388,6 +3659,16 @@ app.http('drive-download', {
     const acc = await driveClientAccess(p, realmId, { files: true }); if (acc.err) return acc.err;
     try {
       const dt = await driveDocAndToken(realmId); if (dt.err) return dt.err;
+      // Realm access is not file ownership: every id on the account is addressable, so this
+      // endpoint would proxy ANY file the firm's token can read, for any client tab.
+      const dlRoot = dt.doc.root || null;
+      let dlOwned;
+      try {
+        dlOwned = dt.doc.provider === 'google'
+          ? await gUnderFolder(dt.at, fileId, (dlRoot && dlRoot.folderId) || '', new Map())
+          : await odUnderRoot(dt.at, dlRoot && dlRoot.driveId, fileId, dlRoot && dlRoot.itemId);
+      } catch (e) { const er = driveOwnershipError(e, 'this file'); if (er) return er; throw e; }
+      if (!dlOwned) return { status: 403, jsonBody: { ok: false, error: 'This file does not belong to this client.' } };
       const uq = new URL(request.url).searchParams;
       const wantInlineReq = uq.get('inline') === '1'; // preview request
       const name = (uq.get('name') || 'download').replace(/[^a-zA-Z0-9._ -]+/g, '_').slice(0, 120);
@@ -3441,6 +3722,17 @@ app.http('drive-upload', {
       const buf = Buffer.from(await file.arrayBuffer());
       const name = String(file.name || 'upload'); const ct = file.type || 'application/octet-stream';
       const root = dt.doc.root || null;
+      // Same reasoning as the download side, in the other direction: without this a folderId
+      // could file one client's paperwork into another client's drive.
+      if (folderId) {
+        let upOwned;
+        try {
+          upOwned = dt.doc.provider === 'google'
+            ? await gUnderFolder(dt.at, folderId, (root && root.folderId) || '', new Map())
+            : await odUnderRoot(dt.at, root && root.driveId, folderId, root && root.itemId);
+        } catch (e) { const er = driveOwnershipError(e, 'that folder'); if (er) return er; throw e; }
+        if (!upOwned) return { status: 403, jsonBody: { ok: false, error: 'That folder does not belong to this client.' } };
+      }
       if (dt.doc.provider === 'google') {
         const boundary = 'bcc' + Date.now().toString(36);
         const meta = { name }; const parent = folderId || (root && root.folderId); if (parent) meta.parents = [parent];
@@ -4618,6 +4910,10 @@ app.http('msgraph-send-mail', {
       const html = String(body.bodyHtml || body.body || '');
 
       let upn;
+      // Did this message actually go out AS the client's shared mailbox? With
+      // fallbackToSender an unconfigured client sends from the signed-in user instead, and
+      // the error mapping below must not blame a mailbox that was never involved.
+      let sentAsClientMailbox = false;
       if (body.realmId) {
         const rc = await resolveClientMailbox(p, String(body.realmId), { mutating: true }); // sends AS the client's mailbox
         if (rc.err) return rc.err;
@@ -4631,6 +4927,7 @@ app.http('msgraph-send-mail', {
            is the only place that actually knows. Without the flag an unconfigured client still
            gets the hard error, so the Email tab's own behaviour is unchanged. */
         if (noMailbox && !body.fallbackToSender) return badRequest('no client mailbox configured for this client');
+        sentAsClientMailbox = !noMailbox;
         upn = encodeURIComponent(noMailbox ? (p.userDetails || p.userId) : rc.cfg.mailbox);
       } else {
         upn = encodeURIComponent(p.userDetails || p.userId);
@@ -4677,7 +4974,23 @@ app.http('msgraph-send-mail', {
       });
       if (!r.ok && r.status !== 202) {
         const detail = (await r.text()).slice(0, 300);
-        if (body.realmId && graphMailboxMissing(r.status, detail)) return { status: 409, jsonBody: { ok: false, pendingMailbox: true, error: 'This client’s shared mailbox hasn’t been created in Microsoft 365 yet. Once an admin creates it, sending works automatically.' } };
+        /* Keyed on the mailbox we actually used, not on realmId being present. With
+           fallbackToSender the realm is passed on EVERY certified-payroll and notary send,
+           so a failure on the sender's OWN mailbox was reported as "this client's shared
+           mailbox hasn't been created" - about a mailbox the message never touched, and
+           telling an admin to create something that would not fix it. */
+        if (graphMailboxMissing(r.status, detail)) {
+          if (sentAsClientMailbox) return { status: 409, jsonBody: { ok: false, pendingMailbox: true, error: 'This client’s shared mailbox hasn’t been created in Microsoft 365 yet. Once an admin creates it, sending works automatically.' } };
+          /* Two different situations, and the message must not conflate them: a send that
+             named a client (fallbackToSender, so it went from the sender because that client
+             has no shared mailbox) versus a send that never involved a client at all. The
+             second used to be told 'this client has no shared mailbox' about a client that
+             was never part of the request. */
+          const meBox = String(p.userDetails || p.userId || '');
+          return { status: 409, jsonBody: { ok: false, error: body.realmId
+            ? ('Microsoft 365 has no mailbox for your own account (' + meBox + '), and this client has no shared mailbox set up, so nothing was sent. Ask an admin to license your mailbox, or set a shared mailbox for this client.')
+            : ('Microsoft 365 has no mailbox for your own account (' + meBox + '), so nothing was sent. Ask an admin to license your mailbox.') } };
+        }
         return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')', detail } };
       }
       logAudit('client-email-send', { user: auditUser(request), path: '/api/integrations/msgraph/send-mail', meta: { realmId: body.realmId ? String(body.realmId) : undefined, to: toList.filter(Boolean).slice(0, 5).map(e => String(e).slice(0, 120)), subject } });
@@ -7698,8 +8011,8 @@ async function getReportLogo(request) {
   if (!_reportLogo) _reportLogoRetryAt = Date.now() + 5 * 60 * 1000;
   return _reportLogo;
 }
-async function renderReportPdf(b) {
-  const doc = pdfPrinter().createPdfKitDocument(buildReportDocDef(b));
+async function pdfBytes(docDef) {
+  const doc = pdfPrinter().createPdfKitDocument(docDef);
   return await new Promise((resolve, reject) => {
     const chunks = [];
     doc.on('data', c => chunks.push(c));
@@ -7708,6 +8021,121 @@ async function renderReportPdf(b) {
     doc.end();
   });
 }
+async function renderReportPdf(b) { return await pdfBytes(buildReportDocDef(b)); }
+
+/* ===== Server-rendered pay-application PDF (pdfmake) =====
+   Pay applications were FILED into the client's documents as .html — the same defect that
+   was fixed for certified payroll: the document viewer will not render an .html file inline
+   (correctly, since an .html file served from our own origin would run inside the reader's
+   session), so the client opening their pay application got a screen of markup. Laid out
+   here from figures the browser has ALREADY computed, exactly like the monthly report — this
+   endpoint does no arithmetic of its own, so the PDF and the on-screen form cannot disagree. */
+function payappDocDef(b) {
+  b = b || {};
+  const S = (v) => pdfSani(v == null ? '' : String(v));
+  const M = (v) => {
+    const n = Number(v) || 0;
+    const t = '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return n < 0 ? '(' + t + ')' : t;
+  };
+  const PCT = (v) => (Math.round((Number(v) || 0) * 10) / 10) + '%';
+  const kv = (k, v) => [{ text: S(k), style: 'k' }, { text: S(v) }];
+  const hdRow = (k1, v1, k2, v2) => kv(k1, v1).concat(kv(k2, v2));
+  const sumRow = (n, label, val, strong) => [
+    { text: n, alignment: 'center', color: '#444' },
+    { text: S(label), bold: !!strong },
+    { text: M(val), alignment: 'right', bold: !!strong }
+  ];
+  const lines = Array.isArray(b.lines) ? b.lines : [];
+  const t = b.totals || {};
+  const cell = (v) => ({ text: S(v), fontSize: 7 });
+  const num = (v) => ({ text: M(v), fontSize: 7, alignment: 'right' });
+  const g703 = [
+    ['Item', 'Description of work', 'Scheduled value', 'From previous', 'This period', 'Materials stored', 'Total completed & stored', '%', 'Balance to finish', 'Retainage']
+      .map(h => ({ text: h, style: 'th' }))
+  ].concat(lines.map(l => [
+    cell(l.item), cell(l.desc), num(l.scheduled), num(l.prev), num(l.period), num(l.stored), num(l.total),
+    { text: PCT(l.pct), fontSize: 7, alignment: 'right' }, num(l.balance), num(l.retain)
+  ])).concat([[
+    { text: '', fontSize: 7 }, { text: 'GRAND TOTAL', fontSize: 7, bold: true },
+    num(t.scheduled), num(t.prev), num(t.period), num(t.stored), num(t.total),
+    { text: PCT(t.pct), fontSize: 7, alignment: 'right', bold: true }, num(t.balance), num(t.retain)
+  ]]);
+  const retW = Number(b.retPctWork) || 0, retS = Number(b.retPctStored) || 0;
+  const cert = 'The undersigned Contractor certifies that to the best of the Contractor’s knowledge, information and belief the Work covered by this Application for Payment has been completed in accordance with the Contract Documents, that all amounts have been paid by the Contractor for Work for which previous Certificates for Payment were issued and payments received from the Owner, and that current payment shown herein is now due.';
+  const fld = (v) => ({ text: S(v || '                    '), decoration: 'underline' });
+  return {
+    pageSize: 'LETTER', pageMargins: [36, 34, 36, 40],
+    defaultStyle: { font: 'Helvetica', fontSize: 9, color: '#111' },
+    styles: {
+      h1: { fontSize: 15, bold: true, alignment: 'center' },
+      sub: { fontSize: 9, alignment: 'center', color: '#444', margin: [0, 2, 0, 10] },
+      h2: { fontSize: 12, bold: true, margin: [0, 10, 0, 5] },
+      k: { bold: true, fillColor: '#f0f0f0' },
+      th: { fontSize: 7, bold: true, fillColor: '#f0f0f0', alignment: 'center' }
+    },
+    footer: (cur, tot) => ({
+      columns: [
+        { text: 'Prepared with Blue Collar Coach - formatted in the style of AIA G702/G703; not an official AIA form. Verify all figures before submitting.', fontSize: 7, color: '#666' },
+        { text: cur + ' / ' + tot, fontSize: 7, color: '#666', alignment: 'right', width: 40 }
+      ], margin: [36, 8, 36, 0]
+    }),
+    content: [
+      { text: 'Application and Certificate for Payment', style: 'h1' },
+      { text: 'Progress billing - prepared in the format of AIA Document G702/G703', style: 'sub' },
+      { table: { widths: [78, '*', 78, '*'], body: [
+        hdRow('To (Owner)', b.ownerName, 'From (Contractor)', b.contractorName),
+        hdRow('Project', b.projectName, 'Via (Architect)', b.architectName),
+        hdRow('Project location', b.projectAddress, 'Contract for', b.contractFor),
+        hdRow('Application no.', b.appNo, 'Period to', b.periodTo),
+        hdRow('Application date', b.appDate, 'Project no.', b.projectNo),
+        hdRow('Contract date', b.contractDate, '', b.isFinal ? 'FINAL APPLICATION' : '')
+      ] } },
+      { text: pdfSani('Contractor’s Application for Payment'), style: 'h2' },
+      { table: { widths: [16, '*', 90], body: [
+        sumRow('1', 'Original contract sum', b.line1),
+        sumRow('2', 'Net change by change orders (' + M(b.coAdd) + ' add - ' + M(b.coDed) + ' ded)', b.netCO),
+        sumRow('3', 'Contract sum to date (1 +/- 2)', b.line3, true),
+        sumRow('4', 'Total completed & stored to date', b.line4),
+        sumRow('5', 'Retainage: ' + retW + '% work (' + M(b.ret5a) + ') + ' + retS + '% stored (' + M(b.ret5b) + ')', b.line5),
+        sumRow('6', 'Total earned less retainage (4 - 5)', b.line6, true),
+        sumRow('7', 'Less previous certificates for payment', b.line7),
+        sumRow('8', 'CURRENT PAYMENT DUE (6 - 7)', b.line8, true),
+        sumRow('9', 'Balance to finish, including retainage (3 - 6)', b.line9)
+      ] }, layout: 'lightHorizontalLines', margin: [0, 0, 0, 10] },
+      { text: pdfSani(cert), fontSize: 8.5, lineHeight: 1.25 },
+      { text: ['Contractor: ', fld(b.contractorName), '   By: ', fld(b.socName), ', ' + S(b.socTitle) + '   Date: ', fld(b.socDate)], fontSize: 8.5, margin: [0, 16, 0, 0] },
+      /* AMOUNT CERTIFIED is the ARCHITECT's figure and may be less than was requested, so it
+         is left blank here exactly as it is on screen — pre-filling it with line 8 would
+         present the contractor's own request as an architect's certification. */
+      { text: [pdfSani('Architect’s Certificate for Payment - Amount Certified: '), fld(''), '   By: ', fld(''), '   Date: ', fld('')], fontSize: 8.5, margin: [0, 12, 0, 0] },
+      { text: 'Amount Certified is completed by the Architect and may differ from the amount requested on line 8.', fontSize: 7.5, color: '#666', margin: [0, 3, 0, 0] },
+      { text: 'Continuation Sheet', style: 'h1', pageBreak: 'before' },
+      { text: 'Application no. ' + S(b.appNo) + ' - Period to ' + S(b.periodTo) + ' - G703 style', style: 'sub' },
+      { table: { headerRows: 1, widths: [26, '*', 48, 44, 42, 46, 52, 24, 48, 44], body: g703 } }
+    ]
+  };
+}
+
+/**
+ * POST /api/payapp/{realmId}/pdf
+ * Lays out a pay application as a real PDF from figures the browser already computed.
+ * Client-scoped: the same gate as filing any other document for that client.
+ */
+app.http('payapp-pdf', {
+  methods: ['POST'], authLevel: 'anonymous', route: 'payapp/{realmId}/pdf',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    const realmId = String(request.params.realmId || '');
+    const acc = await driveClientAccess(p, realmId, { files: true, write: true }); if (acc.err) return acc.err;
+    try {
+      const b = await request.json().catch(() => ({}));
+      const buf = await pdfBytes(payappDocDef(b));
+      logAudit('payapp-pdf', { user: auditUser(request), path: '/api/payapp/' + realmId + '/pdf', meta: { realmId, appNo: String((b && b.appNo) || '') } });
+      return { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="pay-application.pdf"', 'X-Content-Type-Options': 'nosniff' }, body: buf };
+    } catch (e) { context.error('payapp-pdf', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  })
+});
 /**
  * POST /api/integrations/qbo/companies/{realmId}/monthly-report/pdf
  * Renders the finished, styled PDF from the report data the browser already fetched
@@ -8554,10 +8982,6 @@ app.http('documents-list-create', {
 
     // POST — multipart upload.
     try {
-      // Same app-tier gate as the delete branch: a View-only Documents user must not be able
-      // to add firm-wide files either (the bookkeeping check further down only covers
-      // /clients/<realm> folders).
-      if (!tierAtLeast(await appTierFor(p, 'documents'), 'edit')) return forbidden('your Documents access is view-only, so you cannot upload files');
       const form = await request.formData();
       const file = form.get('file');
       if (!file || typeof file === 'string') return badRequest('expected "file" form field');
@@ -8565,6 +8989,16 @@ app.http('documents-list-create', {
       if (buf.length > MAX_UPLOAD_BYTES) return badRequest('file exceeds 25 MB');
 
       const folder = safeFolder(form.get('folder') || '/');
+      /* The Documents tier governs the FIRM-WIDE library, not a client's own folder. It used
+         to be checked before the folder was even read, so a bookkeeper set to Bookkeeping=Edit
+         but Documents=View — a normal combination, meant only to keep them off the Documents
+         page — could not file the monthly report or a certified payroll to the client they
+         work on every day. Client folders are governed below by driveClientAccess plus the
+         bookkeeping tier, which is the rule that actually belongs to them. Mirrors the split
+         docAccessFilter already makes on the read side. */
+      if (!/^\/clients\/[^/]+/i.test(folder) && !tierAtLeast(await appTierFor(p, 'documents'), 'edit')) {
+        return forbidden('your Documents access is view-only, so you cannot upload files');
+      }
       // Same client-access gate the GET (list) path above already enforces — without
       // it, any signed-in user could POST a file straight into another (or a private)
       // client's folder, an unauthorized cross-client write the listing check alone
@@ -8595,6 +9029,30 @@ app.http('documents-list-create', {
       // upload path did not.
       const docId = String(form.get('docId') || (DOC_DOC_PREFIX + Date.now().toString(36) + Math.random().toString(36).slice(2, 9)));
       if (docId.indexOf(DOC_DOC_PREFIX) !== 0) return badRequest('bad docId');
+      /* A docId that names an EXISTING record REPLACES it (the upsert below is a whole-document
+         write), so the caller must be allowed to write THAT document, not merely the folder
+         they are uploading into. The folder gate above no longer covers it: exempting client
+         folders from the Documents tier — correct, so a restricted bookkeeper can still file
+         the monthly report — also removed the tier check that was incidentally the only thing
+         stopping a caller from passing the id of a FIRM-WIDE document and overwriting its
+         name, folder and storageKey while uploading to their own client. Check the record
+         being replaced on its own terms. */
+      {
+        const cPrev = container();
+        const prevMeta = await cPrev.item(docId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+        if (prevMeta && prevMeta.docType === 'document') {
+          const prevRealm = docFolderRealm(prevMeta);
+          if (prevRealm) {
+            const pacc = await driveClientAccess(p, prevRealm);
+            if (pacc.err) return { status: 403, jsonBody: { error: 'no access to the file you are replacing' } };
+            if (!(await isAppAdmin(p)) && bookkeepingReadOnly(await bookkeepingTierFor(p))) {
+              return { status: 403, jsonBody: { error: 'your bookkeeping access is view-only, so you cannot replace this client’s files' } };
+            }
+          } else if (!tierAtLeast(await appTierFor(p, 'documents'), 'edit')) {
+            return forbidden('your Documents access is view-only, so you cannot replace this file');
+          }
+        }
+      }
       const linkedContactId    = String(form.get('linkedContactId') || '').trim() || null;
       const linkedEngagementId = String(form.get('linkedEngagementId') || '').trim() || null;
 
@@ -8679,11 +9137,20 @@ app.http('document-one', {
          for every FIRM-WIDE document ('/', '/contracts', '/sops'), so a View-only Documents
          user could permanently delete those — blob and all — with nothing stopping them.
          This is irreversible, so it is checked before anything is touched. */
-      if (!tierAtLeast(await appTierFor(p, 'documents'), 'edit')) return forbidden('your Documents access is view-only, so you cannot delete files');
+      // Firm-wide documents only — a CLIENT file is governed by the bookkeeping tier below.
+      if (!(meta && docFolderRealm(meta)) && !tierAtLeast(await appTierFor(p, 'documents'), 'edit')) {
+        return forbidden('your Documents access is view-only, so you cannot delete files');
+      }
       // Deleting is a WRITE and this is permanent (Blob + Cosmos). docAccessFilter is
       // deliberately NOT the place for this rule — it also gates the GET/list/download
       // callers, and a read-only bookkeeper is still supposed to READ these files. Keyed on
       // docFolderRealm so firm-wide documents are unaffected.
+      /* An UNSET bookkeeping tier (null) is permissive here, deliberately: null is the
+         documented "no tier recorded = regular access" sentinel used by every other
+         bookkeeping gate in this file, and treating it as restrictive would stop ordinary
+         bookkeepers deleting the client paperwork they file every day. The Documents tier
+         deliberately does NOT apply to client folders — see the upload path — so a client
+         file is governed by client access (docAccessFilter, above) plus this. */
       if (meta && docFolderRealm(meta) && bookkeepingReadOnly(await bookkeepingTierFor(p))) return forbidden('your bookkeeping access is view-only, so you cannot delete this client’s files');
       if (meta && meta.storageKey) {
         try {
