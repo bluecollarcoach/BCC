@@ -6298,7 +6298,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // "search the job and have CPRs specific to that job show up".
     var q = _cprSearch.trim().toLowerCase();
     var reports = !q ? all : all.filter(function (r) {
-      var hay = [r.projectName, r.payrollNo, r.contractName, r.contractNumber, r.weekStart, r.payPeriodEnd]
+      var hay = [r.projectName, r.payrollNo, r.contractName, r.contractNumber, r.weekStart, r.payPeriodEnd, (r.done ? 'done' : 'open')]
         .concat((r.employees || []).map(function (e) { return e.name; }))
         .join(' ').toLowerCase();
       return hay.indexOf(q) >= 0;
@@ -6309,7 +6309,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       (all.length ? '<input id="cpr_search" type="search" placeholder="🔍 Search by job / project, payroll #, or employee…" value="' + esc(_cprSearch) + '" style="width:100%;box-sizing:border-box;min-height:38px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;padding:8px 10px;font:inherit;font-size:13px;margin-bottom:10px;" />' : '');
     var list = reports.length ? ('<table><thead><tr><th>Payroll #</th><th>Pay period end</th><th>Project</th><th class="num">Employees</th><th>Updated</th><th></th></tr></thead><tbody>' + reports.map(function (r) {
       var when = r.updatedAt ? new Date(r.updatedAt).toLocaleDateString([], { month:'short', day:'numeric' }) : '';
-      return '<tr><td><strong>' + esc(r.payrollNo || '—') + '</strong>' + (r.isFinal ? ' <span style="font-size:10px;color:var(--gold-deep);font-weight:700;">FINAL</span>' : '') + '</td>' +
+      return '<tr><td><strong>' + esc(r.payrollNo || '—') + '</strong>' + (r.isFinal ? ' <span style="font-size:10px;color:var(--gold-deep);font-weight:700;">FINAL</span>' : '') +
+        (r.done ? ' <span style="font-size:10px;color:#1f6f43;font-weight:700;" title="Marked done on our end">✓ DONE</span>' : '') + '</td>' +
         '<td>' + esc(r.payPeriodEnd || '—') + '</td><td>' + esc(r.projectName || '—') + '</td>' +
         '<td class="num">' + ((r.employees || []).length) + '</td><td style="color:var(--muted);font-size:12.5px;">' + esc(when) + '</td>' +
         '<td style="text-align:right;white-space:nowrap;"><button class="btn btn-ghost" data-cpr-open="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;">Open</button> ' +
@@ -6319,7 +6320,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }).join('') + '</tbody></table>') : (q
       ? '<div style="color:var(--muted);padding:10px 0;">No payroll reports match &ldquo;' + esc(_cprSearch) + '&rdquo;.</div>'
       : '<div style="color:var(--muted);padding:10px 0;">No payroll reports yet. Click <strong>+ New payroll report</strong> to create one.</div>');
-    body.innerHTML = head + list;
+    body.innerHTML = head + cprNotesBox('', 'Notes for ' + companyName(currentRealm) + '’s certified payroll') + list;
+    cprNotesWire('');
     document.getElementById('cpr_new').onclick = cprNew;
     var cs = document.getElementById('cpr_search');
     if (cs) {
@@ -6356,6 +6358,59 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     });
     return max + 1;
   }
+  /* ---- Certified-payroll reference notes (Karla, 2026-08-20: "Is it possible to have a
+     notes section within the certified payroll section... that way we don't have to go
+     between two pages for info on where to send reports"). One synced document per client:
+     a client-level note, plus a note per JOB, since where a report goes is usually a
+     property of the project. Shown on the list, in the editor, and in the email panel —
+     which is the moment the "where do I send this" question is actually asked. Never
+     printed on any form. ---- */
+  function cprNotesKey() { return 'bcc-cprnotes-' + currentRealm; }
+  function cprNotesDoc() {
+    try { return JSON.parse(localStorage.getItem(cprNotesKey())) || {}; } catch (e) { return {}; }
+  }
+  function cprNoteGet(jobKey) {
+    var d = cprNotesDoc();
+    return String((jobKey ? ((d.byJob || {})[jobKey]) : d.general) || '');
+  }
+  function cprNoteSet(jobKey, text) {
+    if (bkRefuseIfReadOnly()) return false;
+    if (!currentRealm) return false;
+    var d = cprNotesDoc();
+    d.id = cprNotesKey(); d.tenantId = 'blue-collar-coach'; d.docType = 'cpr-notes'; d.realmId = currentRealm;
+    if (jobKey) { d.byJob = d.byJob || {}; d.byJob[jobKey] = text; }
+    else d.general = text;
+    d.updatedAt = nowIso(); d.updatedBy = myUpn();
+    localStorage.setItem(d.id, JSON.stringify(d));
+    return true;
+  }
+  // `jobKey` empty = the client-level note. Returns markup; wire with cprNotesWire().
+  function cprNotesBox(jobKey, label) {
+    var v = cprNoteGet(jobKey);
+    return '<div style="margin:10px 0;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;padding:10px 12px;background:#fcfbf7;">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">' +
+      '<strong style="font-size:12.5px;">📌 ' + esc(label) + '</strong>' +
+      '<span id="cprnote_status" style="font-size:11.5px;color:var(--muted);"></span></div>' +
+      '<textarea id="cprnote_text" rows="3" placeholder="Where these reports go, who to send them to, anything the next person needs. Saved for the whole team — never printed on a form." ' +
+      'style="width:100%;box-sizing:border-box;margin-top:6px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:6px;padding:8px;font:inherit;font-size:13px;">' + esc(v) + '</textarea></div>';
+  }
+  var _cprNoteTimer = null;
+  function cprNotesWire(jobKey) {
+    var el = document.getElementById('cprnote_text'); if (!el) return;
+    var st = document.getElementById('cprnote_status');
+    el.addEventListener('input', function () {
+      if (st) st.textContent = 'Saving…';
+      clearTimeout(_cprNoteTimer);
+      var realmAt = currentRealm, val = el.value;
+      _cprNoteTimer = setTimeout(function () {
+        // Realm-race guard: the debounce outlives a client switch, and this note belongs to
+        // the client that was open when it was typed.
+        if (currentRealm !== realmAt) return;
+        var ok = cprNoteSet(jobKey, val);
+        if (st) st.textContent = ok ? 'Saved' : '';
+      }, 500);
+    });
+  }
   function cprNew() {
     var info = {}; try { info = JSON.parse(localStorage.getItem('bcc-client-info-' + currentRealm)) || {}; } catch (e) {}
     // No job is chosen yet, so this is the client-wide next number; it is re-scoped to the
@@ -6383,6 +6438,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var d = JSON.parse(JSON.stringify(src));
     // Continues the SOURCE report's job, so it takes that job's next number.
     d.id = cprPrefix() + uid2(); d.payrollNo = String(cprNextNo(src, null)); d.autoNo = true; d.isFinal = false;
+    d.done = false;   // a new week's report, whatever the one it was copied from was marked
     d.payPeriodEnd = ''; d.weekStart = ''; d.socCommence = ''; d.socEnd = ''; d.socDate = bizToday();
     d.docId = null; // don't overwrite the source's filed copy
     d.createdAt = nowIso(); d.updatedAt = nowIso();
@@ -6517,13 +6573,21 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       txt('Prime contractor address & phone', 'primeAddress') +
       txt('Contract or grant name', 'contractName') +
       txt('Contract or grant number', 'contractNumber') +
-      '<label>Pay period end date<input type="date" data-cf="payPeriodEnd" value="' + esc(cprDraft.payPeriodEnd || '') + '" /></label>' +
+      /* Begin then end, matching the Statement of Compliance at the bottom of the same form
+         (Karla, 2026-08-20): entering a period end BEFORE its start read backwards against
+         every other date pair on the page and against the paper form. */
       '<label>Week starting (Sunday)<input type="date" data-cf="weekStart" value="' + esc(cprDraft.weekStart || '') + '" /></label>' +
+      '<label>Pay period end date<input type="date" data-cf="payPeriodEnd" value="' + esc(cprDraft.payPeriodEnd || '') + '" /></label>' +
       txt('Project name and location', 'projectName', '', true) +
       txt('State project # (MnDOT)', 'mndotSp', 'e.g. SP 1234-56') +
       txt('Federal project # (MnDOT)', 'mndotFed', 'if federally funded') +
       '<label>Payroll #<input data-cf="payrollNo" value="' + esc(cprDraft.payrollNo || '') + '" /></label>' +
-      '<label class="chk"><input type="checkbox" data-cf="isFinal" ' + (cprDraft.isFinal ? 'checked' : '') + ' /> Mark as FINAL report</label>' +
+      /* Two DIFFERENT things, and they were being conflated (Karla, 2026-08-20): FINAL is
+         part of the government form and means "the last payroll for this job"; `done` is
+         ours and means "we have finished and sent this week's report". Jenna had been
+         ticking FINAL to mean the second, which mislabels a filed form. */
+      '<label class="chk"><input type="checkbox" data-cf="isFinal" ' + (cprDraft.isFinal ? 'checked' : '') + ' /> Mark as FINAL report <span style="color:var(--muted);font-weight:400;">(last payroll for this job — prints on the form)</span></label>' +
+      '<label class="chk"><input type="checkbox" data-cf="done" ' + (cprDraft.done ? 'checked' : '') + ' /> Done on our end <span style="color:var(--muted);font-weight:400;">(finished &amp; sent — our own tracking, not on the form)</span></label>' +
       '</div>';
 
     var empsHtml = '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:6px 0 8px;">Employees</div>' +
@@ -6545,10 +6609,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:18px 0 8px;">Signature</div>' +
       '<div id="cpr_sigwrap" style="margin-bottom:14px;"></div>';
 
-    body.innerHTML = header + hdr + empsHtml + soc +
+    /* The note that applies HERE: this job's, once the job has a name; the client's until
+       then, so the box is never a dead end that quietly files notes under nothing. */
+    var _noteJob = String(cprDraft.projectName || '').trim() ? cprJobKey(cprDraft) : '';
+    var notesHtml = cprNotesBox(_noteJob, _noteJob
+      ? ('Notes for ' + (cprDraft.projectName || 'this job'))
+      : ('Notes for ' + companyName(currentRealm) + '’s certified payroll — name the job above to keep notes per job'));
+    body.innerHTML = header + hdr + notesHtml + empsHtml + soc +
       '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px;"><button class="btn btn-ghost" id="cpr_back2" type="button">← Back</button><button class="btn btn-primary" id="cpr_save2" type="button">Save</button></div>';
 
     // wiring
+    cprNotesWire(_noteJob);
     body.querySelectorAll('[data-cf]').forEach(function (el) {
       el.addEventListener('input', cprCollectField);
       if (el.type === 'checkbox' || el.tagName === 'SELECT') el.addEventListener('change', cprCollectField);
@@ -6606,6 +6677,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       return '<li style="margin:2px 0;">' + esc(cprSendWhen(s.at)) + ' — ' + esc(cprFormsLabel(s.forms)) +
         ' → ' + esc((s.to || []).join(', ')) + (s.payrollNo ? ' <span style="color:var(--muted);">(#' + esc(s.payrollNo) + ')</span>' : '') + '</li>';
     }).join('');
+    /* Prefer this job's note, fall back to the client-level one — the same rule the editor
+       uses, so the box someone typed into is the box that shows up here. */
+    var noteTxt = (_jk !== 'default' ? cprNoteGet(_jk) : '') || cprNoteGet('');
+    var noteHtml = noteTxt ? ('<div class="full" style="font-size:12.5px;background:#fcfbf7;border:1px solid var(--chrome-mute);border-radius:8px;padding:8px 10px;white-space:pre-wrap;">' +
+      '📌 <strong>Notes</strong><br>' + esc(noteTxt) + '</div>') : '';
     var histPanel = prior.length ? '<details class="full" style="font-size:12px;"><summary style="cursor:pointer;color:var(--muted);">🕘 Sent history for this job (' + prior.length + ')</summary>' +
       '<ul style="margin:6px 0 0;padding-left:18px;list-style:disc;">' + histRows + '</ul></details>' : '';
     box.style.display = '';
@@ -6613,6 +6689,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       '<div style="font-weight:700;font-size:14px;margin-bottom:4px;">✉️ Email this payroll report</div>' +
       '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Sending from <strong>' + esc(from) + '</strong></div>' +
       '<div class="ws-form">' +
+      /* The reference note, right where "where do I send this?" is actually asked (Karla).
+         Read-only here — it is edited on the report/list, and printing it beside the
+         recipients is the whole point of not having to open another page. */
+      noteHtml +
       lastNote +
       '<label class="full">To (comma-separated)<input id="cpe_to" autocomplete="off" value="' + esc(toVal) + '" placeholder="gc@example.com" /></label>' +
       '<label class="full">CC (optional)<input id="cpe_cc" autocomplete="off" value="' + esc(ccVal) + '" /></label>' +

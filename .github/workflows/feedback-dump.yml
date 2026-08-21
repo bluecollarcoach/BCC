@@ -1,9 +1,9 @@
 name: TEMP feedback dump
 
-# TEMPORARY — added to read the in-app feedback queue during a sweep and REMOVED in the
-# next commit. Manual dispatch only (no schedule): it prints the queue into this run's log,
-# which only repo collaborators can read. The endpoint it calls is CRON_SECRET-gated and is
-# removed in the same cleanup commit.
+# TEMPORARY — added to read (and answer) the in-app feedback queue during a sweep and
+# REMOVED in the next commit, along with the endpoint it calls and the payload file.
+# Manual dispatch only: it prints the queue into this run's log, which only repo
+# collaborators can read. The endpoint is CRON_SECRET-gated.
 on:
   workflow_dispatch: {}
 
@@ -11,11 +11,16 @@ jobs:
   dump:
     runs-on: ubuntu-latest
     steps:
-      - name: Dump the feedback queue
+      - uses: actions/checkout@v3
+      - name: Dump the feedback queue (and post any resolutions)
         run: |
+          body='{}'
+          if [ -f .github/feedback-resolve.json ]; then body=$(cat .github/feedback-resolve.json); fi
           code=$(curl -sS -o /tmp/fb.json -w '%{http_code}' --max-time 120 \
-            'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/cron/feedback-dump' \
-            -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}")
+            -X POST 'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/cron/feedback-dump' \
+            -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            -H 'content-type: application/json' \
+            --data "$body")
           echo "HTTP $code"
           cat /tmp/fb.json || true; echo
           test "$code" = "200"

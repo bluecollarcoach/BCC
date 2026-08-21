@@ -124,6 +124,11 @@ const CLIENT_SCOPED_ID_RE = [
   // Postal-mail log for a client: what arrived in the physical mail, who scanned it,
   // and whether it has been dealt with. Per-client, so gate it by client access.
   /^bcc-clientmail-([^-]+)$/,
+  /* Certified-payroll reference notes for a client (Karla, 2026-08-20: "where to send
+     reports" was living on another page). One document per client holding a client-level
+     note plus a per-job map — genuinely per-client, so it is gated by client access and the
+     bookkeeping tier exactly like the reports it sits beside. */
+  /^bcc-cprnotes-([^-]+)$/,
 ];
 function dataKeyClientRealm(id) {
   id = String(id || '');
@@ -2022,7 +2027,39 @@ app.http('cron-feedback-dump', {
         query: 'SELECT c.id, c.createdAt, c.status, c.page, c.type, c.rating, c.message, c.userUpn, c.resolutionNote, c.resolutionAt FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC',
         parameters: [{ name: '@t', value: BCC_TENANT_ID }]
       }).fetchAll();
-      return { jsonBody: { ok: true, count: resources.length, feedback: resources } };
+      /* Also RESOLVES, from the same temporary route: the admin resolve path is behind the
+         SWA Entra cookie, which a headless run cannot present, and answering someone's
+         feedback without telling them is half a job. Mirrors that path exactly — same
+         status, same resolutionNote fields, same notifyUser call — so the record and the
+         notification are indistinguishable from an admin doing it in the UI. */
+      const body = await request.json().catch(() => ({}));
+      const toResolve = Array.isArray(body && body.resolve) ? body.resolve : [];
+      const done = [];
+      for (const item of toResolve) {
+        const fid = String((item && item.id) || '');
+        if (fid.indexOf('bcc-feedback-') !== 0) { done.push({ id: fid, ok: false, error: 'bad id' }); continue; }
+        const doc = await c.item(fid, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+        if (!doc || doc.docType !== 'feedback') { done.push({ id: fid, ok: false, error: 'not found' }); continue; }
+        const note = String((item && item.note) || '').trim().slice(0, 2000);
+        const wasResolved = doc.status === 'resolved';
+        doc.status = 'resolved'; doc.reviewedBy = 'lyle@bluecollarcoach.us'; doc.updatedAt = new Date().toISOString();
+        if (note) { doc.resolutionNote = note; doc.resolutionBy = 'lyle@bluecollarcoach.us'; doc.resolutionAt = new Date().toISOString(); }
+        await c.items.upsert(doc);
+        let notified = false;
+        if (doc.userUpn && !wasResolved) {
+          try {
+            const msg = String(doc.message || '');
+            await notifyUser(c, doc.userUpn, {
+              title: '✅ Your feedback was addressed',
+              body: note || (msg.length > 90 ? msg.slice(0, 90) + '…' : msg),
+              url: safeNotifyPath(doc.page), tag: 'fbdone-' + doc.id
+            });
+            notified = true;
+          } catch (nerr) { context.error && context.error('feedback notify failed (non-fatal)', nerr); }
+        }
+        done.push({ id: fid, ok: true, notified });
+      }
+      return { jsonBody: { ok: true, count: resources.length, feedback: resources, resolved: done } };
     } catch (e) { context.error('cron-feedback-dump', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   }
 });
