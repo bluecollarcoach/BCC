@@ -2007,63 +2007,6 @@ app.http('errorlog', {
   })
 });
 
-/* TEMPORARY — reads the in-app feedback queue headlessly during a sweep, and is REMOVED in
-   the follow-up commit. The /api/feedback GET is admin-only behind the SWA Entra cookie,
-   which a headless run has no way to present; this mirrors the cron routes' CRON_SECRET
-   header instead. Read-only: it never writes, never resolves, and never notifies. */
-app.http('cron-feedback-dump', {
-  methods: ['GET', 'POST'],
-  authLevel: 'anonymous',
-  route: 'cron/feedback-dump',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    const given = request.headers.get('x-bcc-cron-secret') || '';
-    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
-    try {
-      const c = container();
-      const { resources } = await c.items.query({
-        // Named fields, not SELECT * — this prints into a CI log, so it ships only what the
-        // triage actually reads.
-        query: 'SELECT c.id, c.createdAt, c.status, c.page, c.type, c.rating, c.message, c.userUpn, c.resolutionNote, c.resolutionAt FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC',
-        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
-      }).fetchAll();
-      /* Also RESOLVES, from the same temporary route: the admin resolve path is behind the
-         SWA Entra cookie, which a headless run cannot present, and answering someone's
-         feedback without telling them is half a job. Mirrors that path exactly — same
-         status, same resolutionNote fields, same notifyUser call — so the record and the
-         notification are indistinguishable from an admin doing it in the UI. */
-      const body = await request.json().catch(() => ({}));
-      const toResolve = Array.isArray(body && body.resolve) ? body.resolve : [];
-      const done = [];
-      for (const item of toResolve) {
-        const fid = String((item && item.id) || '');
-        if (fid.indexOf('bcc-feedback-') !== 0) { done.push({ id: fid, ok: false, error: 'bad id' }); continue; }
-        const doc = await c.item(fid, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-        if (!doc || doc.docType !== 'feedback') { done.push({ id: fid, ok: false, error: 'not found' }); continue; }
-        const note = String((item && item.note) || '').trim().slice(0, 2000);
-        const wasResolved = doc.status === 'resolved';
-        doc.status = 'resolved'; doc.reviewedBy = 'lyle@bluecollarcoach.us'; doc.updatedAt = new Date().toISOString();
-        if (note) { doc.resolutionNote = note; doc.resolutionBy = 'lyle@bluecollarcoach.us'; doc.resolutionAt = new Date().toISOString(); }
-        await c.items.upsert(doc);
-        let notified = false;
-        if (doc.userUpn && !wasResolved) {
-          try {
-            const msg = String(doc.message || '');
-            await notifyUser(c, doc.userUpn, {
-              title: '✅ Your feedback was addressed',
-              body: note || (msg.length > 90 ? msg.slice(0, 90) + '…' : msg),
-              url: safeNotifyPath(doc.page), tag: 'fbdone-' + doc.id
-            });
-            notified = true;
-          } catch (nerr) { context.error && context.error('feedback notify failed (non-fatal)', nerr); }
-        }
-        done.push({ id: fid, ok: true, notified });
-      }
-      return { jsonBody: { ok: true, count: resources.length, feedback: resources, resolved: done } };
-    } catch (e) { context.error('cron-feedback-dump', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
-  }
-});
-
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
