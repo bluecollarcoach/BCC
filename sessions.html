@@ -76,6 +76,14 @@
   }
   .day .events .ev:hover { background:rgba(168,136,74,0.20); }
   .day .events .ev.msgraph { border-left-color:#1d4ed8; background:#ddeefd; }
+  /* A canceled session is MARKED, never hidden: the week grid is the only practical way
+     back into one (the modal opens from .ev[data-id]), so filtering it out would make a
+     cancellation impossible to undo or even look at. Until now the status was honoured
+     only by the reminder paths, so every calendar surface showed it as a live booking. */
+  .day .events .ev.canceled { opacity:.55; border-left-color:#9aa0a6; background:#f1f1ef; }
+  .day .events .ev.canceled .title { text-decoration:line-through; }
+  .day .events .ev.canceled .time { text-decoration:line-through; color:var(--muted); }
+  .day .events .ev .cx { font-size:10.5px; font-weight:800; letter-spacing:.4px; color:#8a3a3a; }
   .day .events .ev .time { font-weight:700; color:var(--ink); font-size:11.5px; }
   .day .events .ev .title { font-size:12.5px; color:var(--ink); margin-top:2px; line-height:1.3; }
   .day .events .ev .who { font-size:11px; color:var(--muted); margin-top:2px; }
@@ -303,8 +311,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           var t = new Date(s.startAt);
           var time = t.toLocaleTimeString([], { hour:'numeric', minute:'2-digit' });
           var contact = s.contactId ? contactName(contactById(s.contactId)) : '';
-          events += '<div class="ev ' + (s.source === 'msgraph' ? 'msgraph' : '') + '" data-id="' + esc(s.id) + '">' +
-            '<div class="time">' + esc(time) + '</div>' +
+          var canceled = /^cancell?ed$/i.test(String(s.status || '').trim());
+          events += '<div class="ev ' + (s.source === 'msgraph' ? 'msgraph ' : '') + (canceled ? 'canceled' : '') + '" data-id="' + esc(s.id) + '">' +
+            '<div class="time">' + esc(time) + (canceled ? ' <span class="cx">CANCELED</span>' : '') + '</div>' +
             '<div class="title">' + esc(s.title || '(untitled session)') + '</div>' +
             (contact ? '<div class="who">' + esc(contact) + '</div>' : '') +
           '</div>';
@@ -441,10 +450,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var contacts = allContacts().sort(function (a, b) {
       return contactName(a).localeCompare(contactName(b));
     });
-    sel.innerHTML = '<option value="">— None —</option>' +
+    /* Keep the STORED contact selectable even when it is not in the list. The list comes from
+       whatever bcc-contact- docs this browser happens to hold, so a contact that has not
+       synced here (or that the CRM tier withholds) simply was not in the options — the select
+       fell back to "— None —", and the next save wrote that back, silently unlinking a record
+       nobody touched. Mirrors what populateCompanyDropdown already does. */
+    var html = '<option value="">— None —</option>' +
       contacts.map(function (c) {
         return '<option value="' + esc(c.id) + '"' + (c.id === selectedId ? ' selected' : '') + '>' + esc(contactName(c)) + (c.company ? ' (' + esc(c.company) + ')' : '') + '</option>';
       }).join('');
+    if (selectedId && !contacts.some(function (c) { return c.id === selectedId; })) {
+      html += '<option value="' + esc(selectedId) + '" selected>(linked contact — not loaded on this device)</option>';
+    }
+    sel.innerHTML = html;
   }
 
   function openModal(id, defaultDayIso) {

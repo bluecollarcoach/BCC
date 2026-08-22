@@ -286,7 +286,73 @@ window.addEventListener('bcc-data-ready', function (e) {
    stuck on their pre-auth reading for the life of the tab. */
 window.addEventListener('bcc-auth-ready', function () {
   if (typeof render === 'function') { try { render(); } catch (e) {} }
+  primeChat();
 });
+/* A failed prime must heal itself. bcc-auth-ready fires exactly once, so without these a
+   single blip left the page refusing writes until someone thought to reload. */
+window.addEventListener('online', function () { primeChat(); });
+window.addEventListener('focus', function () { primeChat(); });
+
+/* EVERY message in EVERY channel is one localStorage blob, and so is the channel list, so
+   any write here rewrites the lot. On a device that does not hold that blob — a new laptop,
+   a private window, a failed boot pull, or a quota failure while storing this very key (it
+   is the largest in the app: photos ride in it) — loadMsgs() returns {} and the first
+   message sent would push a one-message document over the firm's entire history, with no
+   tombstone and no version to recover from. Ask the server what it holds before allowing a
+   write; until it answers, the composer says so and stays shut. */
+function primeChat(done) {
+  if (!window.bccPrimeDoc) { if (done) done(); return; }   // no sync layer: nothing to destroy
+  /* REPAINT when the primed copy differs from what is on screen. Opening the write gate
+     without this is worse than leaving it shut: bccStoreLocal writes with the raw setter, so
+     no 'bcc-data-ready' fires and the module snapshots stay pre-prime — then "Clear channel"
+     counts 3 messages from the stale map, confirms "Delete all 3", and wipes the 240 that
+     had just arrived; and the members modal, built from a stale channel record, drops the
+     members it never displayed. Both writes re-read fresh data, which is exactly what makes
+     the stale SCREEN dangerous. */
+  var before = null;
+  try { before = localStorage.getItem(LS_MSGS) + '|' + localStorage.getItem(LS_CHANS); } catch (e) {}
+  var left = 2, fin = function () {
+    if (--left !== 0) return;
+    chatPrimeUi();
+    var after = null;
+    try { after = localStorage.getItem(LS_MSGS) + '|' + localStorage.getItem(LS_CHANS); } catch (e) {}
+    // Only when it actually changed — the focus re-prime runs on every tab switch.
+    if (after !== before && typeof renderLive === 'function') { try { renderLive(); } catch (e) {} }
+    if (done) done();
+  };
+  window.bccPrimeDoc(LS_MSGS, fin);
+  window.bccPrimeDoc(LS_CHANS, fin);
+}
+function chatReady() {
+  // No sync layer at all (offline demo / bcc-api.js failed to load) = nothing to protect.
+  if (!window.bccDocPrimed) return true;
+  return window.bccDocPrimed(LS_MSGS) && window.bccDocPrimed(LS_CHANS);
+}
+function chatPrimeUi() {
+  /* Deliberately does NOT disable the composer. Disabling it locked the page out of its own
+     recovery: the retry lives inside send(), a disabled textarea fires no keydown and a
+     disabled button no click, so one failed GET made chat read-only for the whole session
+     with nothing on screen to suggest a reload. The refusal belongs at the WRITE (send,
+     mutateMsgs, mutateChans) — which also re-primes — and this only explains the wait. */
+  var ready = chatReady();
+  var t = document.getElementById('c_text');
+  if (t) t.placeholder = ready ? 'Write a message…' : 'Loading the channel history…';
+  var composer = t && t.closest ? t.closest('.composer') : null;
+  var w = document.getElementById('c_prime_warn');
+  if (!ready && !w && composer && composer.parentNode) {
+    /* A SIBLING above .composer, not a child of it. .composer is display:flex with no
+       flex-wrap, so a child — even at flex-basis:100% — becomes another item competing in
+       the same row and squeezes the textarea to a sliver (worse on a phone, where the text
+       wraps to nine lines). .thread is a column, so a sibling lands as its own full-width
+       row, which is what the banner was always meant to be. */
+    w = document.createElement('div');
+    w.id = 'c_prime_warn';
+    w.style.cssText = 'font-size:12.5px;color:var(--burgundy,#7a4848);padding:4px 10px;';
+    w.textContent = 'Still loading this channel’s history — sending is held for a moment so a message cannot overwrite it.';
+    composer.parentNode.insertBefore(w, composer);
+  }
+  if (ready && w) w.remove();
+}
 
 function defaultChans() {
   // BCC default channel set — service-line based, not crew based.
@@ -315,6 +381,14 @@ function saveMsgs(v) { localStorage.setItem(LS_MSGS, JSON.stringify(v)); }
    silently destroyed every message that had synced in from a teammate since our
    last poll. Always re-read, apply the change to the FRESH map, then save. */
 function mutateMsgs(fn) {
+  /* THE chokepoint for every message write — send, delete-a-message and Clear-channel all
+     come through here, and gating only send() left the other two able to publish a blank
+     history. Returns null on refusal; the callers below check it. */
+  if (!chatReady()) {
+    primeChat(function () { chatPrimeUi(); });
+    (window.bccNotify || alert)('Still loading this channel’s history — nothing was changed. Try again in a moment.', 'warn', 6000);
+    return null;
+  }
   msgs = loadMsgs();
   const out = fn(msgs);
   saveMsgs(msgs);
@@ -326,6 +400,14 @@ function mutateMsgs(fn) {
    pre-sync list back over the real one and deleted every channel anyone had created
    elsewhere. Same rule as messages: re-read, mutate the FRESH list, then save. */
 function mutateChans(fn) {
+  /* Same rule as messages, and the same blast radius: the channel list is one document, so
+     writing a not-yet-synced copy publishes defaultChans() over every channel the firm has
+     created. Refuse rather than guess. */
+  if (!chatReady()) {
+    primeChat(function () { chatPrimeUi(); });
+    (window.bccNotify || alert)('Still loading the channel list — nothing was changed. Try again in a moment.', 'warn', 6000);
+    return null;
+  }
   chans = loadChans();
   const out = fn(chans);
   saveChans(chans);
@@ -378,7 +460,7 @@ function init() {
     // list and no creator, so canManageChan() would never grant its own author rights
     // and (for a non-admin) it could never be edited again.
     if (!whoUpn()) { alert('Still signing you in — give it a second and create that channel again.'); return; }
-    mutateChans(cs => { cs.push({ id, name:id, desc:'', members:[whoUpn()], createdBy: whoUpn() }); });
+    if (mutateChans(cs => { cs.push({ id, name:id, desc:'', members:[whoUpn()], createdBy: whoUpn() }); return true; }) === null) return;
     setActive(id);
     render();
     openMembersModal(id);
@@ -559,6 +641,9 @@ function renderThread() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); document.getElementById('c_send').click(); }
   };
   document.getElementById('c_send').onclick = send;
+  // renderThread rebuilds the composer, so the held state has to be re-applied here or the
+  // first repaint after a poll silently re-enables sending over an unprimed history.
+  chatPrimeUi();
   document.getElementById('c_file').onchange = e => {
     const f = (e.target.files||[])[0]; if (!f) return;
     const r = new FileReader();
@@ -593,12 +678,15 @@ function renderThread() {
       // Delete by message id against a freshly re-read map — splicing by the index we
       // computed from a stale snapshot could remove the wrong message (or drop
       // teammates' newer ones) once other messages have synced in.
-      mutateMsgs(mm => {
+      // null = refused because the history has not loaded; do not audit a delete that
+      // did not happen, and do not repaint as though it had.
+      if (mutateMsgs(mm => {
         const fresh = mm[active] || [];
         const fi = fresh.findIndex(x => msgId(x) === mid);
         if (fi >= 0) fresh.splice(fi, 1);
         mm[active] = fresh;
-      });
+        return true;
+      }) === null) return;
       window.bccAudit && window.bccAudit('chat-delete', {
         key: mid,
         meta: { channel: active, originalAuthor: m.author, preview: (m.text||'').slice(0, 80) }
@@ -618,7 +706,7 @@ function renderThread() {
       const count = (msgs[active] || []).length;
       if (!confirm(`Delete all ${count} messages in #${active}?\n\nThis cannot be undone.`)) return;
       // Clearing THIS channel must not also revert other channels to our stale copy.
-      mutateMsgs(mm => { mm[active] = []; });
+      if (mutateMsgs(mm => { mm[active] = []; return true; }) === null) return;
       window.bccAudit && window.bccAudit('chat-clear-channel', {
         key: active,
         meta: { channel: active, deletedCount: count }
@@ -631,6 +719,14 @@ function renderThread() {
 function send() {
   const t = document.getElementById('c_text').value.trim();
   if (!t && !pendingPhoto) return;
+  /* Gated at the WRITE, not only on the disabled button: the button can be re-enabled by a
+     re-render, and Enter-to-send does not go through it. One more attempt to prime, so a
+     transient failure fixes itself rather than locking the page for the session. */
+  if (!chatReady()) {
+    primeChat(function () { chatPrimeUi(); });
+    (window.bccNotify || alert)('Still loading this channel’s history — your message was not sent yet. Try again in a moment.', 'warn', 6000);
+    return;
+  }
   const at = Date.now();
   const newMsg = {
     id: 'm' + at + '-' + Math.random().toString(36).slice(2, 6),

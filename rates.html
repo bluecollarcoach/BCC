@@ -233,10 +233,81 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       updatedAt: nowIso()
     };
   }
+  /* The rate sheet is ONE document, and loadSheet() above mints a DEMO sheet (three made-up
+     packages) whenever the key is absent — a new laptop, a private window, a failed boot
+     pull. Every editing path harvests what is on screen and saves the whole document, so the
+     first keystroke on such a device published those three demo packages, at demo prices,
+     over the firm's real rate sheet for everyone. Ask the server what it holds first; until
+     it answers, the page is read-only and says so. */
+  function ratesReady() { return !window.bccDocPrimed || window.bccDocPrimed(RATES_KEY); }
+  function ratesPrime(done) {
+    if (!window.bccPrimeDoc) { if (done) done(); return; }
+    var before = null;
+    try { before = localStorage.getItem(RATES_KEY); } catch (e) {}
+    window.bccPrimeDoc(RATES_KEY, function () {
+      ratesPrimeUi();
+      /* REPAINT if the primed copy differs from what the screen was drawn from. Caching it
+         is not enough: bccStoreLocal writes with the raw setter (no 'bcc-data-ready'), and
+         every save path harvests s.packages wholesale from the LIVE DOM — so a screen still
+         showing loadSheet()'s three DEMO packages would publish those over the firm's real
+         sheet the moment priming flipped the gate open. That is the exact loss this whole
+         guard exists to prevent, so the guard has to bring the screen with it. */
+      var after = null;
+      try { after = localStorage.getItem(RATES_KEY); } catch (e) {}
+      if (after !== before && typeof renderPackages === 'function') ratesRepaint();
+      if (done) done();
+    });
+  }
+  /* Repaint without eating an in-progress edit — same caret/value dance the live-sync
+     handler at the bottom of this file already performs, for the same reason. */
+  function ratesRepaint() {
+    /* Focus and caret only — deliberately NOT the value. The live-sync handler at the bottom
+       of this file carries the in-progress value across its repaint because there it IS the
+       user's own typing. Here the field may still hold what renderPackages() painted from
+       loadSheet()'s DEMO sheet, and carrying that back (worse, committing it) would publish
+       the stale packages over the copy that just primed — the exact loss this guard exists to
+       prevent. The demo ids are literally 'p1'/'p2'/'p3', which the firm's real sheet also
+       uses, so the restore would land on a real package rather than fail loudly. */
+    var ae = document.activeElement;
+    var editing = !!(ae && ae.closest && ae.closest('#pkgList') && ae.hasAttribute('data-edit'));
+    var pkgEl = editing ? ae.closest('.pkg') : null;
+    var pkgId = pkgEl ? pkgEl.dataset.id : null;
+    var field = editing ? ae.getAttribute('data-edit') : null;
+    var selS = null, selE = null;
+    if (editing) { try { selS = ae.selectionStart; selE = ae.selectionEnd; } catch (err) {} }
+    renderPackages();
+    if (pkgId && field) {
+      var back = document.querySelector('.pkg[data-id="' + pkgId + '"] [data-edit="' + field + '"]');
+      if (back) {
+        back.focus();
+        if (selS != null) { try { back.setSelectionRange(selS, selE); } catch (err) {} }
+      }
+    }
+  }
+  function ratesPrimeUi() {
+    var ready = ratesReady(), host = document.querySelector('.wrap') || document.body;
+    var w = document.getElementById('rates_prime_warn');
+    if (!ready && !w && host) {
+      w = document.createElement('div');
+      w.id = 'rates_prime_warn';
+      w.style.cssText = 'background:#fdf6e3;border:1px solid #e6d9a8;border-radius:8px;padding:9px 12px;margin:0 0 10px;font-size:13px;color:#6a5310;';
+      w.textContent = 'Loading the current rate sheet — editing is held until it arrives, so nothing can be published over it.';
+      host.insertBefore(w, host.firstChild);
+    }
+    if (ready && w) w.remove();
+  }
   function saveSheet(s) {
+    /* Gated at the STORE, so every path is covered: Save, Add package, Remove, the debounced
+       commit, and anything added later. */
+    if (!ratesReady()) {
+      ratesPrime();
+      (window.bccNotify || alert)('The current rate sheet has not loaded yet, so nothing was saved. Try again in a moment.', 'warn', 7000);
+      return false;
+    }
     s.updatedAt = nowIso(); s.id = RATES_KEY; s.tenantId = 'blue-collar-coach'; s.docType = 'rate-sheet';
     localStorage.setItem(RATES_KEY, JSON.stringify(s));
     if (window.bccAudit) window.bccAudit('rate-sheet-save', { key: RATES_KEY, path: '/rates.html' });
+    return true;
   }
 
   function loadCfg() { try { var raw = localStorage.getItem(ADMIN_KEY); if (raw) return JSON.parse(raw); } catch (e) {} return null; }
@@ -301,7 +372,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       b.addEventListener('click', function () {
         if (!confirm('Remove this package?')) return;
         var pkg = b.closest('.pkg'); var id = pkg.dataset.id;
-        var s = commitNow(); // keep edits typed in the last moment before Remove
+        // commitNow returns null when the store REFUSED (the sheet has not primed yet).
+        // Dereferencing that would throw right here and take the whole handler with it.
+        var s = commitNow(); if (!s) return;   // keep edits typed in the last moment before Remove
         s.packages = (s.packages || []).filter(function (p) { return p.id !== id; });
         saveSheet(s);
         renderPackages();
@@ -343,7 +416,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     return s;
   }
   // Commit what's on screen RIGHT NOW, cancelling the pending debounce.
-  function commitNow() { clearTimeout(dirtyT); var s = harvestPackages(loadSheet()); saveSheet(s); return s; }
+  // Returns null when the store REFUSED (not primed) so callers do not report success.
+  function commitNow() { clearTimeout(dirtyT); var s = harvestPackages(loadSheet()); return saveSheet(s) ? s : null; }
   function dirtyCommit() {
     clearTimeout(dirtyT);
     dirtyT = setTimeout(function () {
@@ -364,15 +438,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function dollarsFmt(cents) { return '$' + (Math.round(cents) / 100).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 }); }
 
   document.getElementById('addPkgBtn').addEventListener('click', function () {
-    var s = commitNow(); // keep edits typed in the last moment before Add
+    var s = commitNow(); if (!s) return;   // keep edits typed in the last moment before Add
     s.packages = s.packages || [];
     s.packages.push({ id: uid(), name: 'New package', priceCents: 0, cadence: 'monthly', blurb: '' });
     saveSheet(s);
     renderPackages();
   });
   document.getElementById('saveBtn').addEventListener('click', function () {
-    commitNow(); // actually WRITE now — dirtyCommit only armed a timer, so the
-                 // "saved" toast below used to fire before anything was stored
+    // actually WRITE now — dirtyCommit only armed a timer, so the "saved" toast below used
+    // to fire before anything was stored. And only claim it when the write happened: the
+    // prime gate can refuse, and a green "Rate sheet saved." stacked over its own yellow
+    // refusal is worse than either alone.
+    if (!commitNow()) return;
     if (window.bccNotifySaved) window.bccNotifySaved('Rate sheet saved.');
     else (window.bccNotify || alert)('Saved.', 'success');
   });
@@ -675,7 +752,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      was registered twice — one click then did its work twice (a confirm asked twice, two
      audit rows, two writes). Route both boot paths through one guarded entry point. */
   function bootOnce() { if (document.body.dataset.didInit) return; document.body.dataset.didInit = '1'; init(); }
-  window.addEventListener('bcc-auth-ready', bootOnce);
+  window.addEventListener('bcc-auth-ready', function () { bootOnce(); ratesPrime(); });
   setTimeout(bootOnce, 600);
 })();
 </script>

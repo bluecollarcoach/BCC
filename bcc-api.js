@@ -627,7 +627,11 @@
      _origRemoveItem, so no DELETE is queued and the server copies are untouched; the
      moment their access is restored the next pull brings everything back. Do not
      extend this list to anything whose server copy could be destroyed by pruning. */
-  var PRUNABLE_PREFIXES = ['bcc-kb-article-', 'bcc-event-', 'bcc-course-'];
+  /* bcc-session- belongs here for the same reason bcc-event- does: the family is served
+     unconditionally by the bulk pull, so a doc that has DISAPPEARED from the server is a
+     doc that was deleted. Without it, a canceled coaching session stayed on every other
+     browser forever, and any later edit there re-published it firm-wide. */
+  var PRUNABLE_PREFIXES = ['bcc-kb-article-', 'bcc-event-', 'bcc-course-', 'bcc-session-'];
 
   /* Store a value LOCALLY without queueing a push. For the one shape that legitimately
      needs it: a page that GETs a server document itself (to prove it holds the real copy
@@ -647,6 +651,49 @@
       _origSetItem.call(localStorage, key, value);
       return true;
     } catch (e) { return false; }
+  };
+
+  /* ---------- priming a whole-document key ----------
+     THE most expensive recurring defect in this app, now found in six families: a page holds
+     ONE document (chat history, the rate sheet, a client's postal-mail log, client info, WIP,
+     payroll notes), reads it from localStorage, mints a blank when the key is absent, and the
+     first edit pushes that blank over everything in Cosmos — for the whole firm, with no
+     tombstone and no version to recover from. The key is absent more often than it sounds:
+     a new laptop, a private window, a failed boot pull, an evicted PWA cache, or a quota
+     failure while storing that very blob.
+     One implementation, so the next family to need it cannot get a subtly different one.
+       bccPrimeDoc(key, done)  — ask the server what it holds, cache it LOCALLY (never through
+                                 the hooked setItem, which would push the server's own copy
+                                 straight back and 403 for a view-tier user), then call done().
+       bccDocPrimed(key)       — true ONLY when we know what the server has. Gate the write.
+     An unsent local write short-circuits to primed: our copy IS the authoritative one, and
+     re-fetching would land the server's older copy on top of it. */
+  var _primedDocs = {};        // key -> true | 'busy' | 'fail'
+  var _primeRetryAt = {};
+  window.bccDocPrimed = function (key) { return _primedDocs[key] === true; };
+  window.bccPrimeDoc = function (key, done) {
+    var fin = function () { try { if (done) done(_primedDocs[key] === true); } catch (e) {} };
+    if (!key) { fin(); return; }
+    if (_primedDocs[key] === true || _primedDocs[key] === 'busy') { fin(); return; }
+    // A write of our own that has not reached the server yet outranks anything it could tell us.
+    try { if (pending.has(key) || heldInFlight(key) || outboxPendingAnyTab(key)) { _primedDocs[key] = true; fin(); return; } } catch (e) {}
+    // A failed attempt is retryable, but not on every keystroke.
+    var now = Date.now();
+    if (_primedDocs[key] === 'fail' && _primeRetryAt[key] && (now - _primeRetryAt[key]) < 5000) { fin(); return; }
+    _primeRetryAt[key] = now;
+    _primedDocs[key] = 'busy';
+    fetch(API_BASE + '/data/' + encodeURIComponent(key), { credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+      .then(function (j) {
+        var d = j && j.data;
+        if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { d = null; } }
+        // data:null is a real answer — the document genuinely does not exist yet.
+        var ok = true;
+        if (d !== null && d !== undefined) ok = window.bccStoreLocal(key, JSON.stringify(d));
+        _primedDocs[key] = ok ? true : 'fail';   // a failed STORE must not count as primed
+        fin();
+      })
+      .catch(function () { _primedDocs[key] = 'fail'; fin(); });
   };
 
   /* ---------- hooks ---------- */
@@ -1517,9 +1564,26 @@
             for (var pi = 0; pi < localStorage.length; pi++) {
               var pk = localStorage.key(pi);
               if (!pk || seenKeys.has(pk) || pending.has(pk) || heldInFlight(pk) || outboxPendingAnyTab(pk)) continue; // queued — or still-saving — local write wins, any tab
+              var prunable = false;
               for (var px = 0; px < PRUNABLE_PREFIXES.length; px++) {
-                if (pk.indexOf(PRUNABLE_PREFIXES[px]) === 0) { gone.push(pk); break; }
+                if (pk.indexOf(PRUNABLE_PREFIXES[px]) === 0) { prunable = true; break; }
               }
+              if (!prunable) continue;
+              /* "Absent from the server" only means DELETED for a record the server once had.
+                 A record created HERE since the last full pull has simply not been pushed yet
+                 — and a write made before /.auth/me resolved is not even in the outbox to
+                 vouch for it (only the four OFFLINE_OWNED_PREFIXES families are captured that
+                 early), so the checks above cannot see it. Pruning on age alone destroyed it.
+                 Keep anything stamped after the previous full pull; with no previous full pull
+                 (first sync on this device) keep everything stamped at all. */
+              var fresh = false;
+              try {
+                var pv = JSON.parse(localStorage.getItem(pk) || 'null');
+                var stamp = pv && (pv.updatedAt || pv.createdAt);
+                if (stamp) { var st = new Date(stamp).getTime(); fresh = !isNaN(st) && st >= (_lastFull || 0); }
+              } catch (e) {}
+              if (fresh) continue;
+              gone.push(pk);
             }
             // Collect first, remove second — removing mid-scan reindexes localStorage
             // and would skip keys. _origRemoveItem, NOT removeItem: the doc is already

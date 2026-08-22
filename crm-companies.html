@@ -445,7 +445,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var btn = document.getElementById('bkSyncBtn'); if (btn) btn.disabled = true;
     if (opts.full) setSyncMeta('Syncing from Bookkeeping…');
     return fetch('/api/integrations/qbo/companies', { credentials: 'include' })
-      .then(function (r) { return r.ok ? r.json() : { companies: [] }; })
+      /* An HTTP failure is not "you have access to no companies". Mapping it to an empty
+         list told the owner exactly that, in a toast, while the truth was that the request
+         failed - and the honest catch further down was never reached. */
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('could not reach the bookkeeping company list (HTTP ' + r.status + ')')); })
       .then(function (d) {
         var qcos = (d && d.companies) || [];
         if (!qcos.length) { if (btn) btn.disabled = false; setSyncMeta(''); if (opts.full) (window.bccNotify || function () {})('No bookkeeping companies you can access.', 'warn'); return; }

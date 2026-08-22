@@ -124,10 +124,14 @@ const CLIENT_SCOPED_ID_RE = [
   // Postal-mail log for a client: what arrived in the physical mail, who scanned it,
   // and whether it has been dealt with. Per-client, so gate it by client access.
   /^bcc-clientmail-([^-]+)$/,
-  /* Certified-payroll reference notes for a client (Karla, 2026-08-20: "where to send
-     reports" was living on another page). One document per client holding a client-level
-     note plus a per-job map — genuinely per-client, so it is gated by client access and the
-     bookkeeping tier exactly like the reports it sits beside. */
+  /* Certified-payroll reference notes (Karla, 2026-08-20: "where to send reports" was living
+     on another page). ONE DOCUMENT PER NOTE — `bcc-cprnote-<realm>-<jobhash|general>` — so a
+     write can only ever touch the note it is for; the per-client map this first shipped as
+     was a whole-document write that could take every other job's note with it from a device
+     that had not synced. Both spellings stay matched: the old one so the document written
+     during that window is still gated per client (it is read-only now, never written again).
+     Gated by client access and the bookkeeping tier, like the reports it sits beside. */
+  /^bcc-cprnote-([^-]+)-[0-9a-z]+$/,
   /^bcc-cprnotes-([^-]+)$/,
 ];
 function dataKeyClientRealm(id) {
@@ -785,7 +789,13 @@ app.http('data', {
              client's whole strategic plan. Read the realm off the STORED doc (the payload's
              own qboRealmId is attacker-controlled and is exactly what a blank save clears). */
           if (it.key.startsWith('bcc-dashboard-')) {
-            const exDash = await c.item(it.key, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+            /* A 404 means "no such dashboard yet" and is the only failure that may be read as
+               one. Swallowing EVERY error here made a transient Cosmos blip disable both
+               guards below at once — the empty-overwrite refusal AND the client gate — and
+               the write was then accepted with a 200. Anything else rethrows into the
+               handler's own catch, which answers 500. */
+            const exDash = await c.item(it.key, BCC_TENANT_ID).read().then(r => r.resource)
+              .catch(e => { if (e && e.code === 404) return null; throw e; });
             /* An EMPTY payload over a document that has content is never a real edit — it is
                the blank-form autosave from a device that does not hold the document. Refused
                for every dashboard, linked or not, because the read gate below makes that case
@@ -852,7 +862,13 @@ app.http('data', {
           // is already stored — the same read-before-write this handler already does for
           // server-owned document metadata above. Prefix-gated, so nothing else changes.
           if (it.key.startsWith('bcc-integration-')) {
-            const exInt = await c.item(it.key, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+            /* 404 only — the same rule the dashboard guards use. Swallowing every error here
+               meant a transient Cosmos blip produced `exInt = null`, the merge was skipped, and
+               the whole document was replaced by the UI's copy — which never carries the
+               refresh/access tokens (they live at the top level and are never shipped to the
+               browser). A "Save credentials" during a blip silently disconnected the connector. */
+            const exInt = await c.item(it.key, BCC_TENANT_ID).read().then(r => r.resource)
+              .catch(e => { if (e && e.code === 404) return null; throw e; });
             if (exInt) await c.items.upsert(Object.assign({}, exInt, doc));
             else await c.items.upsert(doc);
             continue;
@@ -905,7 +921,9 @@ app.http('data', {
         if (delRealm && !bkDataAllowed(await bookkeepingTierFor(p), key, 'edit')) return forbidden('your access level does not include this record');
         // Same as the PUT above: a client-linked dashboard belongs to that client.
         if (key.startsWith('bcc-dashboard-')) {
-          const exDash = await c.item(key, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+          // Same rule as the PUT above: only a 404 may be read as "there is nothing here".
+          const exDash = await c.item(key, BCC_TENANT_ID).read().then(r => r.resource)
+            .catch(e => { if (e && e.code === 404) return null; throw e; });
           const dRealm = exDash ? dashboardDocRealm(exDash.data) : null;
           if (dRealm) {
             if ((await driveClientAccess(p, dRealm)).err) return forbidden('no access to this client');
@@ -2005,6 +2023,29 @@ app.http('errorlog', {
     await logError(String(body.where || 'client').slice(0, 200), { message: body.message, stack: body.stack }, { source: 'client', user: String(p.userDetails || '').toLowerCase(), url: String(body.url || '').slice(0, 200) });
     return { jsonBody: { ok: true } };
   })
+});
+
+/* TEMPORARY — reads the in-app feedback queue headlessly during a sweep, and is REMOVED in
+   the follow-up commit. The /api/feedback GET is admin-only behind the SWA Entra cookie,
+   which a headless run cannot present. Read-only: it never writes, resolves or notifies. */
+app.http('cron-feedback-dump', {
+  methods: ['GET', 'POST'],
+  authLevel: 'anonymous',
+  route: 'cron/feedback-dump',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    const given = request.headers.get('x-bcc-cron-secret') || '';
+    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    try {
+      const c = container();
+      const { resources } = await c.items.query({
+        // Named fields, not SELECT * — this prints into a CI log.
+        query: 'SELECT c.id, c.createdAt, c.status, c.page, c.type, c.rating, c.message, c.userUpn, c.resolutionNote FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+      }).fetchAll();
+      return { jsonBody: { ok: true, count: resources.length, feedback: resources } };
+    } catch (e) { context.error('cron-feedback-dump', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  }
 });
 
 app.http('cron-reminders', {
@@ -5033,7 +5074,13 @@ async function resolveClientMailbox(p, realmId, opts) {
     if (bookkeepingNoFinancials(tier)) return { err: { status: 403, jsonBody: { ok: false, error: 'your access level does not include client email' } } };
     if (opts && opts.mutating && bookkeepingReadOnly(tier)) return { err: { status: 403, jsonBody: { ok: false, error: 'your access level is read-only' } } };
   }
-  const cfg = await c.item('bcc-client-mailbox-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+  /* 404 only. Swallowing every error made a transient Cosmos failure indistinguishable from
+     "this client has no mailbox configured" — and every caller reads that as a setup
+     state: the Email tab tells the bookkeeper to ask an admin to create a mailbox that
+     already exists, and a send with fallbackToSender quietly goes out from the bookkeeper's
+     OWN address instead of the client's. */
+  const cfg = await c.item('bcc-client-mailbox-' + realmId, BCC_TENANT_ID).read().then(r => r.resource)
+    .catch(e => { if (e && e.code === 404) return null; throw e; });
   return { comp, cfg };
 }
 
@@ -5218,6 +5265,36 @@ app.http('msgraph-message-get', {
       // best-effort: if the cast is rejected the listing above is untouched, so the worst
       // case is the previous behaviour rather than a broken attachment strip. Only issued
       // when the body actually references a cid, which is a minority of messages.
+      /* List what is INSIDE any forwarded email, so the strip can offer the receipt itself
+         rather than a dead "✉ FW: invoice (open in Outlook)". Bounded to the first three item
+         attachments on a message: each expand pulls the whole inner message including its
+         attachment bytes, and three is far past what a real forward carries. */
+      const ITEM_EXPAND_MAX_BYTES = 20 * 1024 * 1024;
+      const allItemAtts = attachments.filter(a => a.kind === 'item');
+      const itemAtts = allItemAtts.slice(0, 3);
+      /* Say so on the ones we did NOT open. Without this they reach the client with neither
+         `inner` nor `innerError`, and the strip reads that as the positive statement "nothing
+         attached inside it" — about forwards nobody ever looked in. */
+      allItemAtts.slice(3).forEach(ia => { ia.innerError = 'not opened here (more than three forwarded emails on this message)'; });
+      // In PARALLEL: three sequential expands put three Graph round trips in front of the
+      // message opening, on the very messages a bookkeeper opens most.
+      await Promise.all(itemAtts.map(async (ia) => {
+        // An expand pulls the ENTIRE inner message, attachment bytes and all, into this
+        // function's memory just to list names. Past this size it is not worth it.
+        if (ia.size && ia.size > ITEM_EXPAND_MAX_BYTES) {
+          ia.innerError = 'that forwarded email is too large to open here (' + Math.round(ia.size / 1048576) + ' MB)';
+          return;
+        }
+        try {
+          // request.params.id, NOT `id` — `id` is already encoded for this handler's own calls.
+          const ex = await graphExpandItemAttachment(access, upn, request.params.id, ia.id);
+          if (ex.err) { ia.innerError = ex.err; return; }
+          // Never ship the bytes in the LISTING — one forwarded invoice would double the size
+          // of every message payload. The download route re-expands for the one that is asked for.
+          ia.inner = ex.inner.map(x => ({ id: x.id, name: x.name, contentType: x.contentType, size: x.size, kind: x.kind, isInline: x.isInline }));
+          ia.innerSubject = (ex.item && ex.item.subject) || '';
+        } catch (e) { ia.innerError = String((e && e.message) || e); }
+      }));
       if (attachments.length && /cid:/i.test(htmlBody)) {
         try {
           const cr = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + id +
@@ -5244,6 +5321,59 @@ app.http('msgraph-message-get', {
   })
 });
 
+/* A FORWARDED email arrives as an itemAttachment: an Outlook message wrapped inside the
+   message we are reading, with the actual receipt or invoice nested one level down. Graph has
+   no $value for it, so the app could only ever say "open it in Outlook" — and since the firm's
+   whole intake is clients EMAILING documents to a per-client mailbox, and some of them forward
+   rather than send, that dead end swallowed exactly the paperwork this app exists to process.
+   Expanding the item is the one supported way in: the inner message comes back with its own
+   attachments, fileAttachments included, carrying their bytes as base64. Deliberately
+   best-effort everywhere — if Graph declines the expand, the caller is no worse off than the
+   "open in Outlook" it shows today. */
+/* Both ids arrive RAW and are encoded exactly once, here. The message route holds an
+   already-encoded `id` for its own Graph calls and handed that in, so the id was encoded
+   twice ( '=' -> '%3D' -> '%253D' ) and Graph 404'd every single time — the feature failed
+   silently on every forwarded email, since the caller records the failure as innerError and
+   falls back to "open it in Outlook". The download route beside it passed the raw id and was
+   correct: two call sites, one of them wrong, which is the shape that keeps recurring here. */
+async function graphExpandItemAttachment(access, upn, msgId, attId) {
+  /* TWO shapes, because reviewers disagreed about which one Graph honours and being wrong
+     either way makes the whole feature silently answer "nothing inside". The plain expand is
+     what Microsoft's own example uses; the nested form is what actually guarantees the inner
+     message's ATTACHMENTS collection comes with it. Try the plain one, and if the inner
+     message arrives without attachments, ask again with the nested expand before believing
+     that a forwarded email carried nothing. */
+  const base = 'https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + encodeURIComponent(msgId) +
+    '/attachments/' + encodeURIComponent(attId);
+  const ask = async (q) => {
+    const r = await fetch(base + q, { headers: { Authorization: 'Bearer ' + access } }).catch(() => null);
+    if (!r) return { err: 'could not reach the forwarded message' };
+    if (!r.ok) return { err: 'Graph rejected the forwarded message (' + r.status + ')' };
+    const j = await r.json().catch(() => null);
+    return { item: j && j.item };
+  };
+  let got = await ask('?$expand=microsoft.graph.itemAttachment/item');
+  if (!got.err && got.item && !got.item.attachments) {
+    const nested = await ask('?$expand=microsoft.graph.itemAttachment/item($expand=microsoft.graph.message/attachments)');
+    if (!nested.err && nested.item && nested.item.attachments) got = nested;
+  }
+  if (got.err) return { err: got.err };
+  const item = got.item;
+  if (!item) return { err: 'Graph returned no inner message' };
+  // Only real FILE attachments have bytes. A nested item/reference cannot be expanded again
+  // (Graph does not support a second level), so those are reported, not offered.
+  const inner = (item.attachments || []).map(a => {
+    const odata = String(a['@odata.type'] || '');
+    return {
+      id: a.id, name: a.name || 'attachment', contentType: a.contentType || '', size: a.size || 0,
+      isInline: !!a.isInline,
+      kind: /referenceAttachment/i.test(odata) ? 'reference' : /itemAttachment/i.test(odata) ? 'item' : 'file',
+      bytes: typeof a.contentBytes === 'string' ? a.contentBytes : null
+    };
+  });
+  return { item, inner };
+}
+
 /**
  * GET /api/integrations/msgraph/message/{id}/attachment/{attId}/download
  * Streams a received message's attachment bytes through the app (same access gate as
@@ -5266,6 +5396,28 @@ app.http('msgraph-attachment-download', {
       const attId = encodeURIComponent(request.params.attId);
       const wantInlineReq = u.searchParams.get('inline') === '1';
       const name = (u.searchParams.get('name') || 'attachment').replace(/[^a-zA-Z0-9._ -]+/g, '_').slice(0, 150);
+      /* ?inner=<id> — a file nested inside a FORWARDED email. Same gate, same mailbox, same
+         inline rules; only the source of the bytes differs (base64 on the expanded item,
+         because Graph exposes no $value one level down). */
+      const innerId = String(u.searchParams.get('inner') || '');
+      if (innerId) {
+        let ex;
+        try { ex = await graphExpandItemAttachment(access, upn, request.params.id, request.params.attId); }
+        catch (e) { return { status: 502, jsonBody: { ok: false, error: String((e && e.message) || e) } }; }
+        if (ex.err) return { status: 502, jsonBody: { ok: false, error: ex.err } };
+        const hit = (ex.inner || []).find(x => String(x.id) === innerId);
+        if (!hit) return { status: 404, jsonBody: { ok: false, error: 'That file is no longer inside the forwarded email.' } };
+        if (!hit.bytes) {
+          return { status: 415, jsonBody: { ok: false, kind: 'not-a-file',
+            error: hit.kind === 'reference'
+              ? 'Inside the forwarded email this is a link to a file in OneDrive/SharePoint, not an attached copy. Open the email in Outlook and follow the link.'
+              : 'This is another email attached inside the forwarded one, and Outlook only lets us open one level down. Open the email in Outlook to reach it.' } };
+        }
+        const ibuf = Buffer.from(hit.bytes, 'base64');
+        const ict = effectiveContentType(hit.contentType, name);
+        const iInline = wantInlineReq && inlineOk(ict);
+        return { status: 200, headers: { 'Content-Type': ict, 'Content-Disposition': (iInline ? 'inline' : 'attachment') + '; filename="' + name + '"', 'X-Content-Type-Options': 'nosniff' }, body: ibuf };
+      }
       const r = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + msgId + '/attachments/' + attId + '/$value', { headers: { Authorization: 'Bearer ' + access } });
       if (!r.ok) {
         const detail = (await r.text()).slice(0, 300);
@@ -6314,7 +6466,14 @@ app.http('qbo-report', {
             const [pItems, bItems, dItems] = await Promise.all([
               pageScan('Purchase', 'AccountBasedExpenseLineDetail', (r, acc) => ({ id: r.Id, entity: 'purchase', txnType: (r.PaymentType ? r.PaymentType + ' ' : '') + 'expense', date: r.TxnDate, name: (r.EntityRef && r.EntityRef.name) || '', memo: r.PrivateNote || '', amount: Number(r.TotalAmt) || 0, account: acc })),
               pageScan('Bill', 'AccountBasedExpenseLineDetail', (r, acc) => ({ id: r.Id, entity: 'bill', txnType: 'Bill', date: r.TxnDate, name: (r.VendorRef && r.VendorRef.name) || '', memo: r.PrivateNote || '', amount: Number(r.TotalAmt) || 0, account: acc })),
-              pageScan('Deposit', 'DepositLineDetail', (r, acc) => ({ id: r.Id, entity: '', txnType: 'Deposit', date: r.TxnDate, name: '', memo: r.PrivateNote || '', amount: Number(r.TotalAmt) || 0, account: acc })).catch(() => [])
+              /* A failed Deposit scan used to resolve to [] and vanish — the response then said
+                 "here is the complete, uncapped list", and the month-end checklist printed its
+                 green "nothing sitting in an uncategorized account" off the back of a scan that
+                 never ran. Deposits are exactly where uncategorized income hides. Kept
+                 non-fatal (Purchase and Bill results are still worth having) but reported
+                 through the SAME capped flag the client already renders a warning for. */
+              pageScan('Deposit', 'DepositLineDetail', (r, acc) => ({ id: r.Id, entity: '', txnType: 'Deposit', date: r.TxnDate, name: '', memo: r.PrivateNote || '', amount: Number(r.TotalAmt) || 0, account: acc }))
+                .catch((e) => { scanCapped = true; context.log && context.log('for-review: Deposit scan failed — ' + ((e && e.message) || e)); return []; })
             ]);
             items = pItems.concat(bItems, dItems);
           }
@@ -8064,8 +8223,10 @@ function payappDocDef(b) {
       { text: 'Application and Certificate for Payment', style: 'h1' },
       { text: 'Progress billing - prepared in the format of AIA Document G702/G703', style: 'sub' },
       { table: { widths: [78, '*', 78, '*'], body: [
-        hdRow('To (Owner)', b.ownerName, 'From (Contractor)', b.contractorName),
-        hdRow('Project', b.projectName, 'Via (Architect)', b.architectName),
+        // Name AND address for each party — the certificate identifies who it is addressed to.
+        hdRow('To (Owner)', [b.ownerName, b.ownerAddress].filter(Boolean).join(' \u00b7 '),
+              'From (Contractor)', [b.contractorName, b.contractorAddress].filter(Boolean).join(' \u00b7 ')),
+        hdRow('Project', b.projectName, 'Via (Architect)', [b.architectName, b.architectAddress].filter(Boolean).join(' \u00b7 ')),
         hdRow('Project location', b.projectAddress, 'Contract for', b.contractFor),
         hdRow('Application no.', b.appNo, 'Period to', b.periodTo),
         hdRow('Application date', b.appDate, 'Project no.', b.projectNo),

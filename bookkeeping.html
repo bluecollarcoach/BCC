@@ -669,6 +669,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
 <script>
 (function () {
   var companiesLoaded = false;   // set once loadCompanies() has actually resolved
+  /* ...and whether that call FAILED. `companies = []` is kept on failure on purpose — it is
+     the access-scoped source of truth the ?realmId gate and the pickers read, and holding a
+     stale list open would be worse. But an empty list then has two very different meanings,
+     and the screen was only ever telling one of them: a bookkeeper with eleven clients was
+     told she had none, with "ask an admin to give you access". */
+  var companiesLoadFailed = false;
   var PER_PREFIX = 'bcc-financial-period-';
   /* Manual corrections need their OWN id space. bcc-financial-period- is server-owned: the
      sync layer refuses to push it (bcc-api.js setItem/removeItem) and the pull query excludes
@@ -734,9 +740,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
 
   function loadCompanies() {
     return fetch('/api/integrations/qbo/companies', { credentials: 'include' })
-      .then(function (r) { return r.ok ? r.json() : { companies: [] }; })
-      .then(function (d) { companies = (d && d.companies) || []; isAdmin = !!(d && d.isAdmin); usersDir = (d && d.users) || []; taskOnly = !!(d && d.taskOnly); })
-      .catch(function () { companies = []; isAdmin = false; usersDir = []; taskOnly = false; })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+      .then(function (d) { companies = (d && d.companies) || []; isAdmin = !!(d && d.isAdmin); usersDir = (d && d.users) || []; taskOnly = !!(d && d.taskOnly); companiesLoadFailed = false; })
+      .catch(function () { companies = []; isAdmin = false; usersDir = []; taskOnly = false; companiesLoadFailed = true; })
       // Only AFTER this resolves does an empty `companies` mean "none assigned to you".
       // Before it, the boot repaint rendered that access-denial copy at every user on every
       // load — telling a bookkeeper with a full client list that she had none.
@@ -1106,8 +1112,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (pc) pc.textContent = companies.length + ' client' + (companies.length === 1 ? '' : 's');
     if (!companies.length) {
       rowsEl.innerHTML = ''; emptyEl.hidden = false;
-      emptyEl.querySelector('.big').textContent = 'No clients assigned to you yet.';
       var sub = emptyEl.querySelector('div:last-child');
+      if (companiesLoadFailed) {
+        // Say what actually happened. This is a failed request, not an access decision.
+        emptyEl.querySelector('.big').textContent = 'Couldn’t load your client list.';
+        if (sub) sub.innerHTML = 'The app couldn’t reach the server just now. Check your connection and <a href="#" data-retry-companies="1"><strong>try again</strong></a>.';
+        var rl = emptyEl.querySelector('[data-retry-companies]');
+        if (rl) rl.onclick = function (e) { e.preventDefault(); loadCompanies().then(function () { renderWorkList(); }); };
+        return;
+      }
+      emptyEl.querySelector('.big').textContent = 'No clients assigned to you yet.';
       if (sub) sub.innerHTML = canManage() ? 'Open <strong>Management dashboard</strong> → <strong>+ Connect a company</strong> to link a client’s QuickBooks.' : 'Ask an admin to give you access to a client.';
       return;
     }
@@ -3417,11 +3431,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     ]).then(function (results) {
       var j = results[0], metaResp = results[1];
       var meta = (metaResp && metaResp.ok && metaResp.msgs) || {};
-      if (!j || !j.ok) { _emUnread[realm] = 0; }
-      else if (j.pendingMailbox) { _emUnread[realm] = 0; }   // mailbox not created yet
+      /* A failure is NOT a count. Recording zero made the client Overview state "Inbox up to
+         date — no unread mail" on the strength of a request that never came back, which is the
+         one thing a bookkeeper reads that banner for. Forget the number instead (so the next
+         open retries it) and remember that the check failed, so the banner can say so. */
+      if (!j || !j.ok) { delete _emUnread[realm]; _emUnreadErr[realm] = 1; }
+      else if (j.pendingMailbox) { _emUnread[realm] = 0; delete _emUnreadErr[realm]; }   // mailbox not created yet: genuinely zero
       // Same correction as recomputeUnreadBadge: count what THIS person has not read,
       // using the meta snapshot already fetched above — not the mailbox-wide isRead flag.
       else {
+        delete _emUnreadErr[realm];
         var me = myUpn();
         _emUnread[realm] = (j.messages || []).filter(function (m) {
           var mm = meta[m.id];
@@ -3429,9 +3448,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         }).length;
       }
       if (realm === currentRealm) { updateWsNav(); if (currentTab === 'overview') { try { renderOverview(); } catch (e) {} } }
-    }).catch(function () { _emUnread[realm] = 0; });
+    }).catch(function () {
+      delete _emUnread[realm]; _emUnreadErr[realm] = 1;
+      if (realm === currentRealm) { updateWsNav(); if (currentTab === 'overview') { try { renderOverview(); } catch (e) {} } }
+    });
   }
 
+  var _emUnreadErr = {};   // realm -> the unread check FAILED (distinct from "zero unread")
   function myUpn()  { return String((window.bccUser && window.bccUser.userDetails) || '').toLowerCase(); }
   function myName() { var u = myUpn(); return (window.bccDisplayName && window.bccDisplayName(u)) || u; }
   function sani(s)  { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40); }
@@ -3617,7 +3640,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var emailBanner = '';
     if (!taskOnly) {
       var hasUnread = unread > 0;
-      var sub = (unread === undefined) ? 'Open the client inbox'
+      var sub = _emUnreadErr[currentRealm] ? '⚠ Couldn’t check this inbox — open it to see'
+              : (unread === undefined) ? 'Open the client inbox'
               : hasUnread ? ('🔔 ' + unread + ' unread — needs attention')
               : 'Inbox up to date — no unread mail';
       emailBanner = '<button class="ov-email' + (hasUnread ? ' has-unread' : '') + '" type="button" data-ov="email">' +
@@ -4562,11 +4586,24 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        permission refusal is a different thing and must not borrow that message, so it returns
        its own value and the callers check the tier BEFORE doing any work (addMail uploads the
        scan first, and refusing after that would have left an orphan file with no log entry). */
+    /* ONE document holds the client's WHOLE postal-mail log, so this write replaces it.
+       loadMailDoc() mints { items: [] } whenever the key is absent — a new laptop, a private
+       window, a failed boot pull — and logging one envelope then published that empty log
+       over the client's real history, for everyone. Same rule and same shared helper as the
+       chat history and the rate sheet. Reported through the storage-failure channel the two
+       callers already handle (they print "nothing was saved"), with its own toast so the
+       reason is not mistaken for a full disk. */
+    if (window.bccDocPrimed && !window.bccDocPrimed(mailKey())) {
+      if (window.bccPrimeDoc) window.bccPrimeDoc(mailKey(), function () {});
+      (window.bccNotify || alert)('This client’s mail log hasn’t finished loading, so nothing was saved. Try again in a moment.', 'warn', 7000);
+      return false;
+    }
     d.id = mailKey(); d.realmId = currentRealm; d.docType = 'client-mail';
     d.tenantId = 'blue-collar-coach'; d.updatedAt = nowIso(); d.updatedBy = myUpn();
     try { localStorage.setItem(d.id, JSON.stringify(d)); return true; } catch (e) { return false; }
   }
   var _mailFiles = [];
+  var _mailFilesErr = false;   // the LISTING failed — different from "this piece has no scan"
   function renderMail() {
     var body = document.getElementById('mail-body'); if (!body) return;
     body.innerHTML =
@@ -4593,15 +4630,30 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   function loadMailFiles() {
     var realmAt = currentRealm;
+    // Drop the PREVIOUS client's listing and error state before fetching this one's: both are
+    // module-level, so without this a failure on client A kept saying "couldn't load the scan"
+    // on client B, and A's rows could match B's docIds.
+    _mailFiles = []; _mailFilesErr = false;
+    // Ask the server what the log holds while we are here — the writes below are gated on it.
+    /* Repaint when it lands. An empty callback cached the real log and left the screen on the
+       blank one this device happened to hold — so the bookkeeper saw "No mail logged for this
+       client yet" over a history that had just arrived, and would have logged it all again. */
+    if (window.bccPrimeDoc && currentRealm) {
+      window.bccPrimeDoc(mailKey(), function () { if (currentRealm === realmAt) renderMailList(); });
+    }
     var folder = mailFolder();
+    /* An HTTP failure is not an empty folder. Mapping it to { items: [] } made EVERY logged
+       piece of mail render "scan unavailable" — which reads as "the scan is gone", and the
+       obvious next move is to go and re-scan paperwork that was never lost. */
     fetch('/api/documents?folder=' + encodeURIComponent(folder), { credentials: 'include' })
-      .then(function (r) { return r.ok ? r.json() : { items: [] }; })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
       .then(function (d) {
         if (currentRealm !== realmAt) return; // client switched mid-load
+        _mailFilesErr = false;
         _mailFiles = ((d && d.items) || []).filter(function (it) { return (it.folder || '') === folder; });
         renderMailList();
       })
-      .catch(function () { if (currentRealm === realmAt) { _mailFiles = []; renderMailList(); } });
+      .catch(function () { if (currentRealm === realmAt) { _mailFiles = []; _mailFilesErr = true; renderMailList(); } });
   }
   function renderMailList() {
     var list = document.getElementById('ml_list'); if (!list) return;
@@ -4620,7 +4672,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var f = _mailFiles.filter(function (x) { return x.id === m.docId; })[0];
       var link = f
         ? '<a class="fs-file" href="/api/documents/' + encodeURIComponent(f.id) + '/download" data-pvname="' + esc(f.name) + '" data-pvmime="' + esc(f.mimeType || '') + '">' + esc(f.name) + '</a>'
-        : (m.docId ? '<span style="color:var(--muted);font-size:12px;">scan unavailable</span>' : '<span style="color:var(--muted);font-size:12px;">no scan</span>');
+        : (m.docId
+            ? (_mailFilesErr
+                ? '<span style="color:var(--burgundy);font-size:12px;">couldn’t load the scan — try again</span>'
+                : '<span style="color:var(--muted);font-size:12px;">scan unavailable</span>')
+            : '<span style="color:var(--muted);font-size:12px;">no scan</span>');
       return '<div class="fl-row" data-mid="' + esc(m.id) + '" style="display:flex;gap:12px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--chrome-mute);' + (m.handled ? 'opacity:.62;' : '') + '">' +
         '<div style="flex:1;min-width:0;">' +
           '<div style="font-weight:700;font-size:13.5px;">' + esc(m.what || '(not described)') + '</div>' +
@@ -5605,6 +5661,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // m.isRead is the MAILBOX's flag, and nothing in this app ever sets it — reading a
     // message here stamps our own per-person readBy instead. Counting isRead meant the
     // badge never cleared no matter how much mail the bookkeeper worked through.
+    // The Email tab has just counted the inbox itself — that answers the question the
+    // "couldn't check" banner asks, so clear it here too or the banner sticks all session.
+    delete _emUnreadErr[currentRealm];
     _emUnread[currentRealm] = _emMsgs.filter(function (m) { return !readByMe(m.id) && !metaFor(m.id).archived; }).length;
     updateWsNav();
   }
@@ -5654,6 +5713,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // emMetaOp then wrote those message ids into the shared per-client meta doc.
     if (!mailboxActive()) {
       list.innerHTML = '<div style="color:var(--muted);padding:10px 0;">No mailbox is set up for this client yet, so there’s no client mail to show. An admin can add one in the client’s settings.</div>';
+      /* Do NOT clear _emUnreadErr here. mailboxActive() is false both when the client has
+         no mailbox AND when the config read FAILED (loadClientMailbox synthesizes an empty,
+         disabled config on failure) — so clearing it would turn "we could not check" into
+         "inbox up to date" on exactly the failure the flag exists to report. */
       _emMsgs = []; _emLoadedFor = currentRealm; _emLoadedFolder = _emFolder; _emUnread[currentRealm] = 0; updateWsNav(); return;
     }
     var rid = '&realmId=' + encodeURIComponent(currentRealm);
@@ -5664,7 +5727,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         if (currentRealm !== realmAt || _emFolder !== folderAt) return; // client or folder switched mid-flight
         if (resp && resp.ok && resp.pendingMailbox) {
           list.innerHTML = '<div style="background:var(--gold-fade);border:1px solid var(--chrome-mute);border-radius:8px;padding:12px 14px;font-size:13px;color:var(--ink);">📬 <strong>' + esc((_clientMailbox && _clientMailbox.mailbox) || 'This mailbox') + '</strong> is set up in the app but hasn’t been created in Microsoft 365 yet. An admin can create it as a <strong>shared mailbox</strong> in the M365 admin center — mail will appear here automatically once it exists.</div>';
-          _emMsgs = []; _emUnread[currentRealm] = 0; updateWsNav(); return;
+          _emMsgs = []; _emUnread[currentRealm] = 0; delete _emUnreadErr[currentRealm]; updateWsNav(); return;
         }
         if (!resp || !resp.ok) {
           // Drop the other folder's cache AND record why, so nothing can repaint it later.
@@ -5822,9 +5885,30 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         var m = resp.message;
         var fromEl = document.getElementById('em_m_from');
         if (fromEl) fromEl.innerHTML = esc(m.fromName ? (m.fromName + ' <' + m.from + '>') : m.from) + '<br><span style="color:var(--muted);">To: ' + esc((m.to || []).join(', ')) + (m.cc && m.cc.length ? ' · Cc: ' + esc(m.cc.join(', ')) : '') + '</span>';
-        var attDl = function (a) {
-          return '/api/integrations/msgraph/message/' + encodeURIComponent(id) + '/attachment/' + encodeURIComponent(a.id) +
-            '/download?name=' + encodeURIComponent(a.name) + '&realmId=' + encodeURIComponent(currentRealm);
+        var attDl = function (a, outerId) {
+          // outerId set = `a` is nested inside a FORWARDED email; the route re-expands that
+          // item and serves the inner file's bytes.
+          return '/api/integrations/msgraph/message/' + encodeURIComponent(id) + '/attachment/' + encodeURIComponent(outerId || a.id) +
+            '/download?name=' + encodeURIComponent(a.name) + '&realmId=' + encodeURIComponent(currentRealm) +
+            (outerId ? ('&inner=' + encodeURIComponent(a.id)) : '');
+        };
+        /* The last ten feet. Receipts and bills arrive by EMAIL — the per-client mailboxes are
+           the firm's whole intake — and until now an attachment here was a download link and
+           nothing else: to get one into QuickBooks a bookkeeper had to save it to her machine,
+           find it again in Downloads, and re-upload it through the receipt scanner. That gap is
+           why "can we just email it into QuickBooks?" keeps coming up. Both actions hand the
+           bytes straight to code that already exists — scanReceipt() and /api/documents. */
+        var SCANNABLE = /^image\/|pdf$/i;
+        var attActs = function (a, outerId) {
+          var url = attDl(a, outerId), ty = a.contentType || '';
+          var scannable = SCANNABLE.test(ty) || /\.(pdf|png|jpe?g|webp|gif|bmp|heic)$/i.test(a.name || '');
+          var mk = function (act, label, title) {
+            return '<button type="button" class="em-att-act" data-att-act="' + act + '" data-att-url="' + esc(url) + '" ' +
+              'data-att-name="' + esc(a.name || 'attachment') + '" data-att-type="' + esc(ty) + '" title="' + esc(title) + '" ' +
+              'style="background:none;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:6px;padding:1px 6px;margin-left:4px;font:inherit;font-size:11px;cursor:pointer;color:var(--gold-deep,#a8884a);font-weight:700;">' + label + '</button>';
+          };
+          return (scannable ? mk('scan', '📷 QuickBooks', 'Read this with AI and start a QuickBooks transaction from it — the file is attached to the transaction when it posts') : '') +
+            mk('file', '📁 Files', 'Save a copy into this client’s Files');
         };
         // Only a 'file' attachment has bytes behind it. A 'reference' is a OneDrive /
         // SharePoint link (Outlook makes one whenever the sender picks a cloud file, and
@@ -5881,16 +5965,40 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
               ' <span style="color:var(--muted);font-size:11px;">(cloud link' + (m.webLink ? ' — <a href="' + esc(m.webLink) + '" target="_blank" rel="noopener">open in Outlook</a>' : '') + ')</span>';
           }
           if (a.kind === 'item') {
-            return '<span class="fs-file" style="cursor:default;border-bottom:none;" title="An email attached to this email">✉ ' + esc(a.name) + '</span>' +
-              ' <span style="color:var(--muted);font-size:11px;">(attached email' + (m.webLink ? ' — <a href="' + esc(m.webLink) + '" target="_blank" rel="noopener">open in Outlook</a>' : '') + ')</span>';
+            // A forwarded email. The server expands it, so what was inside is now reachable
+            // rather than a dead "open it in Outlook".
+            var head = '<span class="fs-file" style="cursor:default;border-bottom:none;" title="An email attached to this email">✉ ' + esc(a.name) + '</span>';
+            /* Everything inside the forward is listed, inline or not. The OUTER strip hides
+               an inline part only when the body is about to draw it (`embedded[a.id]`) — but
+               nothing ever renders the INNER message's body, so hiding an inline inner part
+               makes it unreachable and then prints "nothing attached inside it" over the top.
+               Two phone photos of receipts forwarded from iOS Mail arrive exactly like this. */
+            var innerList = (a.inner || []);
+            if (innerList.length) {
+              return head + '<div style="margin:3px 0 0 18px;">' + innerList.map(function (x) {
+                var xkb = x.size ? (' <span style="color:var(--muted);font-size:11px;">(' + Math.max(1, Math.round(x.size / 1024)) + ' KB)</span>') : '';
+                if (x.kind !== 'file') {
+                  return '<div style="font-size:12px;color:var(--muted);">↳ ' + esc(x.name) + ' — only reachable in Outlook (one level down is as far as Outlook lets us open)</div>';
+                }
+                return '<div style="font-size:12.5px;">↳ <a class="fs-file" href="' + attDl(x, a.id) + '" data-pvname="' + esc(x.name) + '" data-pvmime="' + esc(x.contentType || '') + '" data-pvprobe="1">' + esc(x.name) + '</a>' + xkb + attActs(x, a.id) + '</div>';
+              }).join('') + '</div>';
+            }
+            // "nothing inside" is a claim, and it is only true when the expand ran AND came
+            // back empty. Not opened (too big, too many, Graph refused) is a different answer.
+            return head + ' <span style="color:var(--muted);font-size:11px;">(' +
+              (a.innerError ? ('attached email — ' + esc(a.innerError))
+                : a.inner ? 'attached email — nothing attached inside it'
+                : 'attached email — not opened here')
+              + (m.webLink ? ' — <a href="' + esc(m.webLink) + '" target="_blank" rel="noopener">open in Outlook</a>' : '') + ')</span>';
           }
-          return '<a class="fs-file" href="' + attDl(a) + '" data-pvname="' + esc(a.name) + '" data-pvmime="' + esc(a.contentType || '') + '" data-pvprobe="1">' + esc(a.name) + '</a>' + kb;
+          return '<a class="fs-file" href="' + attDl(a) + '" data-pvname="' + esc(a.name) + '" data-pvmime="' + esc(a.contentType || '') + '" data-pvprobe="1">' + esc(a.name) + '</a>' + kb + attActs(a, null);
         }).join(' &nbsp;&middot;&nbsp; ') + '</div>'
           // hasAttachments true but the list came back empty AND the server flagged
           // why — Graph's attachment listing failed, this is NOT "no attachments".
           : (m.hasAttachments && m.attachmentsError) ? '<div class="em-att" style="color:var(--burgundy);">⚠ Could not load this email’s attachment(s) — <a href="#" data-att-retry="1">try again</a>.</div>' : '';
         bodyEl.innerHTML = att;
         if (att) wirePreviews(bodyEl, '&');
+        if (att) wireAttActions(bodyEl);
         var retryLink = bodyEl.querySelector('[data-att-retry]');
         if (retryLink) retryLink.onclick = function (e) { e.preventDefault(); openEmail(id); };
         var ifr = document.createElement('iframe');
@@ -6365,23 +6473,47 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      property of the project. Shown on the list, in the editor, and in the email panel —
      which is the moment the "where do I send this" question is actually asked. Never
      printed on any form. ---- */
-  function cprNotesKey() { return 'bcc-cprnotes-' + currentRealm; }
-  function cprNotesDoc() {
-    try { return JSON.parse(localStorage.getItem(cprNotesKey())) || {}; } catch (e) { return {}; }
+  /* ONE DOCUMENT PER NOTE, deliberately — not one document per client holding a map of
+     them. A single per-client document is a whole-document write: on a device that has not
+     yet synced it (a new laptop, a failed pull, a colleague's browser) the local copy is an
+     empty object, and typing one job's note would push a document containing ONLY that note,
+     destroying every other job's. That is the same class of bug the Client Info and WIP
+     panes each needed a priming guard to close — here it is designed out instead, because a
+     write can only ever touch the note it is for. */
+  function cprNoteHash(jobKey) {
+    // Stable, alphanumeric, and short enough to keep the key matchable by the server's
+    // client-scoped pattern. Not security — just a filename for a job.
+    var h = 5381, s2 = String(jobKey || '');
+    for (var i = 0; i < s2.length; i++) { h = ((h * 33) ^ s2.charCodeAt(i)) >>> 0; }
+    return h.toString(36);
+  }
+  function cprNoteKey(jobKey, realm) {
+    return 'bcc-cprnote-' + (realm || currentRealm) + '-' + (jobKey ? cprNoteHash(jobKey) : 'general');
   }
   function cprNoteGet(jobKey) {
-    var d = cprNotesDoc();
-    return String((jobKey ? ((d.byJob || {})[jobKey]) : d.general) || '');
+    try {
+      var raw = localStorage.getItem(cprNoteKey(jobKey));
+      if (raw) { var d = JSON.parse(raw); if (d && typeof d.text === 'string') return d.text; }
+    } catch (e) {}
+    /* Fallback to the ONE-DOCUMENT shape this shipped as earlier today, so a note typed in
+       that window is still shown. Read-only: nothing writes that document again, so it can
+       never take another job's note down with it. */
+    try {
+      var legacy = JSON.parse(localStorage.getItem('bcc-cprnotes-' + currentRealm) || 'null');
+      if (legacy) return String((jobKey ? ((legacy.byJob || {})[jobKey]) : legacy.general) || '');
+    } catch (e) {}
+    return '';
   }
-  function cprNoteSet(jobKey, text) {
+  function cprNoteSet(jobKey, text, realm) {
     if (bkRefuseIfReadOnly()) return false;
-    if (!currentRealm) return false;
-    var d = cprNotesDoc();
-    d.id = cprNotesKey(); d.tenantId = 'blue-collar-coach'; d.docType = 'cpr-notes'; d.realmId = currentRealm;
-    if (jobKey) { d.byJob = d.byJob || {}; d.byJob[jobKey] = text; }
-    else d.general = text;
-    d.updatedAt = nowIso(); d.updatedBy = myUpn();
-    localStorage.setItem(d.id, JSON.stringify(d));
+    var rlm = realm || currentRealm;
+    if (!rlm) return false;
+    var id = cprNoteKey(jobKey, rlm);
+    localStorage.setItem(id, JSON.stringify({
+      id: id, tenantId: 'blue-collar-coach', docType: 'cpr-note', realmId: rlm,
+      jobKey: jobKey || '', text: String(text == null ? '' : text),
+      updatedAt: nowIso(), updatedBy: myUpn()
+    }));
     return true;
   }
   // `jobKey` empty = the client-level note. Returns markup; wire with cprNotesWire().
@@ -6406,7 +6538,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         // Realm-race guard: the debounce outlives a client switch, and this note belongs to
         // the client that was open when it was typed.
         if (currentRealm !== realmAt) return;
-        var ok = cprNoteSet(jobKey, val);
+        var ok = cprNoteSet(jobKey, val, realmAt);
         if (st) st.textContent = ok ? 'Saved' : '';
       }, 500);
     });
@@ -6422,7 +6554,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       primeName: '', primeAddress: '', primePhone: '', contractName: '', contractNumber: '',
       payPeriodEnd: '', projectName: '', payrollNo: String(nextNo), autoNo: true, isFinal: false, weekStart: '',
       contractingAuthority: '', generalContractor: '', typeOfWork: '',
-      socName: '', socTitle: '', socBusiness: info.legalName || companyName(currentRealm) || '', socDate: new Date().toISOString().slice(0,10),
+      // bizToday(), not the UTC date: after ~7pm Central a new report was certified with
+      // TOMORROW's date on a form filed with a public agency. cprDuplicate and payappNew
+      // have always used bizToday; this one was the odd man out.
+      socName: '', socTitle: '', socBusiness: info.legalName || companyName(currentRealm) || '', socDate: bizToday(),
       socCommence: '', socEnd: '', fringe: '', fringeExceptions: '', fringePrograms: '',
       employees: [ blankEmp() ], createdAt: nowIso(), updatedAt: nowIso()
     };
@@ -6646,6 +6781,73 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // crm.html's card-scan/csv-import labels.
     var afi = document.getElementById('cpr_file'); if (afi) afi.onchange = cprAutofill;
   }
+  /* Fetch an attachment's bytes as a real File. Same-origin and credentialed, so it goes
+     through the same access gate as the download link beside it — nothing new is exposed;
+     what changes is that the bytes reach code inside the app instead of the Downloads folder. */
+  function emAttFetch(url, name, type) {
+    return fetch(url, { credentials: 'include' }).then(function (r) {
+      if (!r.ok) {
+        return r.json().catch(function () { return {}; }).then(function (j) {
+          throw new Error((j && j.error) || ('could not read the attachment (HTTP ' + r.status + ')'));
+        });
+      }
+      return r.blob();
+    }).then(function (b) {
+      var ty = b.type && b.type !== 'application/octet-stream' ? b.type : (type || b.type || 'application/octet-stream');
+      // A File, not a Blob: scanReceipt and the documents upload both read .name.
+      try { return new File([b], name, { type: ty }); }
+      catch (e) { try { b.name = name; } catch (e2) {} return b; }
+    });
+  }
+  function wireAttActions(host) {
+    if (!host) return;
+    host.querySelectorAll('[data-att-act]').forEach(function (btn) {
+      btn.onclick = function (ev) {
+        ev.preventDefault();
+        var act = btn.getAttribute('data-att-act');
+        var nm = btn.getAttribute('data-att-name') || 'attachment';
+        // Pin the client this attachment belongs to: the fetch and the upload that follows
+        // both outlive a client switch, and this is the same realm-race that has bitten every
+        // other async path on this page.
+        var realmAt = currentRealm;
+        if (!realmAt) { (window.bccNotify || alert)('Open a client first.', 'warn'); return; }
+        if (act === 'file' && bkRefuseIfReadOnly()) return;
+        var ot = btn.textContent; btn.disabled = true; btn.textContent = '…';
+        var done = function () { btn.disabled = false; btn.textContent = ot; };
+        emAttFetch(btn.getAttribute('data-att-url'), nm, btn.getAttribute('data-att-type'))
+          .then(function (f) {
+            done();
+            if (currentRealm !== realmAt) { (window.bccNotify || alert)('You switched client while that was loading — open the email again.', 'warn', 7000); return; }
+            if (act === 'scan') {
+              /* CLOSE THE READER FIRST. scanReceipt goes through gotoTransactions(), which
+                 reveals the transactions section WITHOUT re-rendering the workspace — and
+                 renderWorkspace is the only thing that ever closes this modal. So the whole
+                 scan ran behind a full-screen overlay: the AI placeholder, the seeded form,
+                 and for an unknown vendor a REAL vendor created in the client's live
+                 QuickBooks, all invisible, with the email still on screen and nothing to
+                 suggest the click had worked. Someone would reasonably click it again.
+                 `=== false` on purpose: that is the "you have an unsent reply, discard it?"
+                 answer, and if they say no the scan must not happen either. */
+              if (emCloseModal() === false) return;
+              scanReceipt(f); return;   // pins its own realm and takes over from here
+            }
+            var fd = new FormData();
+            fd.append('file', f); fd.append('folder', '/clients/' + realmAt); fd.append('tags', 'email attachment');
+            if (window.bccNotify) window.bccNotify('Saving “' + nm + '” to this client’s Files…', 'info', 3000);
+            fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
+              .then(function (rr) { return rr.json().then(function (j) { return rr.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + rr.status))); }); })
+              .then(function (j) {
+                if (window.bccAudit) window.bccAudit('client-file-upload', { key: j && j.id, path: '/bookkeeping.html', meta: { realmId: realmAt, name: nm, source: 'email-attachment' } });
+                if (window.bccNotifySaved) window.bccNotifySaved('“' + nm + '” saved to this client’s Files.');
+                if (currentRealm === realmAt && typeof loadFiles === 'function') loadFiles();
+              })
+              .catch(function (e) { (window.bccNotify || alert)('Could not save it to Files: ' + e.message, 'error', 8000); });
+          })
+          .catch(function (e) { done(); (window.bccNotify || alert)('Could not open that attachment: ' + e.message, 'error', 8000); });
+      };
+    });
+  }
+
   /* ===== Email a certified payroll report from the CLIENT's mailbox =====
      Sends from the client's dedicated mailbox when one is live, otherwise from
      the signed-in user's — so it works today and upgrades automatically. Attaches
@@ -7917,6 +8119,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var pc = computePayapp(r);
     return {
       appNo: r.appNo || '', ownerName: r.ownerName || '', contractorName: r.contractorName || '',
+      /* The three party ADDRESSES are asked for on the form and were then dropped by both
+         renderers, so a G702 went out naming an owner and an architect with no way to reach
+         either. They are part of the certificate, not decoration. */
+      ownerAddress: r.ownerAddress || '', contractorAddress: r.contractorAddress || '', architectAddress: r.architectAddress || '',
       projectName: r.projectName || '', architectName: r.architectName || '',
       projectAddress: r.projectAddress || '', contractFor: r.contractFor || '',
       periodTo: r.periodTo || '', appDate: r.appDate || '', projectNo: r.projectNo || '',
@@ -7994,8 +8200,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var certText = 'The undersigned Contractor certifies that to the best of the Contractor’s knowledge, information and belief the Work covered by this Application for Payment has been completed in accordance with the Contract Documents, that all amounts have been paid by the Contractor for Work for which previous Certificates for Payment were issued and payments received from the Owner, and that current payment shown herein is now due.';
     return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Pay Application #' + esc(r.appNo || '') + '</title><style>' + css + '</style></head><body>' +
       '<h1>Application and Certificate for Payment</h1><div class="sub">Progress billing — prepared in the format of AIA® Document G702™/G703™</div>' +
-      '<table class="hd"><tr>' + kv('To (Owner)', r.ownerName) + kv('From (Contractor)', r.contractorName) + '</tr>' +
-      '<tr>' + kv('Project', r.projectName) + kv('Via (Architect)', r.architectName) + '</tr>' +
+      '<table class="hd"><tr>' + kv('To (Owner)', [r.ownerName, r.ownerAddress].filter(Boolean).join(' · ')) +
+        kv('From (Contractor)', [r.contractorName, r.contractorAddress].filter(Boolean).join(' · ')) + '</tr>' +
+      '<tr>' + kv('Project', r.projectName) + kv('Via (Architect)', [r.architectName, r.architectAddress].filter(Boolean).join(' · ')) + '</tr>' +
       '<tr>' + kv('Project location', r.projectAddress) + kv('Contract for', r.contractFor) + '</tr>' +
       '<tr>' + kv('Application no.', r.appNo) + kv('Period to', r.periodTo) + '</tr>' +
       '<tr>' + kv('Application date', r.appDate) + kv('Project no.', r.projectNo) + '</tr>' +

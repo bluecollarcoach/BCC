@@ -347,10 +347,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function populateContactDropdown(selected) {
     var sel = document.getElementById('m-contact');
     var contacts = allContacts();
-    sel.innerHTML = '<option value="">— None —</option>' +
+    /* Keep the STORED contact selectable even when it is not in the list. The list comes from
+       whatever bcc-contact- docs this browser happens to hold, so a contact that has not
+       synced here (or that the CRM tier withholds) simply was not in the options — the select
+       fell back to "— None —", and the next save wrote that back, silently unlinking a record
+       nobody touched. Mirrors what populateCompanyDropdown already does. */
+    var html = '<option value="">— None —</option>' +
       contacts.map(function (c) {
         return '<option value="' + esc(c.id) + '"' + (c.id === selected ? ' selected' : '') + '>' + esc(contactName(c)) + (c.company ? ' (' + esc(c.company) + ')' : '') + '</option>';
       }).join('');
+    if (selected && !contacts.some(function (c) { return c.id === selected; })) {
+      html += '<option value="' + esc(selected) + '" selected>(linked contact — not loaded on this device)</option>';
+    }
+    sel.innerHTML = html;
   }
   function allCompanies() {
     var out = [];
