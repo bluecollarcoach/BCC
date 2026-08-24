@@ -74,7 +74,11 @@ const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-
   // accepts, so /api/data would otherwise let any signed-in user read, overwrite or
   // DELETE them — and wiping the reminder de-dupe map re-sends every reminder in the
   // window to everyone subscribed.
-  'bcc-reminder-sent-v1', 'bcc-qbo-debug-'];
+  // 'bcc-qbo-debug' carries NO trailing hyphen on purpose: qbo-callback writes that BARE id
+  // for both its success and its error breadcrumb, and a 'bcc-qbo-debug-' prefix does not
+  // cover it — so that one doc was writable and deletable through /api/data by any signed-in
+  // user while its two suffixed siblings were protected. startsWith covers all three.
+  'bcc-reminder-sent-v1', 'bcc-qbo-debug'];
 // A SERVER-owned file-metadata doc (written by /api/documents) is FLAT: docType sits
 // at the top level. A documents.html record synced through /api/data is WRAPPED: its
 // docType lives under .data, so top-level docType is undefined. That difference is
@@ -948,6 +952,18 @@ app.http('data', {
             updatedAt: now,
             updatedBy: who
           };
+          /* A blind write (see mergeBlindPersonalDoc) merges rather than replaces. Only the
+             two families that can legitimately be written without the server's copy, and only
+             when the client actually flagged it — so an ordinary save is untouched. */
+          if (it.data && it.data.blindWrite === true &&
+              (it.key.startsWith('bcc-daily-log-') || it.key.startsWith('bcc-mytasks-'))) {
+            const exOwn = await c.item(it.key, BCC_TENANT_ID).read().then(r => r.resource)
+              .catch(e => { if (e && e.code === 404) return null; throw e; });
+            doc.data = (exOwn && exOwn.data) ? mergeBlindPersonalDoc(exOwn.data, it.data) : it.data;
+            if (doc.data && typeof doc.data === 'object') delete doc.data.blindWrite;
+            await c.items.upsert(doc);
+            continue;
+          }
           /* Merge, never replace — see mergeChatMessages. 404-only catch: swallowing every
              error would silently turn a Cosmos blip back into the whole-blob replace this
              exists to prevent. */
@@ -974,8 +990,25 @@ app.http('data', {
                browser). A "Save credentials" during a blip silently disconnected the connector. */
             const exInt = await c.item(it.key, BCC_TENANT_ID).read().then(r => r.resource)
               .catch(e => { if (e && e.code === 404) return null; throw e; });
-            if (exInt) await c.items.upsert(Object.assign({}, exInt, doc));
-            else await c.items.upsert(doc);
+            /* The top-level merge above rescues the OAuth tokens, but `data` is still replaced
+               wholesale — so a browser that lost its cache and posted an empty skeleton
+               erased data.fields, and with it the Intuit client secret, which exists nowhere
+               else. A field that is STORED and arrives BLANK is not an edit; it is a client
+               that never read it. Deleting a key outright still clears it, which is what the
+               UI's Clear does. */
+            if (exInt) {
+              const exFields = (exInt.data && typeof exInt.data === 'object' && exInt.data.fields) || null;
+              const inFields = (doc.data && typeof doc.data === 'object' && doc.data.fields) || null;
+              if (exFields && inFields && typeof inFields === 'object') {
+                for (const fk of Object.keys(exFields)) {
+                  const kept = exFields[fk];
+                  if (!kept) continue;                                   // nothing stored to lose
+                  if (!Object.prototype.hasOwnProperty.call(inFields, fk)) continue;  // omitted = untouched
+                  if (String(inFields[fk] || '').trim() === '') inFields[fk] = kept;  // blanked = never read
+                }
+              }
+              await c.items.upsert(Object.assign({}, exInt, doc));
+            } else await c.items.upsert(doc);
             continue;
           }
           await c.items.upsert(doc);
@@ -2769,6 +2802,44 @@ function mergeChatMessages(oldData, newData) {
    company invisible until an admin grants access) was being republished to the entire firm
    through the CRM. Same shape as dashboardDocRealm: the realm is in the DOCUMENT, not the
    key, so dataKeyClientRealm cannot see it. */
+/* Merge a write the client has flagged as made WITHOUT knowing what the server holds.
+   myday.html's daily log and personal task list are single whole-document keys that it mints
+   blank when this browser does not hold them — and unlike every other page it cannot refuse
+   the write, because those two families are exactly the ones that must keep working with no
+   network (see writingBlind there). So the client says "blind" and the merge happens here.
+   The rule is deliberately narrow: a key the flagged copy does not carry is LEFT ALONE (it
+   was never that device's to change), a key it does carry wins (it is what the person just
+   did — including clockedOutAt:null, which is what starting a new punch means), and the two
+   arrays that accumulate are unioned. A blind device cannot delete what it cannot see, so
+   union loses nothing. */
+function mergeBlindPersonalDoc(oldData, newData) {
+  const parse = (d) => { if (typeof d === 'string') { try { return JSON.parse(d); } catch (_) { return null; } } return d; };
+  const a = parse(oldData), b = parse(newData);
+  const shaped = (x) => !!x && typeof x === 'object' && !Array.isArray(x);
+  if (!shaped(a) || !shaped(b)) return newData;
+  const out = Object.assign(Object.create(null), a);
+  for (const k of Object.keys(b)) {
+    if (k === 'blindWrite') continue;
+    out[k] = b[k];
+  }
+  const union = (name, keyOf) => {
+    const la = Array.isArray(a[name]) ? a[name] : [];
+    const lb = Array.isArray(b[name]) ? b[name] : [];
+    if (!la.length && !lb.length) return;
+    const seen = new Map();
+    for (const x of la) { if (x && typeof x === 'object') seen.set(keyOf(x), x); }
+    for (const x of lb) { if (x && typeof x === 'object') seen.set(keyOf(x), x); }
+    out[name] = Array.from(seen.values());
+  };
+  // Personal to-dos carry their own id; banked punch segments are identified by their pair.
+  union('items', (x) => String(x.id || ((x.text || '') + '|' + (x.createdAt || ''))));
+  /* inAt/outAt — the field names parkSegment actually writes. Guessing (in/start, out/end)
+     would have keyed EVERY segment as '|', collapsed the whole day's banked punches into one
+     entry, and done it on the merge path added to stop exactly that kind of loss. */
+  union('segments', (x) => String((x.inAt || '') + '|' + (x.outAt || '')));
+  delete out.blindWrite;
+  return out;
+}
 function companyDocRealm(data) {
   let dd = data;
   if (typeof dd === 'string') { try { dd = JSON.parse(dd); } catch (_) { dd = null; } }
@@ -2996,7 +3067,13 @@ async function appAccessChecker(p) {
    of having to remember it. */
 async function driveClientAccess(p, realmId, opts) {
   const c = container();
-  const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+  /* 404 ONLY. companyPrivateBlocked(null, p) answers false — there is no privateToUpn to
+     read — and an app admin skips the `!comp` arm below entirely, so a swallowed Cosmos error
+     turned the firm's own books into an accessible client for every other admin. This is the
+     one check documented as NOT bypassed by admin status; it must not be bypassed by a blip
+     either. Every caller already handles a throw (the route's own catch answers 500). */
+  const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource)
+    .catch(e => { if (e && (e.code === 404 || e.statusCode === 404)) return null; throw e; });
   if (companyPrivateBlocked(comp, p)) return { err: { status: 403, jsonBody: { ok: false, error: 'no access to this client' } } };
   if (!(await isAppAdmin(p))) {
     const who = String(p.userDetails || p.userId || '').toLowerCase();
@@ -3627,6 +3704,28 @@ app.http('sharepoint-map', {
       if (request.method === 'POST') {
         const body = await request.json().catch(() => ({}));
         const map = (body && typeof body.map === 'object' && body.map) || {};
+        /* The caller posts a whole map, so entries for clients they cannot see have to be
+           carried over from what is stored rather than taken from the payload — otherwise the
+           owner-only client's folder could be repointed (or dropped) by anyone who could
+           reach this route, even though the GET above never showed it to them. */
+        let spPrev = {};
+        try {
+          const dPrev = await c.item(SP_MAP_ID, BCC_TENANT_ID).read().then(r => r.resource)
+            .catch(e => { if (e && (e.code === 404 || e.statusCode === 404)) return null; throw e; });
+          if (dPrev && dPrev.map) spPrev = dPrev.map;
+        } catch (_) { spPrev = {}; }
+        const spHidden = new Set();
+        try {
+          const { resources: spComps } = await c.items.query({
+            query: 'SELECT c.realmId, c.privateToUpn FROM c WHERE c.tenantId=@t AND c.docType="qbo-company"',
+            parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+          }).fetchAll();
+          for (const co of spComps) { if (companyPrivateBlocked(co, p)) spHidden.add(String(co.realmId)); }
+        } catch (_) { /* leave spHidden empty: a failed lookup must not drop the whole save */ }
+        for (const rid of spHidden) {
+          if (Object.prototype.hasOwnProperty.call(spPrev, rid)) map[rid] = spPrev[rid];
+          else delete map[rid];
+        }
         await c.items.upsert({ id: SP_MAP_ID, tenantId: BCC_TENANT_ID, docType: 'sharepoint-map', map, updatedAt: new Date().toISOString(), updatedBy: (p.userDetails || '').toLowerCase() });
         return { jsonBody: { ok: true, map } };
       }
@@ -3634,12 +3733,18 @@ app.http('sharepoint-map', {
       try { const d = await c.item(SP_MAP_ID, BCC_TENANT_ID).read().then(r => r.resource); if (d && d.map) map = d.map; } catch (_) {}
       const folders = await spFolderNames();
       const { resources: comps } = await c.items.query({
-        query: 'SELECT c.realmId, c.companyName FROM c WHERE c.tenantId=@t AND c.docType="qbo-company"',
+        // privateToUpn comes back so the owner-only client can be filtered below — every
+        // other listing of this docType already does it, and this was the one that did not.
+        query: 'SELECT c.realmId, c.companyName, c.privateToUpn FROM c WHERE c.tenantId=@t AND c.docType="qbo-company"',
         parameters: [{ name: '@t', value: BCC_TENANT_ID }]
       }).fetchAll();
       // Include the auto-match so the UI can show what it WOULD use.
       const rows = [];
       for (const co of comps) {
+        /* The firm's OWN books are not another admin's to see — or to repoint. This screen
+           names the client AND writes the folder its documents are filed into, so listing it
+           disclosed the client and offered the map entry in the same breath. */
+        if (companyPrivateBlocked(co, p)) continue;
         // Same matcher the runtime uses, so `auto` is literally what would be resolved and
         // `suggest` names the folders an admin may want to map by hand. Previously this
         // screen used an exact-only rule of its own while the runtime quietly prefix-matched,
@@ -5570,13 +5675,23 @@ async function graphExpandItemAttachment(access, upn, msgId, attId) {
     return { item: j && j.item };
   };
   let got = await ask('?$expand=microsoft.graph.itemAttachment/item');
+  let retryErr = '';
   if (!got.err && got.item && !got.item.attachments) {
     const nested = await ask('?$expand=microsoft.graph.itemAttachment/item($expand=microsoft.graph.message/attachments)');
     if (!nested.err && nested.item && nested.item.attachments) got = nested;
+    else if (nested.err) retryErr = nested.err;    // kept: it is the difference below
   }
   if (got.err) return { err: got.err };
   const item = got.item;
   if (!item) return { err: 'Graph returned no inner message' };
+  /* "Graph did not give us the list" is not "the forward carried nothing". Falling through to
+     `item.attachments || []` turned a failed retry — or a response that simply never carried
+     the collection — into the affirmative claim the UI prints as "attached email — nothing
+     attached inside it", about a forward that may well hold the client's invoice. hasAttachments
+     is the message's own answer to that question and it is right here in the payload. */
+  if (!item.attachments && (item.hasAttachments || retryErr)) {
+    return { err: 'could not list what is inside this forwarded email' + (retryErr ? ' (' + retryErr + ')' : '') };
+  }
   // Only real FILE attachments have bytes. A nested item/reference cannot be expanded again
   // (Graph does not support a second level), so those are reported, not offered.
   const inner = (item.attachments || []).map(a => {
@@ -7978,7 +8093,14 @@ app.http('qbo-monthly-report', {
         const who = String((ctx.p && (ctx.p.userDetails || ctx.p.userId)) || '').toLowerCase();
         // Read-modify-write (not a blind overwrite) — a past period may already carry a
         // frozen snapshot (frozenByMethod, see GET below); saving notes must not wipe it.
-        const existingObs = await c.item(docId(period), BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+        /* 404 ONLY. Anything else rethrows into the handler's own catch, which answers 502 —
+           and bookkeeping.html already renders that as "your observations could not be saved,
+           they are still on screen". Failing the save loudly is strictly better than the
+           alternative here: the upsert below is a whole-document REPLACE built from this
+           read, so a swallowed blip wipes a past period's frozen snapshot (the numbers and
+           statements already sent to the client) and the other basis's narrative with it. */
+        const existingObs = await c.item(docId(period), BCC_TENANT_ID).read().then(r => r.resource)
+          .catch(e => { if (e && (e.code === 404 || e.statusCode === 404)) return null; throw e; });
         /* Observations quote dollar figures ("gross margin fell to 24%, down $18k"), so they
            are only true of the basis they were written against. Stored flat, switching a
            report from accrual to cash — or re-pulling it — printed last basis's sentences
@@ -8048,11 +8170,26 @@ app.http('qbo-monthly-report', {
         // several seconds on live QBO calls, and building off the earlier, now-stale
         // `saved` would risk silently discarding an observations save (or another
         // method's freeze) that landed on this same doc during that window.
-        saved = await c.item(docId(period), BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+        /* On failure KEEP the copy read at the top of the handler rather than clobbering it
+           with null, and remember that the re-read failed. Rethrowing here would be wrong:
+           this runs on every report view including the current month, where nothing is ever
+           frozen and `saved` only supplies narrative, so a transient blip would 502 the whole
+           report after several seconds of live QuickBooks calls have already been spent. */
+        let rereadFailed = false;
+        saved = await c.item(docId(period), BCC_TENANT_ID).read().then(r => r.resource)
+          .catch(e => {
+            if (e && (e.code === 404 || e.statusCode === 404)) return null;
+            rereadFailed = true;
+            return saved;      // the copy from the top of the handler, not null
+          });
         // Never lock in a result missing prior-period data (e.g. a transient QBO
         // rate-limit hit) — that would freeze permanently-incomplete comparisons.
         // Leaving it unfrozen means the next view retries live and self-heals.
-        if (isPast && !data.degraded) {
+        /* ...and never lock one in on top of a document we could not re-read. The upsert
+           below is a whole-document write built from `saved`; doing it with a stale or
+           unknown copy is how an observations save that landed during the QuickBooks pull
+           gets destroyed. Skipping the freeze costs one re-pull on the next view. */
+        if (isPast && !data.degraded && !rereadFailed) {
           const frozenAt = new Date().toISOString();
           const priorFrozenByMethod = (saved && saved.frozenByMethod) || {};
           // "method-switch" = some OTHER method was already frozen for this period (this
@@ -9398,18 +9535,27 @@ app.http('documents-list-create', {
       {
         const cPrev = container();
         const prevMeta = await cPrev.item(docId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
-        if (prevMeta && prevMeta.docType === 'document') {
-          const prevRealm = docFolderRealm(prevMeta);
-          if (prevRealm) {
-            const pacc = await driveClientAccess(p, prevRealm);
-            if (pacc.err) return { status: 403, jsonBody: { error: 'no access to the file you are replacing' } };
-            if (!(await isAppAdmin(p)) && bookkeepingReadOnly(await bookkeepingTierFor(p))) {
-              return { status: 403, jsonBody: { error: 'your bookkeeping access is view-only, so you cannot replace this client’s files' } };
-            }
-          } else if (!tierAtLeast(await appTierFor(p, 'documents'), 'edit')) {
-            return forbidden('your Documents access is view-only, so you cannot replace this file');
+        /* ANY existing record, not only the flat server-owned shape. A documents.html record
+         synced through /api/data is WRAPPED (docType lives under .data), so `prevMeta.docType`
+         was undefined for it, the whole guard was skipped, and the upsert below replaced that
+         record wholesale with metadata pointing at the uploader's own client folder. The
+         mirror-image case is already guarded on the /api/data side. */
+      if (prevMeta) {
+        // Either shape: the folder lives at the top level on a server-owned record and under
+        // .data on a documents.html one, and a wrapped record CAN name a client folder — so
+        // reading only the top level would gate it by the Documents tier when it should be
+        // gated by access to that client.
+        const prevRealm = docFolderRealm(prevMeta) || docFolderRealm(prevMeta.data);
+        if (prevRealm) {
+          const pacc = await driveClientAccess(p, prevRealm);
+          if (pacc.err) return { status: 403, jsonBody: { error: 'no access to the file you are replacing' } };
+          if (!(await isAppAdmin(p)) && bookkeepingReadOnly(await bookkeepingTierFor(p))) {
+            return { status: 403, jsonBody: { error: 'your bookkeeping access is view-only, so you cannot replace this client’s files' } };
           }
+        } else if (!tierAtLeast(await appTierFor(p, 'documents'), 'edit')) {
+          return forbidden('your Documents access is view-only, so you cannot replace this file');
         }
+      }
       }
       const linkedContactId    = String(form.get('linkedContactId') || '').trim() || null;
       const linkedEngagementId = String(form.get('linkedEngagementId') || '').trim() || null;

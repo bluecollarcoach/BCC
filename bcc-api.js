@@ -263,10 +263,32 @@
     o.items[key] = { v: value, t: !!trusted, qt: (typeof prevQt === 'number' && prevQt > 0) ? prevQt : Date.now() };
     outboxWrite(o);
   }
-  function outboxDrop(keys) {
+  /* `sentValues` is OPT-IN: pass a { key: value } map and a key is dropped only while the
+     outbox still holds the value this flush actually transmitted. Without it every listed key
+     is dropped unconditionally, which is what the rehydrate callers want (they are moving
+     entries, not retiring them).
+     The value check has to have an escape hatch. An entry that survives a drop keeps the key
+     pinned against every pull (outboxPendingAnyTab), so a benign mismatch — a re-serialised
+     copy, a value another tab rewrote identically — would freeze that document forever. An
+     entry queued no later than the one we sent is therefore dropped anyway: it cannot be the
+     newer write this check exists to protect. */
+  function outboxDrop(keys, sentValues) {
     if (!keys || !keys.length) return;
     var o = outboxRead(); var changed = false;
-    keys.forEach(function (k) { if (o.items[k] !== undefined) { delete o.items[k]; changed = true; } });
+    keys.forEach(function (k) {
+      var cur = o.items[k];
+      if (cur === undefined) return;
+      if (sentValues && Object.prototype.hasOwnProperty.call(sentValues, k)) {
+        var sent = sentValues[k];
+        if (cur.v !== sent) {
+          // Another tab queued something else under this key while we were sending.
+          var sentQt = (sentValues._qt && sentValues._qt[k]) || 0;
+          var curQt = (typeof cur.qt === 'number' && cur.qt > 0) ? cur.qt : 0;
+          if (!(sentQt && curQt && curQt <= sentQt)) return;   // genuinely newer — leave it queued
+        }
+      }
+      delete o.items[k]; changed = true;
+    });
     if (changed) outboxWrite(o);
   }
   /* PARKING, not deleting. An outbox entry rejected because it belongs to a DIFFERENT user
@@ -670,6 +692,15 @@
      doc that was deleted. Without it, a canceled coaching session stayed on every other
      browser forever, and any later edit there re-published it firm-wide. */
   var PRUNABLE_PREFIXES = ['bcc-kb-article-', 'bcc-event-', 'bcc-course-', 'bcc-session-'];
+  /* Keys the SERVER has DELIVERED to this device in this session. The prune's freshness test
+     reads the document's own updatedAt, which is meant to mean "this device minted this
+     record and has not pushed it yet" — but the pull writes the server's copy verbatim, so a
+     record a COLLEAGUE edited and a delta pull delivered carries just as fresh a stamp, and
+     was therefore exempt from pruning: when they later deleted it, this browser kept it and
+     the next local write re-uploaded it, resurrecting it for everyone. Provenance answers the
+     question the timestamp was standing in for. In-memory and per-session by design: it only
+     ever makes the prune MORE willing, never less, so the worst case is the old behaviour. */
+  var _serverDelivered = new Set();
 
   /* Store a value LOCALLY without queueing a push. For the one shape that legitimately
      needs it: a page that GETs a server document itself (to prove it holds the real copy
@@ -710,6 +741,9 @@
   var _primeRetryAt = {};
   window.bccDocPrimed = function (key) { return _primedDocs[key] === true; };
   window.bccPrimeDoc = function (key, done) {
+    // Snapshot before the round trip — see the compare in the .then below.
+    var beforeRaw = null;
+    try { beforeRaw = localStorage.getItem(key); } catch (e) { beforeRaw = null; }
     var fin = function () { try { if (done) done(_primedDocs[key] === true); } catch (e) {} };
     if (!key) { fin(); return; }
     if (_primedDocs[key] === true || _primedDocs[key] === 'busy') { fin(); return; }
@@ -727,6 +761,12 @@
         if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { d = null; } }
         // data:null is a real answer — the document genuinely does not exist yet.
         var ok = true;
+        /* Landed while we were asking? Then it is at least as new as what we fetched — keep
+           it. The key is still PRIMED either way: the point of priming is to know the server
+           has spoken, and it has. */
+        var nowRaw = null;
+        try { nowRaw = localStorage.getItem(key); } catch (e) { nowRaw = null; }
+        if (nowRaw !== beforeRaw) { _primedDocs[key] = true; fin(); return; }
         if (d !== null && d !== undefined) ok = window.bccStoreLocal(key, JSON.stringify(d));
         _primedDocs[key] = ok ? true : 'fail';   // a failed STORE must not count as primed
         fin();
@@ -999,7 +1039,17 @@
     // would just re-tell them). Whatever got re-queued above stays in the outbox so it
     // still survives a reload. This single sweep covers every exit path above.
     var settledKeys = entries.map(function (e) { return e[0]; }).filter(function (k) { return !pending.has(k); });
-    outboxDrop(settledKeys);
+    /* What we actually SENT, after the _rehydrated reconcile above may have swapped in another
+       tab's newer value — that reconcile rewrites e[1], so `entries` is the transmitted copy,
+       and comparing against `pending` instead would compare with a write that never went. */
+    var sentValues = { _qt: {} };
+    var _ob = outboxRead().items || {};
+    entries.forEach(function (e) {
+      sentValues[e[0]] = e[1];
+      var was = _ob[e[0]];
+      if (was && typeof was.qt === 'number') sentValues._qt[e[0]] = was.qt;
+    });
+    outboxDrop(settledKeys, sentValues);
     outboxUnparkKeys(settledKeys);   // a parked copy of a key that has now SHIPPED must go too
     // Hold each key for one more poll interval so a response already in flight, built
     // from a pre-write read, can't land on top of what we just saved.
@@ -1081,7 +1131,7 @@
           // Same per-item guard as the bootstrap pull: one full-storage failure must not
           // abandon the rest of the batch. changed.push INSIDE the try — announcing a key
           // that never landed would have every listener re-render from the old value.
-          try { _origSetItem.call(localStorage, it.key, val); changed.push(it.key); }
+          try { _origSetItem.call(localStorage, it.key, val); _serverDelivered.add(it.key); changed.push(it.key); }
           catch (e) {
             pollFailed++;
             if (it.updatedAt && (!minFailedUpd || it.updatedAt < minFailedUpd)) minFailedUpd = it.updatedAt;
@@ -1560,6 +1610,10 @@
          case it was meant to fix. */
       var dataPromise = fetch(dataUrl).then(function (r) {
         if (!r || !r.ok) window._bccBootPullFailed = true;
+        // ...and the positive fact too. "Not failed" is also true BEFORE the pull has run,
+        // and bccIsAdmin's first-deploy bootstrap needs to know the difference between "the
+        // server said there is no config" and "we have not asked yet".
+        else window._bccBootPullOk = true;
         return r;
       }).catch(function (e) {
         console.warn('[bcc-api] initial pull failed', e);
@@ -1594,7 +1648,7 @@
             // out of this forEach: every remaining doc was skipped and the cursor stamps
             // below never ran, so SYNC_FULL_KEY stayed unwritten and every later pull was a
             // full pull that hit the same wall — the sync never recovered on its own.
-            try { _origSetItem.call(localStorage, it.key, val); }
+            try { _origSetItem.call(localStorage, it.key, val); _serverDelivered.add(it.key); }
             catch (e) {
               pullFailed++;
               if (it.updatedAt && (!minFailedUpd || it.updatedAt < minFailedUpd)) minFailedUpd = it.updatedAt;
@@ -1633,7 +1687,10 @@
                 var stamp = pv && (pv.updatedAt || pv.createdAt);
                 if (stamp) { var st = new Date(stamp).getTime(); fresh = !isNaN(st) && st >= (_lastFull || 0); }
               } catch (e) {}
-              if (fresh) continue;
+              /* ...unless the SERVER is where it came from. A fresh stamp on a record this
+                 device received is the colleague's edit, not evidence we minted it — and
+                 sparing it is what let a deleted record come back (see _serverDelivered). */
+              if (fresh && !_serverDelivered.has(pk)) continue;
               gone.push(pk);
             }
             // Collect first, remove second — removing mid-scan reindexes localStorage
@@ -2963,9 +3020,18 @@
     try {
       var raw = localStorage.getItem('bcc-admin-config-v1');
       var cfg = raw ? JSON.parse(raw) : null;
-      if (!cfg) return true;                           // no config yet (first deploy)
+      /* The bootstrap arms are for a FIRST DEPLOY — a successful pull that found no config.
+         They fired identically on any cold browser whose pull merely FAILED, and
+         bccGetAppPermission('admin') delegates straight here, so bccEnforcePagePermission
+         resolved 'admin' and lifted the overlay from Admin and the Activity log for whoever
+         was signed in. That is the exact opposite of the rule the overlay documents
+         ("deliberately still blocking when the pull failed"). Require evidence that we
+         actually heard from the server; the recovery paths above (__pcServerIsAdmin and the
+         SWA 'administrator' role) are unaffected, and they are what a real lockout uses. */
+      var heardFromServer = !window._bccBootPullFailed && window._bccBootPullOk === true;
+      if (!cfg) return heardFromServer;                // no config yet (first deploy)
       var users = Array.isArray(cfg.users) ? cfg.users : [];
-      if (!users.length) return true;                  // empty list (cloud hasn't synced)
+      if (!users.length) return heardFromServer;       // empty list (cloud hasn't synced)
       // From here on, admin role is REQUIRED. No "no admins set" exception.
       return users.some(function (u) {
         if (!u || u.role !== 'admin' || u.status === 'inactive') return false;

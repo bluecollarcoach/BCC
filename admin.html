@@ -1628,16 +1628,26 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      (keyRedact is false for admins), so prime from there and only ever save on top of what
      the server actually holds. Same pattern as primeCfg above. */
   var _intPrimed = {};
+  /* Whether the SERVER ANSWERED for this channel — true on any ok response, including one
+     carrying data:null. That is a real answer ("nothing stored yet"), and it is the normal
+     state for a connector nobody has configured, so it must not read as a failure or the
+     first save of every connector would be refused forever. The four OAuth connectors are
+     stored FLAT (saveOAuthTokens writes no `.data`), so their successful reads never populate
+     _intPrimed either — another reason the payload cache cannot serve as this signal. */
+  var _intRead = {};
+  var _intReadWarned = false;
   function primeIntegrations() {
     return Promise.all(CONNECTORS.map(function (conn) {
       return fetch('/api/data/' + encodeURIComponent(INT_PREFIX + conn.channel), { credentials: 'include' })
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (j) {
+          if (!j) { _intRead[conn.channel] = false; return; }   // non-ok status
+          _intRead[conn.channel] = true;
           var d = j && j.data;
           if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { d = null; } }
           if (d && typeof d === 'object') _intPrimed[conn.channel] = d;
         })
-        .catch(function () {});
+        .catch(function () { _intRead[conn.channel] = false; });
     }));
   }
   function loadIntegration(channel) {
@@ -1655,6 +1665,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       (window.bccNotify || alert)('Still loading the saved credentials — give it a second and try again.', 'warn', 6000);
       return false;   // the caller MUST NOT then claim success
     }
+    /* PER CHANNEL, and on the read OUTCOME. _ready only ever meant "the priming pass
+       finished" — each connector's fetch carried its own catch, so Promise.all resolved just
+       as happily when every one of them failed, and _ready flipped true anyway. On a browser
+       that did not already hold the document (new laptop, private window, a boot pull that
+       failed) the card then rendered empty credential boxes and Save wrote that skeleton over
+       the stored fields: the server merge preserves only TOP-LEVEL keys, so `data.fields` —
+       the Intuit client secret — was replaced wholesale, under a success toast, with no copy
+       anywhere else and every client's nightly sync dead at the next token refresh. */
+    if (_intRead[rec.channel] !== true) {
+      (window.bccNotify || alert)('Couldn’t read the saved credentials for ' + rec.channel + ', so nothing was saved — saving now could erase them. Reload the page and try again.', 'warn', 10000);
+      return false;
+    }
     rec.id = INT_PREFIX + rec.channel;
     rec.tenantId = 'blue-collar-coach';
     rec.docType = 'integration';
@@ -1671,6 +1693,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     return true;
   }
 
+  /* One message per failed priming pass, not one per card and not one per save attempt. */
+  function intReadWarn() {
+    var bad = CONNECTORS.filter(function (c2) { return _intRead[c2.channel] !== true; })
+      .map(function (c2) { return c2.channel; });
+    if (!bad.length) { _intReadWarned = false; return; }
+    if (_intReadWarned) return;
+    _intReadWarned = true;
+    (window.bccNotify || function () {})('Couldn’t load the saved credentials for ' + bad.join(', ') +
+      '. Those cards are showing blank boxes, not what is stored — saving is refused for them until a reload succeeds.', 'warn', 12000);
+  }
   function statusDot(status) {
     var color = '#8a877e';
     if (status === 'connected') color = '#059669';
@@ -1691,7 +1723,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        so the Save buttons stay disabled until priming finishes. */
     if (!renderIntegrations._primed) {
       renderIntegrations._primed = true;
-      primeIntegrations().then(function () { renderIntegrations._ready = true; renderIntegrations(); });
+      primeIntegrations().then(function () {
+        renderIntegrations._ready = true;   // the pass finished; saveIntegration judges per channel
+        intReadWarn();
+        renderIntegrations();
+      });
     }
     listEl.innerHTML = CONNECTORS.map(function (conn) {
       var rec = loadIntegration(conn.channel);
@@ -2086,14 +2122,21 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
          arrived from another admin — and the next Save merged those stale inputs back.
          `keys` is null on the bootstrap dispatch (bcc-api.js sends detail:{keys:null}), so
          a bare keys.forEach would throw and abort the rest of this handler. */
-      if (!keys) { _intPrimed = {}; }
+      /* Marked STALE rather than deleted. Dropping the cache up front means that if the
+         re-read then fails, loadIntegration falls through to localStorage (a possibly
+         redacted copy) or to an empty skeleton, and the card renders blank credential boxes
+         — a good cache downgraded to nothing by a network blip. The new values are swapped in
+         on success by primeIntegrations; on failure the old ones are still there and
+         _intRead marks the channel unsaveable. */
+      if (!keys) { CONNECTORS.forEach(function (c2) { _intRead[c2.channel] = false; }); }
       else keys.forEach(function (k) {
         var kk = String(k);
-        if (kk.indexOf(INT_PREFIX) === 0) delete _intPrimed[kk.slice(INT_PREFIX.length)];
+        if (kk.indexOf(INT_PREFIX) === 0) _intRead[kk.slice(INT_PREFIX.length)] = false;
       });
       renderIntegrations._ready = false;
       primeIntegrations().then(function () {
         renderIntegrations._ready = true;
+        intReadWarn();
         /* Re-check focus HERE. It was evaluated when the event arrived, but the repaint now
            happens a network round trip later — long enough for the admin to have clicked into
            the panel and started typing a secret, which this would then wipe. */

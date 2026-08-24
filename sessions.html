@@ -359,6 +359,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // button reads like a personal import, so say plainly what it actually does
     // before anything is published. (Private/Confidential entries are excluded
     // server-side, and event bodies are never imported.)
+    /* The de-dupe index is built from this browser's own copy of the sessions, so importing
+       from a device that never received them re-creates the whole shared calendar — one new
+       doc per event, pushed firm-wide. Gate on the boot pull, not on the list being empty: an
+       empty calendar is a perfectly good reason to import. */
+    if (window._bccBootPullFailed) {
+      (window.bccNotify || alert)('Can’t import right now: this device could not load the existing calendar, and importing would duplicate every session already on it. Reload once you are back online.', 'warn', 10000);
+      return;
+    }
     if (!confirm('Import your Outlook calendar into the shared Sessions calendar?\n\nImported events become visible to everyone at the firm. Appointments you marked Private or Confidential are skipped, and event descriptions are not imported.')) return;
     var btn = this; btn.disabled = true; btn.textContent = 'Pulling…';
     // Default range = the current week +/- a couple weeks, so the pull

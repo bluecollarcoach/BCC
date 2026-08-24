@@ -218,12 +218,28 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function todayDate() { return new Date().toISOString().slice(0, 10); }
   function esc(s) { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
   function uid() { return 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2,9); }
-  function dollars(cents) { return '$' + (Math.round(cents) / 100).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 }); }
+  /* Cents when there are cents, whole dollars when there are not. The signed record snapshots
+     priceCents verbatim (packagesSnapshot), so a display that rounds is a display that
+     disagrees with the agreement. */
+  function moneyCents(cents) {
+    var c = Math.round(Number(cents) || 0);
+    return '$' + (c / 100).toLocaleString(undefined, {
+      minimumFractionDigits: (c % 100) ? 2 : 0, maximumFractionDigits: 2
+    });
+  }
+  function dollars(cents) { return moneyCents(cents); }
 
   function loadSheet() {
     try { var raw = localStorage.getItem(RATES_KEY); if (raw) return JSON.parse(raw); } catch (e) {}
+    /* STARTER TEMPLATE — not the firm's rate sheet. Three invented packages at invented
+       prices, minted whenever the document is absent: a new laptop, a private window, a
+       failed boot pull, or a firm that has not built its sheet yet. `provisional` is what
+       every path that would show these prices to a CUSTOMER checks (see sheetIsProvisional);
+       it is never persisted, because saveSheet writes what is on screen and the moment
+       anything is saved the sheet stops being a template. */
     return {
       id: RATES_KEY, tenantId: 'blue-collar-coach', docType: 'rate-sheet',
+      provisional: true,
       effectiveFrom: todayDate(),
       packages: [
         { id: 'p1', name: '1:1 Monthly Coaching', priceCents: 99500, cadence: 'monthly', blurb: 'Two 60-min coaching sessions per month + Voxer access for asks between sessions.' },
@@ -240,6 +256,21 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      over the firm's real rate sheet for everyone. Ask the server what it holds first; until
      it answers, the page is read-only and says so. */
   function ratesReady() { return !window.bccDocPrimed || window.bccDocPrimed(RATES_KEY); }
+  /* Is this sheet the STARTER TEMPLATE rather than the firm's own? Deliberately separate from
+     ratesReady(): "primed" answers whether the server has spoken, and the server answering
+     "there is no rate sheet" is a perfectly successful prime that still leaves the demo
+     packages on screen. Anything a customer would see has to ask this one. */
+  function sheetIsProvisional(sheet) {
+    return !!(sheet && sheet.provisional);
+  }
+  // Refuse an outbound use of the starter template, and say which of the two reasons it is.
+  function refuseProvisionalSheet(what) {
+    var msg = ratesReady()
+      ? ('These are the built-in example packages, not your rate sheet — ' + what + ' would quote prices the firm does not offer. Set your own packages and prices above (they save as you type), then try again.')
+      : ('Your rate sheet has not loaded yet, so ' + what + ' would use the built-in example prices. It is being fetched; try again in a moment.');
+    if (!ratesReady()) { ratesPrime(); ratesPrimeUi(); }
+    (window.bccNotify || alert)(msg, 'warn', 11000);
+  }
   function ratesPrime(done) {
     if (!window.bccPrimeDoc) { if (done) done(); return; }
     var before = null;
@@ -254,6 +285,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
          guard exists to prevent, so the guard has to bring the screen with it. */
       var after = null;
       try { after = localStorage.getItem(RATES_KEY); } catch (e) {}
+      if (ratesReady()) _ratesQuietWarn = false;   // a later refusal is news again
       if (after !== before && typeof renderPackages === 'function') ratesRepaint();
       if (done) done();
     });
@@ -296,15 +328,25 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     if (ready && w) w.remove();
   }
-  function saveSheet(s) {
+  function saveSheet(s, quiet) {
     /* Gated at the STORE, so every path is covered: Save, Add package, Remove, the debounced
-       commit, and anything added later. */
+       commit, and anything added later.
+       `quiet` exists for ONE caller: the 250ms typing debounce, which fires on every pause.
+       It says the refusal has already been announced — the message is the same either way, and
+       repeating it per keystroke is how a warning becomes noise nobody reads. Every deliberate
+       action (Save, Add, Remove) leaves it off and is always told. */
     if (!ratesReady()) {
       ratesPrime();
-      (window.bccNotify || alert)('The current rate sheet has not loaded yet, so nothing was saved. Try again in a moment.', 'warn', 7000);
+      if (!quiet) (window.bccNotify || alert)('The current rate sheet has not loaded yet, so nothing was saved. Try again in a moment.', 'warn', 7000);
       return false;
     }
     s.updatedAt = nowIso(); s.id = RATES_KEY; s.tenantId = 'blue-collar-coach'; s.docType = 'rate-sheet';
+    /* Stripped on the way out, and this is load-bearing. The editing paths mutate the very
+       object loadSheet() returned, so without this the `provisional` marker on the starter
+       template would be written into the firm's real document the first time anyone edited it
+       — and the sheet could then never be emailed or signed for again. Saving IS the act that
+       makes it the firm's own; the marker exists only for the unsaved mint. */
+    delete s.provisional;
     localStorage.setItem(RATES_KEY, JSON.stringify(s));
     if (window.bccAudit) window.bccAudit('rate-sheet-save', { key: RATES_KEY, path: '/rates.html' });
     return true;
@@ -339,6 +381,23 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   /* ===== Packages list ===== */
   function renderPackages() {
     var sheet = loadSheet();
+    /* Say it on screen, not only at the moment of refusal. The three starter packages are
+       convincing — real names, real-looking prices — and the only thing that distinguishes
+       them from the firm's own sheet is that nobody has saved one yet (or this device has not
+       received it). Anyone reading prices off this page deserves to know which they are. */
+    var tn = document.getElementById('rates_template_note');
+    if (sheetIsProvisional(sheet)) {
+      if (!tn) {
+        var hostT = document.querySelector('.wrap') || document.body;
+        if (hostT) {
+          tn = document.createElement('div');
+          tn.id = 'rates_template_note';
+          tn.style.cssText = 'background:#fdf6e3;border:1px solid #e6d9a8;border-radius:8px;padding:9px 12px;margin:0 0 10px;font-size:13px;color:#6a5310;';
+          tn.textContent = 'These are built-in EXAMPLE packages, not your rate sheet. Edit them below (they save as you type) — until then this sheet cannot be emailed or signed for.';
+          hostT.insertBefore(tn, hostT.firstChild);
+        }
+      }
+    } else if (tn) { tn.remove(); }
     document.getElementById('effectiveFrom').textContent = sheet.effectiveFrom || todayDate();
     var list = document.getElementById('pkgList');
     list.innerHTML = (sheet.packages || []).map(function (p) {
@@ -382,6 +441,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     });
   }
   var dirtyT;
+  var _ratesQuietWarn = false;   // the debounced path warns once, not once per typing pause
   // Reads the packages straight off the LIVE inputs. Split out of dirtyCommit's timer
   // so anything that rewrites the sheet can fold in typing that hasn't been committed
   // yet — edits sat in a ~250ms debounce, and Add/Remove/Save all used to start from
@@ -418,12 +478,21 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // Commit what's on screen RIGHT NOW, cancelling the pending debounce.
   // Returns null when the store REFUSED (not primed) so callers do not report success.
   function commitNow() { clearTimeout(dirtyT); var s = harvestPackages(loadSheet()); return saveSheet(s) ? s : null; }
+  var _ratesQuietWarn = false;   // the debounced path warns once, not once per pause
   function dirtyCommit() {
     clearTimeout(dirtyT);
     dirtyT = setTimeout(function () {
       var s = harvestPackages(loadSheet());
       var pkgs = s.packages;
-      saveSheet(s);
+      /* Honour the refusal. saveSheet returns false when the sheet has not primed — the
+         labels below were repainted from the harvested values anyway, so the row read as
+         SAVED while nothing had been stored. Latched, because this timer fires on every
+         typing pause and saveSheet's own toast is not: the refusal used to arrive over and
+         over while the user typed. Re-armed by ratesPrime once the sheet actually lands, so
+         a later failure still speaks up. */
+      // First refusal speaks; the rest stay quiet until ratesPrime re-arms the latch.
+      if (!saveSheet(s, _ratesQuietWarn)) { _ratesQuietWarn = true; return; }
+      _ratesQuietWarn = false;
       // Re-render only the price labels (avoid losing focus on the typed input)
       document.querySelectorAll('#pkgList .pkg').forEach(function (el) {
         var id = el.dataset.id;
@@ -435,7 +504,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       });
     }, 250);
   }
-  function dollarsFmt(cents) { return '$' + (Math.round(cents) / 100).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 }); }
+  function dollarsFmt(cents) { return moneyCents(cents); }
 
   document.getElementById('addPkgBtn').addEventListener('click', function () {
     var s = commitNow(); if (!s) return;   // keep edits typed in the last moment before Add
@@ -548,6 +617,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (!name) { (window.bccNotify || alert)('Add the customer\'s name.', 'warn'); return; }
     var contactId = document.getElementById('sig-contact').value || '';
     var sheet = loadSheet();
+    /* Worse than the email, in one way: packagesSnapshot is what the customer is recorded as
+       having signed for, and the record syncs firm-wide and is durable. */
+    if (sheetIsProvisional(sheet)) { refuseProvisionalSheet('capturing a signature'); return; }
     var record = {
       id: SIG_PREFIX + uid(),
       tenantId: 'blue-collar-coach',
@@ -600,7 +672,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var co = (cfg && cfg.company) || {};
     var url = location.origin + '/rates.html';
     var rows = (sheet.packages || []).map(function (p) {
-      var price = '$' + (Math.round((p.priceCents || 0) / 100)).toLocaleString();
+      // The same formatter the card and the printed handoff use. This one goes to the
+      // CUSTOMER, so it is the last place that should disagree with what they sign.
+      var price = moneyCents(p.priceCents || 0);
       return '<tr><td style="padding:8px 0;border-bottom:1px solid #e6e5e1;"><strong>' + esc(p.name) + '</strong>' +
         (p.blurb ? '<br><span style="color:#6b7077;font-size:13px;">' + esc(p.blurb) + '</span>' : '') + '</td>' +
         '<td style="padding:8px 0;border-bottom:1px solid #e6e5e1;text-align:right;color:#a8884a;font-weight:700;white-space:nowrap;">' + price + ' <span style="color:#6b7077;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">/ ' + esc(p.cadence || 'one-time') + '</span></td></tr>';
@@ -624,6 +698,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       (window.bccNotify || alert)('Connect Outlook in Admin → Integrations first (the email goes from your mailbox).', 'warn');
       return;
     }
+    /* Checked BEFORE the recipient prompt: being asked to choose a prospect and only then
+       told the send is refused is its own small insult. */
+    if (sheetIsProvisional(loadSheet())) { refuseProvisionalSheet('emailing this sheet'); return; }
     var contacts = loadContacts();
     if (contacts.length === 0) {
       (window.bccNotify || alert)('Add a contact in CRM first.', 'warn');

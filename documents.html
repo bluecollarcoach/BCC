@@ -279,13 +279,21 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      Kept in memory only: writing these back through localStorage would re-queue a PUT
      that the server refuses, blacklisting the key and toasting a permission error. */
   var _serverDocs = [];
+  /* Why a message rather than an empty list: almost every real document here is server-owned,
+     so a failed listing collapses the page to near-nothing and "No documents yet." is then a
+     confident false statement about the firm's whole library. bookkeeping.html's client Files
+     pane already carries this fix. */
+  var _serverDocsError = '';
+  var _preContact = null, _preEng = null;   // deep-link prefill still waiting to be applied
   function loadServerDocs() {
     return fetch('/api/documents', { credentials: 'include' })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (j) { _serverDocs = (j && Array.isArray(j.items)) ? j.items : []; })
-      // Endpoint not deployed, offline, or refused — fall back to exactly the old
-      // localStorage-only behaviour rather than breaking the page.
-      .catch(function () { _serverDocs = []; });
+      .then(function (r) { if (!r.ok) throw new Error('the server returned ' + r.status); return r.json(); })
+      .then(function (j) { _serverDocs = (j && Array.isArray(j.items)) ? j.items : []; _serverDocsError = ''; })
+      /* Endpoint not deployed, offline, or refused — the page still renders from whatever is
+         local rather than breaking, but it now SAYS the library could not be read instead of
+         printing "No documents yet." over it. Keep whatever _serverDocs already held: a
+         failed refresh should not empty a list that loaded a moment ago. */
+      .catch(function (e) { _serverDocsError = (e && e.message) ? e.message : 'the request failed'; });
   }
   function allDocs() {
     var byId = {};
@@ -363,7 +371,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     rowsEl.innerHTML = '';
     if (matched.length === 0) {
       emptyEl.hidden = false;
-      emptyEl.querySelector('.big').textContent = all.length === 0 ? 'No documents yet.' : 'No matches.';
+      emptyEl.querySelector('.big').textContent = (all.length === 0 && _serverDocsError)
+        ? ('Couldn’t load the document library — ' + _serverDocsError + '. Reload to try again.')
+        : (all.length === 0 ? 'No documents yet.' : 'No matches.');
       return;
     }
     emptyEl.hidden = true;
@@ -564,9 +574,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // Pre-fill the linker dropdowns from ?contact= / ?engagement= query
     // params (e.g. crm.html links here with the contact pre-selected).
     var qs = new URLSearchParams(location.search);
-    var preContact = qs.get('contact');
-    var preEng = qs.get('engagement');
+    /* ONE-SHOT, at module scope. populateLinkDropdowns can only select an option that
+       EXISTS, and the option list comes from the bcc-contact-/bcc-engagement- keys already in
+       localStorage — which on the 600ms-fallback boot is before the sync has landed. The
+       rebuild on bcc-data-ready then repopulated the lists and dropped the prefill silently,
+       while the note below kept promising the upload would be linked. */
+    _preContact = qs.get('contact');
+    _preEng = qs.get('engagement');
+    var preContact = _preContact, preEng = _preEng;
     populateLinkDropdowns('linkContact', 'linkEngagement', preContact, preEng);
+    // Touched by hand = the prefill has served its purpose and must not be re-applied.
+    ['linkContact', 'linkEngagement'].forEach(function (sid) {
+      var el = document.getElementById(sid);
+      if (el) el.addEventListener('change', function () { _preContact = null; _preEng = null; });
+    });
     populateLinkDropdowns('contactFilter', 'engagementFilter');
     if (preContact || preEng) {
       var note = document.getElementById('prefillNote');
@@ -645,7 +666,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // contact created in CRM (or by a colleague) never appeared here until a reload —
     // the file just got uploaded with no link. Passing no prefill keeps whatever is
     // currently selected, including a ?contact= / ?engagement= prefill.
-    populateLinkDropdowns('linkContact', 'linkEngagement');
+    /* Re-apply a prefill that could not be applied at wire() time — the ids may only have
+       arrived with this very sync. Cleared once it takes, and cleared by a manual change, so
+       this cannot fight the user. */
+    populateLinkDropdowns('linkContact', 'linkEngagement', _preContact, _preEng);
+    if (_preContact || _preEng) {
+      var lc = document.getElementById('linkContact'), le = document.getElementById('linkEngagement');
+      if ((!_preContact || (lc && lc.value === _preContact)) && (!_preEng || (le && le.value === _preEng))) {
+        _preContact = null; _preEng = null;
+      }
+    }
     populateLinkDropdowns('contactFilter', 'engagementFilter');
     loadServerDocs().then(renderList);
   });

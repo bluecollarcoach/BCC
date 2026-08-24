@@ -751,11 +751,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // Pull the latest financial periods from Cosmos (kept fresh by the nightly QBO
   // sync), access-scoped, into localStorage — so the tables/KPIs reflect last
   // night's data without a manual sync. Server owns these keys (not pushed back).
+  var periodsLoadFailed = false;   // distinct from "this client genuinely has no periods yet"
   function loadPeriodsFromCloud() {
     return fetch('/api/integrations/qbo/periods', { credentials: 'include' })
-      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
       .then(function (d) {
-        if (!d || !d.ok || !Array.isArray(d.periods)) return;
+        if (!d || !d.ok || !Array.isArray(d.periods)) { periodsLoadFailed = true; return; }
+        /* Cleared only on a well-formed answer. An EMPTY periods array is a legitimate one
+           (the tasks-only tier and a client with no access both get it), so it must not be
+           read as a failure — but a refusal or a malformed body must not read as "no periods
+           yet" either, which is what three silent exits made of it. */
+        periodsLoadFailed = false;
         d.periods.forEach(function (p) {
           if (!p || !p.realmId || !p.period) return;
           if (!p.id) p.id = PER_PREFIX + p.realmId + '-' + p.period;
@@ -763,7 +769,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           try { localStorage.setItem(p.id, JSON.stringify(p)); } catch (_) {}
         });
       })
-      .catch(function () {});
+      .catch(function () { periodsLoadFailed = true; });
   }
   function updateCompany(realm, patch) {
     return fetch('/api/integrations/qbo/companies/' + encodeURIComponent(realm), {
@@ -1342,7 +1348,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
 
     if (rows.length === 0) {
       rowsEl.innerHTML = ''; emptyEl.hidden = false;
-      emptyEl.querySelector('.big').textContent = all.length === 0 ? 'No periods yet — hit "Sync all from QBO".' : 'No periods for that year.';
+      /* Say WHICH kind of nothing this is. The flag was added with the failure paths but not
+         wired to anything here, which left the honest state recorded and the dishonest message
+         still on screen — the fix looked done and did nothing. */
+      emptyEl.querySelector('.big').textContent = (all.length === 0 && periodsLoadFailed)
+        ? 'Couldn’t load this client’s financial periods — nothing is missing, we just could not read them. Reload to try again.'
+        : (all.length === 0 ? 'No periods yet — hit "Sync all from QBO".' : 'No periods for that year.');
       var esub = emptyEl.querySelector('div:last-child'); // reset so stale copy from another view doesn't linger
       if (esub) esub.innerHTML = all.length === 0 ? 'Use <strong>Sync</strong> once QuickBooks is connected, or add a period with <strong>+ Manual entry</strong>.' : 'Pick a different year, or sync more history.';
       return;
@@ -3340,6 +3351,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd2 }).catch(function () {});
   }
   function scanReceipt(file) {
+    // Covers the toolbar picker as well as the mail-attachment menu: this ends in a
+    // QuickBooks write, so a view-only bookkeeper must not start it from either.
+    if (bkRefuseIfReadOnly()) return;
     if (file.size > 12 * 1024 * 1024) { (window.bccNotify || alert)('File too large (max 12 MB).', 'warn'); return; }
     gotoTransactions(); // make sure the write card is visible (scan can be triggered from Overview)
     // AI extraction takes several seconds, and switching clients during it used to seed
@@ -3363,7 +3377,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     reader.onload = function () {
       var dataUrl = reader.result;
       var previewType = /pdf/i.test(file.type || '') ? 'pdf' : 'image';
-      var fd = new FormData(); fd.append('file', file); fd.append('realmId', currentRealm);
+      var fd = new FormData(); fd.append('file', file); fd.append('realmId', realmAt);   // the PINNED realm — every other guard in this function tests it
       fetch('/api/ai/extract-receipt', { method: 'POST', credentials: 'include', body: fd })
         .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
         .then(function (resp) {
@@ -3490,6 +3504,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
 
   var _emUnreadErr = {};   // realm -> the unread check FAILED (distinct from "zero unread")
+  /* The realm whose INBOX this device has actually read in this session. Set only where the
+     messages genuinely came back (or the mailbox is confirmed not created yet); cleared the
+     moment a client switch or a failed load makes _emMsgs meaningless. */
+  var _emInboxOkFor = null;
   function myUpn()  { return String((window.bccUser && window.bccUser.userDetails) || '').toLowerCase(); }
   function myName() { var u = myUpn(); return (window.bccDisplayName && window.bccDisplayName(u)) || u; }
   function sani(s)  { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40); }
@@ -4699,7 +4717,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        callers already handle (they print "nothing was saved"), with its own toast so the
        reason is not mistaken for a full disk. */
     if (window.bccDocPrimed && !window.bccDocPrimed(mailKey())) {
-      if (window.bccPrimeDoc) window.bccPrimeDoc(mailKey(), function () {});
+      /* Repaint when it lands — the same callback loadMailFiles uses, and for the same
+         reason: bccStoreLocal writes with the raw setter and fires no 'bcc-data-ready', so an
+         empty callback cached the real log and left the screen on the blank one this device
+         happened to hold. The bookkeeper would have logged the whole history again. */
+      var mailRealmAt = currentRealm;
+      if (window.bccPrimeDoc) window.bccPrimeDoc(mailKey(), function () {
+        if (currentRealm === mailRealmAt) { _mailDocErr = !(window.bccDocPrimed && window.bccDocPrimed(mailKey())); renderMailList(); }
+      });
       (window.bccNotify || alert)('This client’s mail log hasn’t finished loading, so nothing was saved. Try again in a moment.', 'warn', 7000);
       return false;
     }
@@ -4733,18 +4758,27 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     document.getElementById('ml_filter').onchange = renderMailList;
     loadMailFiles();
   }
+  var _mailDocErr = false;   // the mail LOG (not the file list) could not be primed
   function loadMailFiles() {
     var realmAt = currentRealm;
     // Drop the PREVIOUS client's listing and error state before fetching this one's: both are
     // module-level, so without this a failure on client A kept saying "couldn't load the scan"
     // on client B, and A's rows could match B's docIds.
-    _mailFiles = []; _mailFilesErr = false;
+    _mailFiles = []; _mailFilesErr = false; _mailDocErr = false;
     // Ask the server what the log holds while we are here — the writes below are gated on it.
     /* Repaint when it lands. An empty callback cached the real log and left the screen on the
        blank one this device happened to hold — so the bookkeeper saw "No mail logged for this
        client yet" over a history that had just arrived, and would have logged it all again. */
     if (window.bccPrimeDoc && currentRealm) {
-      window.bccPrimeDoc(mailKey(), function () { if (currentRealm === realmAt) renderMailList(); });
+      /* Take the OUTCOME. bccPrimeDoc calls back identically on success and on failure, and
+         renderMailList has no notion of a failed prime — so with no local copy it printed the
+         definitive "No mail logged for this client yet" about a log it had not been able to
+         read. Same distinction _mailFilesErr already draws for the file list beside it. */
+      window.bccPrimeDoc(mailKey(), function () {
+        if (currentRealm !== realmAt) return;
+        _mailDocErr = !(window.bccDocPrimed && window.bccDocPrimed(mailKey()));
+        renderMailList();
+      });
     }
     var folder = mailFolder();
     /* An HTTP failure is not an empty folder. Mapping it to { items: [] } made EVERY logged
@@ -4770,7 +4804,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (cnt) cnt.textContent = shown.length + ' of ' + rows.length + ' item' + (rows.length === 1 ? '' : 's');
     if (!shown.length) {
       list.innerHTML = '<div style="color:var(--muted);padding:10px 0;">' +
-        (rows.length ? 'Nothing here with that filter.' : 'No mail logged for this client yet. Log the first piece above.') + '</div>';
+        (rows.length ? 'Nothing here with that filter.' : '' + (_mailDocErr ? 'Couldn\u2019t load this client\u2019s mail log \u2014 reopen the tab to try again. Nothing is missing; we just could not read it.' : 'No mail logged for this client yet. Log the first piece above.') + '') + '</div>';
       return;
     }
     list.innerHTML = shown.map(function (m) {
@@ -4833,6 +4867,23 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        the tier only at save time left an orphan file in the client's folder with no log entry
        pointing at it — and told the bookkeeper their storage was full. */
     if (bkRefuseIfReadOnly()) return;
+    /* ...and for the same reason, the mail log has to be loaded BEFORE the scan is sent.
+       saveMailDoc refuses an unprimed write (it would publish a blank log over the client's
+       whole history), but it only runs from finish(), by which time the file is already in
+       the client's folder — an orphan with no entry pointing at it. Refuse here instead.
+       Deliberately refuse-and-return rather than "prime, then upload in the callback":
+       bccPrimeDoc calls back immediately while a prime is still in flight, so the callback
+       form would refuse every click made during the first seconds of the Mail tab. */
+    if (window.bccDocPrimed && !window.bccDocPrimed(mailKey())) {
+      // Repaint when it lands — an empty callback caches the real log and leaves the blank
+      // one on screen, which is what the bookkeeper would then log all over again.
+      var addRealmAt = currentRealm;
+      if (window.bccPrimeDoc) window.bccPrimeDoc(mailKey(), function () {
+        if (currentRealm === addRealmAt) { _mailDocErr = !(window.bccDocPrimed && window.bccDocPrimed(mailKey())); renderMailList(); }
+      });
+      (window.bccNotify || alert)('This client’s mail log hasn’t finished loading, so nothing was uploaded or logged. Your file is still selected — try again in a moment.', 'warn', 8000);
+      return;
+    }
     var realmAt = currentRealm;
     var fi = document.getElementById('ml_file');
     var f = fi && fi.files && fi.files[0];
@@ -4848,7 +4899,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         loggedBy: myUpn(), loggedAt: nowIso(), handled: false
       }]);
       if (btn) btn.disabled = false;
-      if (!saveMailDoc(doc)) { if (st) st.textContent = ''; (window.bccNotify || alert)('That mail could not be logged — the scan uploaded, but the entry was not saved.', 'error', 9000); return; }
+      if (!saveMailDoc(doc)) {
+        if (st) st.textContent = '';
+        /* Clear the picker on this path too. The scan IS uploaded — it is in the client's
+           Files under /mail — so leaving the file armed meant the natural retry uploaded a
+           second copy of it and orphaned the first. Say where it went, so the entry can be
+           added against the file that is already there. */
+        if (fi) fi.value = '';
+        (window.bccNotify || alert)('The scan uploaded to this client’s Files (under mail), but the log entry could not be saved. Add the entry again in a moment — without re-attaching the scan, or you will file a second copy.', 'error', 12000);
+        return;
+      }
       if (window.bccAudit) window.bccAudit('client-mail-add', { path: '/bookkeeping.html', meta: { realmId: currentRealm, from: from } });
       if (st) st.textContent = '';
       document.getElementById('ml_from').value = '';
@@ -5583,6 +5643,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      "no mailbox", and a client opened EARLIER read as the wrong mailbox. Those paths
      pass the realm to the server with fallbackToSender and let it decide. */
   function mailboxActive() { return !!(_clientMailbox && _clientMailboxRealm === currentRealm && _clientMailbox.mailbox && _clientMailbox.enabled !== false); }
+  /* Did the mailbox config READ fail for the client currently open? Distinct from
+     mailboxActive() being false, which is also the honest answer for a client that simply has
+     no mailbox. Only the send path needs the difference, and it needs it badly: without it a
+     transient failure sends the client's mail from the bookkeeper's own address. */
+  var _mailboxErr = false;
+  function mailboxUnknown() { return _clientMailboxRealm !== currentRealm || !!_mailboxErr; }
   function emSigKey() { return 'bcc-emailsig-' + (myUpn().replace(/[^a-z0-9]+/g, '-') || 'x'); }
   function getSig() { try { var d = JSON.parse(localStorage.getItem(emSigKey()) || 'null'); return (d && d.sig) || ''; } catch (e) { return ''; } }
   // Reports whether the write actually landed. It used to swallow a localStorage
@@ -5698,6 +5764,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var fo = document.getElementById('em_folder');
     if (fo) { fo.value = _emFolder; fo.addEventListener('change', function () { _emFolder = this.value; loadInbox(true); }); }
     if (_emLoadedFor !== currentRealm) _emMsgs = []; // drop the previous client's cached mail
+    if (_emInboxOkFor !== currentRealm) _emInboxOkFor = null;   // this client's inbox is unread until it is read
     _clientMailbox = null; _clientMailboxRealm = null;                            // unknown until the per-client config resolves
     loadEmailMeta();
     // Load the mailbox config FIRST, then the inbox — so inbox routing uses the
@@ -5712,11 +5779,29 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var realmAt = currentRealm;
     fetch('/api/integrations/msgraph/client-mailbox/' + encodeURIComponent(currentRealm), { credentials: 'include' })
       .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
-      .then(function (cfg) { if (currentRealm !== realmAt) return; _clientMailbox = (cfg && cfg.ok) ? { mailbox: cfg.mailbox, enabled: cfg.enabled } : { mailbox: '', enabled: false }; _clientMailboxRealm = realmAt; renderMailboxSection(info); if (done) done(); })
-      .catch(function () { if (currentRealm !== realmAt) return; _clientMailbox = { mailbox: '', enabled: false }; _clientMailboxRealm = realmAt; renderMailboxSection(info); if (done) done(); });
+      /* An ok:false body and a rejected fetch are recorded as a FAILURE, not as "no mailbox".
+         The synthesized empty config stays (everything downstream reads it), but _mailboxErr
+         says why it is empty — and the send path refuses rather than falling back to the
+         bookkeeper's own address. */
+      .then(function (cfg) {
+        if (currentRealm !== realmAt) return;
+        _mailboxErr = !(cfg && cfg.ok);
+        _clientMailbox = (cfg && cfg.ok) ? { mailbox: cfg.mailbox, enabled: cfg.enabled } : { mailbox: '', enabled: false };
+        _clientMailboxRealm = realmAt; renderMailboxSection(info); if (done) done();
+      })
+      .catch(function () {
+        if (currentRealm !== realmAt) return;
+        _mailboxErr = true;
+        _clientMailbox = { mailbox: '', enabled: false };
+        _clientMailboxRealm = realmAt; renderMailboxSection(info); if (done) done();
+      });
   }
   function renderMailboxSection(info) {
     var el = document.getElementById('em_mailbox'); if (!el) return;
+    if (_mailboxErr && _clientMailboxRealm === currentRealm) {
+      el.innerHTML = '<div style="color:var(--burgundy);font-size:13px;">⚠ Couldn’t load this client’s mailbox settings, so sending is paused — an email sent now would go out from your own address. Reload the page.</div>';
+      return;
+    }
     var cm = _clientMailbox || {};
     if (mailboxActive()) {
       el.innerHTML = '<div class="em-mbx em-mbx-on">📬 Sending &amp; reading as <strong>' + esc(cm.mailbox) + '</strong>' + (isAdmin ? ' <button class="btn btn-ghost" id="cm_change" type="button" style="font-size:11px;min-height:26px;">Change</button>' : '') + '</div>';
@@ -5763,6 +5848,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function recomputeUnreadBadge() {
     if (_emLoadedFor !== currentRealm) return; // _emMsgs isn't for this realm yet
     if (_emLoadedFolder !== 'inbox') return;   // ...nor is it the inbox — Sent Items has no unread count
+    /* ...and the inbox has to have been READ. _emLoadedFor is set by renderEmail before
+       loadInbox runs, and _emLoadedFolder survives from the previous client, so both guards
+       above pass while _emMsgs is the empty array renderEmail just reset — and this function
+       is called by loadEmailMeta and emMetaOp, neither of which knows whether the mailbox was
+       even reachable. Publishing from there turned "we could not check this inbox" into
+       "inbox up to date", which is the one thing the flag exists to prevent. Both statements
+       are gated, not just the delete: an unconditional zero would still overwrite a real
+       count that loadUnreadEmail had put there. */
+    if (_emInboxOkFor !== currentRealm) return;
     // m.isRead is the MAILBOX's flag, and nothing in this app ever sets it — reading a
     // message here stamps our own per-person readBy instead. Counting isRead meant the
     // badge never cleared no matter how much mail the bookkeeper worked through.
@@ -5831,19 +5925,27 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .then(function (resp) {
         if (currentRealm !== realmAt || _emFolder !== folderAt) return; // client or folder switched mid-flight
         if (resp && resp.ok && resp.pendingMailbox) {
+          _emInboxOkFor = currentRealm;   // confirmed: the mailbox exists in the app but not yet in M365
           list.innerHTML = '<div style="background:var(--gold-fade);border:1px solid var(--chrome-mute);border-radius:8px;padding:12px 14px;font-size:13px;color:var(--ink);">📬 <strong>' + esc((_clientMailbox && _clientMailbox.mailbox) || 'This mailbox') + '</strong> is set up in the app but hasn’t been created in Microsoft 365 yet. An admin can create it as a <strong>shared mailbox</strong> in the M365 admin center — mail will appear here automatically once it exists.</div>';
           _emMsgs = []; _emUnread[currentRealm] = 0; delete _emUnreadErr[currentRealm]; updateWsNav(); return;
         }
         if (!resp || !resp.ok) {
           // Drop the other folder's cache AND record why, so nothing can repaint it later.
           _emMsgs = []; _emLoadedFolder = null;
+          /* The inbox was NOT read. Forget any count for this client and record the failure,
+             so the Overview says "couldn't check" instead of "up to date" — the same thing
+             loadUnreadEmail does on its own failure paths. */
+          _emInboxOkFor = null;
+          if (folderAt === 'inbox') { delete _emUnread[realmAt]; _emUnreadErr[realmAt] = 1; updateWsNav(); }
           _emLoadError = 'Mailbox unavailable: ' + ((resp && resp.error) || 'error');
           _emLoadErrorFor = realmAt + '|' + folderAt;
           list.innerHTML = '<div style="color:var(--burgundy);">' + esc(_emLoadError) + '</div>';
           return;
         }
         _emLoadError = ''; _emLoadErrorFor = '';
-        _emMsgs = resp.messages || []; _emLoadedFor = currentRealm; _emLoadedFolder = folderAt; renderEmailList();
+        _emMsgs = resp.messages || []; _emLoadedFor = currentRealm; _emLoadedFolder = folderAt;
+        if (folderAt === 'inbox') _emInboxOkFor = currentRealm;   // read, so the badge may speak
+        renderEmailList();
         // Keep the nav/overview unread badge in sync with what we just loaded.
         recomputeUnreadBadge();
       })
@@ -5855,6 +5957,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .catch(function () {
         if (currentRealm !== realmAt || _emFolder !== folderAt) return;
         _emMsgs = []; _emLoadedFolder = null;
+        _emInboxOkFor = null;    // same as the !ok branch above: nothing was read
+        if (folderAt === 'inbox') { delete _emUnread[realmAt]; _emUnreadErr[realmAt] = 1; updateWsNav(); }
         _emLoadError = 'Could not load mail.';
         _emLoadErrorFor = realmAt + '|' + folderAt;
         list.innerHTML = '<div style="color:var(--burgundy);">' + esc(_emLoadError) + '</div>';
@@ -6006,7 +6110,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         var SCANNABLE = /^image\/|pdf$/i;
         var attActs = function (a, outerId) {
           var url = attDl(a, outerId), ty = a.contentType || '';
-          var scannable = SCANNABLE.test(ty) || /\.(pdf|png|jpe?g|webp|gif|bmp|heic)$/i.test(a.name || '');
+          /* Mirror what the extractor actually accepts. HEIC/HEIF is refused outright
+             server-side, and by then the scan path has already closed the reader and switched
+             the workspace away from the mailbox — so offering the button spent the
+             bookkeeper's place in the mail for nothing. */
+          var scannable = (SCANNABLE.test(ty) || /\.(pdf|png|jpe?g|webp|gif)$/i.test(a.name || ''))
+            && !/heic|heif/i.test(String(ty) + ' ' + String(a.name || ''));
           var mk = function (act, label, title) {
             return '<button type="button" class="em-att-act" data-att-act="' + act + '" data-att-url="' + esc(url) + '" ' +
               'data-att-name="' + esc(a.name || 'attachment') + '" data-att-type="' + esc(ty) + '" title="' + esc(title) + '" ' +
@@ -6322,6 +6431,21 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // earlier — and then it's silently wiped when attachments are cleared below.
     var filesBtn = document.querySelector('label[for="em_files"]');
     document.getElementById('em_files').disabled = true; if (filesBtn) filesBtn.style.pointerEvents = 'none';
+    /* Refuse rather than guess. With the config unread we cannot tell whether this client
+       has a mailbox, and the fallback is not a neutral one: omitting realmId sends from the
+       bookkeeper's personal address, over the client's signature, and the sent-log then
+       records the wrong sender too. */
+    if (mailboxUnknown()) {
+      (window.bccNotify || alert)(_mailboxErr
+        ? 'Couldn’t check which mailbox this client’s email should come from, so nothing was sent — it would have gone out from your own address. Reload the client and try again.'
+        : 'This client’s mailbox settings are still loading, so nothing was sent yet — sending now could go out from your own address. Try again in a moment.', 'error', 11000);
+      /* Put the composer back exactly as the send path's own failure branches do. The Send
+         button and the attachment picker were both disabled a few lines above, and returning
+         without restoring them leaves the message typed, unsent and unsendable. */
+      btn.disabled = false; btn.textContent = ot; st.textContent = '';
+      document.getElementById('em_files').disabled = false; if (filesBtn) filesBtn.style.pointerEvents = '';
+      return;
+    }
     var usingMailbox = mailboxActive();
     var realmAt = currentRealm; // capture at Send-click time — a client switch during the async encode/send below must not misattribute this email
     var composeAt = _emComposeGen;  // ...and the compose box this send belongs to (see below)
@@ -6976,13 +7100,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         // other async path on this page.
         var realmAt = currentRealm;
         if (!realmAt) { (window.bccNotify || alert)('Open a client first.', 'warn'); return; }
-        if (act === 'file' && bkRefuseIfReadOnly()) return;
+        /* BOTH actions, not just Files. The scan hands off to scanReceipt, which posts to
+       QuickBooks (an unmatched vendor is CREATED) — strictly more destructive than the upload
+       this gate was written for, and resolveClientMailbox deliberately admits the 'view' tier
+       to a client's mailbox, so a view-only bookkeeper reaches this menu. */
+    if (bkRefuseIfReadOnly()) return;
         var ot = btn.textContent; btn.disabled = true; btn.textContent = '…';
         var done = function () { btn.disabled = false; btn.textContent = ot; };
         emAttFetch(btn.getAttribute('data-att-url'), nm, btn.getAttribute('data-att-type'))
           .then(function (f) {
-            done();
-            if (currentRealm !== realmAt) { (window.bccNotify || alert)('You switched client while that was loading — open the email again.', 'warn', 7000); return; }
+            if (currentRealm !== realmAt) { done(); (window.bccNotify || alert)('You switched client while that was loading — open the email again.', 'warn', 7000); return; }
             if (act === 'scan') {
               /* CLOSE THE READER FIRST. scanReceipt goes through gotoTransactions(), which
                  reveals the transactions section WITHOUT re-rendering the workspace — and
@@ -6993,7 +7120,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
                  suggest the click had worked. Someone would reasonably click it again.
                  `=== false` on purpose: that is the "you have an unsent reply, discard it?"
                  answer, and if they say no the scan must not happen either. */
-              if (emCloseModal() === false) return;
+              if (emCloseModal() === false) { done(); return; }
+              done();
               scanReceipt(f); return;   // pins its own realm and takes over from here
             }
             var fd = new FormData();
@@ -7001,12 +7129,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             if (window.bccNotify) window.bccNotify('Saving “' + nm + '” to this client’s Files…', 'info', 3000);
             fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
               .then(function (rr) { return rr.json().then(function (j) { return rr.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + rr.status))); }); })
+              /* done() only once the UPLOAD is over. It used to run as soon as the bytes had
+                 been fetched, leaving the button live for the whole POST with nothing but a
+                 3-second toast for feedback — and a second click filed a complete duplicate,
+                 new docId and new storage key, into the client's folder. */
               .then(function (j) {
+                done();
                 if (window.bccAudit) window.bccAudit('client-file-upload', { key: j && j.id, path: '/bookkeeping.html', meta: { realmId: realmAt, name: nm, source: 'email-attachment' } });
                 if (window.bccNotifySaved) window.bccNotifySaved('“' + nm + '” saved to this client’s Files.');
                 if (currentRealm === realmAt && typeof loadFiles === 'function') loadFiles();
               })
-              .catch(function (e) { (window.bccNotify || alert)('Could not save it to Files: ' + e.message, 'error', 8000); });
+              .catch(function (e) { done(); (window.bccNotify || alert)('Could not save it to Files: ' + e.message, 'error', 8000); });
           })
           .catch(function (e) { done(); (window.bccNotify || alert)('Could not open that attachment: ' + e.message, 'error', 8000); });
       };
@@ -7512,6 +7645,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      so a blank rate silently produces $0 gross for that line — on a certified payroll
      form that is filed with a public agency. Reported at the boundary where a document
      is actually produced. */
+  /* The description that can honestly head a shared "Other" deduction column: the DISTINCT
+     labels across the employees on the form, or nothing when they disagree by more than the
+     header can carry. Shared by both MN DLI outputs and mirrored in the MnDOT builder — a
+     header describes every row under it, so the first employee's label is not an answer. */
+  function cprOtherLabel(emps, which) {
+    var out = [];
+    (emps || []).forEach(function (e) {
+      var l = String((e && e[which === 2 ? 'dedOther2Label' : 'dedOther1Label']) || '').trim();
+      if (l && out.indexOf(l) < 0) out.push(l);
+    });
+    var j = out.join(' / ');
+    return (out.length > 1 && j.length > 28) ? '' : j;
+  }
   function cprMissingRates(r) {
     return (r.employees || []).filter(function (e) {
       var stH = sumArr(e.st), otH = sumArr(e.ot);
@@ -7647,7 +7793,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       '<table class="grid"><thead><tr>' +
         '<th rowspan="2">Employee name,<br>address & ID #</th><th rowspan="2"># ex.</th><th rowspan="2">Labor code &<br>classification</th><th rowspan="2">OT/<br>ST</th>' +
         dayHead + '<th rowspan="2">Total<br>hrs</th><th rowspan="2">Hrly<br>rate</th><th rowspan="2">Gross<br>this job</th><th rowspan="2">Gross<br>this pay<br>period</th>' +
-        '<th rowspan="2">FICA</th><th rowspan="2">Fed<br>tax</th><th rowspan="2">State<br>tax</th><th rowspan="2">Other</th><th rowspan="2">Other</th><th rowspan="2">Total<br>deduct.</th><th rowspan="2">Net<br>wages</th>' +
+        '<th rowspan="2">FICA</th><th rowspan="2">Fed<br>tax</th><th rowspan="2">State<br>tax</th>' +
+        // The editor collects a description for each of these; print it, or the amount is
+        // filed with the state with nothing saying what it was.
+        '<th rowspan="2">Other' + (cprOtherLabel(r.employees, 1) ? '<br>' + esc(cprOtherLabel(r.employees, 1)) : '') + '</th>' +
+        '<th rowspan="2">Other' + (cprOtherLabel(r.employees, 2) ? '<br>' + esc(cprOtherLabel(r.employees, 2)) : '') + '</th>' +
+        '<th rowspan="2">Total<br>deduct.</th><th rowspan="2">Net<br>wages</th>' +
       '</tr><tr></tr></thead><tbody>' + empRows +
         '<tr class="tot"><td colspan="4" class="l">TOTALS</td><td colspan="7"></td><td class="n">' + totals.hrs.toFixed(2) + '</td><td></td><td class="n">' + money(totals.job) + '</td><td class="n">' + money(totals.gp) + '</td><td colspan="5"></td><td class="n">' + money(totals.ded) + '</td><td class="n">' + money(totals.net) + '</td></tr>' +
       '</tbody></table>' +
@@ -7744,10 +7895,26 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         setTf(form, dayBase + (d === 0 ? '' : '_' + (d + 1)), MDOW[d]);      // top row: day letters
         setTf(form, dayBase + '_' + (d + 8), wd[d]);                          // bottom row: dates
       }
-      var othLbl = { a: '', b: '' };
-      chunks[ci].forEach(function (e) { if (!othLbl.a && (e.dedOther1Label || '').trim()) othLbl.a = e.dedOther1Label.trim(); if (!othLbl.b && (e.dedOther2Label || '').trim()) othLbl.b = e.dedOther2Label.trim(); });
-      setTf(form, 'Other SpecifyState Tax', othLbl.a);
-      setTf(form, 'Other SpecifyState Tax_2', othLbl.b);
+      /* ONE header serves every row in this chunk, so it has to describe every row in it.
+         Taking the FIRST label found printed one worker's description over everyone else's
+         amounts. Collect the DISTINCT labels instead (same rule the Statement of Compliance
+         already uses) — and when they do not agree and the joined list would be clipped by
+         the field's own length limit, leave it BLANK rather than print a description that is
+         wrong for most of the page. */
+      var othSet = { a: [], b: [] };
+      chunks[ci].forEach(function (e) {
+        var la = String(e.dedOther1Label || '').trim(), lb = String(e.dedOther2Label || '').trim();
+        if (la && othSet.a.indexOf(la) < 0) othSet.a.push(la);
+        if (lb && othSet.b.indexOf(lb) < 0) othSet.b.push(lb);
+      });
+      var othJoin = function (list) {
+        var j = list.join(' / ');
+        // 40 chars is comfortably inside the acroform field; past that the PDF clips it and a
+        // clipped description reads as a definite (wrong) one.
+        return (list.length > 1 && j.length > 40) ? '' : j;
+      };
+      setTf(form, 'Other SpecifyState Tax', othJoin(othSet.a));
+      setTf(form, 'Other SpecifyState Tax_2', othJoin(othSet.b));
       chunks[ci].forEach(function (e, idx) {
         var i = idx + 1, sfx = (i === 1 ? '' : '_' + i), comp = computeEmp(e);
         setTf(form, 'Employee Name Address and Last Four Digits of Social Security NumberRow' + i, [e.name, e.address, e.idNumber].filter(Boolean).join('\n'));
@@ -7900,8 +8067,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       { key:'fica',  w:30,  align:'right',  h:'FICA' },
       { key:'fed',   w:28,  align:'right',  h:'Fed\ntax' },
       { key:'state', w:30,  align:'right',  h:'State\ntax' },
-      { key:'oth1',  w:28,  align:'right',  h:'Other' },
-      { key:'oth2',  w:28,  align:'right',  h:'Other' },
+      { key:'oth1',  w:28,  align:'right',  h:'Other' + (cprOtherLabel(r.employees, 1) ? '\n' + cprOtherLabel(r.employees, 1) : '') },
+      { key:'oth2',  w:28,  align:'right',  h:'Other' + (cprOtherLabel(r.employees, 2) ? '\n' + cprOtherLabel(r.employees, 2) : '') },
       { key:'ded',   w:38,  align:'right',  h:'Tot\nded.' },
       { key:'net',   w:42,  align:'right',  h:'Net\nwages' }
     ];
@@ -8832,7 +8999,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var book = parseFloat(row.getAttribute('data-book')) || 0;
     var id = row.getAttribute('data-recon');
     // Strip $ , and spaces first — parseFloat("12,450.00") would otherwise read 12.
-    var stmt = parseFloat(String((_close.recon[id] || {}).statementBalance || '').replace(/[^0-9.\-]/g, ''));
+    /* Accounting parentheses mean NEGATIVE. Stripping them and keeping the value positive
+       flipped the sign of every credit-card statement balance typed the way the Book column
+       right beside it prints them — and the difference this row exists to show was then
+       wrong by twice the balance. Both the server's book-balance parser and qboAmount already
+       apply this rule; a leading '-' inside the parens cannot double-negate. */
+    var stmtRaw = String((_close.recon[id] || {}).statementBalance || '').trim();
+    var stmtNeg = /^\(.*\)$/.test(stmtRaw);
+    var stmt = parseFloat(stmtRaw.replace(/[^0-9.\-]/g, ''));
+    if (stmtNeg && !isNaN(stmt)) stmt = -Math.abs(stmt);
     var cell = row.querySelector('.recon-diff'); if (!cell) return;
     if (isNaN(stmt)) { cell.innerHTML = '<span style="color:var(--muted);">—</span>'; return; }
     var diff = Math.round((stmt - book) * 100) / 100;

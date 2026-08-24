@@ -359,6 +359,33 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     try { return JSON.parse(localStorage.getItem(logKeyForDay(day)) || 'null'); } catch (e) { return null; }
   }
   function warnNoIdentity() { (window.bccNotify || alert)('Still signing you in — give it a second and try again.', 'warn'); }
+  /* ---- Blind writes ----
+     The daily log and the personal task list are each ONE document, and both loaders mint a
+     blank one whenever this browser does not hold it — a new laptop, cleared storage, or
+     simply the pull not having reached that key yet. Every save writes the whole document, so
+     clocking in from a blank mint replaced the morning's banked punch segments, the day's
+     wins/blockers/tomorrow and, on the task side, the entire to-do list.
+     The gate the rest of the app uses (refuse until bccPrimeDoc answers) is WRONG here, and
+     deliberately so: these are two of the four OFFLINE_OWNED families, myday.html keeps a
+     cached upn precisely so the clock works with no network, sw.js precaches this page, and
+     the offline toast promises the punch is queued. Refusing would disable the clock on a job
+     site — the one place it has to work.
+     So the write always happens, and instead SAYS that it was made without knowing what the
+     server holds. The server merges a flagged write into the stored document rather than
+     replacing it (see mergeBlindPersonalDoc in api/src/index.js): keys the flagged copy does
+     not carry are left alone, and the two accumulating arrays are unioned. */
+  function writingBlind(key) {
+    /* A localStorage that THROWS is the strongest possible evidence that we do not know what
+       this device holds, let alone the server — so it answers BLIND. Returning false there
+       (what the first draft of this did) would have sent a full replace on the one device
+       least able to justify one. */
+    try { if (localStorage.getItem(key)) return false; } catch (e) { return true; }
+    // No local copy. If the server has answered for this key, the blank mint IS the truth.
+    if (window.bccDocPrimed && window.bccDocPrimed(key)) return false;
+    // Kick a prime so the next write knows; never wait on it — see above.
+    if (window.bccPrimeDoc) { try { window.bccPrimeDoc(key, function () {}); } catch (e) {} }
+    return true;
+  }
   // Save a daily-log for a specific day (defaults to today). Editing a past day keeps its date.
   // Returns false — and writes nothing — while the signed-in upn is still unknown.
   function saveLogDoc(log) {
@@ -368,6 +395,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     log.tenantId = 'blue-collar-coach';
     log.docType = 'daily-log';
     log.userUpn = meUpn();
+    // Set fresh on EVERY save: a doc that once had to be written blind must stop claiming so
+    // the moment this device holds the real one, or the server would keep merging forever.
+    if (writingBlind(log.id)) log.blindWrite = true; else delete log.blindWrite;
     log.updatedAt = nowIso();
     if (!log.createdAt) log.createdAt = log.updatedAt;
     localStorage.setItem(log.id, JSON.stringify(log));
@@ -631,7 +661,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     try { var d = JSON.parse(localStorage.getItem(myTasksKey()) || 'null'); if (d && Array.isArray(d.items)) return d; } catch (e) {}
     return { id: myTasksKey(), tenantId: 'blue-collar-coach', docType: 'mytasks', upn: meUpn(), items: [], createdAt: nowIso() };
   }
-  function saveMyTasks(d) { d.updatedAt = nowIso(); d.updatedBy = meUpn(); localStorage.setItem(d.id, JSON.stringify(d)); }
+  function saveMyTasks(d) {
+    d.updatedAt = nowIso(); d.updatedBy = meUpn();
+    // See writingBlind: adding one to-do from a device that never received the list used to
+    // publish a one-item document over every task the person had.
+    if (writingBlind(d.id)) d.blindWrite = true; else delete d.blindWrite;
+    localStorage.setItem(d.id, JSON.stringify(d));
+  }
   function renderMyTasks() {
     var wrap = document.getElementById('myTasksWrap'); if (!wrap) return;
     wrap.style.display = '';

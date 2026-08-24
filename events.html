@@ -254,6 +254,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         saveEvent(rec);
         if (window.bccAudit) window.bccAudit('event-update', { key: rec.id, path: '/events.html', meta: { action: 'unbook' } });
         renderBookings(rec);
+      // The CARD behind the modal shows "N / capacity booked" and is only rebuilt by
+      // renderGrid — nothing else repaints it, so booking or removing an attendee left that
+      // count wrong for the rest of the session. #grid and #modalBg are sibling subtrees, so
+      // rebuilding one cannot disturb focus or inputs in the other.
+      renderGrid();
       });
     });
     document.getElementById('bk-add').addEventListener('click', function () {
@@ -272,6 +277,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       document.getElementById('bk-name').value = '';
       document.getElementById('bk-contact').value = '';
       renderBookings(rec);
+      // The CARD behind the modal shows "N / capacity booked" and is only rebuilt by
+      // renderGrid — nothing else repaints it, so booking or removing an attendee left that
+      // count wrong for the rest of the session. #grid and #modalBg are sibling subtrees, so
+      // rebuilding one cannot disturb focus or inputs in the other.
+      renderGrid();
     });
   }
 

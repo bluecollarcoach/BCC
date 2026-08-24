@@ -461,7 +461,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             if (!nc) return;   // refused — nc.id would throw, and the count would be a lie
             existing.push(nc); created++; toFill.push(nc.id);
           } else if (!match.realmId) {
-            match.realmId = String(q.realmId); if (!match.source) match.source = 'bookkeeping'; saveCompany(match); linked++;
+            // Counted only if it was WRITTEN — saveCompany returns null on a read-only
+            // refusal, and the create branch above already checks for exactly that. Without
+            // this the summary toast reported links that never happened.
+            match.realmId = String(q.realmId); if (!match.source) match.source = 'bookkeeping';
+            if (!saveCompany(match)) return;
+            linked++;
             if (!match.qboInfoAt || (match.website && !match.aiEnrichedAt)) toFill.push(match.id);
           } else if (opts.full && (!match.qboInfoAt || (match.website && !match.aiEnrichedAt))) {
             // Full sync also AI-enriches existing companies that have a website but weren't enriched yet.

@@ -856,6 +856,13 @@ function openMembersModal(chId) {
     // saving `chans` wholesale dropped every channel created elsewhere since the
     // tab loaded. Re-checking canManageChan on the fresh record also means a
     // channel whose ownership changed while the modal sat open can't be rewritten.
+    /* Sampled BEFORE the call. mutateChans returns null for two very different reasons —
+       the channel is gone / no longer ours to manage, or the channel LIST has not primed —
+       and the message below only ever spoke to the first, so a prime refusal told the user
+       two contradictory things at once (mutateChans' own "still loading" toast alongside
+       "the channel was changed or removed") and threw the selection away as if it were
+       permanent. */
+    const wasReady = chatReady();
     const saved = mutateChans(cs => {
       const t = cs.find(x => x.id === chId);
       if (!t || !canManageChan(t)) return null;
@@ -867,7 +874,9 @@ function openMembersModal(chId) {
     // longer manage it — in which case NOTHING was written. Closing the modal and
     // auditing a change that didn't happen made the selection look saved.
     if (!saved) {
-      alert('Those members were not saved — the channel was changed or removed while this was open.');
+      alert(wasReady
+        ? 'Those members were not saved — the channel was changed or removed while this was open.'
+        : 'Those members were not saved — the channel list is still loading. Open Members again in a moment and it will stick.');
       close();
       renderLive();
       return;

@@ -1113,7 +1113,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function loadContactDocs(contactId) {
     var box = document.getElementById('contactDocs'); if (!box) return;
     fetch('/api/documents?linkedContactId=' + encodeURIComponent(contactId), { credentials: 'include' })
-      .then(function (r) { return r.ok ? r.json() : { items: [] }; })
+      /* An HTTP failure is NOT "no documents linked". Substituting an empty list sent a 403 or
+       a 500 down the SUCCESS path, which prints exactly that as a fact — while the honest
+       .catch below (which says "Could not load documents.") could only ever be reached by a
+       network rejection. Same substitution sweep 14 removed from three sibling places. */
+    .then(function (r) { if (!r.ok) { var e = new Error('HTTP ' + r.status); e.status = r.status; throw e; } return r.json(); })
       .then(function (d) {
         var box2 = document.getElementById('contactDocs'); if (!box2) return;
         var docs = (d && d.items) || [];

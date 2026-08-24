@@ -348,6 +348,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     'permissions-update':  { label:'Changed permissions',         cat:'admin', ic:'&#128273;' }
   };
 
+  /* Two actions the app really emits were absent from the table above, so classifyAction fell
+     back to cat:'system' and the Bookkeeping and CRM category filters hid them — a filtered
+     audit review would have missed a generated pay application entirely. */
+  ACTIONS['payapp-pdf']  = ACTIONS['payapp-pdf']  || { label: 'Generated a pay application PDF', cat: 'bookkeeping', ic: '&#128196;' };
+  ACTIONS['job-create']  = ACTIONS['job-create']  || { label: 'Created a job', cat: 'crm', ic: '&#43;' };
   function classifyAction(action) {
     if (ACTIONS[action]) return ACTIONS[action];
     return { label: action.replace(/-/g, ' '), cat: 'system', ic: '&#8226;' };

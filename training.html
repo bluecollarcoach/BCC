@@ -443,6 +443,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     renderGrid();
   });
 
+  /* esc() stops attribute breakout, not a URL SCHEME — the browser entity-decodes the
+     attribute before parsing the href, so a `javascript:` URL survives escaping intact and
+     runs in this origin when clicked (target=_blank does not sandbox it). videoUrl is free
+     text on a bcc-course- document, and training is a member-default EDIT app, so any
+     employee could write one and it syncs to the whole firm. Same normalisation the CRM
+     already applies to a company website: force anything that is not http(s) into an inert
+     https URL, while a bare "vimeo.com/123" keeps working. */
+  function safeVideoUrl(u) {
+    var v = String(u == null ? '' : u).trim();
+    if (!v) return '';
+    return /^https?:\/\//i.test(v) ? v : 'https://' + v.replace(/^\/+/, '');
+  }
   function renderLearner(courseId) {
     var c = getCourse(courseId);
     var el = document.getElementById('learnerMode');
@@ -461,7 +473,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           var durNum = parseInt(l.durationMin, 10) || 0; // synced field — never render it raw
           var dur = durNum ? durNum + ' min' : 'duration unknown';
           var watch = l.videoUrl
-            ? '<a class="watch" href="' + esc(l.videoUrl) + '" target="_blank" rel="noreferrer noopener">Open ↗</a>'
+            ? '<a class="watch" href="' + esc(safeVideoUrl(l.videoUrl)) + '" target="_blank" rel="noreferrer noopener">Open ↗</a>'
             : '';
           return '<div class="lesson-row-l' + (done ? ' done' : '') + '" data-lesson="' + esc(l.id) + '">' +
             '<div class="check" data-act="toggle"></div>' +

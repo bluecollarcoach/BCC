@@ -437,7 +437,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     dirty = true; // every user edit routes through here — resync() reads this
     setSaveState('Saving…', false);
     if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(doSave, 600);
+    /* The id has to DIE when it fires, or `if (saveTimer)` stops meaning "a debounce is
+       pending" the moment the first autosave of the session runs — it holds an
+       already-fired id forever after. openClient() opens with that test and flushes a
+       doSave() on the strength of it, and resync(true) calls openClient() from the
+       bcc-data-ready handler: the live poll writes a colleague's newer copy into
+       localStorage, and the spurious flush then wrote the still-on-screen older form
+       straight back over it — before `current` was reloaded, so nothing on screen ever
+       showed their change. */
+    saveTimer = setTimeout(function () { saveTimer = null; doSave(); }, 600);
   }
   function doSave() {
     var d = collect(); if (!d) return;
