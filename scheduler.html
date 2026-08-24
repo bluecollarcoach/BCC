@@ -360,7 +360,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           var t = new Date(it.startAt);
           var time = t.toLocaleTimeString([], { hour:'numeric', minute:'2-digit' });
           var who = it.contactId ? contactName(contactById(it.contactId)) : '';
-          return '<div class="day-ev" data-href="' + esc(it.href) + '">' +
+          /* Carry the id, exactly as the month-grid rows do. Without it this landed on the
+             bare page, which opens the CURRENT week — from a month or year view that can be
+             months from what was clicked — and this modal is the ONLY way to reach items past
+             the first three on a day. */
+          var href = it.href + (it.id ? ('?id=' + encodeURIComponent(it.id)) : '');
+          return '<div class="day-ev" data-href="' + esc(href) + '">' +
             '<div class="t">' + esc(time) + ' &middot; ' + esc(it.title || '(untitled)') + '</div>' +
             '<div class="meta">' + esc(it.kind === 'session' ? 'Coaching session' : 'Event') + (who ? ' &middot; ' + esc(who) : '') + (it.location ? ' &middot; ' + esc(it.location) : '') + '</div>' +
           '</div>';

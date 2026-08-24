@@ -422,6 +422,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   /* ===== Upload ===== */
   function tryUpload() {
     var fileInput = document.getElementById('fileInput');
+    /* applyDocsPerms replaces the whole uploader card for a view-only user, taking #fileInput
+       (and the folder/tags inputs) with it — but the drag-and-drop listeners are bound to
+       #uploader, which survives, so a drop still arrived here and threw on the missing input.
+       Answer it properly instead of dying. */
+    if (!fileInput) {
+      (window.bccNotify || alert)('Your Documents access is view-only, so files can’t be added here.', 'warn', 7000);
+      return;
+    }
     var f = fileInput.files && fileInput.files[0];
     if (!f) { (window.bccNotify || alert)('Pick a file first.', 'warn'); return; }
     if (f.size > 25 * 1024 * 1024) { (window.bccNotify || alert)('File over 25 MB.', 'warn'); return; }
@@ -511,13 +519,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // Drag-and-drop on the uploader card
   var up = document.getElementById('uploader');
   ['dragover','dragenter'].forEach(function (ev) {
-    up.addEventListener(ev, function (e) { e.preventDefault(); up.classList.add('dragover'); });
+    // No accepting highlight for a user who cannot upload — the gesture is refused below, and
+    // a zone that lights up is a promise.
+    up.addEventListener(ev, function (e) { e.preventDefault(); if (document.getElementById('fileInput')) up.classList.add('dragover'); });
   });
   ['dragleave','dragend','drop'].forEach(function (ev) {
     up.addEventListener(ev, function (e) { up.classList.remove('dragover'); });
   });
   up.addEventListener('drop', function (e) {
     e.preventDefault();
+    if (!document.getElementById('fileInput')) {
+      // View-only (see tryUpload): the card's contents are gone, this listener is not.
+      (window.bccNotify || alert)('Your Documents access is view-only, so files can’t be added here.', 'warn', 7000);
+      return;
+    }
     var f = e.dataTransfer.files && e.dataTransfer.files[0];
     // The zone highlights on dragover, so the gesture looks accepted. Dropping
     // something that isn't a real file (a folder, or text/a link dragged out of

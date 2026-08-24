@@ -132,6 +132,15 @@
   }
 
   var signedIn = false;
+  /* Distinct from `signedIn === false`. FALSE means /.auth/me answered and said nobody is
+     signed in; TRUE means it never answered at all (offline boot, DNS, a 5xx at the edge) and
+     we do not know. The two must not be treated alike: an unknown answer that is silently
+     read as "anonymous" throws away every write the user makes for the life of the tab. While
+     it is set, writes are captured exactly as they are for a signed-in user (see the setItem
+     hook) — _flushOnce refuses to send anything until signedIn is true, so a queue built
+     under an unknown verdict is held, not pushed, and the pending entries double as the
+     guard that stops the eventual boot pull from landing on top of them. */
+  var _authUnknown = false;
   var user = null;
   var pending = new Map();
   var pushTimer = null;
@@ -578,6 +587,35 @@
     }
   });
 
+  /* ---------- Re-ask for identity after an unanswered /.auth/me ----------
+   * bootstrap() used to ask exactly once. The only 'online' listener was the flush above,
+   * and it can never fire for this case: with no principal the setItem hook captured almost
+   * nothing, so `pending` is empty and there is nothing to flush. The tab stayed anonymous
+   * until someone reloaded it — which nobody does, because the app looks like it is working.
+   * Re-running the whole bootstrap is deliberate: identity, the profile/access stamp, the
+   * outbox replay and the pull all have to happen together, and every listener it ends with
+   * is already guarded against a second run (bootOnce, _ncPollStarted, the #bcc-bell check). */
+  var _bootRunning = false;
+  var _authRetries = 0;
+  function runBootstrap() {
+    if (_bootRunning) return Promise.resolve();
+    _bootRunning = true;
+    return Promise.resolve().then(bootstrap)
+      .catch(function (e) { console.warn('[bcc-api] bootstrap failed', e); })
+      .then(function () { _bootRunning = false; });
+  }
+  function retryAuthBootstrap() {
+    // Only for the unknown verdict. A genuinely anonymous device answered already, and
+    // re-asking on every focus would be a request storm on the sign-in page.
+    if (!_authUnknown || _bootRunning || !navigator.onLine) return;
+    if (_authRetries >= 25) return;   // a wedged edge shouldn't spin for the life of the tab
+    _authRetries++;
+    runBootstrap();
+  }
+  window.addEventListener('online', retryAuthBootstrap);
+  window.addEventListener('focus', retryAuthBootstrap);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) retryAuthBootstrap(); });
+
   /* DEVICE preferences, not firm data. Each is written with the ordinary
      localStorage API, so without this list the hook below would push it to Cosmos as
      a single tenant-wide doc and every other user's delta poll would pull it back —
@@ -702,11 +740,11 @@
     // Writes made before auth settles used to fall straight through this guard and be
     // lost. Capture the owner-only ones so bootstrap can replay them; outboxRehydrate
     // decides what is safe to keep.
-    if (this === window.localStorage && !signedIn && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0
+    if (this === window.localStorage && !signedIn && !_authUnknown && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0
         && OFFLINE_OWNED_PREFIXES.some(function (p) { return key.indexOf(p) === 0; })) {
       outboxPut(key, value, false);
     }
-    if (this === window.localStorage && signedIn && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0) {
+    if (this === window.localStorage && (signedIn || _authUnknown) && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0) {
       if (DEVICE_LOCAL_KEYS.indexOf(key) >= 0) return;
       // Financial periods are owned by the server (the QBO sync writes them to
       // Cosmos as flat, access-scoped docs). Don't push them back: it would
@@ -730,7 +768,14 @@
       // for these on the grounds that the gate now exists.
       if (key.indexOf('bcc-email-') === 0) return;
       pending.set(key, value); _rehydrated.delete(key); // typed here: ours, not a snapshot
-      outboxPut(key, value, true); // survives a reload or a tab close before the flush lands
+      /* `signedIn`, not a literal true. Under _authUnknown this write cannot be attributed to
+         anyone yet, and outboxRehydrate's trusted flag is precisely what decides whether an
+         entry may be replayed under whoever signs in NEXT — a shared document written on a
+         device booted offline would otherwise be pushed under a colleague's name. Untrusted
+         entries are still replayed for the owner-only families, same as before, and the
+         in-memory `pending` entry above (which protects it from the pull and is what the
+         flush sends once this tab learns who it is) is unaffected either way. */
+      outboxPut(key, value, signedIn); // survives a reload or a tab close before the flush lands
       schedulePush();
       // Admin user list / status changed → re-filter bccPeople immediately so
       // every dropdown in the app reflects the new active/hidden/inactive
@@ -745,13 +790,13 @@
   };
   Storage.prototype.removeItem = function (key) {
     _origRemoveItem.call(this, key);
-    if (this === window.localStorage && signedIn && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0) {
+    if (this === window.localStorage && (signedIn || _authUnknown) && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0) {
       if (DEVICE_LOCAL_KEYS.indexOf(key) >= 0) return; // device preference (see setItem)
       if (key.indexOf('bcc-financial-period-') === 0) return; // server-owned (see setItem)
       if (key.indexOf('bcc-cpr-sends-') === 0) return; // device-local (see setItem)
       if (key.indexOf('bcc-email-') === 0) return;     // device-local (see setItem)
       pending.set(key, null); _rehydrated.delete(key); // ours, not a snapshot
-      outboxPut(key, null, true);
+      outboxPut(key, null, signedIn);   // see setItem: an unattributable delete is not trusted
       schedulePush();
     }
   };
@@ -1368,16 +1413,22 @@
     startProgress();
 
     // 1) Detect auth via SWA's built-in /.auth/me endpoint
+    var authAnswered = false;
     try {
       var r = await fetch('/.auth/me', { credentials: 'include' });
       if (r.ok) {
         var j = await r.json();
         user = j && j.clientPrincipal ? j.clientPrincipal : null;
         signedIn = !!user;
+        authAnswered = true;    // a principal-less 200 IS an answer: this device is anonymous
       }
     } catch (e) {
-      // not deployed on SWA, or network issue — anon mode
+      // Offline, DNS, or not deployed on SWA. NOT an answer — see _authUnknown.
     }
+    /* sw.js deliberately bypasses /.auth/ (it must never be cached), so an offline boot always
+       lands here, and it precaches the pages people open in the field. Remember that we never
+       got a verdict so writes are still captured and retryAuthBootstrap can ask again. */
+    _authUnknown = !signedIn && !authAnswered;
 
     // Recover writes this device queued but never got to send — a tab closed while
     // offline, a reload mid-retry, or an edit made in the window before /.auth/me
@@ -2000,7 +2051,7 @@
       '.bcc-toast .x{background:transparent;border:none;color:rgba(255,255,255,0.8);font-size:16px;line-height:1;cursor:pointer;padding:0;margin-left:auto;}' +
       '.bcc-toast .x:hover{color:#fff;}' +
       // ---- Offline banner ----
-      '.bcc-offline{position:fixed;top:0;left:0;right:0;z-index:9997;background:#a16207;color:#fff;padding:8px 14px;font-size:13px;font-weight:700;text-align:center;display:none;}' +
+      '.bcc-offline{position:fixed;top:0;left:0;right:0;z-index:60;background:#a16207;color:#fff;padding:8px 14px;font-size:13px;font-weight:700;text-align:center;display:none;}' +
       '.bcc-offline.show{display:block;}' +
       // ---- Global hardening ----
       // Stop accidental horizontal scroll on phones (a single too-wide
@@ -2426,7 +2477,12 @@
    */
   window.bccNotifySaved = function (onlineMsg, ttl) {
     if (!window.bccNotify) { try { alert(onlineMsg); } catch (e) {} return; }
-    if (navigator.onLine) {
+    /* signedIn is checked BEFORE navigator.onLine. The radio coming back does not mean the
+       write went anywhere — on a tab that booted offline we may still have no principal — and
+       a green "Saved." is the most expensive lie this file can tell. */
+    if (_authUnknown) {
+      window.bccNotify((onlineMsg ? onlineMsg + ' ' : '') + 'Saved on this device and queued. We haven’t been able to confirm your sign-in yet, so it will finish saving as soon as we can reach the server.', 'warn', 9000);
+    } else if (navigator.onLine && signedIn) {
       window.bccNotify(onlineMsg || 'Saved.', 'success', ttl);
     } else if (!signedIn) {
       /* Offline AND unauthenticated. The setItem hook captures only the four
@@ -2472,9 +2528,36 @@
        is safely queued. */
     bar.textContent = signedIn
       ? '⚠ You are offline. Your changes will sync when the connection returns.'
-      : '⚠ You are offline and not signed in. Your time log, tasks and field forms are saved and will sync when you sign in; other changes stay on this device only.';
+      : (_authUnknown
+        ? '⚠ You are offline. Your changes are being saved on this device and will sync when the connection returns.'
+        : '⚠ You are offline and not signed in. Your time log, tasks and field forms are saved and will sync when you sign in; other changes stay on this device only.');
     bar.classList.add('show');
+    placeOfflineBar(bar);
   }
+  /* Sit UNDER the topbar, never over it. Every page declares
+     header.topbar{position:sticky;top:0;z-index:50}, so a sticky/fixed topbar always owns the
+     first N px of the viewport; a banner pinned at top:0 covered it, and on a phone that
+     topbar holds the hamburger — the only navigation and the only way to sign out. The height
+     is measured rather than assumed because this banner wraps to 2-4 lines on a narrow screen
+     and the topbar itself can wrap. A static (non-sticky) topbar scrolls away, so there is
+     nothing to clear and the banner stays at 0. */
+  function placeOfflineBar(bar) {
+    bar = bar || document.getElementById('bcc-offline-bar');
+    if (!bar) return;
+    var top = 0;
+    try {
+      var tb = document.querySelector('header.topbar');
+      if (tb) {
+        var pos = (window.getComputedStyle(tb) || {}).position;
+        if (pos === 'sticky' || pos === 'fixed') top = Math.round(tb.getBoundingClientRect().height) || 0;
+      }
+    } catch (e) { top = 0; }
+    bar.style.top = top + 'px';
+  }
+  window.addEventListener('resize', function () {
+    var b = document.getElementById('bcc-offline-bar');
+    if (b && b.classList.contains('show')) placeOfflineBar(b);
+  });
   window.addEventListener('online',  refreshOnlineState);
   window.addEventListener('offline', refreshOnlineState);
   // Defer the first check until DOM is ready so we can append to <body>.
@@ -3354,7 +3437,10 @@
     var changed = false;
     chans.forEach(function (ch) {
       if (!window.bccChatCanSee(ch, myUpn)) return;
-      var arr = msgs[ch.id] || [];
+      // Skip tombstones (chat.html marks a deleted message rather than removing it, so the
+      // server-side merge cannot resurrect it) — the bell must not announce a deleted
+      // message, nor take one as the baseline for "everything before this is read".
+      var arr = (msgs[ch.id] || []).filter(function (m) { return m && !m.deleted; });
       if (!arr.length) return;
       if (seen[ch.id] == null) { seen[ch.id] = arr[arr.length - 1].at; changed = true; return; } // baseline
       var floor = Math.max(seen[ch.id] || 0, read[ch.id] || 0);
@@ -3496,8 +3582,8 @@
   window.addEventListener('bcc-users-ready', ncMountBell);
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', bootstrap);
+    document.addEventListener('DOMContentLoaded', runBootstrap);
   } else {
-    bootstrap();
+    runBootstrap();
   }
 })();

@@ -636,17 +636,28 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var wrap = document.getElementById('myTasksWrap'); if (!wrap) return;
     wrap.style.display = '';
     var d = loadMyTasks(), items = d.items || [];
+    /* Every button below is keyed by the task's OWN id, never by its row position. The
+       handlers re-read the document (they must: the 8s live poll writes the incoming copy
+       underneath us) and liveRefresh deliberately skips this repaint while _mtDirty is set or
+       the add boxes have focus — so the row order in the DOM and the order in the document
+       drift apart, and an index deleted or ticked the wrong task. Backfill an id on any row
+       that predates them, once, so there is no index fallback left anywhere. */
+    var needIds = items.filter(function (t) { return t && !t.id; });
+    // Guarded on identity, like addFn: with no upn the key is the orphan 'bcc-mytasks-',
+    // which the server refuses — a backfill there would be a write that can never land.
+    if (needIds.length && meUpn()) { needIds.forEach(function (t) { t.id = uid2(); }); saveMyTasks(d); }
     var openCount = items.filter(function (t) { return !t.done; }).length;
     var today = new Date().toISOString().slice(0, 10);
     var rows = items.map(function (t, i) {
       var overdue = !t.done && t.due && t.due < today;
+      var tid = esc(t.id || '');
       return '<div class="mt-row' + (t.done ? ' done' : '') + '">' +
-        '<input type="checkbox" data-mt-done="' + i + '"' + (t.done ? ' checked' : '') + ' aria-label="Mark done" />' +
+        '<input type="checkbox" data-mt-done="' + tid + '"' + (t.done ? ' checked' : '') + ' aria-label="Mark done" />' +
         '<span class="mt-text">' + esc(t.text) + '</span>' +
         (t.due ? '<span class="mt-due' + (overdue ? ' over' : '') + '">' + (overdue ? 'Overdue · ' : 'Due ') + esc(t.due) + '</span>' : '') +
-        '<span class="mt-move"><button data-mt-up="' + i + '" type="button" aria-label="Move up"' + (i === 0 ? ' disabled' : '') + '>▲</button>' +
-        '<button data-mt-down="' + i + '" type="button" aria-label="Move down"' + (i === items.length - 1 ? ' disabled' : '') + '>▼</button></span>' +
-        '<button class="mt-del" data-mt-del="' + i + '" type="button" aria-label="Delete">×</button></div>';
+        '<span class="mt-move"><button data-mt-up="' + tid + '" type="button" aria-label="Move up"' + (i === 0 ? ' disabled' : '') + '>▲</button>' +
+        '<button data-mt-down="' + tid + '" type="button" aria-label="Move down"' + (i === items.length - 1 ? ' disabled' : '') + '>▼</button></span>' +
+        '<button class="mt-del" data-mt-del="' + tid + '" type="button" aria-label="Delete">×</button></div>';
     }).join('');
     wrap.innerHTML = '<div class="card mt-card">' +
       '<div class="mt-head"><button class="mt-toggle" id="mt_toggle" type="button" aria-label="Toggle">' + (_myTasksOpen ? '▾' : '▸') + '</button>' +
@@ -673,11 +684,23 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     };
     document.getElementById('mt_add').onclick = addFn;
     var ni = document.getElementById('mt_new'); if (ni) ni.addEventListener('keydown', function (e) { if (e.key === 'Enter') addFn(); });
-    var swap = function (i, j) { var dd = loadMyTasks(); if (i < 0 || j < 0 || i >= dd.items.length || j >= dd.items.length) return; var t = dd.items[i]; dd.items[i] = dd.items[j]; dd.items[j] = t; saveMyTasks(dd); renderMyTasks(); };
-    wrap.querySelectorAll('[data-mt-done]').forEach(function (b) { b.onchange = function () { var i = +b.getAttribute('data-mt-done'); var dd = loadMyTasks(); if (dd.items[i]) { dd.items[i].done = b.checked; dd.items[i].doneAt = b.checked ? nowIso() : null; } saveMyTasks(dd); renderMyTasks(); }; });
-    wrap.querySelectorAll('[data-mt-del]').forEach(function (b) { b.onclick = function () { var i = +b.getAttribute('data-mt-del'); var dd = loadMyTasks(); dd.items.splice(i, 1); saveMyTasks(dd); renderMyTasks(); }; });
-    wrap.querySelectorAll('[data-mt-up]').forEach(function (b) { b.onclick = function () { var i = +b.getAttribute('data-mt-up'); swap(i, i - 1); }; });
-    wrap.querySelectorAll('[data-mt-down]').forEach(function (b) { b.onclick = function () { var i = +b.getAttribute('data-mt-down'); swap(i, i + 1); }; });
+    // Position of a task in the CURRENT document, or -1 if it is no longer there (another
+    // device deleted it while this render was on screen) — in which case the operation is
+    // dropped and the card repainted, rather than applied to whatever moved into that slot.
+    var mtIndexOf = function (dd, id) {
+      var list = (dd && dd.items) || [];
+      for (var n = 0; n < list.length; n++) { if (list[n] && String(list[n].id) === String(id)) return n; }
+      return -1;
+    };
+    var swap = function (id, dir) {
+      var dd = loadMyTasks(); var i = mtIndexOf(dd, id); if (i < 0) { renderMyTasks(); return; }
+      var j = i + dir; if (j < 0 || j >= dd.items.length) return;
+      var t = dd.items[i]; dd.items[i] = dd.items[j]; dd.items[j] = t; saveMyTasks(dd); renderMyTasks();
+    };
+    wrap.querySelectorAll('[data-mt-done]').forEach(function (b) { b.onchange = function () { var dd = loadMyTasks(); var i = mtIndexOf(dd, b.getAttribute('data-mt-done')); if (i < 0) { renderMyTasks(); return; } dd.items[i].done = b.checked; dd.items[i].doneAt = b.checked ? nowIso() : null; saveMyTasks(dd); renderMyTasks(); }; });
+    wrap.querySelectorAll('[data-mt-del]').forEach(function (b) { b.onclick = function () { var dd = loadMyTasks(); var i = mtIndexOf(dd, b.getAttribute('data-mt-del')); if (i < 0) { renderMyTasks(); return; } dd.items.splice(i, 1); saveMyTasks(dd); renderMyTasks(); }; });
+    wrap.querySelectorAll('[data-mt-up]').forEach(function (b) { b.onclick = function () { swap(b.getAttribute('data-mt-up'), -1); }; });
+    wrap.querySelectorAll('[data-mt-down]').forEach(function (b) { b.onclick = function () { swap(b.getAttribute('data-mt-down'), 1); }; });
     /* Track typing so a live sync cannot wipe a half-written to-do. Checking activeElement
        alone was not enough: type a task, click away to check something, and the 8s poll
        repaints the card and throws the text away. Reset AFTER wiring, because this repaint

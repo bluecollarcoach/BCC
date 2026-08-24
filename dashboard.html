@@ -280,6 +280,83 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       pulse:{}, people:[]
     };
   }
+  /* ---- Prime gate ----
+     dashboard.html mints blankDoc() whenever the key is missing from localStorage, and the
+     autosave fires 600ms after the first keystroke — so a device that never received this
+     client's document (a new laptop, a cleared browser, or simply the sync not having reached
+     this key yet) replaced the client's whole strategic plan with a blank form carrying one
+     character. The server-side refusal only catches a COMPLETELY empty payload, which this
+     never is: it always carries whatever was just typed. So it has to be stopped here.
+     _dashPrimed[id]: true = we hold the server's answer for this client (including a
+     confirmed "no document yet"), 'busy' = asking, 'fail' = the ask failed and saving stays
+     refused until a retry succeeds. */
+  var _dashPrimed = {};
+  var _dashWarned = {};    // one refusal message per client, not one per keystroke
+  var _dashRetryAt = {};
+  function primeDash(id, done) {
+    if (!id || _dashPrimed[id] === true || _dashPrimed[id] === 'busy') { if (done) done(); return; }
+    // An older bcc-api.js without the shared priming layer must not wedge the page: with no
+    // way to ask, behave as before rather than refusing every save forever.
+    if (!window.bccPrimeDoc || !window.bccDocPrimed) { _dashPrimed[id] = true; if (done) done(); return; }
+    _dashPrimed[id] = 'busy';
+    window.bccPrimeDoc(DASH_PREFIX + id, function () {
+      _dashPrimed[id] = window.bccDocPrimed(DASH_PREFIX + id) ? true : 'fail';
+      if (done) done();
+    });
+  }
+  /* Called once the prime lands. If nothing was typed while we waited, just repaint from the
+     primed copy. If something WAS typed, the form is the newer copy for those fields and the
+     primed document is the newer copy for everything else — merge, never pick one. */
+  function adoptDash(id) {
+    if (!id || currentId !== id) return;
+    var fresh = loadDoc(id);
+    // Focus/caret is preserved on BOTH paths: fillForm reassigns every field's value, and
+    // assigning to the focused input collapses its selection even when the value is unchanged.
+    var ae0 = document.activeElement, s0 = null, e0 = null;
+    try { if (ae0 && 'selectionStart' in ae0) { s0 = ae0.selectionStart; e0 = ae0.selectionEnd; } } catch (e) {}
+    if (!dirty) {
+      current = fresh;
+      fillForm(current);
+      if (ae0 && s0 != null) { try { ae0.focus(); ae0.setSelectionRange(s0, e0); } catch (e) {} }
+      setSaveState(current.updatedAt ? 'Saved' : '', !!current.updatedAt);
+      return;
+    }
+    var form = collect();
+    if (!form) { current = fresh; fillForm(fresh); return; }
+    var any = function (v) { return String(v == null ? '' : v).trim() !== ''; };
+    ['vision','coreValues','why','ninetyDay','bottleneck','kpis','marketingPlan','flavorOfLean','sne','books','pulse_notes']
+      .forEach(function (k) { if (any(form[k])) fresh[k] = form[k]; });
+    fresh.swot = fresh.swot || {};
+    ['strengths','weaknesses','opportunities','threats'].forEach(function (k) {
+      if (any(form.swot && form.swot[k])) fresh.swot[k] = form.swot[k];
+    });
+    fresh.financials = fresh.financials || {};
+    ['currentRatio','monthsCash','netMargin'].forEach(function (k) {
+      if (any(form.financials && form.financials[k])) fresh.financials[k] = form.financials[k];
+    });
+    /* Only TRUE ticks and non-empty notes carry over. An unticked box in a blank form is not
+       an edit — it is the absence of one — and treating it as an edit would clear ticks the
+       primed document has. */
+    fresh.pulse = fresh.pulse || {};
+    Object.keys(form.pulse || {}).forEach(function (k) { if (form.pulse[k]) fresh.pulse[k] = true; });
+    if (!Array.isArray(fresh.people)) fresh.people = [];
+    (form.people || []).forEach(function (pp, i) {
+      if (!pp) return;
+      var m = fresh.people[i] || { label: pp.label, done: false, note: '' };
+      if (pp.done) m.done = true;
+      if (any(pp.note)) m.note = pp.note;
+      fresh.people[i] = m;
+    });
+    if (any(form.qboRealmId)) fresh.qboRealmId = form.qboRealmId;
+    current = fresh;
+    // Keep the caret where the user left it: fillForm reassigns every field's value, and
+    // assigning to the focused input collapses its selection to the end mid-word.
+    var ae = document.activeElement, selS = null, selE = null;
+    try { if (ae && 'selectionStart' in ae) { selS = ae.selectionStart; selE = ae.selectionEnd; } } catch (e) {}
+    fillForm(current);
+    if (ae && selS != null) { try { ae.focus(); ae.setSelectionRange(selS, selE); } catch (e) {} }
+    doSave();     // primed now, so this one actually writes — and it writes the merge
+  }
   function loadDoc(id) {
     /* REPAIR the identity fields to match the key it was found under. `bcc-dashboard-` is
        member-writable and syncs firm-wide, and doSave writes through d.id — so a planted doc
@@ -364,6 +441,32 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   function doSave() {
     var d = collect(); if (!d) return;
+    if (currentId && _dashPrimed[currentId] !== true) {
+      /* Refuse rather than publish a blank plan over the real one. Nothing is disabled — the
+         retry lives behind this very handler — and the message is latched per client because
+         scheduleSave() is bound to `input`, so an unlatched toast would fire per keystroke. */
+      if (!_dashWarned[currentId]) {
+        _dashWarned[currentId] = true;
+        (window.bccNotify || function () {})('Not saved yet — this client’s plan is still loading, and saving now would replace it with a blank one. It saves automatically as soon as it loads.', 'warn', 9000);
+      }
+      setSaveState('Waiting for this client’s plan…', false);
+      if (_dashPrimed[currentId] === 'fail') {
+        var nowMs = Date.now();
+        if (!(_dashRetryAt[currentId] > nowMs - 4000)) {
+          _dashRetryAt[currentId] = nowMs;
+          var retryFor = currentId;
+          _dashPrimed[retryFor] = undefined;
+          primeDash(retryFor, function () {
+            // Re-arm the warning only on SUCCESS — clearing it on failure brings the
+            // per-keystroke toast storm straight back.
+            if (_dashPrimed[retryFor] !== true) return;
+            _dashWarned[retryFor] = false;
+            adoptDash(retryFor);
+          });
+        }
+      }
+      return;
+    }
     // resync() deliberately refuses to repaint while the user is typing, so a teammate's
     // change that arrived mid-edit is still sitting in storage — and this save is a whole
     // document write, so it is about to go over the top of it. Overwriting is the right
@@ -412,6 +515,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     current = loadDoc(id);
     $('emptyHint').style.display='none'; $('grid').style.display='';
     fillForm(current);
+    // Ask the server for this client's plan before any autosave is allowed to publish one.
+    primeDash(id, function () { adoptDash(id); });
     setSaveState(current.updatedAt ? 'Saved' : '', !!current.updatedAt);
     try { localStorage.setItem(LAST_CLIENT, id); } catch (e) {}
     updatePullState();

@@ -141,7 +141,13 @@ self.addEventListener('fetch', (event) => {
            way to tell. Serve a saved copy only while it is fresh enough to plausibly still
            be the deployed build; past that, show the offline page rather than boot code we
            know may be superseded. */
-        const cached = await caches.match(req);
+        /* ignoreSearch: OFFLINE_PAGES are precached under bare paths (cache.put(url, ...)),
+           but the app's own navigations carry a query — crm.html?id=, sessions.html?id=, and
+           the url a push notification opens. caches.match keys on the FULL url, so every one
+           of those missed and the user was told the page "hasn't been cached for offline use
+           yet" about a page sitting in the cache. The query is a selector within the page,
+           never a different document. */
+        const cached = await caches.match(req, { ignoreSearch: true });
         if (cached) {
           const at = Number(cached.headers.get('sw-cached-at') || 0);
           const age = at ? (Date.now() - at) : Infinity;

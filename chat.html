@@ -525,7 +525,7 @@ function renderLive() {
 function unreadCount(chId) {
   const last = read[chId] || 0;
   const list = msgs[chId] || [];
-  return list.filter(m => m.at > last && m.author !== who).length;
+  return list.filter(m => m && !m.deleted && m.at > last && m.author !== who).length;
 }
 
 function renderSidebar() {
@@ -578,7 +578,9 @@ function renderThread() {
     document.getElementById('thread').innerHTML = `<div class="empty-state"><div class="big">&#128172;</div><h3>Pick a channel</h3></div>`;
     return;
   }
-  const list = (msgs[active] || []).slice().sort((a,b) => a.at - b.at);
+  // Tombstones (deleted messages) are storage bookkeeping, never content — see the delete
+  // handler for why they exist at all.
+  const list = (msgs[active] || []).filter(m => m && !m.deleted).slice().sort((a,b) => a.at - b.at);
   let lastAuthor = null, lastDay = null;
   const admin = isAdmin();
   let html = `
@@ -680,10 +682,16 @@ function renderThread() {
       // teammates' newer ones) once other messages have synced in.
       // null = refused because the history has not loaded; do not audit a delete that
       // did not happen, and do not repaint as though it had.
+      /* TOMBSTONE, not splice. The server now merges chat writes by message id (a whole-blob
+         PUT from a device that was offline used to wipe out everything sent during the
+         outage), and under a merge a removed entry is simply absent — indistinguishable from
+         "this device had not received it yet", so it would come straight back on the next
+         write from anyone. A marker cannot be mistaken for absence. The text and photo are
+         dropped with it, so the content really is gone. */
       if (mutateMsgs(mm => {
         const fresh = mm[active] || [];
         const fi = fresh.findIndex(x => msgId(x) === mid);
-        if (fi >= 0) fresh.splice(fi, 1);
+        if (fi >= 0) fresh[fi] = { id: msgId(fresh[fi]), at: fresh[fi].at, author: fresh[fi].author, deleted: true };
         mm[active] = fresh;
         return true;
       }) === null) return;
@@ -703,10 +711,15 @@ function renderThread() {
   const cb = document.getElementById('clearChan');
   if (cb) {
     cb.onclick = () => {
-      const count = (msgs[active] || []).length;
+      const count = (msgs[active] || []).filter(m => m && !m.deleted).length;
       if (!confirm(`Delete all ${count} messages in #${active}?\n\nThis cannot be undone.`)) return;
       // Clearing THIS channel must not also revert other channels to our stale copy.
-      if (mutateMsgs(mm => { mm[active] = []; return true; }) === null) return;
+      // Same reasoning as the single-message delete above: an emptied array is absence, and
+      // absence loses to a merge. Every message becomes a tombstone (text and photo dropped).
+      if (mutateMsgs(mm => {
+        mm[active] = (mm[active] || []).map(m => ({ id: msgId(m), at: m.at, author: m.author, deleted: true }));
+        return true;
+      }) === null) return;
       window.bccAudit && window.bccAudit('chat-clear-channel', {
         key: active,
         meta: { channel: active, deletedCount: count }

@@ -301,6 +301,46 @@ async function isAppAdmin(p) {
   );
 }
 
+/* Is THIS upn an app admin? isAppAdmin() answers for the CALLER, and part of how it answers
+   — the SWA 'administrator' role — only exists on a live principal. For a third party ("may
+   the person I am about to notify see this client?") only the config-based half is knowable.
+   Every difference from isAppAdmin fails CLOSED: no config, an empty roster or a corrupt one
+   answers false here where isAppAdmin bootstraps to true, because the consequence here is
+   withholding a notification rather than granting access. */
+async function isAppAdminUpn(upn) {
+  const who = String(upn || '').toLowerCase();
+  if (!who) return false;
+  if (bootstrapOwners().includes(who)) return true;
+  // getAdminCfg FIRST: it is what sets the corrupt flag adminCfgCorrupt() reads, so asking
+  // in the other order answers "not corrupt" on a cold instance whatever the document holds.
+  const cfg = await getAdminCfg();
+  if (adminCfgCorrupt()) return false;
+  const users = (cfg && Array.isArray(cfg.users)) ? cfg.users : [];
+  return users.some(u =>
+    u && u.role === 'admin' && u.status !== 'inactive' && (
+      (u.upn   || '').toLowerCase() === who ||
+      (u.email || '').toLowerCase() === who
+    )
+  );
+}
+
+/* Would this client be visible to that person? Same rule as driveClientAccess and
+   companyAccessMap, evaluated for someone who is not the caller. An unknown client answers
+   false: there is nothing to tell them about it. */
+async function realmVisibleTo(upn, realmId) {
+  const who = String(upn || '').toLowerCase();
+  if (!who || !realmId) return false;
+  const co = await container().item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource)
+    .catch(e => { if (e && e.code === 404) return null; throw e; });
+  if (!co) return false;
+  // privateToUpn is not bypassed by admin — the firm's own books belong to one person.
+  if (co.privateToUpn && String(co.privateToUpn).toLowerCase() !== who) return false;
+  if (await isAppAdminUpn(who)) return true;
+  if (co.enabled === false) return false;
+  const allow = (co.allowedUserUpns || []).map(u => String(u).toLowerCase());
+  return !(allow.length && allow.indexOf(who) < 0);
+}
+
 /* Normalise a caller-supplied notification target to a SAME-ORIGIN path.
  * The value reaches sw.js, which opens it with clients.openWindow(), so anything that
  * resolves off-origin becomes an internal-phishing primitive. Fold the string the way
@@ -644,6 +684,18 @@ app.http('data', {
                 if (bookkeepingNoFinancials(await bookkeepingTierFor(p))) return forbidden('your bookkeeping access does not include this client’s financials');
               }
             }
+            /* A CRM company record LINKED to a QuickBooks client is that client under another
+               key (see companyDocRealm). Only realms that actually exist as client records are
+               gated: a row pointing at a realm no client record claims any more is a stale
+               link, not a restricted client, and hiding it would empty CRM rows nobody ever
+               restricted. Bulk pull below applies the identical rule. */
+            if (String(key).startsWith('bcc-company-') && resource) {
+              const cRealm = companyDocRealm(resource.data);
+              if (cRealm) {
+                const cAcc = await companyAccessMap(p);
+                if (cAcc.realms.indexOf(cRealm) >= 0 && !cAcc.allowed(cRealm)) return forbidden('no access to this client');
+              }
+            }
             const data = resource
               ? (keyRedact ? redactIntegrationData(resource.data) : adminCfgRedact ? redactAdminConfigData(resource.data, false, me) : resource.data)
               : null;
@@ -709,12 +761,23 @@ app.http('data', {
            fire — the looks-right-does-nothing shape. */
         const dashRealmOf = (r) => String(r.id).startsWith('bcc-dashboard-') ? dashboardDocRealm(r.data) : null;
         const hasDashRealm = resources.some(r => dashRealmOf(r));
-        const needAccess = hasClientScoped || hasDashRealm;
+        // A CRM company row linked to a QuickBooks client — see companyDocRealm.
+        const coRealmOf = (r) => String(r.id).startsWith('bcc-company-') ? companyDocRealm(r.data) : null;
+        const hasCoRealm = resources.some(r => coRealmOf(r));
+        const needAccess = hasClientScoped || hasDashRealm || hasCoRealm;
         const coAccess = needAccess ? await companyAccessMap(p) : null;
+        /* Known realms only, for the company rows. allowed() answers false for a realm it has
+           never heard of, which is right for a client-scoped KEY (that realm was deleted) but
+           wrong for a CRM row that merely carries a stale realmId — it would blank company
+           rows nobody restricted. Client-scoped keys and dashboards keep the strict rule. */
+        const knownRealms = coAccess ? new Set(coAccess.realms.map(String)) : null;
         const gated = coAccess
           ? resources.filter(r => {
               const realm = dataKeyClientRealm(r.id) || dashRealmOf(r);
-              return !realm || coAccess.allowed(realm);
+              if (realm && !coAccess.allowed(realm)) return false;
+              const cr = coRealmOf(r);
+              if (cr && knownRealms.has(cr) && !coAccess.allowed(cr)) return false;
+              return true;
             })
           : resources;
         // Integration docs hold secrets — redact credential fields for non-admins
@@ -804,6 +867,19 @@ app.http('data', {
             if (exDash && dashboardIsEmpty(it.data) && !dashboardIsEmpty(exDash.data)) {
               return badRequest('this would replace an existing dashboard with an empty one — reload the page and try again');
             }
+            /* ...and the same refusal for the case that actually happens. The blank form
+               autosaves with the ONE character just typed in it, so it is never fully empty
+               and the check above could not fire. A genuine edit changes one field at a time:
+               even "select all, delete" in the largest textarea drops a single count. Losing
+               four or more populated sections in a single write, landing at almost nothing, is
+               a device publishing a form it never filled — and that write also clears
+               qboRealmId, which is where this document's per-client access gate lives, so
+               accepting it removes the gate from the client's plan permanently. */
+            const exCount = exDash ? dashboardContentCount(exDash.data) : -1;
+            const inCount = dashboardContentCount(it.data);
+            if (exCount >= 4 && inCount >= 0 && inCount <= 1 && (exCount - inCount) >= 4) {
+              return badRequest('this would wipe an existing dashboard — reload the page and try again');
+            }
             const dRealm = exDash ? dashboardDocRealm(exDash.data) : null;
             if (dRealm) {
               if (!realmAccessCache.has(dRealm)) realmAccessCache.set(dRealm, await driveClientAccess(p, dRealm));
@@ -814,6 +890,25 @@ app.http('data', {
                  resolves dashboard='edit' by default (MEMBER_DEFAULT_EDIT_APPS), so the app
                  tier alone would let a view-tier bookkeeper overwrite a client's plan. */
               if (bookkeepingReadOnly(putBkTier)) return forbidden('your bookkeeping access is view-only, so you cannot change this client’s dashboard');
+            }
+          }
+          /* Same rule as the read gate: a CRM company row linked to a QuickBooks client is
+             that client under another key. Gating only the read would leave the record
+             blind-writable by someone the client is withheld from — and the whole row,
+             including its realm link, is replaced by a PUT. Read the realm off the STORED
+             doc: the payload's own realmId is caller-controlled. Only a realm that still
+             exists as a client record is gated (see the bulk pull). */
+          if (it.key.startsWith('bcc-company-')) {
+            const exCo = await c.item(it.key, BCC_TENANT_ID).read().then(r => r.resource)
+              .catch(e => { if (e && e.code === 404) return null; throw e; });
+            const cRealm = exCo ? companyDocRealm(exCo.data) : null;
+            if (cRealm) {
+              const knownCo = await c.item('bcc-qbo-company-' + cRealm, BCC_TENANT_ID).read().then(r => r.resource)
+                .catch(e => { if (e && e.code === 404) return null; throw e; });
+              if (knownCo) {
+                if (!realmAccessCache.has(cRealm)) realmAccessCache.set(cRealm, await driveClientAccess(p, cRealm));
+                if (realmAccessCache.get(cRealm).err) return forbidden('no access to this client');
+              }
             }
           }
           // CRM/Engagements/Marketing/Rate-Sheet records — only someone with 'edit'+
@@ -853,6 +948,16 @@ app.http('data', {
             updatedAt: now,
             updatedBy: who
           };
+          /* Merge, never replace — see mergeChatMessages. 404-only catch: swallowing every
+             error would silently turn a Cosmos blip back into the whole-blob replace this
+             exists to prevent. */
+          if (it.key === CHAT_MSGS_KEY) {
+            const exChat = await c.item(it.key, BCC_TENANT_ID).read().then(r => r.resource)
+              .catch(e => { if (e && e.code === 404) return null; throw e; });
+            doc.data = mergeChatMessages(exChat && exChat.data, it.data);
+            await c.items.upsert(doc);
+            continue;
+          }
           // A PUT here is a whole-document REPLACE, but the OAuth callbacks write the
           // connector's refresh/access token to the doc's TOP level — and the top level
           // is never shipped to the browser (the pull ships only c.data). So a routine
@@ -1910,6 +2015,22 @@ app.http('notify-user', {
      row here silently dropped every task-assignment notification to ordinary staff who had
      never been edited in Admin. Reject only an EXPLICIT deactivation. */
   if (recN && (recN.status === 'inactive' || recN.status === 'hidden')) return badRequest('recipient is not an active user');
+      /* A notification ABOUT a client carries that client's name and the task text, and this
+         route only ever checked that the recipient is an active user. Assigning a client task
+         therefore pushed the company name and the task straight to anyone in the firm —
+         including people the client is withheld from, whose /api/data sync then filters the
+         task document out, so the assignment could never be worked either. When the caller
+         names the client, both ends are checked. Optional so every other notification (month
+         end, feedback, a reminder) is unaffected. */
+      const notifyRealm = String(body.realmId || '').trim();
+      if (notifyRealm) {
+        // The SENDER too: they are putting this client's name into someone's phone.
+        const sendAcc = await driveClientAccess(p, notifyRealm);
+        if (sendAcc.err) return sendAcc.err;
+        if (!(await realmVisibleTo(toUpn, notifyRealm))) {
+          return { status: 403, jsonBody: { ok: false, error: 'recipient-no-client-access' } };
+        }
+      }
       const c = container();
       const from = String(p.userDetails || p.userId || '').toLowerCase();
       const delivered = await notifyUser(c, toUpn, { title, body: msg, url, tag: String(body.tag || '').slice(0, 60) });
@@ -2075,6 +2196,28 @@ app.http('cron-reminders', {
       }
       const allSubs = subs;
 
+      /* Sessions and events are TIER-GATED on every other path: SINGLE_APP_KEY_PREFIXES maps
+         bcc-session- to 'sessions' (also readable with scheduler/myday) and bcc-event- to
+         'events' (also scheduler), and appAccessChecker enforces that on the bulk pull, the
+         single-key GET and every write. This fan-out was the remaining door — an admin who set
+         a contractor to None still had the record's title, start time and location pushed to
+         their phone, because targetSubs fell through to every subscription in the firm for
+         every event and for any session with no coachUpn (sessions.html leaves it empty when a
+         session is saved before auth resolves).
+         The SAME checker is reused rather than the rule re-derived — one per subscribed user,
+         built once per run, not once per document. */
+      const remCheckers = new Map();
+      for (const u of subsByUser.keys()) {
+        try { remCheckers.set(u, await appAccessChecker({ userDetails: u })); }
+        catch (e) { context.log && context.log('reminders: tier lookup failed for a subscriber — withholding'); remCheckers.set(u, null); }
+      }
+      // No checker means we could not establish access. Withhold: a missed reminder is
+      // recoverable, a disclosure is not.
+      const remMaySee = (sub, docId) => {
+        const chk = remCheckers.get(String((sub && sub.user) || '').toLowerCase());
+        return !!chk && chk(docId, 'view') !== false;
+      };
+
       const toSend = []; // { sub, payload }
       let dueCount = 0;
 
@@ -2122,6 +2265,10 @@ app.http('cron-reminders', {
         } else {
           targetSubs = allSubs;
         }
+        /* Applied to BOTH branches. A coach whose sessions tier an admin set to None cannot
+           open the session in the app either, so pushing them its title and location would be
+           the one place that setting does not hold. */
+        targetSubs = targetSubs.filter(sb => remMaySee(sb, d.id));
         const payload = JSON.stringify({
           title: payloadTitle,
           body: payloadBody,
@@ -2260,6 +2407,14 @@ app.http('bookkeeping-time-report', {
           parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@f', value: from }, { name: '@to', value: to }]
         }).fetchAll()
       ]);
+      /* companyPrivateBlocked is NOT bypassed by the admin check — it exists for the firm's
+         OWN books, which the other admins must not see — and every sibling route honours it
+         (qbo-companies, qboResolveAccess, driveClientAccess, companyAccessMap,
+         resolveClientMailbox, and the /bookkeeping/entry GET). This report did not, so it
+         returned the private company's realmId, name and per-person hours to every app admin.
+         companyAccessMap.allowed() applies exactly that rule, and for an admin it withholds
+         nothing else: a realm no client record claims any more still comes through. */
+      const timeAcc = await companyAccessMap(p);
       const byCompany = {}, byUser = {};
       const bump = (r, secs, field) => {
         const cc = byCompany[r.realmId] || (byCompany[r.realmId] = { realmId: r.realmId, companyName: r.companyName || r.realmId, seconds: 0, loggedSeconds: 0, users: {} });
@@ -2270,8 +2425,11 @@ app.http('bookkeeping-time-report', {
         const uu = byUser[r.userUpn] || (byUser[r.userUpn] = { userUpn: r.userUpn, userName: r.userName || r.userUpn, seconds: 0, loggedSeconds: 0 });
         uu[field] += secs; if (r.userName) uu.userName = r.userName;
       };
-      for (const r of autoRes.resources) bump(r, r.seconds || 0, 'seconds');
-      for (const r of logRes.resources) bump(r, Math.round((r.minutes || 0) * 60), 'loggedSeconds');
+      /* Skipped BEFORE bump, so the withheld hours are absent from the per-person totals as
+         well — a user row whose total exceeds the sum of the companies under it reports the
+         private client's existence and volume just as plainly as naming it would. */
+      for (const r of autoRes.resources) { if (!timeAcc.allowed(r.realmId)) continue; bump(r, r.seconds || 0, 'seconds'); }
+      for (const r of logRes.resources) { if (!timeAcc.allowed(r.realmId)) continue; bump(r, Math.round((r.minutes || 0) * 60), 'loggedSeconds'); }
       const companies = Object.keys(byCompany).map(k => { const x = byCompany[k]; return { realmId: x.realmId, companyName: x.companyName, seconds: x.seconds, loggedSeconds: x.loggedSeconds, users: Object.keys(x.users).map(u2 => ({ userUpn: u2, seconds: x.users[u2].seconds, loggedSeconds: x.users[u2].loggedSeconds })).sort((a, b) => (b.seconds + b.loggedSeconds) - (a.seconds + a.loggedSeconds)) }; }).sort((a, b) => (b.seconds + b.loggedSeconds) - (a.seconds + a.loggedSeconds));
       const users = Object.keys(byUser).map(k => byUser[k]).sort((a, b) => (b.seconds + b.loggedSeconds) - (a.seconds + a.loggedSeconds));
       return { jsonBody: { ok: true, from, to, companies, users } };
@@ -2534,6 +2692,88 @@ function dashboardIsEmpty(data) {
   if (Array.isArray(dd.people) && dd.people.some(pp => pp && (pp.done === true || any(pp.note)))) return false;
   if (dd.pulse && typeof dd.pulse === 'object' && Object.keys(dd.pulse).some(k => dd.pulse[k])) return false;
   return true;
+}
+/* How much CONTENT a dashboard carries. dashboardIsEmpty above answers "is this payload
+   completely blank", which the blank-form autosave never is — dashboard.html saves 600ms
+   after the first keystroke, so the payload always carries the character just typed, and the
+   refusal that depended on it could not fire on the case it was written for. Counting lets
+   the far more telling signal be used instead: a save that drops a whole populated plan to
+   nothing but the one thing just typed. */
+function dashboardContentCount(data) {
+  let dd = data;
+  if (typeof dd === 'string') { try { dd = JSON.parse(dd); } catch (_) { return -1; } }
+  if (!dd || typeof dd !== 'object') return -1;
+  const any = (v) => String(v == null ? '' : v).trim() !== '';
+  let n = 0;
+  ['vision', 'coreValues', 'why', 'ninetyDay', 'bottleneck', 'kpis', 'marketingPlan', 'flavorOfLean', 'sne', 'books', 'pulse_notes']
+    .forEach(k => { if (any(dd[k])) n++; });
+  const sw = dd.swot || {};
+  ['strengths', 'weaknesses', 'opportunities', 'threats'].forEach(k => { if (any(sw[k])) n++; });
+  const fin = dd.financials || {};
+  ['currentRatio', 'monthsCash', 'netMargin'].forEach(k => { if (any(fin[k])) n++; });
+  if (dd.pulse && typeof dd.pulse === 'object') Object.keys(dd.pulse).forEach(k => { if (dd.pulse[k]) n++; });
+  if (Array.isArray(dd.people)) dd.people.forEach(pp => { if (pp && (pp.done === true || any(pp.note))) n++; });
+  return n;
+}
+/* The whole chat history is ONE document. A PUT of it is a whole-document replace, and a
+   device that composed a message while offline queues exactly that: bcc-api.js blocks the
+   pull for any key with a queued write, so the snapshot it replays on reconnect has none of
+   the messages teammates sent during the outage — and the durable outbox replays it for up
+   to seven days, so a laptop closed overnight does it too. Meanwhile the offline banner has
+   promised "your changes will sync when the connection returns".
+   So a chat PUT MERGES rather than replaces: union by message id, oldest-first. A message can
+   be added or tombstoned, never dropped by someone else's stale snapshot. Deleting still
+   works — chat.html marks a message deleted:true instead of splicing it out, and a tombstone
+   always wins here, so a delete cannot be undone by a device that had not seen it.
+   Anything that is not the shape we know is passed through untouched: this must never be the
+   reason a chat write fails. */
+const CHAT_MSGS_KEY = 'bcc-chat-messages-v1';
+function chatMsgId(m) {
+  // Same derivation as chat.html's msgId, for messages predating stored ids.
+  return String((m && m.id) || ('m' + (m && m.at) + '-' + String((m && m.author) || '').slice(0, 4).replace(/\W/g, '')));
+}
+function mergeChatMessages(oldData, newData) {
+  const parse = (d) => { if (typeof d === 'string') { try { return JSON.parse(d); } catch (_) { return null; } } return d; };
+  const a = parse(oldData), b = parse(newData);
+  const shaped = (x) => !!x && typeof x === 'object' && !Array.isArray(x);
+  if (!shaped(a) || !shaped(b)) return newData;
+  /* Null prototype: the keys here are CHANNEL IDS from a member-writable document, and on a
+     plain object `out['__proto__'] = [...]` hits Object.prototype's setter rather than
+     creating a property — that channel's history would vanish on the next write from anyone.
+     Serialises exactly the same. */
+  const out = Object.create(null);
+  const chans = new Set(Object.keys(a).concat(Object.keys(b)));
+  for (const ch of chans) {
+    const listA = Array.isArray(a[ch]) ? a[ch] : [];
+    const listB = Array.isArray(b[ch]) ? b[ch] : [];
+    const byId = new Map();
+    for (const m of listA) { if (m && typeof m === 'object') byId.set(chatMsgId(m), m); }
+    for (const m of listB) {
+      if (!m || typeof m !== 'object') continue;
+      const k = chatMsgId(m);
+      const prev = byId.get(k);
+      // A tombstone already stored is never overwritten by a live copy of the same message.
+      if (prev && prev.deleted && !m.deleted) continue;
+      byId.set(k, m);
+    }
+    out[ch] = Array.from(byId.values()).sort((x, y) => (Number(x && x.at) || 0) - (Number(y && y.at) || 0));
+  }
+  return out;
+}
+/* The QuickBooks realm a CRM company record is linked to, if any. crm-companies.html's
+   automatic Bookkeeping sync mints a bcc-company-<uid> for every QuickBooks client the
+   SYNCING user can see and stamps it with that client's realmId, then fills in its phone,
+   website, city and legal name. Those records are gated only by app tier — crm, jobs or
+   dashboard, and 'dashboard' is in MEMBER_DEFAULT_EDIT_APPS — so a client withheld by
+   allowedUserUpns (or by the ADMIN_ONLY_UPN sentinel, whose whole purpose is to keep a new
+   company invisible until an admin grants access) was being republished to the entire firm
+   through the CRM. Same shape as dashboardDocRealm: the realm is in the DOCUMENT, not the
+   key, so dataKeyClientRealm cannot see it. */
+function companyDocRealm(data) {
+  let dd = data;
+  if (typeof dd === 'string') { try { dd = JSON.parse(dd); } catch (_) { dd = null; } }
+  const rid = dd && dd.realmId;
+  return rid ? String(rid) : null;
 }
 function dashboardDocRealm(data) {
   let dd = data;
@@ -9270,11 +9510,21 @@ app.http('document-one', {
          deliberately does NOT apply to client folders — see the upload path — so a client
          file is governed by client access (docAccessFilter, above) plus this. */
       if (meta && docFolderRealm(meta) && bookkeepingReadOnly(await bookkeepingTierFor(p))) return forbidden('your bookkeeping access is view-only, so you cannot delete this client’s files');
+      /* The metadata row is the ONLY record of storageKey, and nothing reconciles the
+         container — so deleting it after a failed blob delete leaves the bytes stored,
+         unreachable and unremovable by any path in the app, while the caller is told 204
+         "deleted" and drops the row from the list. If the bytes cannot be removed, keep the
+         row and say so: the file is still deletable on a retry. deleteIfExists() returns
+         false for an already-absent blob rather than throwing, so a throw here is a real
+         storage failure. A record with no storageKey never had bytes to remove. */
       if (meta && meta.storageKey) {
         try {
           const cont = getBlobContainer();
           await cont.getBlockBlobClient(meta.storageKey).deleteIfExists();
-        } catch (be) { context.warn && context.warn('blob delete failed', be && be.message); }
+        } catch (be) {
+          context.error && context.error('blob delete failed — metadata kept so the file can be deleted again', be);
+          return { status: 502, jsonBody: { ok: false, error: 'the file could not be removed from storage, so nothing was deleted — please try again' } };
+        }
       }
       try { await c.item(id, BCC_TENANT_ID).delete(); } catch (e) { if (e.code !== 404) throw e; }
       const delRealm = (/^\/clients\/([^/]+)/.exec(String((meta && meta.folder) || '')) || [])[1];

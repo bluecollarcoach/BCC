@@ -459,6 +459,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
    */
   var _cfgDoc = null;    // authoritative server copy (null = nothing stored yet)
   var _cfgFresh = false; // true once an UNREDACTED server read has answered
+  var _cfgReprimeWarned = false; // one "couldn't re-check" message per failure run, not per pull
   // The read can come back redacted too — the roster cache is per Function instance,
   // so right after a promotion the GET can hit a stale instance while a later PUT hits
   // a fresh one. Every user record this page (or saveMsGraphTokensFor) ever writes
@@ -483,17 +484,25 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     return fetch('/api/data/' + encodeURIComponent(CFG_KEY), { credentials: 'include' })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (j) {
-        if (!j) return false;
+        /* A FAILED re-read must UNSET _cfgFresh, not merely decline to update it. _cfgFresh
+           was write-once: once the first prime succeeded, loadCfg kept preferring _cfgDoc and
+           saveCfg kept allowing whole-document PUTs from it — so a later refresh that failed
+           (or came back redacted, which this page's own comment documents as routine right
+           after a promotion) left every panel rendering and SAVING the roster from before
+           another admin's change, quietly reverting it. Dropping to false makes loadCfg fall
+           back to localStorage, which by then holds the newer synced copy, and makes saveCfg
+           refuse until a read succeeds. */
+        if (!j) { _cfgFresh = false; return false; }
         var d = j.data;
         if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { d = null; } }
-        if (d && typeof d === 'object' && looksRedacted(d)) return false; // stay unprimed
+        if (d && typeof d === 'object' && looksRedacted(d)) { _cfgFresh = false; return false; } // stay unprimed
         // data:null is a legitimate answer on first run — the defaults below are then
         // the whole document, so there is nothing a save could drop.
         _cfgDoc = (d && typeof d === 'object') ? d : null;
         _cfgFresh = true;
         return true;
       })
-      .catch(function () { return false; });
+      .catch(function () { _cfgFresh = false; return false; });
   }
 
   function loadCfg() {
@@ -2051,7 +2060,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (touched(CFG_KEY)) {
       // What just landed may be the REDACTED projection of the admin-config (see
       // primeCfg) — re-read the authoritative copy before anything renders from it.
-      primeCfg().then(function () {
+      primeCfg().then(function (ok) {
+        /* The boolean used to be ignored here. It is the difference between "the server
+           confirmed this roster" and "we could not check" — and saving from the second
+           reverts whoever DID change it. primeCfg now clears _cfgFresh on failure, so the
+           panels below repaint from the freshly synced localStorage copy instead of the
+           stale primed one, and saveCfg refuses until a read succeeds. Say so once. */
+        if (!ok) {
+          if (!_cfgReprimeWarned) {
+            _cfgReprimeWarned = true;
+            (window.bccNotify || function () {})('Couldn’t re-check the current admin settings just now, so saving is paused until it succeeds — otherwise this page could save an out-of-date user list over someone else’s change. Try your change again in a moment.', 'warn', 10000);
+          }
+        } else {
+          _cfgReprimeWarned = false;
+        }
         if (!panelHasFocus('panel-users'))    renderUsers();
         if (!panelHasFocus('panel-company'))  renderCompany();
         if (!panelHasFocus('panel-security')) renderSecurity();

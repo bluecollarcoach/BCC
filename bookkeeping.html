@@ -840,10 +840,29 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       for (var i = 0; i < localStorage.length; i++) {
         var k = localStorage.key(i); if (k && re.test(k)) olds.push(k);
       }
+      if (!olds.length) { localStorage.setItem(MPER_MIGRATED_KEY, String(Date.now())); return; }
+      /* The marker used to be stamped unconditionally at the end of this run, while the
+         decision below deferred every row whose new-id counterpart was not already in
+         localStorage — and that counterpart only exists if some device has already saved a
+         NEW correction for that exact realm and period, which is almost never. So the "next
+         load can decide properly" that the deferral promised never came: the migration was a
+         guaranteed no-op on its first and only run, and these corrections — living under a
+         prefix the sync layer refuses to push — were stranded on one browser for good.
+         Two changes. Absence is now ANSWERED rather than assumed: bccPrimeDoc asks the server
+         for the new id, so "no such document" is a fact and adopting the legacy row is
+         correct (it is the only copy in existence). And the marker is stamped only if every
+         row got a real decision, so a row we could not resolve is retried on the next load
+         instead of being written off. */
+      var outstanding = olds.length, deferred = 0;
+      var finish = function () {
+        if (--outstanding > 0) return;
+        if (!deferred) localStorage.setItem(MPER_MIGRATED_KEY, String(Date.now()));
+        if (moved) console.info('[bcc] migrated ' + moved + ' manual period correction(s) into the syncable id space');
+      };
       olds.forEach(function (k) {
         var m = re.exec(k), doc = null;
-        try { doc = JSON.parse(localStorage.getItem(k)); } catch (e) { return; }
-        if (!doc) return;
+        try { doc = JSON.parse(localStorage.getItem(k)); } catch (e) { finish(); return; }
+        if (!doc) { finish(); return; }
         var nid = MPER_PREFIX + m[1] + '-' + m[2];
         doc.id = nid; doc.realmId = doc.realmId || m[1]; doc.period = doc.period || m[2]; doc.source = 'manual';
         /* Adopt only if the legacy row is genuinely NEWER. Testing merely for absence meant
@@ -851,22 +870,38 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
            the pull lands) a months-old never-synced correction was written into the syncable
            id space and then PUSHED over whatever the firm currently has. Stamp updatedAt on
            adoption so the pushed doc does not carry a stale client timestamp either. */
-        var cur = null; try { cur = JSON.parse(localStorage.getItem(nid)); } catch (e) {}
-        /* Adopt ONLY when there is something to compare against and the legacy row is
-           genuinely newer. The `!cur` arm was the bug this check was added for: absence does
-           not mean "nothing exists", it usually means the pull has not applied yet — so a
-           months-old never-synced correction was written into the syncable id space and then
-           pushed over the firm's current figure. When cur is missing we leave BOTH rows
-           alone; the next load, after the pull, can decide properly. */
-        if (!cur) return;
-        if (String(doc.updatedAt || '') > String(cur.updatedAt || '')) {
-          doc.updatedAt = nowIso();
-          localStorage.setItem(nid, JSON.stringify(doc)); moved++;
-        }
-        localStorage.removeItem(k);   // superseded either way; hooked removeItem no-ops here
+        /* `known` means the SERVER has answered for this id — either with a document or with
+           a definite "there is none". Absence on its own still must not be acted on: it
+           usually means the pull has not applied yet, and adopting then pushed a months-old
+           never-synced correction over the firm's current figure. */
+        var decide = function (known) {
+          /* Its own try/catch. The decision is asynchronous now, so it runs OUTSIDE the one
+             wrapping this function — and that wrapper exists precisely so a migration that
+             goes wrong (a quota error on the adopting write, say) cannot take the page down
+             with it. finish() still runs, or the marker would never be stamped and the run
+             would repeat forever. */
+          try {
+            if (!known) { deferred++; return; }   // leave BOTH rows; retry next load
+            var cur = null; try { cur = JSON.parse(localStorage.getItem(nid)); } catch (e) {}
+            if (!cur || String(doc.updatedAt || '') > String(cur.updatedAt || '')) {
+              // Stamp updatedAt on adoption so the pushed doc does not carry a stale client
+              // timestamp — the delta cursor is what decides who wins next time.
+              doc.updatedAt = nowIso();
+              localStorage.setItem(nid, JSON.stringify(doc)); moved++;
+            }
+            localStorage.removeItem(k);   // superseded either way; hooked removeItem no-ops here
+          } catch (e) {
+            deferred++;    // unresolved, so do not let the marker write this row off
+          } finally {
+            finish();
+          }
+        };
+        if (window.bccDocPrimed && window.bccDocPrimed(nid)) { decide(true); return; }
+        // No priming layer (an older bcc-api.js): defer rather than guess. The marker is not
+        // stamped, so this runs again on the next load rather than stranding the row.
+        if (!window.bccPrimeDoc) { decide(false); return; }
+        window.bccPrimeDoc(nid, function () { decide(!!(window.bccDocPrimed && window.bccDocPrimed(nid))); });
       });
-      localStorage.setItem(MPER_MIGRATED_KEY, String(Date.now()));
-      if (moved) console.info('[bcc] migrated ' + moved + ' manual period correction(s) into the syncable id space');
     } catch (e) {}
   }
   function allPeriods() {
@@ -3945,17 +3980,36 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function adoptWip(realm) {
     var d = {};
     try { d = JSON.parse(localStorage.getItem('bcc-wip-' + realm)) || {}; } catch (e) { d = {}; }
-    var jobs = d.jobs || {}, ae = document.activeElement, last = null;
+    var jobs = d.jobs || {}, ae = document.activeElement, last = null, typedBack = false;
     document.querySelectorAll('#wip-body [data-wrow]').forEach(function (row) {
-      var name = row.getAttribute('data-job'), j = jobs[name];
-      if (!j) return;
+      var name = row.getAttribute('data-job');
       row.querySelectorAll('[data-wf]').forEach(function (inp) {
-        if (inp === ae || String(inp.value || '').trim()) return;
-        var v = j[inp.getAttribute('data-wf')];
-        if (v != null && String(v).trim()) { inp.value = v; last = inp; }
+        var f = inp.getAttribute('data-wf');
+        var stored = (jobs[name] || {})[f];
+        var typed = String(inp.value == null ? '' : inp.value);
+        if (typed.trim()) {
+          /* A cell with something in it was TYPED — including anything entered while the
+             prime was still in flight, which saveWip refused and therefore never stored.
+             Without carrying it back the bookkeeper watched a contract value sit on screen
+             that was never saved anywhere, and only a later keystroke in that same cell would
+             have rescued it. The DOM is the newer copy here; merge it onto the primed doc. */
+          if (String(stored == null ? '' : stored) !== typed) {
+            jobs[name] = jobs[name] || {};
+            jobs[name][f] = typed;
+            typedBack = true;
+            last = inp;
+          }
+        } else if (inp !== ae && stored != null && String(stored).trim()) {
+          inp.value = stored; last = inp;      // empty cell takes the primed value
+        }
       });
     });
     _wip = loadWipDoc();
+    if (typedBack) {
+      // Now primed, so this actually writes — and it writes the MERGE, not either copy alone.
+      _wip.jobs = jobs;
+      saveWip();
+    }
     /* recalcAll lives inside renderWipTable, so it cannot be called from here. Fire the
        table's own input handler on one adopted cell instead: it re-reads the document,
        writes back the value it just took FROM that document (a no-op in content) and
@@ -4155,12 +4209,48 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   // Assignee <option>s from the ACTIVE directory; if the task is already assigned to
   // someone now-inactive, keep that person listed (marked) so editing doesn't drop them.
+  /* Who can actually be assigned a task on the client currently open. The picker used to be
+     every active user in the firm: assigning to someone the client is withheld from pushed
+     that client's NAME and the task text to their phone, while the task document itself
+     (bcc-task-<realm>-…) was filtered out of their sync — a disclosure and an assignment that
+     could never be worked, at the same time. Returns null when there is nothing to filter by,
+     in which case the list is unchanged; /api/notify has the final say either way. */
+  function assignableUpns() {
+    var co = null;
+    try { co = (companies || []).filter(function (c) { return c && c.realmId === currentRealm; })[0] || null; } catch (e) { co = null; }
+    if (!co) return null;                                   // company list not loaded — do not filter
+    var allow = (co.allowedUserUpns || []).map(function (u) { return String(u || '').toLowerCase(); });
+    if (!allow.length) return null;                         // "All users": no restriction
+    var set = {}, sentinel = String(ADMIN_ONLY_UPN).toLowerCase();
+    allow.forEach(function (u) { if (u && u !== sentinel) set[u] = true; });
+    /* Admins see every client, so they are always assignable. Their names are readable only
+       from an UNREDACTED admin config — which is what an admin viewing an admin-only client
+       has; for anyone else the roster comes back with other people's roles stripped, so they
+       simply cannot be added here. That errs toward a shorter list, never a longer one. */
+    try {
+      var cfg = JSON.parse(localStorage.getItem('bcc-admin-config-v1') || 'null');
+      (cfg && Array.isArray(cfg.users) ? cfg.users : []).forEach(function (u) {
+        if (!u || u.role !== 'admin' || u.status === 'inactive' || u.status === 'hidden') return;
+        if (u.upn) set[String(u.upn).toLowerCase()] = true;
+        if (u.email) set[String(u.email).toLowerCase()] = true;
+      });
+    } catch (e) {}
+    return set;
+  }
   function assigneeOpts(sel) {
     var people = (window.bccFilterActive ? window.bccFilterActive(window.bccPeopleFull) : (window.bccPeopleFull || []));
     var selLc = (sel || '').toLowerCase(), has = false;
-    var o = people.map(function (p) {
+    var allowed = assignableUpns();
+    var o = people.filter(function (p) {
+      if (!allowed) return true;
+      var u = String(p.upn || p.mail || '').toLowerCase();
+      // The person already on the task stays listed whatever their access — dropping them
+      // would silently reassign the task on the next save.
+      return !u || allowed[u] === true || (selLc && u === selLc);
+    }).map(function (p) {
       var u = p.upn || p.mail || ''; var isSel = selLc && u.toLowerCase() === selLc; if (isSel) has = true;
-      return '<option value="' + esc(u) + '"' + (isSel ? ' selected' : '') + '>' + esc(p.displayName || u) + '</option>';
+      var noAcc = allowed && u && allowed[String(u).toLowerCase()] !== true;
+      return '<option value="' + esc(u) + '"' + (isSel ? ' selected' : '') + '>' + esc(p.displayName || u) + (noAcc ? ' (no access to this client)' : '') + '</option>';
     }).join('');
     if (selLc && !has) o += '<option value="' + esc(sel) + '" selected>' + esc((window.bccDisplayName && window.bccDisplayName(sel)) || sel) + ' (inactive)</option>';
     return '<option value="">— Unassigned —</option>' + o;
@@ -4280,10 +4370,25 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         toUpn: to,
+        // Names the client, so the server checks that the recipient may see it — the title
+        // and body below are that client's name and their work.
+        realmId: t.realmId || currentRealm,
         title: '📋 Task for you — ' + companyName(t.realmId || currentRealm),
         body: t.title + (t.dueDate ? ' · due ' + t.dueDate : ''),
         url: '/bookkeeping.html', tag: 'task-' + t.id
       })
+    }).then(function (r) {
+      if (r.ok) return null;
+      return r.json().catch(function () { return null; });
+    }).then(function (j) {
+      if (!j || j.error !== 'recipient-no-client-access') return;
+      /* Say so. Silently swallowing this left the assigner believing the work had been handed
+         over — and the assignee would never have received the task either, since this
+         client's records do not sync to them. */
+      (window.bccNotify || function () {})(
+        (window.bccDisplayName && window.bccDisplayName(to) || to) + ' doesn’t have access to ' +
+        companyName(t.realmId || currentRealm) + ', so they weren’t notified and this client’s records won’t reach them. ' +
+        'Give them access under Team & access, or assign someone else.', 'warn', 12000);
     }).catch(function () {});
   }
   function addTask() {
@@ -6521,27 +6626,78 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var v = cprNoteGet(jobKey);
     return '<div style="margin:10px 0;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;padding:10px 12px;background:#fcfbf7;">' +
       '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">' +
-      '<strong style="font-size:12.5px;">📌 ' + esc(label) + '</strong>' +
+      '<strong id="cprnote_label" style="font-size:12.5px;">📌 ' + esc(label) + '</strong>' +
       '<span id="cprnote_status" style="font-size:11.5px;color:var(--muted);"></span></div>' +
       '<textarea id="cprnote_text" rows="3" placeholder="Where these reports go, who to send them to, anything the next person needs. Saved for the whole team — never printed on a form." ' +
       'style="width:100%;box-sizing:border-box;margin-top:6px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:6px;padding:8px;font:inherit;font-size:13px;">' + esc(v) + '</textarea></div>';
   }
   var _cprNoteTimer = null;
+  var _cprNoteKeyNow = '';      // the key the box currently on screen is bound to
+  var _cprNoteTouched = false;  // typed into during THIS editor session
+  // The job key the draft implies right now. Empty until the job is named, which is the
+  // client-level note — deliberately, so the box is never a dead end.
+  function cprNoteJobKeyNow() {
+    return (cprDraft && String(cprDraft.projectName || '').trim()) ? cprJobKey(cprDraft) : '';
+  }
+  /* jobKey may be a string (the list view's client-level box, which cannot move) or a
+     FUNCTION (the editor, where naming the job or filling in the contract number moves the
+     key underneath the box). Resolve it per keystroke rather than freezing it at paint. */
   function cprNotesWire(jobKey) {
     var el = document.getElementById('cprnote_text'); if (!el) return;
     var st = document.getElementById('cprnote_status');
+    var live = (typeof jobKey === 'function') ? jobKey : null;
+    _cprNoteKeyNow = live ? live() : (jobKey || '');
+    _cprNoteTouched = false;
     el.addEventListener('input', function () {
+      _cprNoteTouched = true;
       if (st) st.textContent = 'Saving…';
       clearTimeout(_cprNoteTimer);
       var realmAt = currentRealm, val = el.value;
+      // Bound to the job as it stands at the keystroke, not as it stood at paint time.
+      var keyAt = live ? live() : _cprNoteKeyNow;
+      _cprNoteKeyNow = keyAt;
       _cprNoteTimer = setTimeout(function () {
         // Realm-race guard: the debounce outlives a client switch, and this note belongs to
         // the client that was open when it was typed.
         if (currentRealm !== realmAt) return;
-        var ok = cprNoteSet(jobKey, val, realmAt);
+        var ok = cprNoteSet(keyAt, val, realmAt);
         if (st) st.textContent = ok ? 'Saved' : '';
       }, 500);
     });
+  }
+  /* Called when the job identity itself changes (the project name or contract number is
+     committed). Wired to `change`, never `input`: rekeying per keystroke would file a note
+     under every prefix of the name being typed. */
+  function cprNoteRekey() {
+    var el = document.getElementById('cprnote_text'); if (!el) return;
+    var nk = cprNoteJobKeyNow();
+    if (nk === _cprNoteKeyNow) return;
+    var st = document.getElementById('cprnote_status');
+    var txt = el.value, oldKey = _cprNoteKeyNow;
+    if (_cprNoteTimer) { clearTimeout(_cprNoteTimer); _cprNoteTimer = null; }
+    // Flush what was typed to the key it was typed under — it was written about that job.
+    if (_cprNoteTouched) cprNoteSet(oldKey, txt, currentRealm);
+    var existing = cprNoteGet(nk);
+    /* Carry the text over when the newly-named job has no note of its own. Typing the note
+       first and naming the job second is the ordinary order of work here, and leaving the box
+       to blank itself would read as the note having been thrown away. Never over an existing
+       note: that one belongs to the job being switched to. */
+    if (_cprNoteTouched && String(txt || '').trim() && !String(existing || '').trim()) {
+      cprNoteSet(nk, txt, currentRealm);
+      existing = txt;
+    }
+    _cprNoteKeyNow = nk;
+    // Bound to a new key, and nothing has been typed against it yet. Without this the next
+    // rekey would treat the note just loaded as the user's own typing and copy it onward.
+    _cprNoteTouched = false;
+    if (el.value !== (existing || '')) el.value = existing || '';
+    var lab = document.getElementById('cprnote_label');
+    if (lab) {
+      lab.textContent = '📌 ' + (nk
+        ? ('Notes for ' + ((cprDraft && cprDraft.projectName) || 'this job'))
+        : ('Notes for ' + companyName(currentRealm) + '’s certified payroll — name the job above to keep notes per job'));
+    }
+    if (st) st.textContent = '';
   }
   function cprNew() {
     var info = {}; try { info = JSON.parse(localStorage.getItem('bcc-client-info-' + currentRealm)) || {}; } catch (e) {}
@@ -6746,7 +6902,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
 
     /* The note that applies HERE: this job's, once the job has a name; the client's until
        then, so the box is never a dead end that quietly files notes under nothing. */
-    var _noteJob = String(cprDraft.projectName || '').trim() ? cprJobKey(cprDraft) : '';
+    var _noteJob = cprNoteJobKeyNow();
     var notesHtml = cprNotesBox(_noteJob, _noteJob
       ? ('Notes for ' + (cprDraft.projectName || 'this job'))
       : ('Notes for ' + companyName(currentRealm) + '’s certified payroll — name the job above to keep notes per job'));
@@ -6754,7 +6910,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px;"><button class="btn btn-ghost" id="cpr_back2" type="button">← Back</button><button class="btn btn-primary" id="cpr_save2" type="button">Save</button></div>';
 
     // wiring
-    cprNotesWire(_noteJob);
+    // The KEY, not a snapshot of it: see cprNotesWire. The editor is painted once and the
+    // job it belongs to can still be named or renumbered afterwards.
+    cprNotesWire(cprNoteJobKeyNow);
     body.querySelectorAll('[data-cf]').forEach(function (el) {
       el.addEventListener('input', cprCollectField);
       if (el.type === 'checkbox' || el.tagName === 'SELECT') el.addEventListener('change', cprCollectField);
@@ -6764,6 +6922,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // report for that job; type an employee name → their class/labor code/rates
     // fill from the last report they were on. Only fills BLANK fields; review before saving.
     var pn = body.querySelector('[data-cf="projectName"]'); if (pn) pn.addEventListener('change', cprJobAutofill);
+    /* Move the note box to the job's key once the job identity is committed. Both fields:
+       cprJobKey is projectName + contractNumber, and cprJobAutofill can fill the contract
+       number itself, so this runs after it. */
+    ['projectName', 'contractNumber'].forEach(function (f) {
+      var fx = body.querySelector('[data-cf="' + f + '"]');
+      if (fx) fx.addEventListener('change', cprNoteRekey);
+    });
     body.querySelectorAll('[data-emp][data-f="name"]').forEach(function (el) { el.addEventListener('change', function () { cprEmpAutofill(+el.getAttribute('data-emp')); }); });
     var addb = document.getElementById('cpr_addemp'); if (addb) addb.onclick = function () { cprDraft.employees.push(blankEmp()); renderPayroll(); };
     document.getElementById('cpr_back').onclick = document.getElementById('cpr_back2').onclick = function () { cprEditingId = null; cprDraft = null; renderPayroll(); };
@@ -7166,6 +7331,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function cprApplyExtract(data) {
     data = data || {};
     ['weekStart', 'payPeriodEnd', 'projectName'].forEach(function (f) { if (!String(cprDraft[f] || '').trim() && data[f]) cprDraft[f] = String(data[f]).trim(); });
+    /* Naming the job here has to re-scope the payroll number exactly as typing it into the
+       field does. This is the OTHER way a job gets named, and it was not covered: the number
+       cprNew assigned is the client-wide maximum + 1, cprJobAutofill (wired only to the
+       project-name `change` event) never ran on this path, and cprSave then sets
+       autoNo = false — freezing a client-wide number onto a job's report permanently, where
+       no later edit can renumber it. Guarded on autoNo inside cprJobAutofill, so a number
+       the bookkeeper typed themselves is still theirs. */
+    if (String(cprDraft.projectName || '').trim()) cprJobAutofill();
     // Read the shift AFTER the weekStart fill above, and never pass cprEmpFromExtract
     // straight to .map - map would hand it the array INDEX as the rotation.
     var wsD = cprDraft.weekStart ? new Date(cprDraft.weekStart + 'T00:00:00') : null;
@@ -7345,10 +7518,34 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       return (stH > 0 && !cnum(e.stRate)) || (otH > 0 && !cnum(e.otRate));
     }).map(function (e) { return (e.name || '(unnamed)'); });
   }
+  /* The mirror case, and it was silent. An employee carried onto this payroll with pay-period
+     gross and deductions but NO daily hours on this job computes grossJob = 0 while
+     grossPeriod and net stay real — so the form prints "Gross amount earned this job $0.00"
+     and blank hours beside a real gross, real deductions and real net wages, and
+     cprEmpIsBlank does not drop the row (grossThisPeriod is set). On a form filed with a
+     public agency that reads as an employee paid for no work. Usually it means the hours were
+     never entered, or the person belongs on a different job's payroll. */
+  function cprZeroHourRows(r) {
+    return (r.employees || []).filter(function (e) {
+      if (cprEmpIsBlank(e)) return false;
+      if (sumArr(e.st) > 0 || sumArr(e.ot) > 0) return false;
+      var ded = cnum(e.dedFica) + cnum(e.dedFed) + cnum(e.dedState) + cnum(e.dedOther1) + cnum(e.dedOther2);
+      return cnum(e.grossThisPeriod) > 0 || ded > 0;
+    }).map(function (e) { return (e.name || '(unnamed)'); });
+  }
   function cprConfirmRates(r, what) {
-    var miss = cprMissingRates(r);
-    if (!miss.length) return true;
-    return confirm(miss.length + ' employee' + (miss.length === 1 ? ' has' : 's have') + ' hours on this job but no pay rate, so they will print at $0.00:\n\n' + miss.slice(0, 8).join(', ') + (miss.length > 8 ? ', …' : '') + '\n\n' + what + ' anyway?');
+    var miss = cprMissingRates(r), zero = cprZeroHourRows(r);
+    if (!miss.length && !zero.length) return true;
+    var lines = [];
+    if (miss.length) {
+      lines.push(miss.length + ' employee' + (miss.length === 1 ? ' has' : 's have') + ' hours on this job but no pay rate, so they will print at $0.00:\n' +
+        miss.slice(0, 8).join(', ') + (miss.length > 8 ? ', …' : ''));
+    }
+    if (zero.length) {
+      lines.push(zero.length + ' employee' + (zero.length === 1 ? ' has' : 's have') + ' pay for the period but no hours on this job, so “Gross amount earned this job” will print $0.00 beside their real wages:\n' +
+        zero.slice(0, 8).join(', ') + (zero.length > 8 ? ', …' : ''));
+    }
+    return confirm(lines.join('\n\n') + '\n\n' + what + ' anyway?');
   }
   function cprSaveToFiles(r, silent, ratesConfirmed) {
     var realm = currentRealm; if (!realm) return;
@@ -7358,7 +7555,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        name of a form filed with a public agency. Now a silent save with missing rates files
        nothing at all, and the three actions ask ONCE up front and pass ratesConfirmed. */
     if (!ratesConfirmed) {
-      if (silent) { if (cprMissingRates(r).length) return; }
+      if (silent) { if (cprMissingRates(r).length || cprZeroHourRows(r).length) return; }
       else if (!cprConfirmRates(r, 'File it to the client')) return;
     }
     /* Filed as a REAL PDF, not .html. Renee: opening a certified payroll from client files
@@ -7906,17 +8103,52 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       coAdd: coAdd, coDed: coDed, netCO: netCO, line1: line1, line3: line3, line4: line4, ret5a: ret5a, ret5b: ret5b, line5: line5, line6: line6, line7: line7, line8: line8, line9: line9
     };
   }
+  /* AIA G702 "APPLICATION NO." is per CONTRACT, not per client. Numbering across every
+     project a client has — what this did — makes a second, concurrent project's applications
+     read 1, 4, 7 on a form filed with the owner and architect, which reads as missing
+     applications and holds up payment. Identical rule (and identical past defect) as
+     certified payroll's per-job numbering above; see cprNextNo.
+     The key is project name + project no.: two contracts for the same owner are told apart by
+     the project number, and a project with no number is still its own project by name. */
+  function payappJobKey(r) {
+    return String((r && r.projectName) || '').trim().toLowerCase() + '|' +
+           String((r && r.projectNo) || '').trim().toLowerCase();
+  }
+  function payappNextNo(sample, skipId) {
+    // sample null = the CLIENT-wide next number, used only until a project is named.
+    var jk = (sample && String(sample.projectName || '').trim()) ? payappJobKey(sample) : null, max = 0;
+    allPayapp().forEach(function (r) {
+      if (skipId && r.id === skipId) return;
+      if (jk && payappJobKey(r) !== jk) return;
+      max = Math.max(max, cnum(r.appNo));
+    });
+    return max + 1;
+  }
+  /* Re-scope the number once the project identity is committed — the same shape as
+     cprJobAutofill. Only while the number is still the one we assigned (autoNo); once the
+     bookkeeper types their own, it is theirs. */
+  function payappRenumber() {
+    if (!payappDraft || !payappDraft.autoNo) return;
+    var no = String(payappNextNo(payappDraft, payappDraft.id));
+    if (no === String(payappDraft.appNo || '')) return;
+    payappDraft.appNo = no;
+    var inp = document.querySelector('[data-pf="appNo"]'); if (inp) inp.value = no;
+  }
   function payappNew(carryFromId) {
     var info = {}; try { info = JSON.parse(localStorage.getItem('bcc-client-info-' + currentRealm)) || {}; } catch (e) {}
     var prior = null;
     if (carryFromId) { try { prior = JSON.parse(localStorage.getItem(carryFromId)); } catch (e) {} }
-    var reports = allPayapp(); var maxNo = 0; reports.forEach(function (r) { maxNo = Math.max(maxNo, cnum(r.appNo)); });
+    /* On the "Next app →" continuation path the project is already known, so the number is
+       scoped to THAT contract from the start. On a blank new application it is the client-wide
+       next number, marked autoNo so payappRenumber can re-scope it the moment the project is
+       named — a fresh application would otherwise open at #1 for every project. */
+    var startNo = payappNextNo(prior, null);
     var d = {
       id: payappPrefix() + uid2(), tenantId: 'blue-collar-coach', docType: 'payapp', realmId: currentRealm,
       contractorName: info.legalName || companyName(currentRealm) || '', contractorAddress: info.address || '',
       ownerName: '', ownerAddress: '', architectName: '', architectAddress: '',
       projectName: '', projectAddress: '', contractFor: '',
-      appNo: String(maxNo + 1), periodTo: '', appDate: bizToday(), projectNo: '', contractDate: '',
+      appNo: String(startNo), autoNo: !prior, periodTo: '', appDate: bizToday(), projectNo: '', contractDate: '',
       contractSum: '', retPctWork: '5', retPctStored: '0', lessPrevious: '',
       changeOrderRows: [], lines: [blankPayLine()],
       socName: '', socTitle: '', socDate: bizToday(), isFinal: false,
@@ -8046,7 +8278,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // wiring
     body.querySelectorAll('[data-pf]').forEach(function (el) {
       var ev = (el.type === 'checkbox') ? 'change' : 'input';
-      el.addEventListener(ev, function () { r[el.getAttribute('data-pf')] = (el.type === 'checkbox') ? el.checked : el.value; payappRecalc(); });
+      el.addEventListener(ev, function () {
+        var f = el.getAttribute('data-pf');
+        r[f] = (el.type === 'checkbox') ? el.checked : el.value;
+        // Typed by hand — never renumber it again. Same rule as certified payroll.
+        if (f === 'appNo') r.autoNo = false;
+        payappRecalc();
+      });
+      /* Naming the project (or its number) is what makes per-contract numbering possible, so
+         re-scope then. On `change`, not `input`: renumbering per keystroke would compare
+         against every prefix of the name being typed. */
+      if (el.getAttribute('data-pf') === 'projectName' || el.getAttribute('data-pf') === 'projectNo') {
+        el.addEventListener('change', payappRenumber);
+      }
     });
     body.querySelectorAll('[data-co]').forEach(function (el) { el.addEventListener('input', function () { var i = +el.getAttribute('data-co'); r.changeOrderRows[i][el.getAttribute('data-cof')] = el.value; payappRecalc(); }); });
     body.querySelectorAll('[data-l]').forEach(function (el) { el.addEventListener('input', function () { var i = +el.getAttribute('data-l'); r.lines[i][el.getAttribute('data-lf')] = el.value; payappRecalc(); }); });
@@ -8105,6 +8349,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function payappSave(silent) {
     if (bkRefuseIfReadOnly()) return;
     if (!payappDraft) return;
+    /* Once this application names its project it has a contract-scoped number, and saving is
+       the point at which that number becomes a fact — it goes onto a G702 filed with the
+       owner and architect. Freeze it, exactly as cprSave does for a certified payroll, so
+       reopening the application later and touching the project name cannot move it. */
+    if (String(payappDraft.projectName || '').trim()) payappDraft.autoNo = false;
     payappDraft.updatedAt = nowIso(); payappDraft.updatedBy = myUpn();
     localStorage.setItem(payappDraft.id, JSON.stringify(payappDraft));
     if (window.bccAudit) window.bccAudit('payapp-save', { key: payappDraft.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, appNo: payappDraft.appNo } });
@@ -8425,57 +8674,135 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .catch(done);
   }
   function closeGoReport(t) { setSection('reports'); setTimeout(function () { loadQboReport(t); }, 60); }
-  function closeLoadHelpers(period) {
+  /* ---- Month-end helper lines (uncategorized count + reconcile balances) ----
+     Cached per client+period. renderClose() runs on every checkbox tick, and it used to
+     re-fire both requests each time: the for-review scan pages Purchase, Bill and Deposit at
+     up to six pages of a thousand rows each — up to eighteen QuickBooks queries — and the
+     reconcile call reset both panels to "Loading balances…", throwing away the statement
+     balances on screen until it came back. Working down a checklist therefore got slower and
+     blanker with every step. The answers do not change while ticking boxes, so they are
+     fetched once per client+period and repainted from the cache, with an explicit refresh
+     link for when they should be re-asked. */
+  /* atCat / atRecon are SEPARATE. One shared stamp meant the uncategorized scan succeeding
+     marked the reconcile half fresh too: a reconcile failure next to a successful scan then
+     sat there for the whole TTL with nothing to retry it, since reconFailed paints no
+     re-check link of its own. Each half ages on its own answer. */
+  var _closeHelp = {};                        // 'realm|period' -> { atCat, atRecon, cat, recon, busyCat, busyRecon }
+  var CLOSE_HELP_TTL_MS = 5 * 60 * 1000;      // a tick-through of the checklist stays well inside this
+  function closeHelpFor(period) {
+    var k = currentRealm + '|' + period;
+    return _closeHelp[k] || (_closeHelp[k] = { atCat: 0, atRecon: 0 });
+  }
+  /* Elements are looked up at PAINT time, never captured. renderClose() replaces this markup
+     while a request is still in flight, and a captured reference paints into a detached node
+     — the visible line would then sit on "Checking…" forever. */
+  function closeHelpEl(which) { return document.querySelector('.close-help[data-help="' + which + '"]'); }
+  function closeHelpReload(period) {
+    return ' <a href="#" data-helpreload="1" style="font-size:11.5px;">re-check</a>';
+  }
+  function closeWireReload(el, period) {
+    var a = el && el.querySelector('[data-helpreload]');
+    if (a) a.onclick = function (e) { e.preventDefault(); closeLoadHelpers(period, true); };
+  }
+  function closePaintCat(period) {
+    var catEl = closeHelpEl('cat'); if (!catEl) return;
+    var res = closeHelpFor(period).cat;
+    if (!res) { catEl.textContent = 'Checking uncategorized…'; return; }
+    if (res.err) {
+      // Say we could not check. Blanking the line (what this used to do) reads as "fine".
+      catEl.innerHTML = '<span style="color:var(--burgundy);">Couldn’t check uncategorized transactions — ' + esc(res.err) + '. Check it in QuickBooks before closing.</span>' + closeHelpReload(period);
+      closeWireReload(catEl, period);
+      return;
+    }
+    var n = res.n, capped = res.capped;
+    /* The scan is BOUNDED (6 pages per entity, 24 months) and says so with data.capped —
+       which the report view already prints. Ignoring it here meant a busy client whose scan
+       ran out of pages printed the green "nothing uncategorized" on the month-end checklist,
+       which is precisely the assurance this line is read for. */
+    catEl.innerHTML = (n
+      ? ('<strong style="color:#c0392b;">' + n + ' transaction' + (n === 1 ? '' : 's') + '</strong> to categorize — open <a href="#" data-goreview="1">🔎 For review</a>.' + (capped ? ' <span style="color:#8a6d2f;">Large history — only the most recent transactions were scanned, so there may be more.</span>' : ''))
+      : (capped
+          ? '<span style="color:#8a6d2f;">Nothing uncategorized in the most recent transactions — this client has too much history to scan in full, so check further back in QuickBooks before closing.</span>'
+          : '✓ nothing sitting in an uncategorized account.')) + closeHelpReload(period);
+    var g = catEl.querySelector('[data-goreview]'); if (g) g.onclick = function (e) { e.preventDefault(); closeGoReport('for-review'); };
+    closeWireReload(catEl, period);
+  }
+  function closePaintRecon(period) {
+    var bankEl = closeHelpEl('recon-bank'), ccEl = closeHelpEl('recon-cc');
+    if (!bankEl && !ccEl) return;
+    var res = closeHelpFor(period).recon;
+    if (!res) {
+      if (bankEl) bankEl.textContent = 'Loading balances…';
+      if (ccEl) ccEl.textContent = 'Loading balances…';
+      return;
+    }
+    /* Blanking the line on failure (what this did) leaves the reconcile step looking like
+       every other completed one — an unreadable QuickBooks read as a clean reconciliation on
+       the month-end checklist. Say what happened instead. */
+    if (res.err) { reconFailed(bankEl, ccEl, res.err); return; }
+    var accounts = res.accounts || [];
+    var banks = accounts.filter(function (a) { return a.type === 'Bank'; });
+    var ccs = accounts.filter(function (a) { return a.type === 'Credit Card'; });
+    if (bankEl) { bankEl.innerHTML = reconPanel(banks, period); wireRecon(bankEl); }
+    if (ccEl) { ccEl.innerHTML = reconPanel(ccs, period); wireRecon(ccEl); }
+  }
+  function closeLoadHelpers(period, force) {
     var realmAt = currentRealm; // realm-race guard — both fetches below can take a few seconds
-    var catEl = document.querySelector('.close-help[data-help="cat"]');
-    if (catEl) {
-      catEl.textContent = 'Checking uncategorized…';
+    var st = closeHelpFor(period);
+    var nowT = Date.now();
+    var staleCat = force || !st.atCat || (nowT - st.atCat) > CLOSE_HELP_TTL_MS;
+    var staleRecon = force || !st.atRecon || (nowT - st.atRecon) > CLOSE_HELP_TTL_MS;
+    if (force) { st.cat = null; st.recon = null; }
+
+    // Static helper lines — no request, so they are wired on every repaint.
+    var ar = closeHelpEl('ar'); if (ar) ar.innerHTML = 'Open the <a href="#" data-gorpt="ar-aging">A/R Aging</a> report.';
+    var ap = closeHelpEl('ap'); if (ap) ap.innerHTML = 'Open the <a href="#" data-gorpt="ap-aging">A/P Aging</a> report.';
+    document.querySelectorAll('.close-help [data-gorpt]').forEach(function (a) { a.onclick = function (e) { e.preventDefault(); closeGoReport(a.getAttribute('data-gorpt')); }; });
+
+    // Paint whatever is already known first, so a tick repaint is instant.
+    closePaintCat(period);
+    closePaintRecon(period);
+
+    if (closeHelpEl('cat') && staleCat && !st.busyCat) {
+      st.busyCat = true;
       fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/report?type=for-review', { credentials: 'include' })
         /* Status-checked. The server's failure bodies are valid JSON with no `data`, so an
            unread response produced n = 0 and the checklist printed the green
            "✓ nothing sitting in an uncategorized account" — telling a bookkeeper closing the
-           month that QuickBooks was clean when we had simply failed to ask it. Same shape the
-           reconcile helper below already uses. */
+           month that QuickBooks was clean when we had simply failed to ask it. */
         .then(function (r) { return r.json().then(function (j) { return r.ok && j && j.ok !== false ? j : Promise.reject(new Error((j && j.error) || ('HTTP ' + r.status))); }); })
         .then(function (j) {
+          st.busyCat = false;
           if (currentRealm !== realmAt) return;
-          var n = ((j && j.data && j.data.items) || []).length;
-          /* The scan is BOUNDED (6 pages per entity, 24 months) and says so with data.capped
-             — which the report view already prints. Ignoring it here meant a busy client
-             whose scan ran out of pages printed the green "nothing uncategorized" on the
-             month-end checklist, which is precisely the assurance this line is read for. */
-          var capped = !!(j && j.data && j.data.capped);
-          catEl.innerHTML = n
-            ? ('<strong style="color:#c0392b;">' + n + ' transaction' + (n === 1 ? '' : 's') + '</strong> to categorize — open <a href="#" data-goreview="1">🔎 For review</a>.' + (capped ? ' <span style="color:#8a6d2f;">Large history — only the most recent transactions were scanned, so there may be more.</span>' : ''))
-            : (capped
-                ? '<span style="color:#8a6d2f;">Nothing uncategorized in the most recent transactions — this client has too much history to scan in full, so check further back in QuickBooks before closing.</span>'
-                : '✓ nothing sitting in an uncategorized account.');
-          var g = catEl.querySelector('[data-goreview]'); if (g) g.onclick = function (e) { e.preventDefault(); closeGoReport('for-review'); };
+          st.cat = { n: ((j && j.data && j.data.items) || []).length, capped: !!(j && j.data && j.data.capped) };
+          st.atCat = Date.now();
+          closePaintCat(period);
         }).catch(function (e) {
-          // Say we could not check. Blanking the line (what this used to do) reads as "fine".
-          if (currentRealm === realmAt) catEl.innerHTML = '<span style="color:var(--burgundy);">Couldn’t check uncategorized transactions — ' + esc(e && e.message ? e.message : 'QuickBooks did not answer') + '. Check it in QuickBooks before closing.</span>';
+          st.busyCat = false;
+          if (currentRealm !== realmAt) return;
+          /* A failure is NOT cached as an answer: st.atCat is left alone, so the next repaint
+             asks again rather than showing the failure for the rest of the TTL. */
+          st.cat = { err: (e && e.message) ? e.message : 'QuickBooks did not answer' };
+          closePaintCat(period);
         });
     }
-    var ar = document.querySelector('.close-help[data-help="ar"]'); if (ar) ar.innerHTML = 'Open the <a href="#" data-gorpt="ar-aging">A/R Aging</a> report.';
-    var ap = document.querySelector('.close-help[data-help="ap"]'); if (ap) ap.innerHTML = 'Open the <a href="#" data-gorpt="ap-aging">A/P Aging</a> report.';
-    document.querySelectorAll('.close-help [data-gorpt]').forEach(function (a) { a.onclick = function (e) { e.preventDefault(); closeGoReport(a.getAttribute('data-gorpt')); }; });
-    var bankEl = document.querySelector('.close-help[data-help="recon-bank"]');
-    var ccEl = document.querySelector('.close-help[data-help="recon-cc"]');
-    if (bankEl) bankEl.textContent = 'Loading balances…'; if (ccEl) ccEl.textContent = 'Loading balances…';
-    if (bankEl || ccEl) {
+
+    if ((closeHelpEl('recon-bank') || closeHelpEl('recon-cc')) && staleRecon && !st.busyRecon) {
+      st.busyRecon = true;
       fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/reconcile-accounts?asOf=' + periodEndDate(period), { credentials: 'include' })
         .then(function (r) { return r.json(); }).then(function (j) {
+          st.busyRecon = false;
           if (currentRealm !== realmAt) return;
-          /* Blanking the line on failure (what this did) leaves the reconcile step looking
-             like every other completed one — an unreadable QuickBooks read as a clean
-             reconciliation on the month-end checklist. Say what happened instead, the same
-             way the categorize helper above does. */
-          if (!j || !j.ok) { reconFailed(bankEl, ccEl, (j && j.error) || 'QuickBooks did not answer'); return; }
-          var banks = j.accounts.filter(function (a) { return a.type === 'Bank'; });
-          var ccs = j.accounts.filter(function (a) { return a.type === 'Credit Card'; });
-          if (bankEl) { bankEl.innerHTML = reconPanel(banks, period); wireRecon(bankEl); }
-          if (ccEl) { ccEl.innerHTML = reconPanel(ccs, period); wireRecon(ccEl); }
-        }).catch(function (e) { if (currentRealm !== realmAt) return; reconFailed(bankEl, ccEl, (e && e.message) || 'QuickBooks did not answer'); });
+          if (!j || !j.ok) { st.recon = { err: (j && j.error) || 'QuickBooks did not answer' }; closePaintRecon(period); return; }
+          st.recon = { accounts: j.accounts || [] };
+          st.atRecon = Date.now();
+          closePaintRecon(period);
+        }).catch(function (e) {
+          st.busyRecon = false;
+          if (currentRealm !== realmAt) return;
+          st.recon = { err: (e && e.message) || 'QuickBooks did not answer' };
+          closePaintRecon(period);
+        });
     }
   }
   function reconFailed(bankEl, ccEl, why) {
@@ -8644,9 +8971,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     out.innerHTML = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:760px;"><thead><tr style="background:#f7f1e3;">' +
       ['Job', 'Contract', 'Est. cost', 'Cost to date', '% comp', 'Earned', 'Billed', 'Over/(under)'].map(function (h, i) { return '<th style="text-align:' + (i === 0 ? 'left' : 'right') + ';padding:5px;font-size:10.5px;text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid #c5a55a;">' + h + '</th>'; }).join('') +
       '</tr></thead><tbody>' + rows + '</tbody><tfoot id="wip_totals"></tfoot></table></div>' +
+      '<div id="wip_totals_note" style="font-size:11px;color:#8a6d2f;margin-top:8px;"></div>' +
       '<div style="font-size:11px;color:var(--muted);margin-top:8px;">% complete is cost-based (cost ÷ est. cost) and needs an estimated cost; without one, % complete, earned and over/(under) show “—” rather than a guess. A figure over 100% (⚠) means costs have exceeded the estimate. Earned = % × contract, capped at 100% — earned revenue can never exceed the contract. Over/(under) = billed − earned: positive is <strong>overbilled</strong>, negative is <strong>underbilled</strong>.</div>';
     function recalcAll() {
-      var tot = { contract: 0, est: 0, cost: 0, earned: 0, billed: 0, over: 0 };
+      /* setupBilled / setupJobs: the part of Billed that belongs to jobs which HAVE both a
+         contract and an estimated cost. Earned and Over/(under) can only be computed for
+         those (wipCalc returns null otherwise), so adding every job's billing into the same
+         total row made the footer fail the identity printed directly under it —
+         "Over/(under) = billed − earned" — by exactly the billing on the jobs that show "—".
+         Both are kept: Billed still totals every job (it is a real figure the bookkeeper
+         needs), and the footnote says how much of it the other two columns exclude. */
+      var tot = { contract: 0, est: 0, cost: 0, earned: 0, billed: 0, over: 0, setupBilled: 0, setupJobs: 0, openJobs: 0 };
       out.querySelectorAll('[data-wrow]').forEach(function (row) {
         var name = row.getAttribute('data-job');
         var c = wipCalc(jobs[+row.getAttribute('data-wrow')], _wip.jobs[name] || {});
@@ -8657,9 +8992,23 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         row.querySelector('.wc-earned').textContent = (c.earned == null) ? '—' : m(c.earned);
         row.querySelector('.wc-over').innerHTML = (c.over == null) ? '—' : (c.over === 0 ? m(0) : '<span style="color:' + (c.over > 0 ? '#b7791f' : '#c0392b') + ';">' + m(c.over) + '</span>');
         tot.contract += c.contract; tot.est += c.est; tot.cost += c.cost; tot.billed += c.billed;
-        if (c.earned != null) tot.earned += c.earned; if (c.over != null) tot.over += c.over;
+        tot.openJobs++;
+        if (c.earned != null) { tot.earned += c.earned; tot.setupBilled += c.billed; tot.setupJobs++; }
+        if (c.over != null) tot.over += c.over;
       });
       var tf = document.getElementById('wip_totals');
+      /* Stated, not hidden. The un-set-up jobs show "—" in Earned and Over/(under) while
+         still contributing their full amount to Billed, so without this line the difference
+         is invisible and the total row simply looks wrong. */
+      var gapN = tot.openJobs - tot.setupJobs, gapAmt = tot.billed - tot.setupBilled;
+      var note = document.getElementById('wip_totals_note');
+      if (note) {
+        note.innerHTML = gapN
+          ? ('Total Billed covers every job. Total Earned and Total Over/(under) cover only the ' + tot.setupJobs + ' job' + (tot.setupJobs === 1 ? '' : 's') +
+             ' with both a contract and an estimated cost — ' + m(gapAmt) + ' billed on ' + gapN + ' job' + (gapN === 1 ? '' : 's') +
+             ' is excluded from those two columns. Fill in the contract and estimate to bring ' + (gapN === 1 ? 'it' : 'them') + ' in.')
+          : '';
+      }
       if (tf) tf.innerHTML = '<tr style="font-weight:700;border-top:2px solid #c5a55a;"><td style="padding:5px;">Total</td><td class="num" style="text-align:right;padding:5px;">' + m(tot.contract) + '</td><td class="num" style="text-align:right;padding:5px;">' + m(tot.est) + '</td><td class="num" style="text-align:right;padding:5px;">' + m(tot.cost) + '</td><td></td><td class="num" style="text-align:right;padding:5px;">' + m(tot.earned) + '</td><td class="num" style="text-align:right;padding:5px;">' + m(tot.billed) + '</td><td class="num" style="text-align:right;padding:5px;color:' + (tot.over >= 0 ? '#b7791f' : '#c0392b') + ';">' + m(tot.over) + '</td></tr>';
     }
     out.querySelectorAll('[data-wrow]').forEach(function (row) {
