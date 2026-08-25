@@ -363,8 +363,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        from a device that never received them re-creates the whole shared calendar — one new
        doc per event, pushed firm-wide. Gate on the boot pull, not on the list being empty: an
        empty calendar is a perfectly good reason to import. */
-    if (window._bccBootPullFailed) {
-      (window.bccNotify || alert)('Can’t import right now: this device could not load the existing calendar, and importing would duplicate every session already on it. Reload once you are back online.', 'warn', 10000);
+    /* Require the POSITIVE fact, not the absence of the negative one. _bccBootPullFailed is
+       undefined while the pull is still in flight — and this button is live from parse time —
+       so a click in the first seconds passed the guard with an empty local calendar and
+       re-created the firm's entire shared schedule, one new document per event. */
+    if (window._bccBootPullFailed || window._bccBootPullOk !== true) {
+      (window.bccNotify || alert)('Can’t import yet: this device hasn’t finished loading the existing calendar, and importing now would duplicate every session already on it. Try again in a moment.', 'warn', 10000);
       return;
     }
     if (!confirm('Import your Outlook calendar into the shared Sessions calendar?\n\nImported events become visible to everyone at the firm. Appointments you marked Private or Confidential are skipped, and event descriptions are not imported.')) return;
@@ -420,6 +424,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             existing.endAt    = ev.endAt;
             existing.location = ev.location;
             existing.allDay   = !!ev.allDay;
+            if (ev.msGraphOwner) existing.msGraphOwner = ev.msGraphOwner;
             existing.source   = 'msgraph';
             saveSession(existing);
             updated++;
@@ -433,6 +438,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
               prepNotes: ev.prepNotes || '',
               status: 'scheduled',
               msGraphId: ev.msGraphId,
+              msGraphOwner: ev.msGraphOwner || null,
               source: 'msgraph'
             });
             created++;
@@ -527,7 +533,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     try { handoffDay = sessionStorage.getItem('bcc-new-session-day') || ''; sessionStorage.removeItem('bcc-new-session-day'); } catch (e) {}
     // The ?id= deep link is handled by trySessionDeepLink below, which retries until the
     // session has actually synced. Its open-modal guard means this handoff still wins.
-    if (handoffDay) { openModal(null, handoffDay); return; }
+    if (handoffDay) {
+      /* Move the grid to the week that day is IN, before opening the form. The modal was
+         filled with the right date but the week behind it was still whatever week today
+         falls in — so saving a session for, say, three weeks out dropped it into a week the
+         user was not looking at, and the grid closed on an unchanged page. That reads as
+         "it didn't save", and the session is then created a second time.
+         Bare "YYYY-MM-DD" is parsed by JS as UTC midnight — the previous day anywhere in the
+         US — so anchor it at local midday exactly as openModal does below. */
+      var _hd = new Date(/^\d{4}-\d{2}-\d{2}$/.test(handoffDay) ? handoffDay + 'T12:00:00' : handoffDay);
+      if (!isNaN(_hd)) { currentWeekStart = startOfWeek(_hd); renderWeek(); }
+      openModal(null, handoffDay);
+      return;
+    }
   })();
   /* Latched retry, the same idiom jobs.html and events.html use. Evaluating ?id= once at
      parse time meant a Scheduler deep link opened nothing whenever the session had not been
@@ -561,6 +579,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (!isGraphConnected()) return Promise.resolve(null);
     var payload = {
       graphEventId: s.msGraphId || null,
+      // Which calendar holds the copy. Sessions are firm-wide, so the person saving an edit
+      // is often not the person whose Outlook the event is in; without this the server
+      // patched the EDITOR's mailbox with someone else's event id and the change never
+      // reached Outlook.
+      graphOwner: s.msGraphOwner || null,
       subject: s.title,
       start: s.startAt,
       end: s.endAt,
@@ -605,8 +628,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         // to add here.
         var cur = getSession(s.id);
         if (!cur) return;                              // deleted while in flight
-        if (cur.msGraphId === resp.graphEventId) return; // already recorded
+        var newOwner = resp.graphOwner || cur.msGraphOwner || null;
+        // Compare the OWNER too: an older session already carries the right id but no owner,
+        // and returning early here would throw away the one thing this round just learned.
+        if (cur.msGraphId === resp.graphEventId && cur.msGraphOwner === newOwner) return;
         cur.msGraphId = resp.graphEventId;
+        if (newOwner) cur.msGraphOwner = newOwner;
         cur.source = 'msgraph';
         saveSession(cur);
         renderWeek();
@@ -639,7 +666,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     fetch('/api/integrations/msgraph/delete-event', {
       method: 'POST', credentials: 'include',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ graphEventId: s.msGraphId })
+      body: JSON.stringify({ graphEventId: s.msGraphId, graphOwner: s.msGraphOwner || null })
     })
       .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
       .then(function (j) {

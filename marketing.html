@@ -320,7 +320,25 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // whose id names another doc would let "Delete" remove that doc instead. Only ever
   // touch keys inside this page's own namespace.
   function isCampaignKey(id) { return typeof id === 'string' && id.indexOf(CAMP_PREFIX) === 0; }
+  /* Tier gate with the fail-open-when-unknown shape crm.html and documents.html use: if the
+     permission helper has not loaded, or we do not know who this is yet, ALLOW — an offline or
+     auth-unknown boot must not take the page read-only for the owner too. The server is the
+     real gate; this exists so a view-tier user is not told their work was saved when it was
+     refused, and so the refusal is not delivered minutes later by the sync layer. */
+  function mkCanEdit() {
+    if (!window.bccCanEdit || !(window.bccUser && window.bccUser.userDetails)) return true;
+    return !!window.bccCanEdit('marketing');
+  }
+  var _mkViewWarned = false;
+  function mkRefuseReadOnly() {
+    if (_mkViewWarned) return true;
+    _mkViewWarned = true;
+    (window.bccNotify || alert)('Your Marketing access is view-only, so nothing was saved. Ask an admin if you need to make changes.', 'warn', 8000);
+    return true;
+  }
   function saveCampaign(c) {
+    // NULL on refusal — see jobs.html/crm.html for the same contract.
+    if (!mkCanEdit()) { mkRefuseReadOnly(); return null; }
     c.updatedAt = nowIso();
     if (!c.createdAt) c.createdAt = c.updatedAt;
     if (!isCampaignKey(c.id)) c.id = CAMP_PREFIX + uid();
@@ -434,7 +452,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       leads:       parseInt(document.getElementById('m-leads').value || '0', 10) || 0
     };
     c.notes     = document.getElementById('m-notes').value.trim();
-    saveCampaign(c);
+    if (!saveCampaign(c)) return;
     if (window.bccAudit) window.bccAudit(id ? 'campaign-update' : 'campaign-create', { key: c.id, path: '/marketing.html', meta: { channel: c.channel, status: c.status } });
     if (window.bccNotifySaved) window.bccNotifySaved('Campaign saved.');
     closeModal();

@@ -312,6 +312,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   document.getElementById('modalBg').addEventListener('click', function (e) { if (e.target.id === 'modalBg') closeModal(); });
 
   document.getElementById('m-save').addEventListener('click', function () {
+    /* If the record is GONE, saving used to mint a brand-new event — same fields, empty
+       attendee list, new id — so a colleague's delete came back as a duplicate with everyone's
+       bookings dropped. The two sibling handlers on this page already refuse; this one did not. */
+    var _mid = document.getElementById('m-id').value;
+    if (_mid && !getEvent(_mid)) {
+      (window.bccNotify || alert)('This event is no longer available — it was deleted while you had it open, so nothing was saved.', 'warn', 9000);
+      return;
+    }
     var id = document.getElementById('m-id').value;
     var rec = id ? (getEvent(id) || {}) : {};
     rec.title       = document.getElementById('m-title').value.trim() || '(untitled event)';

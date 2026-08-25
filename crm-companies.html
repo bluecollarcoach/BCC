@@ -604,11 +604,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             var add = extra.join(' · ');
             if (add && (cur.notes || '').indexOf('Legal name:') < 0 && (cur.notes || '').indexOf('Fiscal year') < 0) cur.notes = (cur.notes ? cur.notes + '\n' : '') + add;
             cur.qboInfoAt = nowIso();
-            saveCompany(cur); filled++;
+            /* Count only what was WRITTEN. saveCompany returns null when the tier refuses,
+               and counting anyway made the sync summary claim detail it had not stored. */
+            if (saveCompany(cur)) filled++;
           });
         return infoStep
           .then(function () { return aiEnrichCompany(id); }) // also pull richer detail from the website
-          .then(function (did) { if (did) ai++; })
+          .then(function (did) { if (did === true) ai++; })   // 'refused' is truthy — count writes only
           .catch(function () {});
       });
     }, Promise.resolve()).then(function () { return { filled: filled, ai: ai }; });
@@ -671,7 +673,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         var about = bits.join('\n');
         if (about && (cur.notes || '').indexOf(about.slice(0, 20)) < 0) cur.notes = (cur.notes ? cur.notes + '\n' : '') + about;
         cur.aiEnrichedAt = nowIso();
-        saveCompany(cur);
+        /* Report the WRITE, not the API call. Returning true after a refused save counted
+           this company in "AI-enriched N" and popped "Company enriched with AI." while
+           nothing was stored — the ✨ never appeared and the next run re-billed the
+           enrichment.
+           'refused' rather than a bare false, because the two failures need different words:
+           saveCompany has already said "your CRM access is view-only", and the button's else
+           branch would otherwise follow it with "could not read that website", which is not
+           what happened — the website read perfectly well. */
+        if (!saveCompany(cur)) return 'refused';
         return true;
       })
       .catch(function () { return false; });
@@ -881,8 +891,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       if (!c.website) { (window.bccNotify || alert)('Add a website first, then enrich.', 'warn'); return; }
       aiBtn.disabled = true; aiBtn.textContent = '✨ Reading website…';
       aiEnrichCompany(c.id, true).then(function (did) {
-        if (did) { if (window.bccNotifySaved) window.bccNotifySaved('Company enriched with AI.'); renderDetail(c.id); }
-        else { aiBtn.disabled = false; aiBtn.textContent = '✨ Enrich with AI'; (window.bccNotify || alert)('Could not read that website — check it’s reachable.', 'warn'); }
+        if (did === true) { if (window.bccNotifySaved) window.bccNotifySaved('Company enriched with AI.'); renderDetail(c.id); return; }
+        aiBtn.disabled = false; aiBtn.textContent = '✨ Enrich with AI';
+        // A view-only refusal has already been announced by saveCompany, and blaming the
+        // website for it would send someone checking a site that answered perfectly well.
+        if (did !== 'refused') (window.bccNotify || alert)('Could not read that website — check it’s reachable.', 'warn');
       });
     };
     document.getElementById('delBtn').onclick = function () {

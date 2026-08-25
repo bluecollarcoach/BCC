@@ -279,13 +279,18 @@
       var cur = o.items[k];
       if (cur === undefined) return;
       if (sentValues && Object.prototype.hasOwnProperty.call(sentValues, k)) {
-        var sent = sentValues[k];
-        if (cur.v !== sent) {
-          // Another tab queued something else under this key while we were sending.
-          var sentQt = (sentValues._qt && sentValues._qt[k]) || 0;
-          var curQt = (typeof cur.qt === 'number' && cur.qt > 0) ? cur.qt : 0;
-          if (!(sentQt && curQt && curQt <= sentQt)) return;   // genuinely newer — leave it queued
-        }
+        /* Differs = another tab queued something else under this key while we were sending,
+           so it is not ours to retire. There is no benign mismatch to make room for: the
+           outbox holds the exact string setItem was handed and sentValues holds the exact
+           string that went over the wire, both from the same call. The qt-based escape hatch
+           this replaces could never NOT fire — outboxPut preserves the original stamp on a
+           rewrite (it means "when the user made this write", which the seven-day retirement
+           depends on), so the queued entry always looked exactly as old as the one sent, and
+           the check it guarded never protected anything.
+           Nothing is stranded by leaving it: the tab that queued it holds it in `pending` and
+           will flush it, and if that tab is gone outboxRehydrate replays it at the next
+           sign-in. */
+        if (cur.v !== sentValues[k]) return;
       }
       delete o.items[k]; changed = true;
     });
@@ -654,6 +659,17 @@
                             per-device sync bookkeeping + identity. Already written via
                             _origSetItem elsewhere; listed so no other write path can
                             reintroduce the push. */
+  var _pullIssuedAt = 0;   // when the in-flight full pull was ISSUED — see the prune
+  /* Keys THIS DEVICE wrote through the ordinary localStorage API in this session — i.e. the
+     app minted or edited them here. The pull and the prime layer both write with
+     _origSetItem, so neither shows up: a key in here is ours, not the server's.
+     The prune needs it. A record created here BEFORE /.auth/me answered is not in the outbox
+     to vouch for itself (only the OFFLINE_OWNED_PREFIXES families are captured that early),
+     and its updatedAt is necessarily EARLIER than the full pull that follows on the same page
+     load — so an age test alone cannot tell it apart from a record a colleague deleted, and
+     deleting it would destroy work that has never been anywhere else. */
+  var _localMints = new Set();
+  var _pollFailStreak = 0, _pollWasFailing = false, _pollAuthNotified = false;  // live-poll health
   var ACCESS_STAMP_KEY = 'bcc-access-stamp-v1';   // what the SERVER last said this account may see
   // Spelled out rather than interpolated: this list is a literal by design (it is read and
   // checked as one), and ACCESS_STAMP_KEY above must stay in step with the entry here.
@@ -692,15 +708,7 @@
      doc that was deleted. Without it, a canceled coaching session stayed on every other
      browser forever, and any later edit there re-published it firm-wide. */
   var PRUNABLE_PREFIXES = ['bcc-kb-article-', 'bcc-event-', 'bcc-course-', 'bcc-session-'];
-  /* Keys the SERVER has DELIVERED to this device in this session. The prune's freshness test
-     reads the document's own updatedAt, which is meant to mean "this device minted this
-     record and has not pushed it yet" — but the pull writes the server's copy verbatim, so a
-     record a COLLEAGUE edited and a delta pull delivered carries just as fresh a stamp, and
-     was therefore exempt from pruning: when they later deleted it, this browser kept it and
-     the next local write re-uploaded it, resurrecting it for everyone. Provenance answers the
-     question the timestamp was standing in for. In-memory and per-session by design: it only
-     ever makes the prune MORE willing, never less, so the worst case is the old behaviour. */
-  var _serverDelivered = new Set();
+
 
   /* Store a value LOCALLY without queueing a push. For the one shape that legitimately
      needs it: a page that GETs a server document itself (to prove it holds the real copy
@@ -737,9 +745,13 @@
        bccDocPrimed(key)       — true ONLY when we know what the server has. Gate the write.
      An unsent local write short-circuits to primed: our copy IS the authoritative one, and
      re-fetching would land the server's older copy on top of it. */
-  var _primedDocs = {};        // key -> true | 'busy' | 'fail'
+  var _primedDocs = {};        // key -> true | 'busy' | 'fail' | 'denied'
   var _primeRetryAt = {};
   window.bccDocPrimed = function (key) { return _primedDocs[key] === true; };
+  /* WHY a document is not primed, for callers that show the user a reason. 'fail' is a blip
+     worth retrying; 'denied' means the server ANSWERED — you may not read this document — so
+     no amount of retrying changes it and "still loading…" is simply untrue. */
+  window.bccPrimeState = function (key) { return _primedDocs[key] || null; };
   window.bccPrimeDoc = function (key, done) {
     // Snapshot before the round trip — see the compare in the .then below.
     var beforeRaw = null;
@@ -749,13 +761,21 @@
     if (_primedDocs[key] === true || _primedDocs[key] === 'busy') { fin(); return; }
     // A write of our own that has not reached the server yet outranks anything it could tell us.
     try { if (pending.has(key) || heldInFlight(key) || outboxPendingAnyTab(key)) { _primedDocs[key] = true; fin(); return; } } catch (e) {}
+    // A refusal is not retryable at all: the server has answered, and hammering it every few
+    // seconds for the life of the tab changes nothing.
+    if (_primedDocs[key] === 'denied') { fin(); return; }
     // A failed attempt is retryable, but not on every keystroke.
     var now = Date.now();
     if (_primedDocs[key] === 'fail' && _primeRetryAt[key] && (now - _primeRetryAt[key]) < 5000) { fin(); return; }
     _primeRetryAt[key] = now;
     _primedDocs[key] = 'busy';
     fetch(API_BASE + '/data/' + encodeURIComponent(key), { credentials: 'include' })
-      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+      .then(function (r) {
+        if (r.ok) return r.json();
+        // Carry the status so the catch can tell a refusal from a blip. 403 only: a 401 means
+        // "not signed in yet", which signing in fixes, so that stays retryable.
+        var err = new Error('HTTP ' + r.status); err.status = r.status; throw err;
+      })
       .then(function (j) {
         var d = j && j.data;
         if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { d = null; } }
@@ -771,12 +791,18 @@
         _primedDocs[key] = ok ? true : 'fail';   // a failed STORE must not count as primed
         fin();
       })
-      .catch(function () { _primedDocs[key] = 'fail'; fin(); });
+      .catch(function (e) { _primedDocs[key] = ((e && e.status) === 403) ? 'denied' : 'fail'; fin(); });
   };
 
   /* ---------- hooks ---------- */
   Storage.prototype.setItem = function (key, value) {
     _origSetItem.call(this, key, value);
+    // Provenance, recorded for EVERY bcc-* write through this hook whatever the auth state —
+    // the prune's one honest signal that a record was minted here. (The pull and the prime
+    // cache both bypass this hook by design, so they never land in here.)
+    if (this === window.localStorage && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0) {
+      try { _localMints.add(key); } catch (e) {}
+    }
     // Writes made before auth settles used to fall straight through this guard and be
     // lost. Capture the owner-only ones so bootstrap can replay them; outboxRehydrate
     // decides what is safe to keep.
@@ -920,6 +946,16 @@
       // refused), so release the hold immediately — leaving these at 0 would block the
       // pull from ever updating those keys again for the life of the page.
       entries.forEach(function (e) { inFlight.delete(e[0]); });
+      /* ...and retire them from the OUTBOX too. Skipping the settle sweep below left every
+         refused key queued forever, and outboxPendingAnyTab reads that queue on every pull:
+         the document could never be refreshed from the server again for the life of the tab,
+         so the browser kept showing a copy it already knew the server had rejected. The user
+         has already been told about the refusal (flush dispatches bcc-sync-error), so
+         replaying it forever only re-tells them. Value-checked, so another tab's newer queued
+         write is still left alone. */
+      var refusedVals = {};
+      entries.forEach(function (e) { refusedVals[e[0]] = e[1]; });
+      outboxDrop(entries.map(function (e) { return e[0]; }), refusedVals);
       setSyncState('idle');
       return;
     }
@@ -1042,13 +1078,8 @@
     /* What we actually SENT, after the _rehydrated reconcile above may have swapped in another
        tab's newer value — that reconcile rewrites e[1], so `entries` is the transmitted copy,
        and comparing against `pending` instead would compare with a write that never went. */
-    var sentValues = { _qt: {} };
-    var _ob = outboxRead().items || {};
-    entries.forEach(function (e) {
-      sentValues[e[0]] = e[1];
-      var was = _ob[e[0]];
-      if (was && typeof was.qt === 'number') sentValues._qt[e[0]] = was.qt;
-    });
+    var sentValues = {};
+    entries.forEach(function (e) { sentValues[e[0]] = e[1]; });
     outboxDrop(settledKeys, sentValues);
     outboxUnparkKeys(settledKeys);   // a parked copy of a key that has now SHIPPED must go too
     // Hold each key for one more poll interval so a response already in flight, built
@@ -1110,8 +1141,16 @@
     if (isNaN(ts)) return; // bootstrap full pull hasn't stamped a cursor yet
     _liveBusy = true;
     fetch(API_BASE + '/data?since=' + encodeURIComponent(new Date(ts - 60 * 1000).toISOString()))
-      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (r) {
+        /* An HTTP failure is NOT "no changes". Collapsing it to null left the cursor
+           untouched and the tab silently stopped receiving anyone else's work — the failure
+           mode this whole layer exists to avoid, in the one place nothing reported it. */
+        if (!r.ok) { var e = new Error('poll HTTP ' + r.status); e.status = r.status; throw e; }
+        return r.json();
+      })
       .then(function (j) {
+        _pollFailStreak = 0;
+        if (_pollWasFailing) { _pollWasFailing = false; setSyncState('idle'); }
         var items = (j && j.items) || [];
         if (!items.length) return;
         var cfgIncoming = false;
@@ -1131,7 +1170,7 @@
           // Same per-item guard as the bootstrap pull: one full-storage failure must not
           // abandon the rest of the batch. changed.push INSIDE the try — announcing a key
           // that never landed would have every listener re-render from the old value.
-          try { _origSetItem.call(localStorage, it.key, val); _serverDelivered.add(it.key); changed.push(it.key); }
+          try { _origSetItem.call(localStorage, it.key, val); changed.push(it.key); }
           catch (e) {
             pollFailed++;
             if (it.updatedAt && (!minFailedUpd || it.updatedAt < minFailedUpd)) minFailedUpd = it.updatedAt;
@@ -1153,7 +1192,22 @@
         }
         if (pollFailed) console.warn('[bcc-api] ' + pollFailed + ' live update(s) could not be stored locally (storage full?) — they will be retried');
       })
-      .catch(function () { /* offline / transient — next tick retries */ })
+      .catch(function (e) {
+        /* Say it ONCE, and say the right thing. A 401 is the routine mid-day session
+           expiry and already has a message written for it; anything else is reported to
+           the console and to the sync chip, which is what that chip is for. The poll keeps
+           retrying either way — the cursor is untouched, so nothing is lost, but a tab that
+           has silently stopped syncing must not look identical to one that is idle. */
+        _pollFailStreak = (_pollFailStreak || 0) + 1;
+        if (_pollFailStreak !== 1) return;
+        _pollWasFailing = true;
+        setSyncState('error');
+        console.warn('[bcc-api] live sync poll failed (' + ((e && e.message) || 'network') + ') — retrying');
+        if ((e && e.status) === 401 && window.bccNotify && !_pollAuthNotified) {
+          _pollAuthNotified = true;
+          window.bccNotify('Your sign-in has expired, so this page has stopped receiving updates from your team. Reload to sign back in.', 'warn', 0);
+        }
+      })
       .finally(function () { _liveBusy = false; });
   }
   function liveStart() {
@@ -1217,6 +1271,26 @@
   window.bccRecomputePeople = function () {
     recomputePcPeople();
     window.dispatchEvent(new Event('bcc-users-ready'));
+  };
+  /* Ask Entra again, NOW. admin.html's "Refresh from Entra" button had only
+     bccRecomputePeople() behind it, which re-derives the lists from the directory copy
+     ALREADY in memory — so somebody hired this morning stayed missing however many times it
+     was pressed, and a full reload was the only thing that actually re-asked. Resolves with
+     the number of users so the caller can report it, and REJECTS on failure so a dead
+     network cannot be reported as a successful refresh of a stale list. */
+  window.bccRefreshUsers = function () {
+    return fetch(API_BASE + '/users', { credentials: 'include' })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (j) {
+        var live = ((j && j.users) || []).filter(function (u) { return u && u.displayName; });
+        // An empty directory is not an answer worth caching over a working list.
+        if (!live.length) throw new Error('the directory came back empty');
+        window.bccPeopleFull = live;
+        try { _origSetItem.call(localStorage, 'bcc-users-cache-v1', JSON.stringify({ users: live, at: Date.now() })); } catch (e) {}
+        recomputePcPeople();
+        window.dispatchEvent(new Event('bcc-users-ready'));
+        return live.length;
+      });
   };
 
   /* Reusable "active users only" filter for ANY list of user objects
@@ -1387,22 +1461,21 @@
     // flag here handed those users a fully working CRM/Jobs/Marketing/Rates UI whose
     // every read came back filtered and every write 403'd.
     if (rec && (rec.status === 'inactive' || rec.status === 'hidden')) return 'none';
+    /* The Admin app is decided by the ROLE and nothing else, and it is checked BEFORE any
+       per-app override. The server's admin gate (isAppAdmin) reads the owner list, the SWA
+       'administrator' role and role==='admin'; it has never looked at appPermissions.admin.
+       An override here therefore handed someone the nav link and a fully rendered Admin
+       Center whose every endpoint then refused them — while the admin who set it believed
+       they had delegated admin and had not. bccIsAdmin() honours the same recovery paths the
+       server uses (BCC_OWNER_UPNS, the SWA 'administrator' role, /api/profile), and its
+       narrow bootstrap only fires on a truly empty admin-config doc. */
+    if (appKey === 'admin') return (window.bccIsAdmin && window.bccIsAdmin()) ? 'admin' : 'none';
     // Per-app override wins if explicitly set
     var perm = rec && rec.appPermissions && rec.appPermissions[appKey];
     if (perm && LEVEL_RANK[perm] != null) return perm;
     // Fall back to global role
     var isAdmin = rec && rec.role === 'admin';
     if (isAdmin) return 'admin';
-    if (appKey === 'admin') {
-      // Strict gate: only admins reach the admin page. Delegates to
-      // bccIsAdmin() which honors the same recovery paths the server
-      // uses (BCC_OWNER_UPNS env list, SWA 'administrator' role,
-      // server's /api/profile verdict). The narrow bootstrap inside
-      // bccIsAdmin() only triggers on a truly empty admin-config doc
-      // (first deploy) -- once anyone exists in cfg.users, admin role
-      // is required.
-      return (window.bccIsAdmin && window.bccIsAdmin()) ? 'admin' : 'none';
-    }
     // Non-admin (member) default: edit on the core member app set, else none.
     return window.BCC_MEMBER_DEFAULT_APPS[appKey] ? 'edit' : 'none';
   };
@@ -1608,6 +1681,9 @@
          BOTH failure shapes: fetch only REJECTS on a network error, so catching alone missed
          the HTTP 500 the comment was written for - the overlay stayed wrong in exactly the
          case it was meant to fix. */
+      /* Read by the prune below: a record touched after this moment cannot be spoken to by
+         this response, whoever touched it. */
+      _pullIssuedAt = Date.now();
       var dataPromise = fetch(dataUrl).then(function (r) {
         if (!r || !r.ok) window._bccBootPullFailed = true;
         // ...and the positive fact too. "Not failed" is also true BEFORE the pull has run,
@@ -1648,7 +1724,7 @@
             // out of this forEach: every remaining doc was skipped and the cursor stamps
             // below never ran, so SYNC_FULL_KEY stayed unwritten and every later pull was a
             // full pull that hit the same wall — the sync never recovered on its own.
-            try { _origSetItem.call(localStorage, it.key, val); _serverDelivered.add(it.key); }
+            try { _origSetItem.call(localStorage, it.key, val); }
             catch (e) {
               pullFailed++;
               if (it.updatedAt && (!minFailedUpd || it.updatedAt < minFailedUpd)) minFailedUpd = it.updatedAt;
@@ -1679,18 +1755,27 @@
                  — and a write made before /.auth/me resolved is not even in the outbox to
                  vouch for it (only the four OFFLINE_OWNED_PREFIXES families are captured that
                  early), so the checks above cannot see it. Pruning on age alone destroyed it.
-                 Keep anything stamped after the previous full pull; with no previous full pull
-                 (first sync on this device) keep everything stamped at all. */
+                 Measured against WHEN THIS PULL WAS ISSUED, not against the previous full
+                 pull. The old test asked "was this stamped since the last full pull", which a
+                 record a COLLEAGUE edited and a delta pull delivered passes just as easily —
+                 the pull writes their copy verbatim, stamp and all — so a record they later
+                 deleted was spared on every other browser and the next local write
+                 resurrected it for the firm. Asking "was this touched after we asked the
+                 server?" is the question that was actually meant: if it was, this response
+                 cannot speak to it; if it was not, absent really does mean deleted. */
+              /* Written HERE in this session, and the server does not have it. Almost always
+                 a record created before /.auth/me answered — too early for the outbox to
+                 capture, and necessarily stamped BEFORE the full pull that follows on the
+                 same page load, so the age test below cannot save it. Provenance can.
+                 Only ever makes the prune less willing, and only for the life of the tab. */
+              if (_localMints.has(pk)) continue;
               var fresh = false;
               try {
                 var pv = JSON.parse(localStorage.getItem(pk) || 'null');
                 var stamp = pv && (pv.updatedAt || pv.createdAt);
-                if (stamp) { var st = new Date(stamp).getTime(); fresh = !isNaN(st) && st >= (_lastFull || 0); }
+                if (stamp) { var st = new Date(stamp).getTime(); fresh = !isNaN(st) && st >= (_pullIssuedAt || 0); }
               } catch (e) {}
-              /* ...unless the SERVER is where it came from. A fresh stamp on a record this
-                 device received is the colleague's edit, not evidence we minted it — and
-                 sparing it is what let a deleted record come back (see _serverDelivered). */
-              if (fresh && !_serverDelivered.has(pk)) continue;
+              if (fresh) continue;
               gone.push(pk);
             }
             // Collect first, remove second — removing mid-scan reindexes localStorage
@@ -2055,7 +2140,9 @@
       mineLoaded = true;
       box.innerHTML = '<div style="color:#6b7077;font-size:12.5px;">Loading…</div>';
       fetch('/api/feedback-mine', { credentials: 'include' })
-        .then(function (r) { return r.ok ? r.json() : null; })
+        // An HTTP failure is not an empty history — the honest .catch below already says so,
+        // and collapsing to null routed every error past it into the empty state instead.
+        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
         .then(function (j) {
           var items = (j && j.items) || [];
           if (!items.length) { box.innerHTML = '<div style="color:#6b7077;font-size:12.5px;">You haven’t sent any feedback yet.</div>'; return; }
@@ -2082,8 +2169,73 @@
     setTimeout(function () { var m = document.getElementById('bcc-fb-msg'); if (m) m.focus(); }, 50);
   };
 
+  /* Bring chrome that is ALREADY on the page into line with a later auth verdict.
+     Deliberately narrow: the chip, the Feedback button, and the drawer's identity line and
+     footer — the parts that state who you are and what you can do about it. The drawer's
+     link list is left as it is; it rebuilds on the next navigation, and hiding a link out
+     from under a finger mid-tap is worse than one that refuses politely. The drawer's click
+     handling is delegated on the drawer itself, so replacing these anchors keeps working. */
+  function repaintAuthChrome(chip) {
+    chip.className = 'bcc-auth-chip ' + (signedIn ? 'auth' : 'anon');
+    if (signedIn) {
+      var email = (user && user.userDetails) || 'Signed in';
+      var nm = window.bccDisplayName(email) || email;
+      chip.innerHTML =
+        '<span class="bcc-dot" title="Cloud sync active"></span>' +
+        '<span class="bcc-name" title="' + escapeHtml(email) + '">' + escapeHtml(nm) + '</span>' +
+        '<a href="#" id="bcc-out">Sign out</a>';
+    } else {
+      chip.innerHTML =
+        '<span class="bcc-dot" title="Local-only (not signed in)"></span>' +
+        '<a href="#" id="bcc-in">Sign in</a>';
+    }
+    var inEl2 = document.getElementById('bcc-in'), outEl2 = document.getElementById('bcc-out');
+    if (inEl2)  inEl2.onclick  = function (e) { e.preventDefault(); bccSignIn(); };
+    if (outEl2) outEl2.onclick = function (e) { e.preventDefault(); bccSignOut(); };
+    if (signedIn) {
+      if (!document.getElementById('bcc-fb-btn') && chip.parentNode) {
+        var fb2 = document.createElement('button');
+        fb2.id = 'bcc-fb-btn'; fb2.className = 'bcc-fb-btn'; fb2.type = 'button'; fb2.title = 'Send feedback';
+        fb2.innerHTML = '<span class="bcc-fb-ic">💬</span><span class="bcc-fb-lbl">Feedback</span>';
+        fb2.onclick = function () { window.bccOpenFeedback(); };
+        chip.parentNode.insertBefore(fb2, chip);
+      }
+    } else {
+      var fbOld = document.getElementById('bcc-fb-btn');
+      if (fbOld && fbOld.parentNode) fbOld.parentNode.removeChild(fbOld);
+    }
+    var whoEl = document.querySelector('.bcc-mobile-menu .bcc-mm-user > div');
+    if (whoEl) {
+      var e2 = signedIn ? ((user && user.userDetails) || '') : '';
+      var dn2 = signedIn ? (window.bccDisplayName(e2) || e2 || 'User') : '';
+      whoEl.innerHTML = signedIn
+        ? 'Signed in as<strong>' + escapeHtml(dn2) + '</strong>' +
+          (e2 && e2 !== dn2
+            ? '<span style="display:block;font-size:11px;color:rgba(255,255,255,0.55);font-weight:500;margin-top:2px;">' + escapeHtml(e2) + '</span>'
+            : '')
+        : '<strong>Not signed in</strong>';
+    }
+    var footEl = document.querySelector('.bcc-mobile-menu .bcc-mm-foot');
+    if (footEl) {
+      footEl.innerHTML = signedIn
+        ? '<a href="#" class="bcc-mm-feedback">💬 Send feedback</a><a href="#" class="bcc-mm-signout">Sign out</a>'
+        : '<a href="#" class="bcc-mm-signin">Sign in with Microsoft</a>';
+    }
+  }
+
   function injectAuthChip() {
-    if (document.getElementById('bcc-auth-chip')) return;
+    /* Re-entrant on purpose. bootstrap() runs more than once: a device that got NO verdict
+       from /.auth/me — offline, or the SWA edge unreachable — paints the anonymous chrome,
+       and retryAuthBootstrap re-runs the whole bootstrap the moment focus or the network
+       returns. Bailing out because the element existed left a fully signed-in, syncing user
+       looking at a grey dot, a "Sign in" link, no Feedback button, and a drawer that read
+       "Not signed in" — with a reload as the only way out. */
+    var existingChip = document.getElementById('bcc-auth-chip');
+    if (existingChip) {
+      if (existingChip.classList.contains(signedIn ? 'auth' : 'anon')) return;  // verdict unchanged
+      repaintAuthChrome(existingChip);
+      return;
+    }
     if (!document.head) return;
 
     var css = document.createElement('style');
@@ -2617,6 +2769,12 @@
   });
   window.addEventListener('online',  refreshOnlineState);
   window.addEventListener('offline', refreshOnlineState);
+  /* ...and again once the verdict is IN. This file is deferred, so the immediate call below
+     runs before bootstrap has asked /.auth/me — and the banner's wording is chosen entirely
+     from signedIn/_authUnknown, so an offline boot told a signed-in user that everything but
+     their time log "stays on this device only". bcc-auth-ready is dispatched at the end of
+     every bootstrap, including the unknown-verdict one. */
+  window.addEventListener('bcc-auth-ready', refreshOnlineState);
   // Defer the first check until DOM is ready so we can append to <body>.
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', refreshOnlineState);
@@ -2954,7 +3112,15 @@
       _origRemoveItem.call(localStorage, 'bcc-push-enabled');
     } catch (e) {}
 
-    var queued = pending.size;
+    /* `pending` is CLEARED by _flushOnce before its first await, so for the entire duration of
+       an in-flight PUT it reads 0 — exactly the moment this branch matters most. inFlight
+       carries the sentinel 0 for a key whose request is still open (it is rewritten to a real
+       expiry once the flush settles), so it is the signal that actually means "a request is
+       open right now". Without this, clicking Sign out during the 1.2s push debounce aborted
+       the write and skipped the confirmation the code promises. */
+    var _openNow = 0;
+    try { inFlight.forEach(function (v) { if (v === 0) _openNow++; }); } catch (e) {}
+    var queued = pending.size + _openNow;
     if (queued) {
       // Give the flush a real chance to land before navigating away, but never wait on
       // it indefinitely — flush() can issue a batch PUT plus N per-key PUTs plus N

@@ -409,9 +409,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function buildCompanyOptions(selectedId) {
     var companies = allCompaniesLite();
     var opts = '<option value="">— None —</option>';
+    var matched = false;
     companies.forEach(function (co) {
+      if (co.id === selectedId) matched = true;
       opts += '<option value="' + esc(co.id) + '"' + (co.id === selectedId ? ' selected' : '') + '>' + esc(co.name) + (co.industry ? ' · ' + esc(co.industry) : '') + '</option>';
     });
+    /* KEEP THE CURRENT LINK even when its company document is not in this browser — a cold
+       device, a failed pull, or a client this person is not on the access list for. Without
+       this the select fell back to "— None —" and the next Save wrote companyId:'' , which
+       unlinked the contact for the whole firm. Mirrors jobs.html's dropdown. */
+    if (selectedId && !matched) {
+      opts += '<option value="' + esc(selectedId) + '" selected>(linked company — not loaded on this device)</option>';
+    }
     return opts;
   }
   var CONVO_PREFIX   = 'bcc-convo-';
@@ -755,6 +764,35 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
 
   /* ===== Detail render ===== */
+  /* Carry the in-progress Profile edits ACROSS a repaint. Six handlers on this pane call
+     renderDetail(), which rebuilds the contenteditable fields from the stored record — so
+     logging a conversation, adding a weekly note or deleting one silently discarded whatever
+     had been typed and not yet saved.
+     Not auto-saved on purpose: an unsaved buffer can contain a half-deleted field, and
+     committing that would publish the deletion to the whole firm. Re-seating the text leaves
+     the user exactly where they were, still holding an explicit Save. */
+  function _crmSnapshotTyped() {
+    var snap = {};
+    document.querySelectorAll('[data-prop]').forEach(function (el) {
+      snap[el.getAttribute('data-prop')] = (el.innerText != null ? el.innerText : el.textContent) || '';
+    });
+    return snap;
+  }
+  function _crmRestoreTyped(snap) {
+    if (!snap) return;
+    document.querySelectorAll('[data-prop]').forEach(function (el) {
+      var k = el.getAttribute('data-prop');
+      if (!Object.prototype.hasOwnProperty.call(snap, k)) return;
+      var was = (el.innerText != null ? el.innerText : el.textContent) || '';
+      if (String(snap[k]).trim() !== String(was).trim()) el.innerText = snap[k];
+    });
+  }
+  // renderDetail + carry. Every in-pane handler uses this instead of renderDetail directly.
+  function renderDetailKeepTyped(id) {
+    var snap = _crmSnapshotTyped();
+    renderDetail(id);
+    _crmRestoreTyped(snap);
+  }
   function renderDetail(id) {
     // Every caller of this is a deliberate repaint (open, post-save, post-delete), so the
     // pane is authoritative again from here.
@@ -789,9 +827,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var locLine = [c.city, c.state, c.country].filter(Boolean).join(', ');
 
     var types = loadTypes();
+    var typeMatched = false;
     var typeOpts = types.map(function (t) {
+      if (t.id === c.customerType) typeMatched = true;
       return '<option value="' + esc(t.id) + '"' + (t.id === c.customerType ? ' selected' : '') + '>' + esc(t.label) + '</option>';
     }).join('');
+    /* A type an admin has retired still belongs to this contact. Without an option for it the
+       select showed the FIRST type instead, and the next Save relabelled the contact to it —
+       silently, and for everyone. Keep it, and say what it is. */
+    if (c.customerType && !typeMatched) {
+      typeOpts += '<option value="' + esc(c.customerType) + '" selected>' + esc(c.customerType) + ' (no longer offered)</option>';
+    }
     var stageOpts = ['lead','qualified','customer','inactive'].map(function (s) {
       return '<option value="' + s + '"' + (s === (c.stage || 'lead') ? ' selected' : '') + '>' + s.charAt(0).toUpperCase() + s.slice(1) + '</option>';
     }).join('');
@@ -1065,7 +1111,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       if (window.bccAudit) window.bccAudit('convo-add', { key: cv.id, path: '/crm.html', meta: { type: cv.type, summary: summary } });
       document.getElementById('convoSummary').value = '';
       document.getElementById('convoDetails').value = '';
-      renderDetail(c.id);
+      renderDetailKeepTyped(c.id);
     };
     document.querySelectorAll('[data-convo-del]').forEach(function (btn) {
       btn.onclick = function (e) {
@@ -1073,7 +1119,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         if (!crmCanEdit()) return;
         if (!confirm('Delete this conversation entry?')) return;
         deleteConvo(btn.getAttribute('data-convo-del'));
-        renderDetail(c.id);
+        renderDetailKeepTyped(c.id);
       };
     });
     document.getElementById('weeklyAdd').onclick = function () {
@@ -1090,7 +1136,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       if (window.bccAudit) window.bccAudit('weekly-note-add', { key: w.id, path: '/crm.html', meta: { weekOf: w.weekOf } });
       if (window.bccNotifySaved) window.bccNotifySaved('Weekly note saved.');
       document.getElementById('weeklyNote').value = '';
-      renderDetail(c.id);
+      renderDetailKeepTyped(c.id);
     };
     document.querySelectorAll('[data-weekly-del]').forEach(function (btn) {
       btn.onclick = function (e) {
@@ -1452,6 +1498,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         if (!sel.length) { status.textContent = 'Nothing to save — each card needs at least a name, company, or email.'; return; }
         var byEmailNow = {};
         allContacts().forEach(function (x) { if (x.email) byEmailNow[x.email.toLowerCase()] = x; });
+        var _saved = 0, _refused = 0;
         sel.forEach(function (b) {
           var c = { firstName: (b.firstName || '').trim(), lastName: (b.lastName || '').trim(), email: (b.email || '').trim(), phone: (b.phone || '').trim(),
             title: (b.title || '').trim(), company: (b.company || '').trim(), website: cleanWeb(b.website), street: (b.street || '').trim(),
@@ -1481,15 +1528,29 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             c.needs = existingRec.needs || []; c.tags = existingRec.tags || [];
             isUpdate = true;
           }
-          if (!saveContact(c)) return;   // refused - do not count a row that was never written
+          if (!saveContact(c)) { _refused++; return; }   // refused - do not count a row that was never written
           // (saveContact mutates c in place, assigning c.id)
           // Index CREATES too, not just matches. Two new cards with the same email both
           // took the create branch and made two contacts — then each later write to that
           // email clobbered whichever one it happened to find.
           if (emailLc) byEmailNow[emailLc] = c;
+          _saved++;
           if (window.bccAudit) window.bccAudit(isUpdate ? 'contact-update' : 'contact-create', { key: c.id, path: '/crm.html', meta: { batch: true } });
         });
-        if (window.bccNotifySaved) window.bccNotifySaved('Saved ' + sel.length + ' contacts.'); else (window.bccNotify || alert)('Saved ' + sel.length + ' contacts.', 'success');
+        /* Report what was WRITTEN, not what was ticked. The per-row refusal skip above was
+           already here, but this line still counted sel.length — so a read-only CRM tier
+           refused all twelve scanned cards and was told "Saved 12 contacts." The scanner
+           then closed and the images were gone. A failure must never render as a success. */
+        if (_refused) {
+          (window.bccNotify || alert)(_saved
+            ? 'Saved ' + _saved + ' of ' + sel.length + ' contacts — the rest were refused because your CRM access is view-only.'
+            : 'None of these were saved: your CRM access is view-only.', _saved ? 'warn' : 'error', 9000);
+          if (!_saved) return;   // leave the scanner OPEN so the cards can be re-tried
+        } else if (window.bccNotifySaved) {
+          window.bccNotifySaved('Saved ' + _saved + ' contact' + (_saved === 1 ? '' : 's') + '.');
+        } else {
+          (window.bccNotify || alert)('Saved ' + _saved + ' contact' + (_saved === 1 ? '' : 's') + '.', 'success');
+        }
         close(); renderList();
       };
     }

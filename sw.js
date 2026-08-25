@@ -147,9 +147,22 @@ self.addEventListener('fetch', (event) => {
            of those missed and the user was told the page "hasn't been cached for offline use
            yet" about a page sitting in the cache. The query is a selector within the page,
            never a different document. */
-        const cached = await caches.match(req, { ignoreSearch: true });
+        /* Pick the FRESHEST match, not an arbitrary one. ignoreSearch means several cached
+           variants of this URL can match (the bare path plus every ?id= the app has opened),
+           and caches.match returns only the first — so one stale copy made the age gate
+           condemn a page that had been saved seconds earlier, and offline mode then answered
+           the "not cached for offline use" notice about a page sitting right there, for good.
+           Exact URL first (it is the most specific answer), then the newest by stamp. */
+        const _c = await caches.open(CACHE_NAME);
+        let cached = await _c.match(req);
+        let _bestAt = cached ? Number(cached.headers.get('sw-cached-at') || 0) : -1;
+        const _all = await _c.matchAll(req, { ignoreSearch: true });
+        for (const _m of _all) {
+          const _at = Number(_m.headers.get('sw-cached-at') || 0);
+          if (_at > _bestAt) { cached = _m; _bestAt = _at; }
+        }
         if (cached) {
-          const at = Number(cached.headers.get('sw-cached-at') || 0);
+          const at = _bestAt > 0 ? _bestAt : Number(cached.headers.get('sw-cached-at') || 0);
           const age = at ? (Date.now() - at) : Infinity;
           if (age <= STALE_CODE_MAX_MS) return cached;
           // Too old to trust as code. For a document, fall through to the offline notice.
@@ -310,7 +323,12 @@ self.addEventListener('notificationclick', (event) => {
     const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     // Prefer focusing an existing tab on the same path (with or without
     // the ?id= param). Otherwise open a new window.
-    const targetPath = target.split('?')[0];
+    /* Strip the FRAGMENT as well as the query. A push whose url carries a hash never matched
+       an open tab, so tapping it opened a duplicate every time and left the tab that was
+       already on that page behind. Both are selectors WITHIN a page; the page is what this
+       loop is looking for — and the navigate() below still carries the full target, so the
+       hash is still honoured once the right tab has been focused. */
+    const targetPath = target.split('#')[0].split('?')[0];
     for (const client of all) {
       try {
         const clientPath = new URL(client.url).pathname;

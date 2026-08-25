@@ -317,7 +317,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
 
   function renderSessionList(sessions, listEl, countEl, emptyMsg) {
-    countEl.textContent = sessions.length + ' total';
+    /* Cancelled sessions are shown but NOT counted. Dropping the row entirely would read as
+       the session having gone missing; counting it says the coach has a meeting they do not. */
+    var liveCount = sessions.filter(function (s) { return !isCanceledSession(s); }).length;
+    countEl.textContent = liveCount + ' total' + (liveCount !== sessions.length ? ' (' + (sessions.length - liveCount) + ' canceled)' : '');
     if (sessions.length === 0) {
       listEl.innerHTML = '<div class="empty-mini">' + esc(emptyMsg) + '</div>';
       return;
@@ -326,9 +329,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var t = new Date(s.startAt);
       var time = t.toLocaleTimeString([], { hour:'numeric', minute:'2-digit' });
       var contact = s.contactId ? contactName(contactById(s.contactId)) : '';
-      return '<a href="sessions.html">' +
+      var cx = isCanceledSession(s);
+      return '<a href="sessions.html"' + (cx ? ' style="opacity:.55;"' : '') + '>' +
         '<div class="time">' + esc(time) + '</div>' +
-        '<div class="title">' + esc(s.title || '(untitled session)') + '</div>' +
+        '<div class="title"' + (cx ? ' style="text-decoration:line-through;"' : '') + '>' + esc(s.title || '(untitled session)') + '</div>' +
+        (cx ? '<div class="who" style="color:var(--burgundy);font-weight:600;">Canceled</div>' : '') +
         (contact ? '<div class="who">with ' + esc(contact) + '</div>' : '') +
       '</a>';
     }).join('');
@@ -375,16 +380,28 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      replacing it (see mergeBlindPersonalDoc in api/src/index.js): keys the flagged copy does
      not carry are left alone, and the two accumulating arrays are unioned. */
   function writingBlind(key) {
-    /* A localStorage that THROWS is the strongest possible evidence that we do not know what
-       this device holds, let alone the server — so it answers BLIND. Returning false there
-       (what the first draft of this did) would have sent a full replace on the one device
-       least able to justify one. */
-    try { if (localStorage.getItem(key)) return false; } catch (e) { return true; }
-    // No local copy. If the server has answered for this key, the blank mint IS the truth.
-    if (window.bccDocPrimed && window.bccDocPrimed(key)) return false;
-    // Kick a prime so the next write knows; never wait on it — see above.
-    if (window.bccPrimeDoc) { try { window.bccPrimeDoc(key, function () {}); } catch (e) {} }
-    return true;
+    /* THE TEST IS THE FLAG ON DISK, not the presence of a key. The blind write stores its own
+       blank mint under this exact key one line later, so "is there anything here?" answers
+       "yes, mine" from the second write onward — and the second write then dropped the flag
+       and took the whole-document REPLACE path, which is precisely the loss the flag exists
+       to prevent. It only ever protected the first punch of the day.
+       bccDocPrimed cannot stand in for it, and this is the trap worth writing down: it
+       short-circuits to primed on our OWN unsent write (correct for the pull — an unsent local
+       write IS the authoritative copy — and exactly wrong for this question), and the
+       freshness compare marks the key primed WITHOUT storing the server's copy when the local
+       value changed mid-flight, which a blind write guarantees. Both signals are poisoned by
+       the very write we are asking about.
+       What is NOT poisoned: the server strips blindWrite before it stores anything, so a
+       local copy WITHOUT the flag can only have come from the server. That is the proof.
+       A localStorage that THROWS answers BLIND for the same reason — it is the strongest
+       possible evidence that we do not know what this device holds. */
+    var raw = null;
+    try { raw = localStorage.getItem(key); } catch (e) { return true; }
+    if (!raw) return true;                       // nothing here at all
+    var have = null;
+    try { have = JSON.parse(raw); } catch (e) { return true; }   // unreadable is not knowledge
+    if (have && have.blindWrite === true) return true;           // our own mint, not the server's
+    return false;
   }
   // Save a daily-log for a specific day (defaults to today). Editing a past day keeps its date.
   // Returns false — and writes nothing — while the signed-in upn is still unknown.
@@ -499,6 +516,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       if (window.bccNotifySaved) window.bccNotifySaved('Clocked out.');
     } else {
       var log = loadTodayLog() || {};
+      /* parkSegment can only bank a pair THIS DEVICE can see. On a device that holds no copy
+         of today's log it banks nothing, and the write that goes out carries a fresh
+         clockedInAt over whatever the server had — so the server banks it instead, on the
+         blind-write merge path (mergeBlindPersonalDoc in api/src/index.js). */
       parkSegment(log); // banks a finished pair before the fields are reused
       log.clockedInAt = nowIso();
       log.clockedOutAt = null;
@@ -512,6 +533,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
 
   /* ===== My time: list + edit your own clock-ins across days ===== */
   var _editDay = null; // which day's row is open for editing
+  var _editDayRendered = null; // the day the In/Out boxes ON SCREEN were built from
   function myLogs() {
     var out = [], pre = logPrefix();
     for (var i = 0; i < localStorage.length; i++) {
@@ -543,6 +565,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function renderMyTime() {
     var listEl = document.getElementById('timeList'), warnEl = document.getElementById('timeWarn');
     if (!listEl) return;
+    /* Carry the times being TYPED across the repaint. Clocking in or out rebuilds this list,
+       and an open edit row was rebuilt from the STORED values — so someone fixing a missed
+       clock-out from Tuesday, who then clocked in for today before pressing Save, lost the
+       correction with nothing to say so. (The cross-device sync path already refuses to
+       repaint while a row is open; the local buttons did not.) Restored only when the SAME
+       day is still open: Save and Cancel both clear _editDay first, and opening a different
+       day must show that day. */
+    var keepIn = null, keepOut = null, keepFocus = null;
+    var _oldIn = listEl.querySelector('[data-fld="in"]'), _oldOut = listEl.querySelector('[data-fld="out"]');
+    if (_oldIn) keepIn = _oldIn.value;
+    if (_oldOut) keepOut = _oldOut.value;
+    if (document.activeElement === _oldIn) keepFocus = 'in';
+    else if (document.activeElement === _oldOut) keepFocus = 'out';
+    var prevEditDay = _editDayRendered;
     var logs = myLogs();
     var today = ymd(new Date());
     // Warn about any PAST day still open (forgot to clock out) — that is Jenna's case.
@@ -557,7 +593,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         openPast.map(function (l) { return esc(fmtDay(l.day)); }).join(', ') + '). Open it below to add your clock-out time.</div>'
       : '';
     if (!logs.length) { listEl.innerHTML = '<div class="empty-mini">No time logged yet. Use “Clock in” above to start.</div>'; return; }
-    listEl.innerHTML = logs.map(function (l) {
+    var _paint = logs.map(function (l) {
       var open = l.clockedInAt && !l.clockedOutAt;
       var segs = logSegments(l);
       // Total every punch on the day, not just the pair still in the fields, and spell
@@ -587,6 +623,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           : '') +
       '</div>';
     }).join('');
+    listEl.innerHTML = _paint;
+    _editDayRendered = _editDay;
+    if (_editDay && prevEditDay === _editDay) {
+      var nIn = listEl.querySelector('[data-fld="in"]'), nOut = listEl.querySelector('[data-fld="out"]');
+      if (nIn && keepIn != null) nIn.value = keepIn;
+      if (nOut && keepOut != null) nOut.value = keepOut;
+      if (keepFocus === 'in' && nIn) nIn.focus();
+      else if (keepFocus === 'out' && nOut) nOut.focus();
+    }
   }
 
   document.getElementById('timeList').addEventListener('click', function (ev) {
@@ -655,6 +700,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   /* ===== My tasks (personal, private — moved here from Bookkeeping) ===== */
   function sani(s)  { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40); }
   function uid2()   { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+  /* A session the coach set to Canceled is still an ordinary future-dated document. Every
+     other surface consults the status; My Day did not, so a cancelled meeting was counted in
+     "sessions today" and listed as if it were happening. Both spellings, because the value is
+     free text from the client — the same predicate sessions.html uses. */
+  function isCanceledSession(s) { return /^cancell?ed$/i.test(String((s && s.status) || '').trim()); }
   var _myTasksOpen = true;
   function myTasksKey() { return 'bcc-mytasks-' + sani(meUpn()); }
   function loadMyTasks() {
@@ -683,7 +733,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // which the server refuses — a backfill there would be a write that can never land.
     if (needIds.length && meUpn()) { needIds.forEach(function (t) { t.id = uid2(); }); saveMyTasks(d); }
     var openCount = items.filter(function (t) { return !t.done; }).length;
-    var today = new Date().toISOString().slice(0, 10);
+    // LOCAL today, not UTC. toISOString rolls over at 7pm Central, so every evening the
+    // to-dos due TODAY were marked Overdue. ymd() is what renderMyTime already uses.
+    var today = ymd(new Date());
     var rows = items.map(function (t, i) {
       var overdue = !t.done && t.due && t.due < today;
       var tid = esc(t.id || '');
@@ -695,6 +747,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         '<button data-mt-down="' + tid + '" type="button" aria-label="Move down"' + (i === items.length - 1 ? ' disabled' : '') + '>▼</button></span>' +
         '<button class="mt-del" data-mt-del="' + tid + '" type="button" aria-label="Delete">×</button></div>';
     }).join('');
+    /* The add box holds text that exists NOWHERE else. Every tick, delete and reorder rebuilds
+       this card, so a half-typed to-do was silently binned by any other click. Snapshot before
+       the rebuild, restore after — the same carry the CRM detail pane does for the same
+       reason. */
+    var keepTxt = (document.getElementById('mt_new') || {}).value || '';
+    var keepDue = (document.getElementById('mt_due') || {}).value || '';
+    var keepFocus = document.activeElement && document.activeElement.id;
     wrap.innerHTML = '<div class="card mt-card">' +
       '<div class="mt-head"><button class="mt-toggle" id="mt_toggle" type="button" aria-label="Toggle">' + (_myTasksOpen ? '▾' : '▸') + '</button>' +
       '<strong>📌 My tasks</strong><span class="mt-count">' + (openCount ? openCount + ' open' : 'all clear') + '</span>' +
@@ -703,6 +762,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         '<div class="mt-add"><input id="mt_new" autocomplete="off" placeholder="Add a personal to-do…" /><input type="date" id="mt_due" title="Due date (optional)" /><button class="btn btn-primary" id="mt_add" type="button">Add</button></div>' +
         (rows || '<div class="mt-empty">No personal tasks yet. Add one above; use ▲▼ to set your priority order.</div>') +
       '</div></div>';
+    var reNew = document.getElementById('mt_new'), reDue = document.getElementById('mt_due');
+    if (reNew && keepTxt) reNew.value = keepTxt;
+    if (reDue && keepDue) reDue.value = keepDue;
+    if (keepFocus === 'mt_new' && reNew) reNew.focus();
+    else if (keepFocus === 'mt_due' && reDue) reDue.focus();
     document.getElementById('mt_toggle').onclick = function () { _myTasksOpen = !_myTasksOpen; renderMyTasks(); };
     var addFn = function () {
       var inp = document.getElementById('mt_new'); var txt = (inp.value || '').trim(); if (!txt) return;
@@ -716,7 +780,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       }
       var due = (document.getElementById('mt_due') || {}).value || '';
       var dd = loadMyTasks(); dd.items.unshift({ id: uid2(), text: txt.slice(0, 300), due: due, done: false, createdAt: nowIso() });
-      saveMyTasks(dd); renderMyTasks(); var n = document.getElementById('mt_new'); if (n) n.focus();
+      saveMyTasks(dd);
+      /* Blank the boxes HERE. The repaint now carries a half-typed to-do forward (so an
+         unrelated tick cannot bin it), and this is the one path where that text has just
+         BECOME a to-do — leaving it would show the task added and still sitting in the box,
+         one Enter away from being added twice. */
+      inp.value = ''; var _d = document.getElementById('mt_due'); if (_d) _d.value = '';
+      renderMyTasks(); var n = document.getElementById('mt_new'); if (n) n.focus();
     };
     document.getElementById('mt_add').onclick = addFn;
     var ni = document.getElementById('mt_new'); if (ni) ni.addEventListener('keydown', function (e) { if (e.key === 'Enter') addFn(); });

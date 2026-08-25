@@ -233,12 +233,49 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     try { var raw = localStorage.getItem(enrollmentIdFor(courseId)); if (raw) return JSON.parse(raw); } catch (_) {}
     return null;
   }
+  /* Prime gate for the enrollment document. loadEnrollment mints a blank {progress:{}} when
+     the key is absent — a new laptop, a private window, a boot pull that failed — and every
+     tick writes the WHOLE document back through the hooked setter, so one tick replaced the
+     learner's entire completed history. Keyed by the document id, because a learner has one
+     per course. Fails OPEN when the priming layer is absent (an older bcc-api.js) rather than
+     making the course untickable. */
+  var _enrPrimed = {};
+  var _enrWarned = {};
+  function primeEnrollment(courseId, done) {
+    var id = enrollmentIdFor(courseId);
+    if (!id || _enrPrimed[id] === true || _enrPrimed[id] === 'busy') { if (done) done(); return; }
+    if (!window.bccPrimeDoc || !window.bccDocPrimed) { _enrPrimed[id] = true; if (done) done(); return; }
+    _enrPrimed[id] = 'busy';
+    window.bccPrimeDoc(id, function () {
+      _enrPrimed[id] = window.bccDocPrimed(id) ? true : 'fail';
+      if (done) done();
+    });
+  }
   function saveEnrollment(courseId, mutator) {
     // Without an identity, userSlug() falls back to 'anon' and this writes progress to a
     // single doc SHARED by everyone — which then syncs, so one person's ticks showed up
     // as another's, and were reverted the moment the real upn arrived. Refuse instead.
     if (!meUpn()) return null;
     var id = enrollmentIdFor(courseId);
+    if (_enrPrimed[id] !== true) {
+      /* Refuse rather than publish a blank record over the learner's progress. Nothing is
+         disabled — this same handler retries — and the message is latched per course. */
+      if (!_enrWarned[id]) {
+        _enrWarned[id] = true;
+        (window.bccNotify || alert)('Not saved yet — your progress for this course is still loading, and saving now would replace it. It saves as soon as it lands.', 'warn', 9000);
+      }
+      if (_enrPrimed[id] === 'fail') _enrPrimed[id] = undefined;
+      primeEnrollment(courseId, function () {
+        if (_enrPrimed[id] !== true) return;
+        _enrWarned[id] = false;
+        /* Repaint only if THIS course's learner view is still the one on screen. There is no
+           module-level "open course" variable to consult, so ask the DOM: the learner view
+           stamps the course id it was drawn for. */
+        var lw = document.getElementById('learnerMode');
+        if (lw && lw.dataset.courseId === String(courseId) && typeof renderLearner === 'function') renderLearner(courseId);
+      });
+      return null;
+    }
     var e = loadEnrollment(courseId) || {
       id: id,
       tenantId: 'blue-collar-coach',
@@ -458,6 +495,23 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function renderLearner(courseId) {
     var c = getCourse(courseId);
     var el = document.getElementById('learnerMode');
+    // Stamp which course this view is showing, so an async repaint can tell whether it is
+    // still the one on screen without a module-level variable to fall out of step.
+    if (el) el.dataset.courseId = String(courseId);
+    /* Ask the server for THIS learner's progress before any tick is allowed to publish a
+       blank record over it. primeEnrollment returns immediately once primed, so the repeat on
+       every render costs nothing, and the callback repaints only if this view is still up. */
+    /* Kicked ONLY when it is neither primed nor in flight. primeEnrollment calls back
+       SYNCHRONOUSLY once a document is primed, so an unconditional kick here would repaint,
+       which kicks again, which repaints — an infinite recursion that locks the tab the second
+       time the course is opened. */
+    var _enrId = enrollmentIdFor(courseId);
+    if (meUpn() && _enrId && _enrPrimed[_enrId] !== true && _enrPrimed[_enrId] !== 'busy') {
+      primeEnrollment(courseId, function () {
+        var lw2 = document.getElementById('learnerMode');
+        if (lw2 && lw2.dataset.courseId === String(courseId)) renderLearner(courseId);
+      });
+    }
     if (!c) {
       el.innerHTML = '<div class="empty"><div class="big">Course not found.</div><div><a href="training.html" style="color:var(--gold-deep); text-decoration:none; font-weight:700;">Back to catalog</a></div></div>';
       return;

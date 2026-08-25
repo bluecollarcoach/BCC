@@ -304,7 +304,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     setTimeout(function () { document.getElementById('ed-title').focus(); }, 50);
   }
 
-  document.getElementById('newBtn').addEventListener('click', function () { openEditor(null); });
+  /* Drive the boot rather than racing it. init() is what assigns the module-level element
+     references openEditor writes into, and it runs from bcc-auth-ready or a 600ms fallback —
+     so a click in the first moments threw and the button simply did nothing, with no message.
+     bootOnce is idempotent (document.body.dataset.didInit), so this is safe to call. */
+  document.getElementById('newBtn').addEventListener('click', function () { bootOnce(); openEditor(null); });
 
   function init() {
     qInput = document.getElementById('q');

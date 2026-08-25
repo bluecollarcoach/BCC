@@ -113,6 +113,22 @@
     .grid { column-count:4; }
     .card { border:1px solid #ccc; }
     .card textarea, .fin-row input, .check-item input.ci-note { background:#fff !important; border-color:#ddd; }
+    /* The inline height on every textarea was measured at the SCREEN column width; the print
+       sheet is narrower, so the same text needs more room and the surplus was clipped — the
+       plan printed with sentences cut off mid-word and nothing to show it had happened.
+       `height:auto !important` beats the inline style (specificity does not apply to !important
+       over inline), and `overflow:visible` lets the content set the box. Deliberately CSS
+       rather than a beforeprint re-measure: no JS runs, so nothing depends on which browser
+       fires which event, and there is no build step here to catch it if one does not. */
+    .card textarea, .check-item input.ci-note {
+      height: auto !important;
+      min-height: 0 !important;
+      overflow: visible !important;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    /* ...and keep a card from being split across a column break mid-sentence. */
+    .card { break-inside: avoid; page-break-inside: avoid; }
   }
 </style>
 <script>/* Boot-error buffer. Must run BEFORE any page script: bcc-api.js is deferred, so
@@ -178,6 +194,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       <div class="sub" id="finSub">Enter manually, or pull from QuickBooks.</div>
       <div class="fin-row"><span class="fl">Current ratio</span><input id="f_fin_cr" placeholder="—" /></div>
       <div class="fin-row"><span class="fl">Months of cash on hand</span><input id="f_fin_mc" placeholder="—" /></div>
+      <div id="finPartial" style="font-size:11.5px;color:#8a6d2f;padding:2px 0 0;"></div>
       <div class="fin-row"><span class="fl">Net margin</span><input id="f_fin_nm" placeholder="—" /></div>
       <div class="pull-note" id="finPulled"></div>
     </div>
@@ -300,7 +317,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (!window.bccPrimeDoc || !window.bccDocPrimed) { _dashPrimed[id] = true; if (done) done(); return; }
     _dashPrimed[id] = 'busy';
     window.bccPrimeDoc(DASH_PREFIX + id, function () {
-      _dashPrimed[id] = window.bccDocPrimed(DASH_PREFIX + id) ? true : 'fail';
+      /* Keep the REASON. A plan this user may not read never arrives however long they wait,
+         and the refusal message below has to say that instead of "still loading". */
+      if (window.bccDocPrimed(DASH_PREFIX + id)) _dashPrimed[id] = true;
+      else _dashPrimed[id] = (window.bccPrimeState && window.bccPrimeState(DASH_PREFIX + id) === 'denied') ? 'denied' : 'fail';
       if (done) done();
     });
   }
@@ -389,6 +409,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     $('f_swot_o').value = s.opportunities || ''; $('f_swot_t').value = s.threats || '';
     var f = d.financials || {};
     $('f_fin_cr').value = f.currentRatio || ''; $('f_fin_mc').value = f.monthsCash || ''; $('f_fin_nm').value = f.netMargin || '';
+    var mcNote = document.getElementById('finPartial');
+    if (mcNote) mcNote.textContent = d.financialsPartial
+      ? '⚠ Months of cash is an estimate — QuickBooks did not return a full burn window, so it is based on a part-month.'
+      : '';
     $('finPulled').textContent = f.pulledAt ? ('Pulled from QuickBooks ' + new Date(f.pulledAt).toLocaleString()) : '';
     // pulse checkboxes
     var pulse = d.pulse || {};
@@ -447,17 +471,25 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        showed their change. */
     saveTimer = setTimeout(function () { saveTimer = null; doSave(); }, 600);
   }
+  /* Returns TRUE only when the document actually reached localStorage. Callers announce
+     success on the strength of it — "Financials pulled from QuickBooks." was being printed
+     over a save the prime gate had just refused, and the figures were then repainted away. */
   function doSave() {
-    var d = collect(); if (!d) return;
+    var d = collect(); if (!d) return false;
     if (currentId && _dashPrimed[currentId] !== true) {
       /* Refuse rather than publish a blank plan over the real one. Nothing is disabled — the
          retry lives behind this very handler — and the message is latched per client because
          scheduleSave() is bound to `input`, so an unlatched toast would fire per keystroke. */
+      var _denied = _dashPrimed[currentId] === 'denied';
       if (!_dashWarned[currentId]) {
         _dashWarned[currentId] = true;
-        (window.bccNotify || function () {})('Not saved yet — this client’s plan is still loading, and saving now would replace it with a blank one. It saves automatically as soon as it loads.', 'warn', 9000);
+        (window.bccNotify || function () {})(_denied
+          ? 'Not saved — you don’t have access to this client’s plan, so it can’t be opened or changed here. Ask an admin to give you access to this client, then reload.'
+          : 'Not saved yet — this client’s plan is still loading, and saving now would replace it with a blank one. It saves automatically as soon as it loads.', 'warn', 9000);
       }
-      setSaveState('Waiting for this client’s plan…', false);
+      // "Waiting" is a promise that it will arrive. For a refusal it never will.
+      setSaveState(_denied ? 'No access to this client’s plan' : 'Waiting for this client’s plan…', false);
+      // (falls through to `return false` below — the caller must not claim success)
       if (_dashPrimed[currentId] === 'fail') {
         var nowMs = Date.now();
         if (!(_dashRetryAt[currentId] > nowMs - 4000)) {
@@ -473,7 +505,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           });
         }
       }
-      return;
+      return false;
     }
     // resync() deliberately refuses to repaint while the user is typing, so a teammate's
     // change that arrived mid-edit is still sitting in storage — and this save is a whole
@@ -502,6 +534,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     dirty = false;
     setSaveState('Saved', true);
     if (window.bccAudit) window.bccAudit('dashboard-update', { key: d.id, path:'/dashboard.html', meta:{ companyId: d.companyId } });
+    return true;
   }
   function setSaveState(txt, ok) { var el = $('saveState'); el.textContent = txt; el.classList.toggle('saved', !!ok); }
 
@@ -549,7 +582,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   function loadQboCompanies() {
     fetch('/api/integrations/qbo/companies', { credentials:'include' })
-      .then(function (r){ return r.ok ? r.json() : { companies:[] }; })
+      // An HTTP failure must not repaint the picker. Falling through the success handler with
+      // an empty list emptied the select — which also dropped the company this dashboard is
+      // already linked to — and greyed the Pull button, reading as "there are none".
+      .then(function (r) { if (!r.ok) return Promise.reject(new Error('HTTP ' + r.status)); return r.json(); })
       .then(function (d){
         qboCompanies = (d && d.companies) || [];
         var sel = $('sel_qbo');
@@ -559,7 +595,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         if (current) { ensureQboOption(current.qboRealmId); sel.value = current.qboRealmId || ''; }
         updatePullState();
       })
-      .catch(function (){ qboCompanies = []; });
+      .catch(function (e) {
+        qboCompanies = [];
+        (window.bccNotify || function () {})('Couldn’t load the QuickBooks company list (' + ((e && e.message) || 'network error') + '), so the picker is empty — this is not a sign that nothing is connected. Reload to try again.', 'warn', 9000);
+      });
   }
   function updatePullState() {
     var has = !!$('sel_qbo').value;
@@ -587,14 +626,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // YYYY-MM-DD directly.
     var asOf = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
     pulling = true;
-    var clientAt = current; // pin the client this pull is FOR — switching mid-fetch must not write these KPIs into a different client's doc
+    /* Pin the CLIENT, not the object. adoptDash replaces `current` with a fresh object for
+       the SAME client the moment the prime lands, so an identity check silently discarded a
+       pull that was still perfectly valid — the button did nothing, with no error. */
+    var idAt = currentId; // pin the client this pull is FOR — switching mid-fetch must not write these KPIs into a different client's doc
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(realm) + '/kpis?method=accrual&asOf=' + asOf + '&burnMonths=3', { credentials:'include' })
       // Carry the HTTP status through: the old code only recognised an explicit
       // ok:false, so any error body without that field (or a non-JSON 5xx) fell
       // through to the success path and blanked the saved financials.
       .then(function (r){ return r.json().catch(function(){ return { ok:false }; }).then(function (j){ return { httpOk: r.ok, body: j }; }); })
       .then(function (res){
-        if (current !== clientAt) return; // user switched clients while this was in flight
+        if (!current || currentId !== idAt) return; // user switched clients while this was in flight
         var resp = res.body || {};
         var k = resp.kpis || {};
         /* Say what the SERVER said. /kpis is deliberately admin-only, so a non-admin clicking
@@ -608,12 +650,27 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         // value silently destroyed figures a bookkeeper had typed in by hand.
         if (k.currentRatio != null) $('f_fin_cr').value = Number(k.currentRatio).toFixed(2);
         if (k.monthsOfCash != null) $('f_fin_mc').value = String(k.monthsOfCash);
+        /* The server sets burnComplete:false when it could not read a COMPLETE-months burn
+           window and fell back to dividing a part-month's spend — its own comment calls that
+           "the exact figure this is meant to avoid". Carry the flag so the saved plan, and the
+           printed one, say which basis the number is on rather than presenting a part-month
+           estimate as months of runway. */
+        if (k.burnComplete === false) current.financialsPartial = true; else delete current.financialsPartial;
         if (k.netMargin != null) $('f_fin_nm').value = (Number(k.netMargin) * 100).toFixed(1) + '%';
         current.financials = current.financials || {};
         current.financials.pulledAt = new Date().toISOString();
         $('finPulled').textContent = 'Pulled from QuickBooks ' + new Date().toLocaleString();
-        doSave();
-        if (window.bccNotifySaved) window.bccNotifySaved('Financials pulled from QuickBooks.');
+        /* Mark it dirty BEFORE saving. Assigning .value in script fires no 'input' event, so
+           the grid listener never ran and `dirty` stayed false — which meant adoptDash treated
+           the pulled figures as nothing to preserve and repainted straight over them. */
+        dirty = true;
+        var savedPull = doSave();
+        /* Only claim it if it was SAVED. The prime gate can refuse this write (the plan has
+           not loaded yet), and a green "pulled" toast over a refusal — followed by adoptDash
+           quietly repainting the figures away — is how a coach comes to trust numbers that
+           were never stored. Say which of the two happened. */
+        if (savedPull) { if (window.bccNotifySaved) window.bccNotifySaved('Financials pulled from QuickBooks.'); }
+        else (window.bccNotify || function () {})('Pulled the figures from QuickBooks, but they are NOT saved yet — this client’s plan is still loading. They will save once it lands; if they vanish, press Pull again.', 'warn', 11000);
       })
       .catch(function (){ if (current === clientAt) (window.bccNotify||alert)('Could not reach QuickBooks.', 'error'); })
       .finally(function (){ pulling = false; btn.textContent = old; updatePullState(); });

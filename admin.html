@@ -562,11 +562,38 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       updatedAt: nowIso()
     };
   }
+  /* Prime gate for the second admin singleton, mirroring primeCfg/saveCfg above. loadTypesDoc
+     mints the built-in seven whenever the key is absent — a new laptop, a private window, a
+     failed boot pull — and saveTypesDoc writes the WHOLE document through the hooked setter.
+     Without this, one edit on such a device replaced the firm's real list for everyone.
+     _typesFresh is set ONLY from a successful read, and cleared on every failure path, so a
+     later refresh that fails cannot leave the page saving from a copy it never confirmed. */
+  var _typesFresh = false;
+  var _typesWarned = false;
+  function primeTypes(done) {
+    if (!window.bccPrimeDoc || !window.bccDocPrimed) { _typesFresh = true; if (done) done(true); return; }
+    window.bccPrimeDoc(TYPES_KEY, function () {
+      _typesFresh = !!window.bccDocPrimed(TYPES_KEY);
+      if (done) done(_typesFresh);
+    });
+  }
   function saveTypesDoc(doc) {
+    if (!_typesFresh) {
+      /* Refuse rather than publish the built-in defaults over the firm's list. Nothing is
+         disabled — the retry is this same handler — and the message is latched because the
+         editor saves on every change. */
+      if (!_typesWarned) {
+        _typesWarned = true;
+        (window.bccNotify || alert)('Not saved — the firm’s customer types haven’t finished loading, and saving now would replace them with the built-in defaults. Try again in a moment.', 'warn', 9000);
+      }
+      primeTypes(function (ok) { if (ok) { _typesWarned = false; renderTypes(); } });
+      return false;
+    }
     doc.updatedAt = nowIso();
     doc.id = TYPES_KEY; doc.tenantId = 'blue-collar-coach'; doc.docType = 'customer-types';
     localStorage.setItem(TYPES_KEY, JSON.stringify(doc));
     if (window.bccAudit) window.bccAudit('customer-types-save', { key: TYPES_KEY, path: '/admin.html' });
+    return true;
   }
 
   document.querySelectorAll('.tabs button').forEach(function (btn) {
@@ -899,6 +926,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         out.innerHTML =
           '<div style="font-size:13px;color:var(--muted);margin-bottom:4px;">Logged (billable): <strong style="color:var(--ink);">' + esc(bkFmtDur(grandLog)) + '</strong> · Active (auto-tracked): <strong style="color:var(--ink);">' + esc(bkFmtDur(grandAct)) + '</strong> · across ' + companies.length + ' client' + (companies.length === 1 ? '' : 's') + '</div>' +
           '<div style="font-size:11.5px;color:var(--muted);margin-bottom:10px;"><strong>Logged</strong> = time bookkeepers explicitly entered/punched · <strong>Active</strong> = passively measured focus time. They may overlap — do not add them together.</div>' +
+          // Say when Active is a TRIMMED figure. The auto-tracker stops at 16h per client
+          // per day; without this the total simply stopped climbing and read as the truth.
+          (resp.cappedSeconds
+            ? '<div style="background:var(--gold-fade);border-radius:8px;padding:9px 11px;margin-bottom:10px;font-size:12.5px;">Active time is <strong>capped at 16h per client per day</strong>. In this range that ceiling held back ' + esc(bkFmtDur(resp.cappedSeconds)) + ', so the Active figures below are a floor.</div>'
+            : '') +
           '<h4 style="margin:0 0 6px;font-family:\'Source Serif 4\',Georgia,serif;font-size:14px;">By client</h4>' +
           '<table style="width:100%;border-collapse:collapse;"><thead><tr><th style="text-align:left;">Client (and bookkeepers)</th><th style="text-align:right;">Logged</th><th style="text-align:right;">Active</th></tr></thead><tbody>' + compRows + '</tbody></table>' +
           '<h4 style="margin:16px 0 6px;font-family:\'Source Serif 4\',Georgia,serif;font-size:14px;">By bookkeeper</h4>' +
@@ -1071,7 +1103,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         if (act === 'demote' && blockLastAdmin((tr.dataset.upn || '').toLowerCase(), 'Demoting them')) return;
         if (act === 'deactivate' && blockLastAdmin((tr.dataset.upn || '').toLowerCase(), 'Deactivating them')) return;
         if (!persistAction(tr, function (rec) {
-          if (act === 'promote') rec.role = 'admin';
+          if (act === 'promote') {
+            rec.role = 'admin';
+            /* Drop ONLY the Admin-app override. A stored appPermissions.admin (which the
+               permissions modal persists for any value differing from the role default —
+               'none' for a member) outranks the role in bccGetAppPermission, so promoting
+               someone who had one locked them out of the Admin Center and the audit log they
+               were just given. Every OTHER app override is deliberately preserved: they are
+               separate decisions about financial data, and Remove/re-add keeps them for
+               exactly that reason. */
+            if (rec.appPermissions) delete rec.appPermissions.admin;
+          }
           if (act === 'demote')  rec.role = 'member';
           if (act === 'activate')   rec.status = 'active';
           if (act === 'deactivate') rec.status = 'inactive';
@@ -1090,8 +1132,29 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     });
   }
   document.getElementById('refreshUsersBtn').addEventListener('click', function () {
-    if (window.bccRecomputePeople) window.bccRecomputePeople();
-    renderUsers();
+    /* "Refresh from Entra" now goes to Entra. It used to call bccRecomputePeople(), which
+       only re-derives the lists from the directory copy already in memory — so a new hire
+       never appeared no matter how many times this was pressed, and the button silently did
+       nothing at all. A failure says so rather than leaving a stale list looking refreshed. */
+    var btn = this, ot = btn.textContent;
+    if (!window.bccRefreshUsers) {   // older bcc-api.js on this device: do what it can
+      if (window.bccRecomputePeople) window.bccRecomputePeople();
+      renderUsers();
+      return;
+    }
+    btn.disabled = true; btn.textContent = 'Refreshing…';
+    window.bccRefreshUsers()
+      .then(function (n) {
+        btn.disabled = false; btn.textContent = ot;
+        renderUsers();
+        if (window.bccNotifySaved) window.bccNotifySaved('Directory refreshed — ' + n + ' user' + (n === 1 ? '' : 's') + ' from Entra.');
+        else if (window.bccNotify) window.bccNotify('Directory refreshed.', 'success');
+      })
+      .catch(function (e) {
+        btn.disabled = false; btn.textContent = ot;
+        renderUsers();
+        (window.bccNotify || alert)('Could not reach Entra (' + ((e && e.message) || 'network error') + '). The list below is the copy this device already had.', 'warn', 8000);
+      });
   });
 
   /* ===== MANUAL ADD-USER FORM ===== */
@@ -1188,19 +1251,27 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
 
     var rowsHtml = APP_LIST.map(function (app) {
       var cur = existing[app.k] || defaultPermFor(role, app.k);
+      /* Admin Center access comes from the GLOBAL role and nothing else — the server's admin
+         gate reads the owner list and role==='admin', and has never looked at a per-app
+         level. Offering one here handed out a fully rendered Admin Center whose every
+         endpoint then refused, and told the admin who set it that they had delegated admin.
+         Show the row (so the current state is visible), refuse the control, say what to do. */
+      var lockedAdminRow = (app.k === 'admin' && role !== 'admin');
       var levels = PERM_LEVELS.slice();
       // Bookkeeping has an extra tier: tasks & notifications only — no financials.
       if (app.k === 'bookkeeping') levels.splice(3, 0, { v: 'tasks', label: 'Tasks only' });
       var sel = levels.map(function (p) {
         return '<option value="' + p.v + '"' + (p.v === cur ? ' selected' : '') + '>' + p.label + '</option>';
       }).join('');
+      var rowLocked = (role === 'admin' || lockedAdminRow);
       return '<tr data-app="' + esc(app.k) + '">' +
         '<td style="padding:9px 8px;border-bottom:1px solid var(--chrome-mute);">' +
           '<div style="font-weight:600;color:var(--ink);font-size:13.5px;">' + esc(app.label) + '</div>' +
           '<div style="color:var(--muted);font-size:11.5px;">' + esc(app.desc) + '</div>' +
+          (lockedAdminRow ? '<div style="color:var(--burgundy,#8a3b3b);font-size:11.5px;margin-top:2px;">Set by the global role — use <strong>Make admin</strong> on the team list to grant this.</div>' : '') +
         '</td>' +
         '<td style="padding:9px 8px;border-bottom:1px solid var(--chrome-mute);text-align:right;">' +
-          '<select data-perm' + (role === 'admin' ? ' disabled' : '') + ' style="min-width:110px;min-height:30px;padding:4px 8px;font-size:12.5px;border-radius:6px;border:1px solid var(--chrome-mute);background:' + (role === 'admin' ? 'var(--chrome)' : '#fff') + ';">' + sel + '</select>' +
+          '<select data-perm' + (rowLocked ? ' disabled' : '') + ' style="min-width:110px;min-height:30px;padding:4px 8px;font-size:12.5px;border-radius:6px;border:1px solid var(--chrome-mute);background:' + (rowLocked ? 'var(--chrome)' : '#fff') + ';">' + sel + '</select>' +
         '</td>' +
       '</tr>';
     }).join('');
@@ -1275,6 +1346,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     Object.keys(perms).forEach(function (k) {
       if (perms[k] !== defaultPermFor(role, k)) minimal[k] = perms[k];
     });
+    /* Never store an Admin-app override for a member. It grants nothing server-side, and
+       keeping one would leave the config claiming a level nobody honours. */
+    if ((rec.role || 'member') !== 'admin') delete minimal.admin;
     if (Object.keys(minimal).length === 0) delete rec.appPermissions;
     else rec.appPermissions = minimal;
     if (!saveCfg(cfg)) return;
@@ -1898,30 +1972,46 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             if (!v && inp.type === 'password') return; // see the Save branch
             rec.fields[inp.getAttribute('data-int-key')] = v;
           });
-          saveIntegration(rec);
+          /* The server tests what it HOLDS, and saveIntegration only writes localStorage —
+             the PUT behind it is debounced. Firing the test immediately therefore graded the
+             PREVIOUS credentials and then wrote that verdict onto the new ones: a corrected
+             secret could read "Failed", and a broken one "Connected". Push first, then test.
+             bccSyncNow returns the flush promise; the timeout is the backstop for a build
+             without it, and the refusal is honoured (a refused save must not be tested). */
+          if (!saveIntegration(rec)) return;
           b.disabled = true; b.textContent = 'Testing…';
-          fetch('/api/integrations/' + encodeURIComponent(channel) + '/test', { method: 'POST', credentials: 'include' })
-            .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
-            .then(function (resp) {
-              var rec2 = loadIntegration(channel);
-              rec2.status = resp.ok ? 'connected' : 'error';
-              rec2.lastTest = resp;
-              saveIntegration(rec2);
-              if (window.bccNotify) window.bccNotify(resp.ok ? 'Connected.' : ('Failed: ' + (resp.error || 'unknown')), resp.ok ? 'success' : 'error');
-              renderIntegrations();
-            })
-            .catch(function (e) {
-              var rec2 = loadIntegration(channel);
-              rec2.status = 'error';
-              rec2.lastTest = { ok: false, error: e.message };
-              saveIntegration(rec2);
-              // The test endpoint has been wired for a long time — claiming otherwise sent
-              // the admin looking for a missing feature instead of at the real error, which
-              // the chain had already captured.
-              if (window.bccNotify) window.bccNotify('Could not test ' + channel + ' (' + (e && e.message ? e.message : 'unknown error') + '). Credentials were saved but not verified.', 'warn', 9000);
-              renderIntegrations();
-            })
-            .finally(function () { /* renderIntegrations re-creates the button */ });
+          var _testFired = false;
+          var runTest = function () {
+            if (_testFired) return; _testFired = true;
+            doTest();
+          };
+          var _sync = window.bccSyncNow ? window.bccSyncNow() : null;
+          Promise.resolve(_sync).then(runTest, runTest);
+          setTimeout(runTest, 2500);
+          function doTest() {
+            fetch('/api/integrations/' + encodeURIComponent(channel) + '/test', { method: 'POST', credentials: 'include' })
+              .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+              .then(function (resp) {
+                var rec2 = loadIntegration(channel);
+                rec2.status = resp.ok ? 'connected' : 'error';
+                rec2.lastTest = resp;
+                saveIntegration(rec2);
+                if (window.bccNotify) window.bccNotify(resp.ok ? 'Connected.' : ('Failed: ' + (resp.error || 'unknown')), resp.ok ? 'success' : 'error');
+                renderIntegrations();
+              })
+              .catch(function (e) {
+                var rec2 = loadIntegration(channel);
+                rec2.status = 'error';
+                rec2.lastTest = { ok: false, error: e.message };
+                saveIntegration(rec2);
+                // The test endpoint has been wired for a long time — claiming otherwise sent
+                // the admin looking for a missing feature instead of at the real error, which
+                // the chain had already captured.
+                if (window.bccNotify) window.bccNotify('Could not test ' + channel + ' (' + (e && e.message ? e.message : 'unknown error') + '). Credentials were saved but not verified.', 'warn', 9000);
+                renderIntegrations();
+              })
+              .finally(function () { /* renderIntegrations re-creates the button */ });
+          }
           return;
         }
         if (act === 'notify') {
@@ -1989,6 +2079,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     document.getElementById('syncMeta').textContent = 'Synced via bcc-api.js';
     renderUsers();
     renderTypes();
+    /* Ask the server for the firm's customer types before any edit can publish the built-in
+       defaults over them, and repaint when it lands — the panel above was drawn from whatever
+       this device happened to hold, which on a cold browser is the seven-item fallback. */
+    primeTypes(function (ok) { if (ok && !panelHasFocus('panel-types')) renderTypes(); });
     renderIntegrations();
     renderCompany();
     renderSecurity();
@@ -2115,7 +2209,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         if (!panelHasFocus('panel-security')) renderSecurity();
       });
     }
-    if (touched(TYPES_KEY) && !panelHasFocus('panel-types')) renderTypes();
+    if (touched(TYPES_KEY)) {
+      // Re-read the authoritative copy before repainting from it, and before the next edit is
+      // allowed to save — the same treatment bcc-admin-config-v1 gets three lines above.
+      primeTypes(function () { if (!panelHasFocus('panel-types')) renderTypes(); });
+    }
     if (intTouched && !panelHasFocus('panel-integrations')) {
       /* Drop the primed copies FIRST. loadIntegration prefers that cache, so repainting
          without refreshing it re-rendered the page-load snapshot over a change that had just

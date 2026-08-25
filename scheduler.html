@@ -206,13 +206,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
 
   function esc(s) { return String(s == null ? '' : s).replace(/[<>&"']/g, function (c) { return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]); }); }
   function ymd(d) { var pad = function (n) { return String(n).padStart(2,'0'); }; return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
+  /* Both spellings — the value is free text from the client. Cancelled items are MARKED, never
+     dropped: a meeting that simply disappears from the calendar reads as lost, not called off. */
+  function isCanceledItem(it) { return /^cancell?ed$/i.test(String((it && it.status) || '').trim()); }
+  function liveCount(items) { return (items || []).filter(function (it) { return !isCanceledItem(it); }).length; }
 
   function allItems() {
     var out = [];
     for (var i = 0; i < localStorage.length; i++) {
       var k = localStorage.key(i); if (!k) continue;
       if (k.indexOf(SESSION_PREFIX) === 0) {
-        try { var s = JSON.parse(localStorage.getItem(k)); if (s && s.startAt) out.push({ kind:'session', startAt:s.startAt, title:s.title, location:s.location, contactId:s.contactId, id:s.id, href:'sessions.html' }); } catch (_) {}
+        // status rides along: without it nothing downstream could tell a CANCELLED session
+        // from a live one, so the grid, its day-count badge and the day modal all counted
+        // meetings that had been called off.
+        try { var s = JSON.parse(localStorage.getItem(k)); if (s && s.startAt) out.push({ kind:'session', startAt:s.startAt, title:s.title, location:s.location, contactId:s.contactId, id:s.id, status:s.status, href:'sessions.html' }); } catch (_) {}
       } else if (k.indexOf(EVENT_PREFIX) === 0) {
         try { var e = JSON.parse(localStorage.getItem(k)); if (e && e.startAt) out.push({ kind:'event', startAt:e.startAt, title:e.title, location:e.location, id:e.id, href:'events.html' }); } catch (_) {}
       }
@@ -273,11 +280,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         var isToday = d.getTime() === today.getTime();
         var dayItems = itemsOn(d);
         html += '<div class="day' + (inMonth ? '' : ' other-month') + (isToday ? ' today' : '') + '" data-day="' + ymd(d) + '">' +
-          '<div class="num">' + d.getDate() + (dayItems.length > 0 ? '<span class="count">' + dayItems.length + '</span>' : '') + '</div>';
+          // The badge counts what is actually HAPPENING — a cancelled session is still listed
+          // below, struck through, but it is not a booking.
+          '<div class="num">' + d.getDate() + (liveCount(dayItems) > 0 ? '<span class="count">' + liveCount(dayItems) + '</span>' : '') + '</div>';
         dayItems.slice(0, 3).forEach(function (it) {
           var t = new Date(it.startAt);
           var time = t.toLocaleTimeString([], { hour:'numeric', minute:'2-digit' });
-          html += '<div class="ev" data-id="' + esc(it.id) + '"><span class="t">' + esc(time) + '</span> ' + esc(it.title || '(untitled)') + '</div>';
+          var cx = isCanceledItem(it);
+          html += '<div class="ev" data-id="' + esc(it.id) + '"' + (cx ? ' style="opacity:.55;text-decoration:line-through;" title="Canceled"' : '') + '><span class="t">' + esc(time) + '</span> ' + esc(it.title || '(untitled)') + '</div>';
         });
         if (dayItems.length > 3) html += '<div class="more" data-more="' + ymd(d) + '">+' + (dayItems.length - 3) + ' more</div>';
         html += '</div>';
@@ -324,7 +334,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           var d = new Date(gridStart); d.setDate(gridStart.getDate() + w*7 + i);
           var inMonth = d.getMonth() === m;
           var isToday = d.getTime() === today.getTime();
-          var has = itemsOn(d).length > 0;
+          var has = liveCount(itemsOn(d)) > 0;   // a cancelled session does not make a day busy
           var cls = isToday ? 'mini-day today' : (has ? 'mini-day has-events' : 'mini-day' + (inMonth ? '' : ' other-month'));
           grid += '<div class="' + cls + '" data-day="' + ymd(d) + '">' + d.getDate() + '</div>';
         }
@@ -360,14 +370,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           var t = new Date(it.startAt);
           var time = t.toLocaleTimeString([], { hour:'numeric', minute:'2-digit' });
           var who = it.contactId ? contactName(contactById(it.contactId)) : '';
+          var cxd = isCanceledItem(it);
           /* Carry the id, exactly as the month-grid rows do. Without it this landed on the
              bare page, which opens the CURRENT week — from a month or year view that can be
              months from what was clicked — and this modal is the ONLY way to reach items past
              the first three on a day. */
           var href = it.href + (it.id ? ('?id=' + encodeURIComponent(it.id)) : '');
           return '<div class="day-ev" data-href="' + esc(href) + '">' +
-            '<div class="t">' + esc(time) + ' &middot; ' + esc(it.title || '(untitled)') + '</div>' +
-            '<div class="meta">' + esc(it.kind === 'session' ? 'Coaching session' : 'Event') + (who ? ' &middot; ' + esc(who) : '') + (it.location ? ' &middot; ' + esc(it.location) : '') + '</div>' +
+            '<div class="t"' + (cxd ? ' style="text-decoration:line-through;"' : '') + '>' + esc(time) + ' &middot; ' + esc(it.title || '(untitled)') + '</div>' +
+            '<div class="meta">' + (cxd ? '<span style="color:var(--burgundy);font-weight:700;">Canceled</span> &middot; ' : '') + esc(it.kind === 'session' ? 'Coaching session' : 'Event') + (who ? ' &middot; ' + esc(who) : '') + (it.location ? ' &middot; ' + esc(it.location) : '') + '</div>' +
           '</div>';
         }).join('');
     document.getElementById('dayEvs').querySelectorAll('.day-ev').forEach(function (el) {

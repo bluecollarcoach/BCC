@@ -915,6 +915,13 @@ app.http('data', {
               }
             }
           }
+          /* A firm-wide notification setting is a bookkeeping-admin decision, not something a
+             view-only or tasks-only account may change. Read-only tiers are refused; everyone
+             else is unaffected. */
+          if (FIRM_SETTING_KEYS.has(it.key)) {
+            if (putBkTier === undefined) putBkTier = await bookkeepingTierFor(p);
+            if (bookkeepingReadOnly(putBkTier)) return forbidden('your bookkeeping access is view-only, so you cannot change this firm setting');
+          }
           // CRM/Engagements/Marketing/Rate-Sheet records — only someone with 'edit'+
           // on the owning app (bcc-contact- requires it on at least one sharing app).
           if (putAppCheck(it.key, 'edit') === false) return forbidden('you do not have edit access for this');
@@ -923,7 +930,7 @@ app.http('data', {
           // orphan the uploaded blob and destroy that file's folder/access info,
           // so only let this endpoint touch ids that aren't already server-owned.
           if (it.key.startsWith(DOC_DOC_PREFIX)) {
-            const existingDoc = await c.item(it.key, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+            const existingDoc = await c.item(it.key, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
             if (isServerOwnedDocMeta(existingDoc)) return forbidden('this file record is managed by the Documents API and cannot be written here');
             /* A file record must not NAME a different key. The whole family is member-writable,
                and documents.html used to render each row under the id inside the payload — so a
@@ -1004,6 +1011,12 @@ app.http('data', {
                   const kept = exFields[fk];
                   if (!kept) continue;                                   // nothing stored to lose
                   if (!Object.prototype.hasOwnProperty.call(inFields, fk)) continue;  // omitted = untouched
+                  /* SECRETS ONLY. A password input renders empty when its stored value was
+                     never shown to this admin, so a blank there means "not read". Every other
+                     field renders its real value, so a blank there is a deliberate clear —
+                     restoring it re-created the "an optional field cannot be emptied" bug
+                     admin.html's own comment records having fixed. */
+                  if (!SECRET_FIELD_RE.test(fk)) continue;
                   if (String(inFields[fk] || '').trim() === '') inFields[fk] = kept;  // blanked = never read
                 }
               }
@@ -1070,8 +1083,30 @@ app.http('data', {
           }
         }
         if ((await appAccessForKey(p, key, 'edit')) === false) return forbidden('you do not have edit access for this');
+        /* Same rule as the read and the write: a CRM company row linked to a QuickBooks
+           client is that client under another key. DELETE is the one verb that cannot be
+           undone, and it was the one with no gate. Realm read off the STORED doc, and only
+           a realm that still exists as a client is gated — a stale link is not a restricted
+           client (see the bulk pull). */
+        if (FIRM_SETTING_KEYS.has(key)) {
+          // Same rule as the PUT: deleting one is just as much a change as rewriting it.
+          if (bookkeepingReadOnly(await bookkeepingTierFor(p))) return forbidden('your bookkeeping access is view-only, so you cannot change this firm setting');
+        }
+        if (key.startsWith('bcc-company-')) {
+          const exCo = await c.item(key, BCC_TENANT_ID).read().then(r => r.resource)
+            .catch(e => { if (e && e.code === 404) return null; throw e; });
+          const cRealm = exCo ? companyDocRealm(exCo.data) : null;
+          if (cRealm) {
+            const knownCo = await c.item('bcc-qbo-company-' + cRealm, BCC_TENANT_ID).read().then(r => r.resource)
+              .catch(e => { if (e && e.code === 404) return null; throw e; });
+            if (knownCo) {
+              const dAcc = await driveClientAccess(p, cRealm);
+              if (dAcc.err) return forbidden('no access to this client');
+            }
+          }
+        }
         if (key.startsWith(DOC_DOC_PREFIX)) {
-          const existingDoc = await c.item(key, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+          const existingDoc = await c.item(key, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
           if (isServerOwnedDocMeta(existingDoc)) return forbidden('this file record is managed by the Documents API and cannot be deleted here');
         }
         if (ADMIN_KEYS.has(key) && !(await isAppAdmin(p))) return forbidden();
@@ -1805,7 +1840,7 @@ app.http('feedback', {
       if (id) { // admin status update
         if (!(await isAppAdmin(p))) return { status: 403, jsonBody: { ok: false, error: 'admin only' } };
         if (String(id).indexOf('bcc-feedback-') !== 0) return badRequest('bad id');
-        const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+        const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
         if (!doc) return { status: 404, jsonBody: { ok: false, error: 'not found' } };
         const st = String(body.status || '').toLowerCase();
         if (['new', 'reviewed', 'resolved'].indexOf(st) < 0) return badRequest('bad status');
@@ -2113,7 +2148,7 @@ app.http('notifications', {
       let marked = 0;
       for (const nid of ids) {
         try {
-          const d = await c.item(String(nid), BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+          const d = await c.item(String(nid), BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
           if (d && d.docType === 'usernotif' && d.forUpn === me && !d.read) { d.read = true; await c.items.upsert(d); marked++; }
         } catch (_) {}
       }
@@ -2380,21 +2415,32 @@ app.http('bookkeeping-time', {
       let day;
       try { day = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' }); } catch (e) { day = new Date().toISOString().slice(0, 10); }
       const DAILY_CAP = 16 * 3600; // realistic per-client/day ceiling (anti-inflation)
-      let recorded = 0;
+      let recorded = 0, capped = 0;
       for (const e of entries) {
         const realmId = String(e.realmId || ''); if (!realmId) continue;
         let secs = Math.round(Number(e.seconds) || 0);
         if (!(secs > 0)) continue;
-        if (secs > 3600) secs = 3600; // per-beat cap (clock jumps)
+        if (secs > 3600) { capped += secs - 3600; secs = 3600; } // per-beat cap (clock jumps)
         const id = 'bcc-bktime-' + sanitizeUpn(who) + '-' + realmId + '-' + day;
         // Optimistic-concurrency add so overlapping flushes (multiple tabs, or an
         // unload beacon racing a keepalive fetch) can't silently lose increments.
+        let _added = 0;   // what this entry ACTUALLY added, after the daily ceiling
         for (let attempt = 0; attempt < 5; attempt++) {
           let existing = null;
           try { const r = await c.item(id, BCC_TENANT_ID).read(); existing = r.resource; }
           catch (re) { if (re.code !== 404) throw re; }
           const doc = existing || { id, tenantId: BCC_TENANT_ID, docType: 'bk-time', userUpn: who, userName: name, realmId, companyName: String(e.companyName || ''), day, seconds: 0, createdAt: new Date().toISOString() };
-          doc.seconds = Math.min((doc.seconds || 0) + secs, DAILY_CAP);
+          /* Keep the OVERFLOW rather than dropping it on the floor. Past the daily ceiling
+             every further beat was discarded in silence: the number on the report simply
+             stopped moving, and there was nothing anywhere to say it had been trimmed. That
+             is real, billable time disappearing without a trace. The stored figure still
+             honours the cap (it is what stops a stuck clock inflating a client's hours);
+             cappedSeconds records how much was held back so the report can say the total is
+             a floor, not the whole truth. */
+          const _before = doc.seconds || 0;
+          doc.seconds = Math.min(_before + secs, DAILY_CAP);
+          _added = doc.seconds - _before;
+          if (_added < secs) doc.cappedSeconds = (doc.cappedSeconds || 0) + (secs - _added);
           if (e.companyName) doc.companyName = String(e.companyName);
           doc.userName = name; doc.updatedAt = new Date().toISOString();
           try {
@@ -2406,9 +2452,12 @@ app.http('bookkeeping-time', {
             throw we;
           }
         }
-        recorded += secs;
+        recorded += _added;
+        capped += secs - _added;
       }
-      return { jsonBody: { ok: true, recorded } };
+      // `recorded` is what was STORED. Counting the requested seconds instead reported time
+      // as banked that the daily ceiling had just swallowed.
+      return { jsonBody: { ok: true, recorded, capped } };
     } catch (err) { context.error('bookkeeping-time', err); return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } }; }
   })
 });
@@ -2432,7 +2481,7 @@ app.http('bookkeeping-time-report', {
       //   loggedSeconds = explicit MANUAL/punch entries a bookkeeper logged (bk-entry, minutes)
       const [autoRes, logRes] = await Promise.all([
         c.items.query({
-          query: 'SELECT c.userUpn, c.userName, c.realmId, c.companyName, c.day, c.seconds FROM c WHERE c.tenantId=@t AND c.docType="bk-time" AND c.day>=@f AND c.day<=@to',
+          query: 'SELECT c.userUpn, c.userName, c.realmId, c.companyName, c.day, c.seconds, c.cappedSeconds FROM c WHERE c.tenantId=@t AND c.docType="bk-time" AND c.day>=@f AND c.day<=@to',
           parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@f', value: from }, { name: '@to', value: to }]
         }).fetchAll(),
         c.items.query({
@@ -2461,11 +2510,15 @@ app.http('bookkeeping-time-report', {
       /* Skipped BEFORE bump, so the withheld hours are absent from the per-person totals as
          well — a user row whose total exceeds the sum of the companies under it reports the
          private client's existence and volume just as plainly as naming it would. */
-      for (const r of autoRes.resources) { if (!timeAcc.allowed(r.realmId)) continue; bump(r, r.seconds || 0, 'seconds'); }
+      /* Time the 16h/client/day ceiling held back, summed over exactly the rows this admin
+         is allowed to see. Surfaced so "Active" is never read as the whole story when it is
+         a trimmed figure. */
+      let cappedTotal = 0;
+      for (const r of autoRes.resources) { if (!timeAcc.allowed(r.realmId)) continue; cappedTotal += (r.cappedSeconds || 0); bump(r, r.seconds || 0, 'seconds'); }
       for (const r of logRes.resources) { if (!timeAcc.allowed(r.realmId)) continue; bump(r, Math.round((r.minutes || 0) * 60), 'loggedSeconds'); }
       const companies = Object.keys(byCompany).map(k => { const x = byCompany[k]; return { realmId: x.realmId, companyName: x.companyName, seconds: x.seconds, loggedSeconds: x.loggedSeconds, users: Object.keys(x.users).map(u2 => ({ userUpn: u2, seconds: x.users[u2].seconds, loggedSeconds: x.users[u2].loggedSeconds })).sort((a, b) => (b.seconds + b.loggedSeconds) - (a.seconds + a.loggedSeconds)) }; }).sort((a, b) => (b.seconds + b.loggedSeconds) - (a.seconds + a.loggedSeconds));
       const users = Object.keys(byUser).map(k => byUser[k]).sort((a, b) => (b.seconds + b.loggedSeconds) - (a.seconds + a.loggedSeconds));
-      return { jsonBody: { ok: true, from, to, companies, users } };
+      return { jsonBody: { ok: true, from, to, companies, users, cappedSeconds: cappedTotal } };
     } catch (err) { context.error('bookkeeping-time-report', err); return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } }; }
   })
 });
@@ -2517,7 +2570,7 @@ app.http('bookkeeping-entry', {
       if (request.method === 'DELETE') {
         const id = request.params.id;
         if (!id || !/^bcc-bkentry-[A-Za-z0-9._@-]+$/.test(id)) return { status: 400, jsonBody: { ok: false, error: 'bad id' } };
-        const existing = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+        const existing = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
         if (!existing || existing.docType !== 'bk-entry') return { jsonBody: { ok: true, deleted: 0 } };
         if (!admin && String(existing.userUpn || '').toLowerCase() !== who) return { status: 403, jsonBody: { ok: false, error: 'not your entry' } };
         await c.item(id, BCC_TENANT_ID).delete().catch(() => {});
@@ -2818,16 +2871,32 @@ function mergeBlindPersonalDoc(oldData, newData) {
   const shaped = (x) => !!x && typeof x === 'object' && !Array.isArray(x);
   if (!shaped(a) || !shaped(b)) return newData;
   const out = Object.assign(Object.create(null), a);
+  /* BANK THE STORED PUNCH BEFORE THE SCALARS ARE OVERWRITTEN. clockedInAt + clockedOutAt are
+     not two ordinary fields: together they are a finished shift that has not been moved into
+     `segments` yet. myday.html moves it there in parkSegment(), on the copy THE CLIENT HOLDS —
+     and a blind device holds nothing, so it banks nothing and its clock-in would land straight
+     on top of a real morning's hours. Do here what parkSegment would have done there.
+     Guarded on the incoming copy actually CARRYING clockedInAt: a blind notes-only write
+     (wins/blockers/tomorrow) sends no clock fields at all, leaves the stored pair in place,
+     and must not have it banked as well — that would count the same hours twice. The union
+     below dedupes on the pair itself, so banking is idempotent even if it somehow runs twice. */
+  const banked = [];
+  if (Object.prototype.hasOwnProperty.call(b, 'clockedInAt') && a.clockedInAt && a.clockedOutAt) {
+    banked.push({ inAt: a.clockedInAt, outAt: a.clockedOutAt });
+  }
   for (const k of Object.keys(b)) {
     if (k === 'blindWrite') continue;
     out[k] = b[k];
   }
-  const union = (name, keyOf) => {
+  const union = (name, keyOf, extra) => {
     const la = Array.isArray(a[name]) ? a[name] : [];
     const lb = Array.isArray(b[name]) ? b[name] : [];
-    if (!la.length && !lb.length) return;
+    const lx = extra || [];
+    if (!la.length && !lb.length && !lx.length) return;
     const seen = new Map();
     for (const x of la) { if (x && typeof x === 'object') seen.set(keyOf(x), x); }
+    // Banked BEFORE the incoming list, so an entry the blind copy also carries still wins.
+    for (const x of lx) { if (x && typeof x === 'object') seen.set(keyOf(x), x); }
     for (const x of lb) { if (x && typeof x === 'object') seen.set(keyOf(x), x); }
     out[name] = Array.from(seen.values());
   };
@@ -2836,7 +2905,7 @@ function mergeBlindPersonalDoc(oldData, newData) {
   /* inAt/outAt — the field names parkSegment actually writes. Guessing (in/start, out/end)
      would have keyed EVERY segment as '|', collapsed the whole day's banked punches into one
      entry, and done it on the merge path added to stop exactly that kind of loss. */
-  union('segments', (x) => String((x.inAt || '') + '|' + (x.outAt || '')));
+  union('segments', (x) => String((x.inAt || '') + '|' + (x.outAt || '')), banked);
   delete out.blindWrite;
   return out;
 }
@@ -2853,6 +2922,14 @@ function dashboardDocRealm(data) {
   return rid ? String(rid) : null;
 }
 function bookkeepingReadOnly(tier) { return tier === 'tasks' || tier === 'view' || tier === 'none'; }
+/* FIRM-WIDE SETTINGS that decide who gets NOTIFIED. They are not client-scoped, so none of the
+   per-client gates see them, and they are not app-scoped, so SINGLE_APP_KEY_PREFIXES does not
+   either — they were writable and deletable by anyone signed in, including a bookkeeper
+   explicitly set to view-only. Changing one silently redirects the firm's month-end hand-off
+   or its notarisation alerts, and nothing on any screen shows that it moved.
+   Deliberately its own small map rather than a new entry in an existing list: those lists
+   carry other meanings (sync scope, app ownership) that do not apply here. */
+const FIRM_SETTING_KEYS = new Set(['bcc-monthend-contact-v1', 'bcc-notary-contact-v1']);
 
 /* Client-scoped bookkeeping records flow through the GENERIC /api/data endpoint, which
    until now applied only COMPANY access — is this client yours? — and never the
@@ -3240,7 +3317,7 @@ function driveCallbackHandler(provider) {
       // of the client's folder. Keep root (and the original connectedAt) intact; a
       // reconnect is a new token, not a new configuration.
       const driveDocId = 'bcc-clientdrive-' + realmId;
-      const priorDrive = await container().item(driveDocId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      const priorDrive = await container().item(driveDocId, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
       const nextDrive = Object.assign({}, priorDrive || {}, {
         id: driveDocId, tenantId: BCC_TENANT_ID, docType: 'client-drive', realmId,
         provider, account, refreshToken: tok.refresh_token,
@@ -3271,7 +3348,7 @@ app.http('drive-status', {
     const acc = await driveClientAccess(p, realmId, { files: true, write: request.method === 'DELETE' }); if (acc.err) return acc.err;
     const c = container(); const id = 'bcc-clientdrive-' + realmId;
     if (request.method === 'DELETE') { try { await c.item(id, BCC_TENANT_ID).delete(); } catch (e) { if (e.code !== 404) throw e; } return { jsonBody: { ok: true, connected: false } }; }
-    const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+    const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
     return { jsonBody: { ok: true, connected: !!doc, provider: doc ? doc.provider : null, account: doc ? doc.account : null, rootName: (doc && doc.root && doc.root.name) || null, googleConfigured: (await driveAppCreds('google')).ok, onedriveConfigured: (await driveAppCreds('onedrive')).ok } };
   })
 });
@@ -3397,7 +3474,7 @@ async function spFolderFor(realmId) {
   let map = {};
   try { const d = await c.item(SP_MAP_ID, BCC_TENANT_ID).read().then(r => r.resource); if (d && d.map) map = d.map; } catch (_) {}
   if (map[realmId]) return map[realmId];
-  const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+  const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
   const name = comp && comp.companyName;
   if (!name) return null;
   const folders = await spFolderNames();
@@ -3433,8 +3510,32 @@ async function spItemBelongsToClient(access, driveId, itemId, folder) {
     const rootIdx = parentPath.indexOf('/root:');
     if (rootIdx < 0) return false;
     const rel = parentPath.slice(rootIdx + 6);            // '/root:'.length
-    const base = '/' + SP_ROOT_FOLDER + '/' + folder;
-    return rel === base || rel.indexOf(base + '/') === 0; // exactly this folder, or a real subfolder — not a name-prefix collision
+    /* COMPARE SEGMENTS, DECODED — never the joined strings. Graph percent-encodes each path
+       segment but not `name`, so the raw path is '/Recurring%20Client%20Work/Acme%20Plumbing'
+       while the folder names we hold are 'Recurring Client Work' and 'Acme Plumbing': the old
+       string compare could not match ANY client whose name contains a space, which is all of
+       them, so every SharePoint download and single-file import was refused with "This file
+       does not belong to this client." The drive-side code says the same thing in its own
+       comment and compares ids instead.
+       Re-encoding our side would be the wrong direction: encodeURI leaves & ' ( ) + , = ! $
+       alone where Graph escapes them, so it would restore most clients and keep refusing
+       exactly the ones with punctuation — a partial fix nobody would notice. Decoding is the
+       reliable direction.
+       Split BEFORE decoding, and decode each segment on its own: a folder whose name really
+       contains '%2F' would otherwise decode into a '/' and forge a segment boundary — a
+       caller-controlled path escape into a sibling client's folder. A malformed escape keeps
+       the raw text, which simply fails to match, so it fails closed. */
+    const decodeSeg = (x) => { try { return decodeURIComponent(x); } catch (_) { return x; } };
+    const relSegs = rel.split('/').filter(Boolean).map(decodeSeg);
+    const baseSegs = [SP_ROOT_FOLDER, folder];
+    if (relSegs.length < baseSegs.length) return false;   // shallower than the client folder
+    for (let i = 0; i < baseSegs.length; i++) {
+      if (relSegs[i] !== baseSegs[i]) return false;
+    }
+    // Equal length = the client's own folder; longer = a real subfolder under it. A sibling
+    // whose name merely starts with the same text cannot match, because this compares whole
+    // segments rather than a string prefix.
+    return true;
   } catch (_) { return false; }
 }
 app.http('sharepoint-list', {
@@ -3764,7 +3865,7 @@ app.http('sharepoint-map', {
 
 async function driveDocAndToken(realmId) {
   const c = container();
-  const doc = await c.item('bcc-clientdrive-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+  const doc = await c.item('bcc-clientdrive-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
   if (!doc) return { err: { status: 400, jsonBody: { ok: false, error: 'not connected' } } };
   const creds = await driveAppCreds(doc.provider);
   if (!creds.ok) return { err: { status: 400, jsonBody: { ok: false, error: 'app not configured' } } };
@@ -3967,9 +4068,9 @@ app.http('drive-files', {
              drive-root search from client A's Files tab listed client B's documents — and the
              ids it returned then passed the download endpoint's realm check. Graph's
              items/{id}/search is recursive, so subfolders are still covered. */
-          if (root && root.driveId && root.itemId) path = "/drives/" + root.driveId + "/items/" + encodeURIComponent(root.itemId) + "/search(q='" + encodeURIComponent(search) + "')";
-          else if (root && root.driveId) path = "/drives/" + root.driveId + "/root/search(q='" + encodeURIComponent(search) + "')";
-          else path = "/me/drive/root/search(q='" + encodeURIComponent(search) + "')";
+          if (root && root.driveId && root.itemId) path = "/drives/" + root.driveId + "/items/" + encodeURIComponent(root.itemId) + "/search(q='" + encodeURIComponent(search.replace(/'/g, "''")) + "')";
+          else if (root && root.driveId) path = "/drives/" + root.driveId + "/root/search(q='" + encodeURIComponent(search.replace(/'/g, "''")) + "')";
+          else path = "/me/drive/root/search(q='" + encodeURIComponent(search.replace(/'/g, "''")) + "')";
         } else if (root && root.driveId) { path = '/drives/' + root.driveId + '/items/' + encodeURIComponent(folderId || root.itemId) + '/children'; }
         else { path = folderId ? ('/me/drive/items/' + encodeURIComponent(folderId) + '/children') : '/me/drive/root/children'; }
         let next = 'https://graph.microsoft.com/v1.0' + path + (path.indexOf('?') >= 0 ? '&' : '?') + '$top=300&$select=id,name,folder,file,size,lastModifiedDateTime,webUrl';
@@ -4123,7 +4224,7 @@ app.http('audit-client', {
       if (bookkeepingNoFinancials(await bookkeepingTierFor(p))) return forbidden('your access level does not include financials');
       // Access gate: admins see all; others only enabled companies assigned to
       // them (or open to all) — mirrors the company-list scoping.
-      const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
       // Owner-only lock is checked BEFORE the admin short-circuit — it is NOT bypassed by the admin check.
       if (companyPrivateBlocked(comp, p)) return { status: 403, jsonBody: { ok: false, error: 'no access to this client' } };
       // Fail CLOSED for non-admins: require a company doc they can actually see
@@ -4599,7 +4700,7 @@ app.http('integrations-qbo-sync', {
       // Which companies to sync — one (body.realmId) or every connected company.
       let companyDocs;
       if (body && body.realmId) {
-        const d = await c.item('bcc-qbo-company-' + body.realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+        const d = await c.item('bcc-qbo-company-' + body.realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
         if (d && !callerCanSee(d)) return { status: 403, jsonBody: { ok: false, error: 'no access to this company' } };
         companyDocs = d ? [d] : [];
       } else {
@@ -4727,6 +4828,15 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
           const status = r ? r.status : 0;
           if (!r || !r.ok) return { i, status, body: r ? (await r.text().catch(() => '')).slice(0, 400) : 'timeout' };
           const j = await r.json().catch(() => null);
+          /* An unusable body is a FETCH FAILURE, not a month of zeroes. Returning without a
+             `per` puts this month through the machinery that already exists for a failed
+             fetch: it joins failedMonths, gets the one retry, drives syncStatus to
+             partial/failed, populates `error` and so reaches the Errors page — and, most
+             importantly, NOTHING IS WRITTEN, so the month's stored P&L and balance sheet
+             both survive untouched. `i` is required: the retry pass re-fetches by it. */
+          if (!j || j.Fault || !(j.Header || j.Columns || j.Rows)) {
+            return { i, status, body: 'P&L body unreadable' };
+          }
           // Parse the P&L by EXACT QBO group (mirrors the qbo-kpis parser; a loose
           // /income/i also matched the computed NetIncome rows and inflated revenue).
           let income = 0, cogs = 0, opex = 0, net = 0;
@@ -4766,7 +4876,16 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
              instead — stale is honest here, absent is not. */
           if (bsOk) { per.cashCents = Math.round(cash * 100); per.currentAssetsCents = Math.round(ca * 100); per.currentLiabilitiesCents = Math.round(cl * 100); }
           else {
-            const prevPer = await c.item(per.id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+            /* 404 = there is genuinely no prior month, so there is nothing to carry and the
+               absent figures are correct. Any other failure means we do not KNOW, and writing
+               the month without them is the same blanking this block exists to prevent — so
+               treat it as a failed month instead, leaving the stored document alone. */
+            let prevPer = null, prevReadFailed = false;
+            try {
+              prevPer = await c.item(per.id, BCC_TENANT_ID).read().then(r => r.resource)
+                .catch(e => { if (e && e.code === 404) return null; throw e; });
+            } catch (_) { prevReadFailed = true; }
+            if (prevReadFailed) return { i, status, body: 'balance-sheet carry-forward unavailable' };
             if (prevPer) {
               if (typeof prevPer.cashCents === 'number') per.cashCents = prevPer.cashCents;
               if (typeof prevPer.currentAssetsCents === 'number') per.currentAssetsCents = prevPer.currentAssetsCents;
@@ -4784,7 +4903,7 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
           if (!monthResults[k].per) monthResults[k] = await fetchMonth(monthResults[k].i);
         }
         const m0 = monthResults.find(x => x.i === 0) || {};
-        const diag = { firstStatus: m0.status || null, firstBody: (m0.status && m0.status !== 200) ? (m0.body || null) : null };
+        const diag = { firstStatus: m0.status || null, firstBody: (m0.status && (m0.status !== 200 || m0.body)) ? (m0.body || null) : null };
         const periods = monthResults.filter(x => x.per).map(x => x.per);
         const failedMonths = monthResults.filter(x => !x.per).length;
         // .catch(() => {}) meant a failed write vanished: the run still reported
@@ -5029,7 +5148,7 @@ async function saveMsGraphTokensFor(upn, refreshToken, displayName) {
   // read/write cfg.users directly on the raw Cosmos item, which silently created a
   // phantom, never-read top-level array: "Connect Outlook" appeared to succeed but
   // the token landed nowhere getAdminCfg()/isAppAdmin()/anything else ever looks.
-  const resource = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+  const resource = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
   let data = resource && resource.data;
   if (typeof data === 'string') { try { data = JSON.parse(data); } catch (_) { data = null; } }
   if (!data || typeof data !== 'object') data = { users: [] };
@@ -5153,8 +5272,30 @@ app.http('msgraph-callback', {
  * POST /api/integrations/msgraph/upsert-event
  *   body: { graphEventId?, subject, start, end, location, body, sessionId }
  *   Creates a new event in the caller's Outlook calendar if graphEventId
- *   is empty, otherwise PATCHes the existing one. Returns { ok, graphEventId }.
+ *   is empty, otherwise PATCHes the existing one in the mailbox that holds it.
+ *   Returns { ok, graphEventId, graphOwner }.
  */
+/**
+ * Which MAILBOX holds a session's Outlook copy.
+ *
+ * bcc-session-* docs are firm-wide, so the person editing a session is routinely not the
+ * person who created it — but msGraphId only exists in the CREATOR's calendar. Addressing
+ * users/<caller>/events/<their id> 404s, so an edited time never reached Outlook at all, and
+ * the matching DELETE (which read 404 as "already gone") removed the session here while the
+ * event lived on — and the next "Pull from Outlook" imported it straight back, which is
+ * exactly the "the delete didn't work" loop sessions.html warns about.
+ *
+ * The Graph token is app-only, so naming the owning mailbox is a change of TARGET, not of
+ * permission — and it is still confined to our own domains. An unrecognised or off-domain
+ * claim silently falls back to the caller rather than being honoured.
+ */
+function graphOwnerFor(claimed, p) {
+  const me = String(p.userDetails || p.userId || '');
+  const c = String(claimed || '').trim().toLowerCase();
+  if (!c || c.indexOf('@') < 0) return me;
+  if (ALLOWED_DOMAINS.indexOf(c.split('@')[1] || '') < 0) return me;
+  return c;
+}
 app.http('msgraph-upsert-event', {
   methods: ['POST'],
   authLevel: 'anonymous',
@@ -5166,7 +5307,11 @@ app.http('msgraph-upsert-event', {
     try {
       const body = await request.json().catch(() => ({}));
       // App-only Graph: works automatically for every signed-in user — no per-user "Connect".
-      const upn = encodeURIComponent(p.userDetails || p.userId);
+      // A NEW event is always created in the caller's own calendar; an EXISTING one is patched
+      // wherever it actually lives (see graphOwnerFor).
+      const owner = body.graphEventId ? graphOwnerFor(body.graphOwner, p) : String(p.userDetails || p.userId || '');
+      const ownerKnown = owner === String(body.graphOwner || '').trim().toLowerCase();
+      const upn = encodeURIComponent(owner);
       const access = await getGraphToken();
 
       const eventPayload = {
@@ -5193,9 +5338,20 @@ app.http('msgraph-upsert-event', {
           body: JSON.stringify(eventPayload)
         });
       }
-      if (!r.ok) return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')', detail: (await r.text()).slice(0, 200) } };
+      if (!r.ok) {
+        /* 404 on a PATCH means "that event is not in THIS mailbox" — nearly always a session
+           a colleague mirrored before we started recording the owner. Say where the copy is
+           instead of a bare Graph code, and deliberately do NOT fall back to creating a
+           second event: the original would sit in their calendar at the old time. */
+        if (r.status === 404 && body.graphEventId) {
+          return { status: 409, jsonBody: { ok: false, notInMailbox: true, owner: owner,
+            error: 'the Outlook copy of this session is not in ' + owner + '\u2019s calendar. It is in the calendar of whoever first mirrored it, so their copy still shows the old details' } };
+        }
+        return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')', detail: (await r.text()).slice(0, 200) } };
+      }
       const ev = await r.json();
-      return { jsonBody: { ok: true, graphEventId: ev.id } };
+      // graphOwner travels back so the session doc can remember which calendar holds the copy.
+      return { jsonBody: { ok: true, graphEventId: ev.id, graphOwner: owner, ownerKnown: ownerKnown } };
     } catch (e) {
       context.error('msgraph upsert-event error', e);
       return { status: 500, jsonBody: { ok: false, error: String(e.message || e) } };
@@ -5214,12 +5370,24 @@ app.http('msgraph-delete-event', {
     try {
       const body = await request.json().catch(() => ({}));
       if (!body.graphEventId) return badRequest('graphEventId required');
-      const upn = encodeURIComponent(p.userDetails || p.userId);
+      const owner = graphOwnerFor(body.graphOwner, p);
+      const ownerKnown = owner === String(body.graphOwner || '').trim().toLowerCase();
+      const upn = encodeURIComponent(owner);
       const access = await getGraphToken();
       const r = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/events/' + encodeURIComponent(body.graphEventId), {
         method: 'DELETE', headers: { Authorization: 'Bearer ' + access }
       });
-      if (!r.ok && r.status !== 404) return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')' } };
+      /* 404 means "not in THIS mailbox", which only equals "already gone" when we addressed
+         the mailbox that actually holds it. Treating it as success for a session mirrored by
+         a colleague deleted the row here while the calendar event survived — and the next
+         Pull from Outlook brought it back. sessions.html turns this refusal into the
+         delete-anyway confirmation, so the choice stays with the person. */
+      if (r.status === 404) {
+        if (ownerKnown) return { jsonBody: { ok: true, alreadyGone: true } };
+        return { status: 409, jsonBody: { ok: false, notInMailbox: true,
+          error: 'that calendar event is not in your Outlook. It is in the calendar of whoever first mirrored this session, so only they can remove it' } };
+      }
+      if (!r.ok) return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')' } };
       return { jsonBody: { ok: true } };
     } catch (e) {
       context.error('msgraph delete-event error', e);
@@ -5385,7 +5553,7 @@ function graphMailboxMissing(status, detail) {
  * Pass mutating:true from send/reply so one gate covers both cases. */
 async function resolveClientMailbox(p, realmId, opts) {
   const c = container();
-  const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+  const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
   if (!comp) return { err: { status: 404, jsonBody: { ok: false, error: 'company not connected' } } };
   if (companyPrivateBlocked(comp, p)) return { err: { status: 403, jsonBody: { ok: false, error: 'no access to this client' } } };
   if (!(await isAppAdmin(p))) {
@@ -5912,14 +6080,14 @@ app.http('email-meta', {
     const c = container(); const id = 'bcc-emailmeta-' + realmId;
     const who = String(p.userDetails || p.userId || '').toLowerCase();
     if (request.method === 'GET') {
-      const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
       return { jsonBody: { ok: true, msgs: (doc && doc.msgs) || {} } };
     }
     if (!messageId || !op) return badRequest('messageId and op required');
     const now = new Date().toISOString();
     // read-modify-write with one optimistic retry on a concurrent change.
     for (let attempt = 0; attempt < 2; attempt++) {
-      const existing = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      const existing = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
       const doc = existing || { id, tenantId: BCC_TENANT_ID, docType: 'email-meta', realmId, msgs: {} };
       if (!doc.msgs) doc.msgs = {};
       const m = doc.msgs[messageId] || (doc.msgs[messageId] = { tags: [], assignedTo: '', archived: false, readBy: {}, repliedBy: [] });
@@ -6001,6 +6169,9 @@ app.http('msgraph-pull-events', {
             allDay: !!e.isAllDay,
             showAs: e.showAs,
             categories: e.categories || [],
+            // Which calendar this id lives in — a later edit or delete has to address THIS
+            // mailbox, not whoever happens to be signed in when the session is next touched.
+            msGraphOwner: String(p.userDetails || p.userId || ''),
             source: 'msgraph'
           };
         }).filter(function (s) { return s.startAt; });
@@ -6154,7 +6325,7 @@ app.http('qbo-callback', {
       // MULTI-COMPANY: one connection doc per QBO company (realmId). Connecting
       // another company just adds another doc — nothing is overwritten.
       const compId = 'bcc-qbo-company-' + realmId;
-      const existing = await c.item(compId, BCC_TENANT_ID).read().then(rr => rr.resource).catch(() => null);
+      const existing = await c.item(compId, BCC_TENANT_ID).read().then(rr => rr.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
       // Reconnecting/refreshing an EXISTING company's token must still respect that
       // company's own access controls — most importantly companyPrivateBlocked,
       // which (per every other per-client gate in this file) is NOT bypassed by
@@ -6183,7 +6354,7 @@ app.http('qbo-callback', {
       // credentials. If creds live under .data.fields (the UI-save shape), do not
       // create an empty top-level `fields: {}` that would shadow them.
       const id = 'bcc-integration-qbo';
-      const doc = await c.item(id, BCC_TENANT_ID).read().then(rr => rr.resource).catch(() => null);
+      const doc = await c.item(id, BCC_TENANT_ID).read().then(rr => rr.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
       const rec = doc || { id, tenantId: BCC_TENANT_ID, docType: 'integration', channel: 'qbo', data: { fields: {} } };
       if (rec.fields && Object.keys(rec.fields).length === 0) delete rec.fields; // drop a stale empty top-level fields
       rec.status = 'connected';
@@ -6363,7 +6534,7 @@ app.http('qbo-company-update', {
       const realmId = request.params.realmId;
       const c = container();
       const id = 'bcc-qbo-company-' + realmId;
-      const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
       if (!doc) return { status: 404, jsonBody: { error: 'company not found' } };
       // OWNER-ONLY companies (the firm's own books) are hidden from other admins on
       // READ — enforce the same on WRITE, or another admin who knows the realmId could
@@ -6386,7 +6557,7 @@ app.http('qbo-company-update', {
         // Revoke + delete the per-client SHARED-DRIVE OAuth token (a live credential)
         // so our access truly ends and nothing re-attaches if the realm is reconnected.
         try {
-          const dd = await c.item('bcc-clientdrive-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+          const dd = await c.item('bcc-clientdrive-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
           if (dd && dd.refreshToken && dd.provider === 'google') {
             try { await fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(dd.refreshToken), { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }); } catch (_) {}
             // (Microsoft has no simple programmatic delegated-token revoke; deleting the stored token ends our use.)
@@ -6457,7 +6628,7 @@ app.http('qbo-company-update', {
       let cur = doc, saved = null;
       for (let attempt = 0; attempt < 3 && !saved; attempt++) {
         if (attempt > 0) {
-          cur = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+          cur = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
           if (!cur) return { status: 404, jsonBody: { error: 'company not found' } };
           if (companyPrivateBlocked(cur, p)) return { status: 403, jsonBody: { error: 'no access to this company' } };
         }
@@ -6668,7 +6839,7 @@ app.http('qbo-report', {
     const type = (url.searchParams.get('type') || 'pl').toLowerCase();
     try {
       const c = container();
-      const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
       if (!comp) return { status: 404, jsonBody: { error: 'company not connected' } };
       // Owner-only lock is checked BEFORE the admin short-circuit — it is NOT bypassed by the admin check.
       if (companyPrivateBlocked(comp, p)) return { status: 403, jsonBody: { error: 'no access to this company' } };
@@ -6884,7 +7055,7 @@ async function qboResolveAccess(request, realmId, opts) {
   if (!p) return { err: unauthorized() };
   if (!domainAllowed(p)) return { err: domainBlocked() };
   const c = container();
-  const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+  const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
   if (!comp) return { err: { status: 404, jsonBody: { error: 'company not connected' } } };
   // Owner-only lock is checked BEFORE the admin short-circuit (see companyPrivateBlocked).
   if (companyPrivateBlocked(comp, p)) return { err: { status: 403, jsonBody: { error: 'no access to this company' } } };
@@ -7762,7 +7933,7 @@ app.http('qbo-kpis', {
     const url = new URL(request.url);
     try {
       const c = container();
-      const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
       if (!comp) return { status: 404, jsonBody: { error: 'company not connected' } };
       // "Admin-only" above is not the same as "owner-only" — a privateToUpn lock must still
       // block every OTHER admin, so it's checked here regardless of the isAppAdmin result.
@@ -7861,7 +8032,7 @@ const REPORT_LOC_APR = 0.12; // line-of-credit interest estimate (annualized), a
 const REPORT_GOAL_DEFAULTS = { monthsCash: 3, monthsCashMin: 1, currentRatio: 1.5, currentRatioMin: 1, grossMargin: 0.30, grossMarginMin: 0.15, netMargin: 0.05, netMarginMin: 0, ccHighBalance: 10000 };
 async function getReportGoals() {
   try {
-    const d = await container().item('bcc-report-goals', BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+    const d = await container().item('bcc-report-goals', BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
     return Object.assign({}, REPORT_GOAL_DEFAULTS, (d && d.goals) || {});
   } catch (e) { return Object.assign({}, REPORT_GOAL_DEFAULTS); }
 }
@@ -8141,7 +8312,7 @@ app.http('qbo-monthly-report', {
       // and could freeze a snapshot missing that day's closing entries.
       const isPast = period < currentPeriodInBusinessTz();
       let [saved, goals] = await Promise.all([
-        c.item(docId(period), BCC_TENANT_ID).read().then(r => r.resource).catch(() => null),
+        c.item(docId(period), BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; }),
         getReportGoals()
       ]);
       // Frozen snapshots are keyed by accounting method — Cash and Accrual are genuinely
@@ -8796,7 +8967,7 @@ app.http('qbo-companyinfo', {
     const realmId = request.params.realmId;
     try {
       const c = container();
-      const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+      const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
       if (!comp) return { status: 404, jsonBody: { ok: false, error: 'company not connected' } };
       if (companyPrivateBlocked(comp, p)) return { status: 403, jsonBody: { ok: false, error: 'no access to this company' } };
       if (!(await isAppAdmin(p))) {
@@ -9039,7 +9210,7 @@ app.http('qbo-cashflow', {
 async function saveOAuthTokens(channel, patch) {
   const c = container();
   const id = 'bcc-integration-' + channel;
-  const doc = await c.item(id, BCC_TENANT_ID).read().then(rr => rr.resource).catch(() => null);
+  const doc = await c.item(id, BCC_TENANT_ID).read().then(rr => rr.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
   const rec = doc || { id, tenantId: BCC_TENANT_ID, docType: 'integration', channel, fields: {} };
   rec.fields = Object.assign(rec.fields || {}, patch);
   rec.status = 'connected';
@@ -9534,7 +9705,7 @@ app.http('documents-list-create', {
          being replaced on its own terms. */
       {
         const cPrev = container();
-        const prevMeta = await cPrev.item(docId, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+        const prevMeta = await cPrev.item(docId, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
         /* ANY existing record, not only the flat server-owned shape. A documents.html record
          synced through /api/data is WRAPPED (docType lives under .data), so `prevMeta.docType`
          was undefined for it, the whole guard was skipped, and the upsert below replaced that
@@ -9726,7 +9897,13 @@ app.http('document-download', {
       }
       // ?inline=1 → render in-app (image/pdf/text only); blob SAS is on a separate
       // *.blob.core.windows.net origin, so even an inline page can't touch our app.
-      const wantInline = new URL(request.url).searchParams.get('inline') === '1' && inlineOk(meta.mimeType);
+      /* ONE derived type feeds both decisions. The stored mimeType is whatever the browser
+         or the remote host claimed at upload time — routinely 'application/octet-stream' for
+         a PDF picked on a phone — while every caller decides "is this previewable?" from the
+         file extension. So the app offered a preview the server then forced to download.
+         Same helper the mail attachment path already uses for the same reason. */
+      const dlCt = effectiveContentType(meta.mimeType, meta.name);
+      const wantInline = new URL(request.url).searchParams.get('inline') === '1' && inlineOk(dlCt);
       const sas = generateBlobSASQueryParameters({
         containerName: cont.containerName,
         blobName: meta.storageKey,
@@ -9734,7 +9911,9 @@ app.http('document-download', {
         startsOn: new Date(now.getTime() - 60 * 1000),
         expiresOn: expiry,
         contentDisposition: (wantInline ? 'inline' : 'attachment') + '; filename="' + filename + '"',
-        contentType: meta.mimeType || 'application/octet-stream'
+        // The SAME derived type the inline decision was made from. Serving 'inline' with a
+        // content type the browser will not render is how a preview turns into a blank tab.
+        contentType: dlCt || 'application/octet-stream'
       }, _blobAccount).toString();
       const url = cont.getBlockBlobClient(meta.storageKey).url + '?' + sas;
       return { status: 302, headers: { Location: url } };

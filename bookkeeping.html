@@ -1097,7 +1097,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // Trend lines from the last 12 synced months (oldest→newest), with hover values.
     var L = kpiMonths(), fM = function (x) { return money2(x); };
     setSpark('kpiRevSpark', sparkline(kpiSeries(function (p) { return (p.revenueCents || 0) / 100; }), { labels: L, fmt: fM }));
-    setSpark('kpiExpSpark', sparkline(kpiSeries(function (p) { return (p.expensesCents || 0) / 100; }), { labels: L, fmt: fM }));
+    // Overhead: up is BAD. Every other spark on this row (revenue, net, YTD) keeps the default.
+    setSpark('kpiExpSpark', sparkline(kpiSeries(function (p) { return (p.expensesCents || 0) / 100; }), { labels: L, fmt: fM, upIsBad: true }));
     setSpark('kpiNetSpark', sparkline(kpiSeries(function (p) { return netOf(p) / 100; }), { labels: L, fmt: fM }));
     var yp = all.slice().sort(function (a, b) { return (a.period || '').localeCompare(b.period || ''); }).filter(function (p) { return p.period && p.period.indexOf(year) === 0 && !periodInProgress(p.period); });
     var yrun = 0; setSpark('kpiYtdSpark', sparkline(yp.map(function (p) { yrun += netOf(p) / 100; return yrun; }), { labels: yp.map(function (p) { return p.period; }), fmt: fM }));
@@ -1209,7 +1210,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       document.getElementById('periodCount').textContent = companies.length + ' compan' + (companies.length === 1 ? 'y' : 'ies') + (isAdmin ? ' · admin controls on' : '');
       if (companies.length === 0) {
         rowsEl.innerHTML = ''; emptyEl.hidden = false;
-        emptyEl.querySelector('.big').textContent = isAdmin ? 'No companies connected yet.' : 'No companies are turned on for you yet.';
+        /* A FAILED list is not an empty one. loadCompanies deliberately resolves on failure
+           with companies=[] and isAdmin=false, so this branch told the firm's own admin they
+           had no clients — and, because isAdmin is false by construction on that path, told
+           them in the words written for a restricted member. canManage() is what the sibling
+           renderWorkList uses for the same reason. */
+        emptyEl.querySelector('.big').textContent = companiesLoadFailed
+          ? 'Couldn’t load your client list — nothing is missing, we just could not read it. Reload to try again.'
+          : ((typeof canManage === 'function' ? canManage() : isAdmin) ? 'No companies connected yet.' : 'No companies are turned on for you yet.');
         var sub = emptyEl.querySelector('div:last-child');
         if (sub) sub.innerHTML = isAdmin ? 'Click <strong>+ Connect a company</strong> to link a client’s QuickBooks.' : 'Ask an admin to give you access in Bookkeeping → All companies.';
         return;
@@ -1335,16 +1343,21 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     yf.style.display = '';
     setHead([{label:'Period'},{label:'Revenue',num:true},{label:'COGS',num:true},{label:'Gross profit',num:true},{label:'Expenses',num:true},{label:'Net',num:true},{label:'Exp %',num:true},{label:'Net %',num:true},{label:'Source'},{label:'Synced'},{label:''}]);
     var all = periodsFor(currentRealm);
-    var year = yf.value;
-    var rows = year ? all.filter(function (p) { return (p.period || '').indexOf(year) === 0; }) : all;
-    document.getElementById('periodCount').textContent = companyName(currentRealm) + ' · ' + rows.length + ' of ' + all.length + ' period' + (all.length === 1 ? '' : 's');
-
+    /* REBUILD THE OPTIONS FIRST, then read the selection. The year was read before the list
+       was rebuilt, so a year carried over from the previous client — one this client may have
+       no periods in — filtered every row away while the selector itself rendered blank,
+       because assigning a value that is not an option leaves a <select> showing nothing. The
+       bookkeeper saw an empty history and no reason for it. Reading after the rebuild means
+       an impossible year has already collapsed to '' (All years). */
     var years = {};
     all.forEach(function (p) { if (p.period) years[p.period.slice(0,4)] = true; });
     var cur = yf.value;
     yf.innerHTML = '<option value="">All years</option>' +
       Object.keys(years).sort().reverse().map(function (y) { return '<option value="' + esc(y) + '">' + esc(y) + '</option>'; }).join('');
-    yf.value = cur;
+    yf.value = cur;                       // keeps the year when this client has it...
+    var year = yf.value;                  // ...and is '' when it does not
+    var rows = year ? all.filter(function (p) { return (p.period || '').indexOf(year) === 0; }) : all;
+    document.getElementById('periodCount').textContent = companyName(currentRealm) + ' · ' + rows.length + ' of ' + all.length + ' period' + (all.length === 1 ? '' : 's');
 
     if (rows.length === 0) {
       rowsEl.innerHTML = ''; emptyEl.hidden = false;
@@ -1702,14 +1715,29 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // bookkeeper could bulk-create hundreds of tasks locally that the server then refused
     // one by one.
     if (!canWriteTasks()) return refuseTaskWrite();
-    var created = 0, failed = 0, byClient = {};
+    var created = 0, failed = 0, byClient = {}, unassigned = 0, _allowCache = {};
+    /* Per-client, computed once each. The import fans out across many clients in one pass, so
+       "who may be assigned" has to be asked per realm. */
+    var allowFor = function (rid) {
+      if (!Object.prototype.hasOwnProperty.call(_allowCache, rid)) _allowCache[rid] = assignableUpns(rid);
+      return _allowCache[rid];
+    };
     _pi.tasks.forEach(function (t) {
       var realms = [];
       (t.labels || []).forEach(function (l) { var rid = _pi.map[l]; if (rid && realms.indexOf(rid) < 0) realms.push(rid); });
       if (!realms.length && _pi.unlabeledRealm) realms = [_pi.unlabeledRealm];
       realms.forEach(function (rid) {
         var id = 'bcc-task-' + rid + '-' + uid2();
-        var doc = { id: id, tenantId: 'blue-collar-coach', docType: 'client-task', realmId: rid, title: t.title, status: t.completed ? 'done' : 'open', assigneeUpn: plannerUpnFor(t.assignee), dueDate: t.dueDate || '', note: t.notes || '', source: 'planner', createdAt: nowIso(), updatedAt: nowIso(), createdBy: myUpn() };
+        /* Never hand work to somebody who cannot see the client. bcc-task-<realm>-* is
+           filtered out of their sync, so an assignment like this is a task that can never be
+           worked AND a client name pushed at someone with no access to it — the exact pair
+           assigneeOpts already refuses for a hand-entered task. Planner has no idea who has
+           access to what, so the bulk path is where this bites: a plan labelled for six
+           clients assigns whoever ran that plan. Left unassigned and reported, not dropped. */
+        var who = plannerUpnFor(t.assignee);
+        var allow = allowFor(rid);
+        if (who && allow && allow[who] !== true) { who = ''; unassigned++; }
+        var doc = { id: id, tenantId: 'blue-collar-coach', docType: 'client-task', realmId: rid, title: t.title, status: t.completed ? 'done' : 'open', assigneeUpn: who, dueDate: t.dueDate || '', note: t.notes || '', source: 'planner', createdAt: nowIso(), updatedAt: nowIso(), createdBy: myUpn() };
         if (t.completed) doc.doneAt = nowIso();
         // A quota failure here used to be swallowed, so the success screen counted only
         // what landed and never mentioned the rest.
@@ -1725,6 +1753,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         ? '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:12px;margin:8px 0;font-size:13px;">Imported <strong>' + created + '</strong> of ' + (created + failed) + ' task' + ((created + failed) === 1 ? '' : 's') + '. <strong>' + failed + '</strong> could not be saved — this browser’s storage is full. Free up space and import the rest again.</div>'
         : '<div style="text-align:center;padding:10px 0 14px;"><div style="font-size:34px;">✅</div><div style="font-family:\'Source Serif 4\',Georgia,serif;font-size:17px;font-weight:700;margin-top:6px;">Imported ' + created + ' task' + (created === 1 ? '' : 's') + '</div></div>') +
       (parts ? '<ul style="max-height:240px;overflow:auto;margin:0 0 12px;padding-left:20px;font-size:13px;">' + parts + '</ul>' : '') +
+      // Say who was NOT assigned. Silently blanking the assignee would leave the work looking
+      // handed over in Planner and sitting unclaimed here.
+      (unassigned ? '<div style="background:var(--gold-fade,#f7f1e0);border-radius:8px;padding:10px 12px;margin:0 0 12px;font-size:12.5px;">' + unassigned + ' task' + (unassigned === 1 ? ' was' : 's were') + ' imported <strong>unassigned</strong> — the person named in Planner does not have access to that client. Assign ' + (unassigned === 1 ? 'it' : 'them') + ' to someone who does.</div>' : '') +
       '<div style="font-size:12px;color:var(--muted);margin-bottom:12px;">They’re syncing to the cloud now and appear in each client’s <strong>Tasks</strong> tab and 🔔 to-do count.</div>' +
       '<div style="text-align:right;"><button class="btn btn-primary" id="pi_done" type="button">Done</button></div>';
     document.getElementById('pi_done').onclick = function () { var m = document.getElementById('pi_modal'); if (m && m._close) m._close(); else if (m) m.remove(); renderAll(); };
@@ -1925,7 +1956,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       pts.push(x.toFixed(1) + ',' + y.toFixed(1)); lastY = y;
       hits += '<rect class="spark-hit" x="' + (x - step / 2).toFixed(1) + '" y="-3" width="' + step.toFixed(1) + '" height="' + (h + 6) + '" fill="transparent" pointer-events="all" data-l="' + (labels[i] != null ? esc(String(labels[i])) : '') + '" data-v="' + esc(fmt(v[i])) + '"></rect>';
     }
-    var col = real[real.length - 1] >= real[0] ? '#0f7a3d' : 'var(--burgundy)';
+    /* opts.upIsBad flips ONLY the colour, for a series where rising is the bad direction.
+       The overhead trend was drawn green while overhead climbed — the opposite verdict to the
+       delta printed directly beneath it. Note the >= boundary is preserved on both sides: a
+       flat series stays "good" either way, which is what every other spark already does. */
+    var rising = real[real.length - 1] >= real[0];
+    var good = opts.upIsBad ? !rising : rising;
+    var col = good ? '#0f7a3d' : 'var(--burgundy)';
     return '<svg class="spark" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" style="display:block;margin:5px 0 2px;overflow:visible;">' +
       '<polyline points="' + pts.join(' ') + '" fill="none" stroke="' + col + '" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>' +
       (lastY != null ? '<circle cx="' + lastX.toFixed(1) + '" cy="' + lastY.toFixed(1) + '" r="2.1" fill="' + col + '"/>' : '') +
@@ -2533,7 +2570,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   function saveReportObservations(notify) {
     var d = _mr.data; if (!d) return Promise.resolve();
-    return fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/monthly-report', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ period: d.period, method: d.method, observations: _mr.obs }) })
+    /* Bank the snapshot that is actually SENT, and pin the client + period it is for.
+       Stamping the baseline from the live _mr.obs when the reply lands recorded whatever had
+       been typed DURING the round trip as saved: mrObsDirty() then read clean, so closing
+       the report — or switching month — threw that text away without a word, and Print /
+       Save to Files both fire this save and then keep the modal open for exactly that kind
+       of continued typing. The realm/period pin is the same race loadMonthlyReport already
+       guards: a reply arriving after a client switch must not touch the new client's
+       baseline. */
+    var realmAt = currentRealm, periodAt = d.period;
+    var sentObs = (_mr.obs || []).slice();
+    var sentJson = JSON.stringify(sentObs);
+    return fetch('/api/integrations/qbo/companies/' + encodeURIComponent(realmAt) + '/monthly-report', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ period: periodAt, method: d.method, observations: sentObs }) })
       .then(function (r) { return r.json(); })
       // `notify` suppresses only the SUCCESS toast — it exists so the piggy-backed
       // callers (Preview/Print PDF, Save to client Files) don't stack a redundant
@@ -2542,7 +2590,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       // the PDF built fine from memory and the page said "filed to the client", and
       // the notes were simply gone when the month was reopened.
       .then(function (j) {
-        if (j && j.ok) { _mr.obsSaved = JSON.stringify(_mr.obs || []); if (notify && window.bccNotifySaved) window.bccNotifySaved('Report notes saved.'); return; }
+        if (j && j.ok) {
+          if (currentRealm === realmAt && _mr.data && _mr.data.period === periodAt) _mr.obsSaved = sentJson;
+          if (notify && window.bccNotifySaved) window.bccNotifySaved('Report notes saved.');
+          return;
+        }
         (window.bccNotify || alert)('Your observations could not be saved. They are still on screen — press “Save notes” before closing this report or changing month, or they will be lost.', 'warn', 9000);
       })
       .catch(function () { (window.bccNotify || alert)('Your observations could not be saved. They are still on screen — press “Save notes” before closing this report or changing month, or they will be lost.', 'warn', 9000); });
@@ -3480,12 +3532,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     ]).then(function (results) {
       var j = results[0], metaResp = results[1];
       var meta = (metaResp && metaResp.ok && metaResp.msgs) || {};
+      /* BOTH halves have to have answered. The count is "messages this person has not read",
+         and the read state lives entirely in the meta half — folding a failed one in as {}
+         counts every message as unread, or, once the archived filter is applied, produces a
+         number that is simply invented. Same treatment as the messages half below. */
+      var metaOk = !!(metaResp && metaResp.ok && metaResp.msgs);
       /* A failure is NOT a count. Recording zero made the client Overview state "Inbox up to
          date — no unread mail" on the strength of a request that never came back, which is the
          one thing a bookkeeper reads that banner for. Forget the number instead (so the next
          open retries it) and remember that the check failed, so the banner can say so. */
       if (!j || !j.ok) { delete _emUnread[realm]; _emUnreadErr[realm] = 1; }
       else if (j.pendingMailbox) { _emUnread[realm] = 0; delete _emUnreadErr[realm]; }   // mailbox not created yet: genuinely zero
+      else if (!metaOk) { delete _emUnread[realm]; _emUnreadErr[realm] = 1; }            // read state unknown — see above
       // Same correction as recomputeUnreadBadge: count what THIS person has not read,
       // using the meta snapshot already fetched above — not the mailbox-wide isRead flag.
       else {
@@ -3508,6 +3566,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      messages genuinely came back (or the mailbox is confirmed not created yet); cleared the
      moment a client switch or a failed load makes _emMsgs meaningless. */
   var _emInboxOkFor = null;
+  /* The per-client collaboration map (read stamps, archive, tags, assignment) could not be
+     read. Distinct from "there is nothing in it", which is the normal state for a client
+     nobody has archived or assigned anything on. */
+  var _emMetaErr = false;
+  /* 'realm|folder' whose LIST this device has actually read. renderEmailList prints an
+     empty-state claim, and without this it printed one over a panel it never drew — including
+     over the "no mailbox is set up for this client" explanation, which loadEmailMeta's repaint
+     would replace with the flat, false "No messages yet." */
+  var _emListReadFor = '';
   function myUpn()  { return String((window.bccUser && window.bccUser.userDetails) || '').toLowerCase(); }
   function myName() { var u = myUpn(); return (window.bccDisplayName && window.bccDisplayName(u)) || u; }
   function sani(s)  { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40); }
@@ -3988,8 +4055,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     ['legalName','dba','contactName','email','phone','website','ein','fiscalYearEnd','payrollSchedule','address','notes'].forEach(function (k) {
       var el = document.getElementById('ci_' + k);
       if (!el || el === ae) return;
-      if (String(el.value || '').trim()) return;   // they typed something here - it wins
-      el.value = d[k] == null ? '' : d[k];
+      /* "Typed" means TYPED. A value the app put there itself (the QuickBooks prefill) carries
+         data-prefill, and the stored document must win over it — otherwise the client's real
+         legal name, email and address were never restored, and the guess was saved over them
+         by the next autosave. The listener below clears the mark on the first real keystroke;
+         a programmatic .value assignment fires no 'input' event, so nothing else can. */
+      if (String(el.value || '').trim() && el.dataset.prefill !== '1') return;
+      if (d[k] == null || d[k] === '') return;     // nothing stored — leave the prefill alone
+      el.value = d[k];
+      delete el.dataset.prefill;
     });
   }
   // Same for the job schedule: its inputs are per-job cells, so fill the empty ones from the
@@ -4067,13 +4141,21 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       '<label class="full">Address<textarea id="ci_address" rows="2">' + esc(d.address || '') + '</textarea></label>' +
       '<label class="full">Notes<textarea id="ci_notes" rows="4">' + esc(d.notes || '') + '</textarea></label>' +
       '</div><div style="margin-top:8px;font-size:12px;color:var(--muted);" id="ci_status"></div>';
-    if (!d.legalName) { var co = companyName(currentRealm); var le = document.getElementById('ci_legalName'); if (le && co && co !== '—') le.value = co; }
+    /* A HINT, not a value. This is the QuickBooks DISPLAY name, and Legal name prints as the
+       contractor on forms filed with public agencies — so it must be something a person chose,
+       not something the app guessed. As a placeholder the box stays genuinely empty: the
+       QuickBooks LegalName can still fill it below, adoptInfo can still restore the stored
+       one, and nothing is saved that nobody typed. */
+    if (!d.legalName) { var co = companyName(currentRealm); var le = document.getElementById('ci_legalName'); if (le && co && co !== '—') le.placeholder = co; }
     /* Bind the realm this form was rendered FOR. The autosave is debounced 500ms and read
        currentRealm only when it finally fired, so typing in one client's legal name / EIN /
        notes and switching client within half a second wrote those values into the client you
        had just opened — overwriting real data with another company's. */
     var infoRealmAt = currentRealm;
-    body.querySelectorAll('input,textarea').forEach(function (el) { el.addEventListener('input', function () { scheduleInfoSave(infoRealmAt); }); });
+    body.querySelectorAll('input,textarea').forEach(function (el) {
+      // First real keystroke: this is now the user's value, not the app's guess.
+      el.addEventListener('input', function () { delete el.dataset.prefill; scheduleInfoSave(infoRealmAt); });
+    });
     fillInfoFromQbo(d);
   }
   // Pre-fill BLANK Client-info fields from QuickBooks company profile. Never
@@ -4087,7 +4169,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .then(function (ci) {
         if (!ci || !ci.ok || currentRealm !== realmAt) return;
         var filled = false;
-        function setIf(id, val) { var el = document.getElementById(id); if (el && !el.value && val) { el.value = val; filled = true; } }
+        /* Stamped as machine-written. adoptInfo skips a non-empty box on the grounds that
+           "they typed something here", and a QuickBooks prefill is not typing — so the
+           client's own stored details were never restored over it, and the guess was
+           published in their place. */
+        function setIf(id, val) { var el = document.getElementById(id); if (el && !el.value && val) { el.value = val; el.dataset.prefill = '1'; filled = true; } }
         setIf('ci_legalName', ci.legalName || ci.displayName);
         setIf('ci_dba', ci.displayName);
         setIf('ci_email', ci.email);
@@ -4096,9 +4182,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         setIf('ci_address', ci.address);
         setIf('ci_fiscalYearEnd', ci.fiscalYearEnd);
         // Only claim success if the save actually happened — saveInfo writes its own refusal
-    // into this very element, and overwriting it with "filled from QuickBooks" told the
-    // bookkeeper their details were saved when nothing was.
-    if (filled && saveInfo(realmAt)) { var s = document.getElementById('ci_status'); if (s) s.textContent = 'Blank fields filled from QuickBooks'; }
+        // into this very element, and overwriting it with "filled from QuickBooks" told the
+        // bookkeeper their details were saved when nothing was.
+        if (filled && saveInfo(realmAt)) { var s = document.getElementById('ci_status'); if (s) s.textContent = 'Blank fields filled from QuickBooks'; }
       })
       .catch(function () {});
   }
@@ -4195,6 +4281,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     return d.toISOString().slice(0, 10);
   }
   var _taskEdit = null; // id of the task currently being edited inline
+  var _taskEditRendered = null; // the id the te_* fields ON SCREEN were built from (see renderTasks)
+  var _taskDraftRealm = null;   // ...and the CLIENT those boxes belong to
   var _taskOpen = null; // id of the task whose details/notes panel is expanded (shared by Tasks tab + Overview)
   // Expanded details/notes panel for a task — used by BOTH the Tasks tab and the
   // Overview "Open to-dos" list so they behave identically.
@@ -4233,9 +4321,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      (bcc-task-<realm>-…) was filtered out of their sync — a disclosure and an assignment that
      could never be worked, at the same time. Returns null when there is nothing to filter by,
      in which case the list is unchanged; /api/notify has the final say either way. */
-  function assignableUpns() {
+  function assignableUpns(realm) {
+    var rid = realm || currentRealm;   // callers inside a workspace pass nothing
     var co = null;
-    try { co = (companies || []).filter(function (c) { return c && c.realmId === currentRealm; })[0] || null; } catch (e) { co = null; }
+    try { co = (companies || []).filter(function (c) { return c && c.realmId === rid; })[0] || null; } catch (e) { co = null; }
     if (!co) return null;                                   // company list not loaded — do not filter
     var allow = (co.allowedUserUpns || []).map(function (u) { return String(u || '').toLowerCase(); });
     if (!allow.length) return null;                         // "All users": no restriction
@@ -4273,8 +4362,28 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (selLc && !has) o += '<option value="' + esc(sel) + '" selected>' + esc((window.bccDisplayName && window.bccDisplayName(sel)) || sel) + ' (inactive)</option>';
     return '<option value="">— Unassigned —</option>' + o;
   }
+  var TASK_DRAFT_IDS = ['tk_title', 'tk_due', 'tk_recur', 'tk_assignee', 'tk_note',
+                        'te_title', 'te_due', 'te_recur', 'te_assignee', 'te_note'];
   function renderTasks() {
     var body = document.getElementById('tasks-body'); if (!body) return;
+    /* Carry what is TYPED across the repaint. Ticking a task off, deleting one, expanding a
+       note, switching the "mine" filter — every one of them rebuilds this whole panel from
+       storage, so a half-written new task, or an open Edit form with unsaved changes in it,
+       was binned by an unrelated click with no prompt and nothing to undo. The cross-device
+       sync path already refuses to repaint over a draft; the LOCAL callers had no such
+       protection, and they are the ones a bookkeeper actually clicks.
+       The te_* fields are only re-seated when the SAME task is still the one being edited —
+       opening a different task's editor, saving, or cancelling must show that task, not the
+       leftovers from the last one. */
+    var keep = {};
+    TASK_DRAFT_IDS.forEach(function (id) { var el = document.getElementById(id); if (el) keep[id] = el.value; });
+    var prevEditId = _taskEditRendered;
+    /* ...and only for the SAME CLIENT. Switching client repaints this panel too, and carrying
+       a half-written task across would file it against whoever is open when Add is finally
+       pressed — losing the draft is bad, filing a client's work under another client is
+       worse. */
+    var prevRealm = _taskDraftRealm;
+    var keepFocus = document.activeElement && document.activeElement.id;
     var opts = assigneeOpts('');
     var today = bizToday();   // Central, not UTC — a UTC 'today' rolls over at 7pm here
     var all = allTasks();
@@ -4336,6 +4445,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var list = active.length ? active.map(function (t) { return taskRow(t, false); }).join('') : '<div style="color:var(--muted);padding:10px 0;">' + (_todoMine ? 'No tasks assigned to you for ' + esc(companyName(currentRealm)) + '.' : 'No active tasks for ' + esc(companyName(currentRealm)) + '.') + '</div>';
     if (upcoming.length) list += '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 6px;">Upcoming (recurring)</div>' + upcoming.map(function (t) { return taskRow(t, true); }).join('');
     body.innerHTML = add + filterBar + list;
+    _taskEditRendered = _taskEdit;
+    var sameClient = (prevRealm === currentRealm);
+    _taskDraftRealm = currentRealm;
+    TASK_DRAFT_IDS.forEach(function (id) {
+      if (!sameClient) return;
+      if (!Object.prototype.hasOwnProperty.call(keep, id)) return;
+      if (id.indexOf('te_') === 0 && !(prevEditId && prevEditId === _taskEdit)) return;
+      var el = document.getElementById(id); if (el) el.value = keep[id];
+    });
+    if (sameClient && keepFocus && TASK_DRAFT_IDS.indexOf(keepFocus) >= 0) {
+      var fe = document.getElementById(keepFocus); if (fe) fe.focus();
+    }
     document.getElementById('tk_add').onclick = addTask;
     var tkMine = document.getElementById('tk_mine'); if (tkMine) tkMine.onclick = function () { _todoMine = !_todoMine; renderTasks(); };
     body.querySelectorAll('[data-tdone]').forEach(function (cb) { cb.onchange = function () { toggleTask(cb.getAttribute('data-tdone'), cb.checked); }; });
@@ -4420,6 +4541,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     localStorage.setItem(id, JSON.stringify(t));
     if (window.bccAudit) window.bccAudit('client-task-create', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } });
     taskAssignNotify(t);
+    // Blank the compose box HERE — renderTasks now carries a draft forward, and this is the
+    // one path where the draft has become a real task and must not come back.
+    ['tk_title', 'tk_due', 'tk_note'].forEach(function (f) { var el = document.getElementById(f); if (el) el.value = ''; });
+    var _ta = document.getElementById('tk_assignee'); if (_ta) _ta.value = '';
+    var _tr = document.getElementById('tk_recur'); if (_tr) _tr.value = 'none';
     renderTasks();
   }
   function toggleTask(id, done) {
@@ -4891,7 +5017,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var btn = document.getElementById('ml_add'); if (btn) btn.disabled = true;
 
     var finish = function (docId) {
-      if (currentRealm !== realmAt) { if (btn) btn.disabled = false; return; } // client switched mid-upload
+      if (currentRealm !== realmAt) {
+        if (btn) btn.disabled = false;
+        /* The scan IS uploaded — into the folder of the client that was open when the button
+           was pressed — and the log entry is correctly NOT written against whoever is open
+           now. Saying nothing left a file in a client's Files that no entry points at, and
+           nobody knowing it was there. */
+        if (docId) {
+          (window.bccNotify || alert)('You switched client while that scan was uploading. The file was saved to ' + companyName(realmAt) + '’s Files (under mail), but the log entry was not written — switch back and add the entry without re-attaching the scan.', 'warn', 14000);
+        }
+        return;
+      }
       var doc = loadMailDoc();
       doc.items = (doc.items || []).concat([{
         id: 'ml' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
@@ -5361,7 +5497,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // scoped to that client (kept for back-compat, though the nav entry was removed).
   function notaryPrefix() { return 'bcc-notary-' + (currentRealm || 'firm') + '-'; }
   function notaryFolder() { return currentRealm ? (typeof clientFolder === 'function' ? clientFolder() : ('/clients/' + currentRealm)) : '/notary'; }
-  function notaryOrgName() { return currentRealm ? companyName(currentRealm) : 'Blue Collar Coach'; }
+  // Takes the REQUEST's realm when there is one. The firm-root Notary view lists requests
+  // belonging to clients, where currentRealm is null — reading the live realm signed the
+  // signer's email "Blue Collar Coach" for a notarization their own bookkeeper requested.
+  function notaryOrgName(realm) { var rr = realm || currentRealm; return rr ? companyName(rr) : 'Blue Collar Coach'; }
   function openNotaryHome() { var o = document.getElementById('notaryOverlay'); if (!o) return; _notaryNew = false; o.style.display = ''; renderNotary(); }
   function closeNotaryHome() { var o = document.getElementById('notaryOverlay'); if (o) o.style.display = 'none'; }
   // At root the firm overlay lists EVERY notary request (firm bucket + any client-scoped
@@ -5468,6 +5607,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     return 'janice@bluecollarcoach.us';
   }
   function setNotaryContact(upn) {
+    /* Same gate the month-end contact has, and the same one the server now applies to both:
+       this decides who the firm's notarization alerts go to, which is not a view-only
+       decision. Refusing here means the dropdown is not left showing a change that the sync
+       layer will quietly reject a minute later. */
+    if (bkRefuseIfReadOnly()) { renderNotary(); return; }
     localStorage.setItem(NOTARY_CONTACT_KEY, JSON.stringify({ id: NOTARY_CONTACT_KEY, tenantId: 'blue-collar-coach', docType: 'setting', upn: String(upn || '').trim().toLowerCase(), updatedAt: nowIso(), updatedBy: myUpn() }));
   }
   function notarySendAlert(to, r, isAssignee) {
@@ -5538,11 +5682,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (!r.signerEmail) { notaryMsg(id, 'Add a signer email first.'); return; }
     if (!r.sessionUrl) { notaryMsg(id, 'Paste the RON session link first.'); return; }
     notaryMsg(id, 'Sending…');
-    var body = 'Hello ' + esc(r.signerName || '') + ',<br><br>Your document <strong>' + esc(r.docName) + '</strong> is ready for online notarization with ' + esc(notaryOrgName()) + '.<br><br>Join your notary session here: <a href="' + esc(r.sessionUrl) + '">' + esc(r.sessionUrl) + '</a><br><br>You will verify your identity and meet the notary by live video. Please have a valid government photo ID ready.<br><br>Thank you.';
+    var body = 'Hello ' + esc(r.signerName || '') + ',<br><br>Your document <strong>' + esc(r.docName) + '</strong> is ready for online notarization with ' + esc(notaryOrgName(r.realmId)) + '.<br><br>Join your notary session here: <a href="' + esc(r.sessionUrl) + '">' + esc(r.sessionUrl) + '</a><br><br>You will verify your identity and meet the notary by live video. Please have a valid government photo ID ready.<br><br>Thank you.';
     var payload = { to: [r.signerEmail], subject: 'Online notarization link — ' + r.docName, bodyHtml: body };
-      // The SERVER decides which mailbox — it is the only place that knows this client's
-      // config. Gating on mailboxActive() here read a cache only the Email tab fills.
-      if (currentRealm) { payload.realmId = currentRealm; payload.fallbackToSender = true; }
+      /* Which mailbox sends: THIS request's own client (r.realmId), never the live
+         currentRealm. The firm-root Notary view lists every request, including client-scoped
+         ones, and there currentRealm is null — so a client's signer got the session link from
+         whoever happened to click, while the same request sent from inside that client's
+         workspace came from the client's dedicated shared mailbox. Two different From
+         addresses for one request, and the reply lands somewhere nobody is watching.
+         Exactly the bug the final-PDF upload above was already fixed for.
+         The SERVER still decides whether that mailbox is usable — it is the only place that
+         knows the client's config — and fallbackToSender keeps the mail going out either way. */
+      if (r.realmId) { payload.realmId = r.realmId; payload.fallbackToSender = true; }
     fetch('/api/integrations/msgraph/send-mail', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
       .then(function (rr) { return rr.json().catch(function () { return { ok: rr.ok }; }); })
       .then(function (resp) { if (resp && resp.ok === false) throw new Error(resp.error || 'send failed'); notaryMsg(id, '✓ Link emailed to ' + r.signerEmail); })
@@ -5870,8 +6021,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var realmAt = currentRealm;
     fetch('/api/bookkeeping/email-meta/' + encodeURIComponent(currentRealm), { credentials: 'include' })
       .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
-      .then(function (resp) { if (currentRealm !== realmAt) return; _emMeta = (resp && resp.ok && resp.msgs) || {}; renderEmailList(); recomputeUnreadBadge(); })
-      .catch(function () {});
+      .then(function (resp) {
+        if (currentRealm !== realmAt) return;
+        /* A failure is not an empty collaboration map. Overwriting _emMeta with {} makes the
+           Archived and "Assigned to me" filters answer "nothing" as a fact, and drops every
+           read stamp so the badge counts mail the bookkeeper has already worked through.
+           Keep whatever we hold (which may be the previous client's — so clear it only when
+           the answer is real) and remember that we could not check. */
+        if (!(resp && resp.ok && resp.msgs)) { _emMetaErr = true; renderEmailList(); return; }
+        _emMetaErr = false;
+        _emMeta = resp.msgs;
+        renderEmailList(); recomputeUnreadBadge();
+      })
+      .catch(function () { if (currentRealm === realmAt) { _emMetaErr = true; renderEmailList(); } });
   }
   function emMetaOp(messageId, op, value) {
     var realmAt = currentRealm; // realm-race guard, matches loadEmailMeta() above — two clients sharing the bookkeeper's own inbox can show the same Graph messageId
@@ -5916,7 +6078,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
          no mailbox AND when the config read FAILED (loadClientMailbox synthesizes an empty,
          disabled config on failure) — so clearing it would turn "we could not check" into
          "inbox up to date" on exactly the failure the flag exists to report. */
-      _emMsgs = []; _emLoadedFor = currentRealm; _emLoadedFolder = _emFolder; _emUnread[currentRealm] = 0; updateWsNav(); return;
+      _emMsgs = []; _emLoadedFor = currentRealm; _emLoadedFolder = _emFolder;
+      _emListReadFor = '';
+      /* ...and only claim ZERO when the mailbox config actually RESOLVED. mailboxActive() is
+         false both for a client with no mailbox and for one whose config could not be read,
+         and writing 0 here made the Overview say "Inbox up to date — no unread mail" on the
+         strength of a request that failed. Same predicate renderMailboxSection uses. */
+      if (_mailboxErr && _clientMailboxRealm === currentRealm) { delete _emUnread[currentRealm]; _emUnreadErr[currentRealm] = 1; }
+      else _emUnread[currentRealm] = 0;
+      updateWsNav(); return;
     }
     var rid = '&realmId=' + encodeURIComponent(currentRealm);
     var folderAt = _emFolder;
@@ -5936,6 +6106,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
              so the Overview says "couldn't check" instead of "up to date" — the same thing
              loadUnreadEmail does on its own failure paths. */
           _emInboxOkFor = null;
+          _emListReadFor = '';
           if (folderAt === 'inbox') { delete _emUnread[realmAt]; _emUnreadErr[realmAt] = 1; updateWsNav(); }
           _emLoadError = 'Mailbox unavailable: ' + ((resp && resp.error) || 'error');
           _emLoadErrorFor = realmAt + '|' + folderAt;
@@ -5945,6 +6116,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         _emLoadError = ''; _emLoadErrorFor = '';
         _emMsgs = resp.messages || []; _emLoadedFor = currentRealm; _emLoadedFolder = folderAt;
         if (folderAt === 'inbox') _emInboxOkFor = currentRealm;   // read, so the badge may speak
+        _emListReadFor = currentRealm + '|' + folderAt;            // ...and the list may claim an empty state
         renderEmailList();
         // Keep the nav/overview unread badge in sync with what we just loaded.
         recomputeUnreadBadge();
@@ -5958,6 +6130,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         if (currentRealm !== realmAt || _emFolder !== folderAt) return;
         _emMsgs = []; _emLoadedFolder = null;
         _emInboxOkFor = null;    // same as the !ok branch above: nothing was read
+        _emListReadFor = '';
         if (folderAt === 'inbox') { delete _emUnread[realmAt]; _emUnreadErr[realmAt] = 1; updateWsNav(); }
         _emLoadError = 'Could not load mail.';
         _emLoadErrorFor = realmAt + '|' + folderAt;
@@ -5990,7 +6163,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       if (_emLoadError && _emLoadErrorFor === (currentRealm + '|' + _emFolder)) {
         list.innerHTML = '<div style="color:var(--burgundy);padding:10px 0;">' + esc(_emLoadError) + '</div>'; return;
       }
-      list.innerHTML = '<div style="color:var(--muted);padding:10px 0;">No messages' + (q || _emFilter !== 'all' ? ' match this view' : ' yet') + '.</div>'; return;
+      /* ...and say NOTHING at all about a list this device never read. loadEmailMeta repaints
+         on its own schedule and can land before loadInbox has run — or after the no-mailbox
+         branch has explained why there is nothing here — and the flat "No messages yet."
+         overwrote that explanation with a claim about a mailbox nobody had opened. Leaving
+         the panel as it is keeps whatever the last real render put there. */
+      if (_emListReadFor !== (currentRealm + '|' + _emFolder)) return;
+      var metaWarn = _emMetaErr
+        ? '<div style="color:var(--burgundy);padding:6px 0 0;font-size:12.5px;">Couldn’t load the read/archive state for this client, so this view may be incomplete.</div>'
+        : '';
+      list.innerHTML = '<div style="color:var(--muted);padding:10px 0;">No messages' + (q || _emFilter !== 'all' ? ' match this view' : ' yet') + '.</div>' + metaWarn; return;
     }
     list.innerHTML = rows.map(function (m) {
       var mt = metaFor(m.id);
@@ -6500,7 +6682,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           _emAttachments.length = 0; renderEmAttachments(_emAttachments, 'em_file_list'); // clear IN PLACE — the change listener above is closured over this exact array
           var comp = document.getElementById('em_compose'); if (comp) comp.open = false;
         }
-        setTimeout(function () { loadInbox(true); }, 1500);
+        /* Pinned, like every other async step in this function. Read live, this refreshed —
+           and zeroed the unread badge of — whichever client happened to be open a second and
+           a half later. _emComposeGen too: a new compose in the same client means this refresh
+           is no longer the one anybody is waiting for. */
+        setTimeout(function () { if (currentRealm === realmAt && _emComposeGen === composeAt) loadInbox(true); }, 1500);
       })
       .catch(function (e) {
         /* `st` and the buttons belong to the compose box this send started from. If the
@@ -6626,8 +6812,21 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // the client's documents, which is a deliberate action, not something a client
     // switch should trigger.
     if (cprEditingId !== null && cprDraft && cprDraft.realmId !== currentRealm) {
-      try { cprDraft.updatedAt = nowIso(); cprDraft.updatedBy = myUpn(); localStorage.setItem(cprDraft.id, JSON.stringify(cprDraft)); } catch (e) {}
-      cprEditingId = null; cprDraft = null;
+      /* Only DISCARD it if it was actually PERSISTED. The catch is right — an uncaught throw
+         here aborts the whole render — but nulling the draft on the failure path threw away
+         an in-progress certified payroll on the one occasion the safeguard exists for: the
+         storage write that was supposed to save it failed. Keep it in memory and say so; the
+         bookkeeper can switch back and it is still there. */
+      var cprKept = false;
+      try {
+        cprDraft.updatedAt = nowIso(); cprDraft.updatedBy = myUpn();
+        localStorage.setItem(cprDraft.id, JSON.stringify(cprDraft));
+        cprKept = true;
+      } catch (e) {}
+      if (cprKept) { cprEditingId = null; cprDraft = null; }
+      else {
+        (window.bccNotify || alert)('This browser’s storage is full, so the certified payroll you had open could not be saved when you switched client. It is still open — switch back to ' + companyName(cprDraft.realmId) + ' and free up some space before leaving it again.', 'error', 14000);
+      }
     }
     if (cprEditingId !== null) { renderCprEditor(body); return; }
     var all = allCpr().sort(function (a, b) { return (cnum(b.payrollNo) - cnum(a.payrollNo)) || (b.updatedAt || '').localeCompare(a.updatedAt || ''); });
@@ -7053,6 +7252,21 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var fx = body.querySelector('[data-cf="' + f + '"]');
       if (fx) fx.addEventListener('change', cprNoteRekey);
     });
+    /* The contract number is HALF the job key, so editing it moves the job this report belongs
+       to — and the payroll number has to move with it, or a second contract on the same project
+       carries the first one's sequence. Deliberately NOT cprJobAutofill, which is wired to the
+       project name: that one also fills every blank header field from the last report for the
+       project NAME, which is the wrong job once the contract number has changed. Renumber
+       only, and only while the number is still the one we assigned. */
+    var cn = body.querySelector('[data-cf="contractNumber"]');
+    if (cn) cn.addEventListener('change', function () {
+      if (!cprDraft || !cprDraft.autoNo) return;
+      var jobNo = String(cprNextNo(cprDraft, cprDraft.id));
+      if (jobNo === String(cprDraft.payrollNo || '')) return;
+      cprDraft.payrollNo = jobNo;
+      var noInp = document.querySelector('[data-cf="payrollNo"]'); if (noInp) noInp.value = jobNo;
+      var h3 = document.querySelector('#tab-payroll h3'); if (h3) h3.textContent = 'Payroll #' + jobNo + ' \u2014 ' + companyName(currentRealm);
+    });
     body.querySelectorAll('[data-emp][data-f="name"]').forEach(function (el) { el.addEventListener('change', function () { cprEmpAutofill(+el.getAttribute('data-emp')); }); });
     var addb = document.getElementById('cpr_addemp'); if (addb) addb.onclick = function () { cprDraft.employees.push(blankEmp()); renderPayroll(); };
     document.getElementById('cpr_back').onclick = document.getElementById('cpr_back2').onclick = function () { cprEditingId = null; cprDraft = null; renderPayroll(); };
@@ -7120,6 +7334,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
                  suggest the click had worked. Someone would reasonably click it again.
                  `=== false` on purpose: that is the "you have an unsent reply, discard it?"
                  answer, and if they say no the scan must not happen either. */
+              /* Refuse BEFORE tearing the reader down. scanReceipt does its own size check,
+                 but by the time it runs the reply has been discarded (with its own confirm)
+                 and the workspace has moved off the mailbox — so the bookkeeper lost a typed
+                 reply to be told the file was too big. Same limit scanReceipt uses. */
+              if (f && f.size > 12 * 1024 * 1024) {
+                done();
+                (window.bccNotify || alert)('That file is over 12 MB, so it can’t be read into QuickBooks — nothing was closed. Download it and send a smaller copy.', 'warn', 9000);
+                return;
+              }
               if (emCloseModal() === false) { done(); return; }
               done();
               scanReceipt(f); return;   // pins its own realm and takes over from here
@@ -7398,8 +7621,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           // and "Insert saved signature" silently never appeared.
           var val = (typeof d.data === 'string') ? d.data : JSON.stringify(d.data);
           if (val === localStorage.getItem(key)) return; // unchanged
-          localStorage.setItem(key, val);
-          if (document.getElementById('cpr_sigwrap')) cprRenderSig();
+          /* LOCAL-ONLY. The plain setter is hooked and would queue a PUT of the server's own
+             copy straight back at it — pointless on every render, and a hard 403 for a
+             view-tier bookkeeper, whose refused key then poisons the rest of the push batch.
+             Same helper primeInfo uses. Re-render only when the write actually landed, or a
+             quota failure would loop this fetch/render pair. */
+          var storedSig = window.bccStoreLocal ? window.bccStoreLocal(key, val)
+            : (function () { try { localStorage.setItem(key, val); return true; } catch (e) { return false; } })();
+          if (storedSig && document.getElementById('cpr_sigwrap')) cprRenderSig();
         })
         .catch(function () {});
     })();
@@ -7475,8 +7704,21 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // Read the shift AFTER the weekStart fill above, and never pass cprEmpFromExtract
     // straight to .map - map would hand it the array INDEX as the rotation.
     var wsD = cprDraft.weekStart ? new Date(cprDraft.weekStart + 'T00:00:00') : null;
-    var dowShift = (wsD && !isNaN(wsD)) ? wsD.getDay() : 0;
-    var emps = (data.employees || []).map(function (x) { return cprEmpFromExtract(x, dowShift); }).filter(function (e) { return (e.name || '').trim(); });
+    /* NO GUESS. The rotation that maps extracted hours into the form's columns is derived
+       entirely from which day the week starts on; assuming Sunday shifted every worker's
+       daily hours by one on a Monday-start payroll — on a form filed with a public agency,
+       where the totals still add up and nothing looks wrong. Fill the header and the people,
+       and refuse the HOURS until someone says which week it is. */
+    var dowKnown = !!(wsD && !isNaN(wsD));
+    var dowShift = dowKnown ? wsD.getDay() : 0;
+    var emps = (data.employees || []).map(function (x) {
+      var e = cprEmpFromExtract(x, dowShift);
+      if (!dowKnown) { e.st = ['', '', '', '', '', '', '']; e.ot = ['', '', '', '', '', '', '']; }
+      return e;
+    }).filter(function (e) { return (e.name || '').trim(); });
+    if (!dowKnown && emps.length) {
+      (window.bccNotify || alert)('That file didn’t say which day the payroll week starts, so the names and rates were filled in but the daily hours were left blank — putting them in the wrong columns would misstate the week on a form filed with the state. Set “Week starting”, then run the import again.', 'warn', 14000);
+    }
     if (!emps.length) return 0;
     var existing = (cprDraft.employees || []).filter(function (e) { return !cprEmpIsBlank(e); });
     var byKey = {}; existing.forEach(function (e) { var k = cprEmpKey(e.name); if (k) byKey[k] = e; });
@@ -7658,6 +7900,32 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var j = out.join(' / ');
     return (out.length > 1 && j.length > 28) ? '' : j;
   }
+  /* WinAnsi-safe text for the PDF builders. pdf-lib's standard fonts throw on anything outside
+     WinAnsi, and both payroll builders draw names, addresses and free text straight from what a
+     bookkeeper typed or an AI import extracted — an accent, a curly quote pasted from Word, or
+     a tab is enough to fail the whole document. Module scope because BOTH builders need it:
+     it used to live inside the DLI one, so the MnDOT one had no sanitiser at all. */
+  function cprWinAnsi(s) {
+    s = String(s == null ? '' : s);
+    var out = s.normalize ? s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '') : s;
+    out = out
+      .replace(/\u0142/g, 'l').replace(/\u0141/g, 'L').replace(/\u0111/g, 'd').replace(/\u0110/g, 'D')
+      .replace(/\u00f8/g, 'o').replace(/\u00d8/g, 'O').replace(/\u00e6/g, 'ae').replace(/\u00c6/g, 'AE')
+      .replace(/\u0153/g, 'oe').replace(/\u0152/g, 'OE').replace(/\u00df/g, 'ss')
+      .replace(/[\u2019\u2018\u201a]/g, "'").replace(/[\u201c\u201d\u201e]/g, '"')
+      .replace(/[\u2013\u2014]/g, '-').replace(/\u2026/g, '...')
+      .replace(/\u2192/g, '->').replace(/\u2265/g, '>=').replace(/\u2264/g, '<=')
+      .replace(/\u00d7/g, 'x').replace(/\u2022/g, '*')
+      .replace(/[\u200b-\u200d\ufeff]/g, '')
+      .replace(/[\u00a0\t\n\r\f\v]+/g, ' ');
+    return out.replace(/[^\x20-\x7E\xA0-\xFF]/g, '?').replace(/ {2,}/g, ' ');
+  }
+  /* ...preserving deliberate line breaks, which setTf turns into a multiline field. Sanitising
+     the whole string first would collapse them and the employee name/address block would print
+     as one run-on line. */
+  function cprWinAnsiLines(s) {
+    return String(s == null ? '' : s).split('\n').map(cprWinAnsi).join('\n');
+  }
   function cprMissingRates(r) {
     return (r.employees || []).filter(function (e) {
       var stH = sumArr(e.st), otH = sumArr(e.ot);
@@ -7725,7 +7993,24 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           // Retire the PREVIOUS filing only now that the replacement is stored. Deleting
           // it first meant a failed upload left the client with neither copy.
           var prev = r.docId;
-          if (j && j.id) { r.docId = j.id; localStorage.setItem(r.id, JSON.stringify(r)); }
+          /* Re-read at CALLBACK time and patch that, rather than re-serialising the snapshot
+             this closure captured. The upload takes seconds; deleting the report in the
+             meantime used to be undone by this line, which wrote the closed-over copy back —
+             and the hooked setter republished it to the whole firm. A record that is gone
+             stays gone; the file it just uploaded is retired below. */
+          if (j && j.id) {
+            var liveRaw = null;
+            try { liveRaw = localStorage.getItem(r.id); } catch (e) { liveRaw = null; }
+            if (liveRaw) {
+              var live = null;
+              try { live = JSON.parse(liveRaw); } catch (e) { live = null; }
+              if (live && live.id === r.id) { live.docId = j.id; localStorage.setItem(r.id, JSON.stringify(live)); }
+            } else {
+              // Deleted while the upload was in flight — retire the file we just made.
+              prev = j.id;
+            }
+            r.docId = j.id;
+          }
           if (prev && j && j.id && prev !== j.id) fetch('/api/documents/' + encodeURIComponent(prev), { method: 'DELETE', credentials: 'include' }).catch(function () {});
           if (window.bccAudit) window.bccAudit('client-file-upload', { key: j && j.id, path: '/bookkeeping.html', meta: { realmId: realm, name: fname, source: 'certified-payroll' } });
           if (!silent && window.bccNotifySaved) window.bccNotifySaved('Payroll report saved & filed to the client (tag: Certified Payroll).');
@@ -7859,7 +8144,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       if (val == null || String(val) === '') return;
       try {
         var tf = form.getTextField(name);
-        var v = String(val);
+        /* Sanitised HERE, at the one chokepoint every MnDOT field goes through. Note that
+           this catch swallows failures, so an unsanitised value did not fail loudly at the
+           setText — it took the whole document down later, at save time, when the font
+           encoder met the character. */
+        var v = cprWinAnsiLines(val);
         var ml = null; try { ml = tf.getMaxLength(); } catch (e) {}
         if (ml && v.length > ml) v = v.slice(0, ml);
         if (v.indexOf('\n') >= 0) { try { tf.enableMultiline(); } catch (e) {} }
@@ -8020,20 +8309,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // Transliterate to a WinAnsi-safe form so one name can never reject the whole build
     // (which would fail the email). Accents are stripped via NFKD; a few non-decomposable
     // letters and common symbols get explicit fallbacks; anything still un-encodable → '?'.
-    function toWinAnsi(s) {
-      s = String(s == null ? '' : s);
-      var out = s.normalize ? s.normalize('NFKD').replace(/[̀-ͯ]/g, '') : s;
-      out = out
-        .replace(/ł/g, 'l').replace(/Ł/g, 'L').replace(/đ/g, 'd').replace(/Đ/g, 'D')
-        .replace(/ø/g, 'o').replace(/Ø/g, 'O').replace(/æ/g, 'ae').replace(/Æ/g, 'AE')
-        .replace(/œ/g, 'oe').replace(/Œ/g, 'OE').replace(/ß/g, 'ss')
-        .replace(/[’‘‚]/g, "'").replace(/[“”„]/g, '"').replace(/[–—]/g, '-').replace(/…/g, '...')
-        .replace(/→/g, '->').replace(/≥/g, '>=').replace(/≤/g, '<=').replace(/×/g, 'x').replace(/•/g, '*')
-        .replace(/[​-‍﻿]/g, '')       // zero-width chars → drop
-        .replace(/[ \t\n\r\f\v]+/g, ' ');        // nbsp + tab/newline/CR → space (pdf-lib's WinAnsi THROWS on 0x09 tab, 0x0A, etc.)
-      return out.replace(/[^\x20-\x7E\xA0-\xFF]/g, '?').replace(/ {2,}/g, ' '); // strip control/out-of-range → '?', collapse runs
-    }
-
+    function toWinAnsi(s) { return cprWinAnsi(s); }
     function clip(s, f, size, maxW) {
       s = String(s == null ? '' : s);
       if (!maxW || f.widthOfTextAtSize(s, size) <= maxW) return s;
@@ -8564,7 +8840,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   function payappSaveToFiles(r, silent) {
     var realm = currentRealm; if (!realm) return;
-    var fname = 'Pay Application' + (r.appNo ? ' #' + r.appNo : '') + (r.periodTo ? ' (to ' + r.periodTo + ')' : '') + '.pdf';
+    /* Name the CONTRACT. Application numbers are per project by design, so without it two
+       live contracts file byte-identical names into the same folder every period and the
+       second silently reads as a duplicate of the first. Same shape as cprSaveToFiles. */
+    var paJob = String(r.projectName || '').replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+    var fname = 'Pay Application' + (r.appNo ? ' #' + r.appNo : '') + (paJob ? ' \u2014 ' + paJob : '') + (r.periodTo ? ' (to ' + r.periodTo + ')' : '') + '.pdf';
     var fileBlob = null;
     function upload() {
       var fd = new FormData();
@@ -8578,7 +8858,24 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           // it first meant a failed upload left the client with neither copy. (This is
           // also what clears the old .html copy the first time one is re-saved.)
           var prev = r.docId;
-          if (j && j.id) { r.docId = j.id; localStorage.setItem(r.id, JSON.stringify(r)); }
+          /* Re-read at CALLBACK time and patch that, rather than re-serialising the snapshot
+             this closure captured. The upload takes seconds; deleting the report in the
+             meantime used to be undone by this line, which wrote the closed-over copy back —
+             and the hooked setter republished it to the whole firm. A record that is gone
+             stays gone; the file it just uploaded is retired below. */
+          if (j && j.id) {
+            var liveRaw = null;
+            try { liveRaw = localStorage.getItem(r.id); } catch (e) { liveRaw = null; }
+            if (liveRaw) {
+              var live = null;
+              try { live = JSON.parse(liveRaw); } catch (e) { live = null; }
+              if (live && live.id === r.id) { live.docId = j.id; localStorage.setItem(r.id, JSON.stringify(live)); }
+            } else {
+              // Deleted while the upload was in flight — retire the file we just made.
+              prev = j.id;
+            }
+            r.docId = j.id;
+          }
           if (prev && j && j.id && prev !== j.id) fetch('/api/documents/' + encodeURIComponent(prev), { method: 'DELETE', credentials: 'include' }).catch(function () {});
           if (window.bccAudit) window.bccAudit('client-file-upload', { key: j && j.id, path: '/bookkeeping.html', meta: { realmId: realm, name: fname, source: 'pay-application' } });
           if (!silent && window.bccNotifySaved) window.bccNotifySaved('Pay application saved & filed to the client (tag: Pay Application).');
@@ -8682,7 +8979,74 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (!doc.steps) doc.steps = {}; if (!doc.recon) doc.recon = {};
     return doc;
   }
-  function saveClose() { if (!_close) return; if (bkRefuseIfReadOnly()) return; _close.updatedAt = nowIso(); _close.updatedBy = myUpn(); localStorage.setItem(_close.id, JSON.stringify(_close)); }
+  /* ---- Close prime gate ----
+     Keyed by the DOCUMENT ID (realm + period), not by realm: the Month picker swaps between
+     eighteen separate documents and priming one says nothing about the others. */
+  var _closePrimed = {};   // id -> true | 'busy' | 'fail'
+  var _closeWarned = {};   // one refusal per document, not one per tick
+  var _closeRetryAt = {};
+  function primeClose(id, done) {
+    if (!id || _closePrimed[id] === true || _closePrimed[id] === 'busy') { if (done) done(); return; }
+    // No priming layer (an older bcc-api.js) must not wedge the checklist: behave as before.
+    if (!window.bccPrimeDoc || !window.bccDocPrimed) { _closePrimed[id] = true; if (done) done(); return; }
+    _closePrimed[id] = 'busy';
+    window.bccPrimeDoc(id, function () {
+      _closePrimed[id] = window.bccDocPrimed(id) ? true : 'fail';
+      if (done) done();
+    });
+  }
+  /* Repaint once the real checklist lands. Without this the gate opens over the blank one
+     still on screen and the next tick is applied to a document the bookkeeper cannot see. */
+  function adoptClose(id) {
+    if (!_close || _close.id !== id) return;
+    var fresh = loadCloseDoc(_close.period);
+    if (!fresh || fresh.realmId !== currentRealm) return;
+    /* REPAINT ONLY ON A REAL CHANGE. renderClose calls primeClose, and primeClose calls back
+       SYNCHRONOUSLY once the document is primed — so an unconditional renderClose() here is
+       an infinite recursion that locks the tab on the second open of the Close tab. Compare
+       what we hold against what is now on disk and repaint only when they differ; on the
+       common path (already primed, nothing changed) this does nothing at all. */
+    var before = '', after = '';
+    try { before = JSON.stringify(_close); } catch (e) { before = ''; }
+    try { after = JSON.stringify(fresh); } catch (e) { after = ''; }
+    if (before === after) return;
+    var ae = document.activeElement;
+    var pane = document.getElementById('close-body');
+    // Never rebuild the table under someone's cursor — a statement balance being typed lives
+    // only in that input until it blurs.
+    if (pane && ae && pane.contains(ae)) { _close = fresh; return; }
+    _close = fresh;
+    renderClose();
+  }
+  function saveClose() {
+    if (!_close) return;
+    if (bkRefuseIfReadOnly()) return;
+    if (_closePrimed[_close.id] !== true) {
+      /* Refuse rather than publish a blank checklist over a month that has been worked. The
+         control is never disabled — the retry lives behind this handler — and the message is
+         latched per document because a bookkeeper ticks several steps in a row. */
+      var cid = _close.id;
+      if (!_closeWarned[cid]) {
+        _closeWarned[cid] = true;
+        (window.bccNotify || alert)('Not saved \u2014 this month\u2019s checklist hasn\u2019t finished loading, and saving now would replace it with an empty one. It is being fetched; try again in a moment.', 'warn', 9000);
+      }
+      if (_closePrimed[cid] === 'fail') {
+        var nowMs = Date.now();
+        if (!(_closeRetryAt[cid] > nowMs - 4000)) {
+          _closeRetryAt[cid] = nowMs;
+          _closePrimed[cid] = undefined;
+          primeClose(cid, function () {
+            // Re-arm the warning only on SUCCESS, or the per-tick toast storm comes back.
+            if (_closePrimed[cid] !== true) return;
+            _closeWarned[cid] = false;
+            adoptClose(cid);
+          });
+        }
+      }
+      return;
+    }
+    _close.updatedAt = nowIso(); _close.updatedBy = myUpn(); localStorage.setItem(_close.id, JSON.stringify(_close));
+  }
   /* Read-modify-write for every Close mutation. _close is a module global captured when the
      tab was opened, so writing straight through it replaced the WHOLE checklist document —
      two bookkeepers closing the same month in the same session silently erased each other's
@@ -8739,6 +9103,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function renderClose() {
     var body = document.getElementById('close-body'); if (!body) return;
     if (!_close || _close.realmId !== currentRealm) _close = loadCloseDoc(mrDefaultPeriod());
+    /* Ask the server for THIS month's checklist before any tick is allowed to publish one.
+       Fires on every renderClose — primeClose returns immediately once a document is primed,
+       so the repeat costs nothing, and it is the only hook the initial open has. */
+    primeClose(_close.id, function () { adoptClose(_close && _close.id); });
     var period = _close.period;
     var done = CLOSE_STEPS.filter(function (s) { return _close.steps[s.key] && _close.steps[s.key].done; }).length;
     var pct = Math.round(done / CLOSE_STEPS.length * 100);
@@ -8771,7 +9139,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        made, so this call only re-published the whole in-memory snapshot — undoing whatever a
        colleague had changed in the meantime, which is the exact clobber closeApply exists to
        prevent. */
-    document.getElementById('close_period').onchange = function () { _close = loadCloseDoc(this.value); renderClose(); };
+    document.getElementById('close_period').onchange = function () {
+      _close = loadCloseDoc(this.value);
+      // Each month is its own document, so each one has to be asked for separately.
+      primeClose(_close.id, function () { adoptClose(_close && _close.id); });
+      renderClose();
+    };
     document.getElementById('close_mecontact').onchange = function () { setMonthEndContact(this.value); var nm = document.getElementById('close_mecname'); if (nm) nm.textContent = (window.bccDisplayName && window.bccDisplayName(monthEndContact())) || monthEndContact(); };
     var meNoteEl = document.getElementById('close_menote');
     if (meNoteEl) meNoteEl.oninput = function () { var v = this.value; closeApply(function (d) { d.meetingNote = v; }); };
@@ -8817,6 +9190,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     return 'janice@bluecollarcoach.us';
   }
   function setMonthEndContact(upn) {
+    // The server refuses this for a read-only tier (it decides who the firm's month-end
+    // hand-off goes to). Refuse here too, so the change is not reported as saved.
+    if (bkRefuseIfReadOnly()) return;
     localStorage.setItem(MONTHEND_CONTACT_KEY, JSON.stringify({ id: MONTHEND_CONTACT_KEY, tenantId: 'blue-collar-coach', docType: 'setting', upn: String(upn || '').trim().toLowerCase(), updatedAt: nowIso(), updatedBy: myUpn() }));
   }
   function monthEndNotify(periodLabel, note, done) {
@@ -8873,6 +9249,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   function closePaintCat(period) {
     var catEl = closeHelpEl('cat'); if (!catEl) return;
+    // The MONTH race, not just the client one. These fetches take seconds and the Month picker
+    // swaps documents underneath them, so one month's answer painted into another month's
+    // panel — with nothing on screen to say which month it was about.
+    if (!_close || _close.period !== period) return;
     var res = closeHelpFor(period).cat;
     if (!res) { catEl.textContent = 'Checking uncategorized…'; return; }
     if (res.err) {
@@ -8897,6 +9277,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function closePaintRecon(period) {
     var bankEl = closeHelpEl('recon-bank'), ccEl = closeHelpEl('recon-cc');
     if (!bankEl && !ccEl) return;
+    if (!_close || _close.period !== period) return;   // see closePaintCat
     var res = closeHelpFor(period).recon;
     if (!res) {
       if (bankEl) bankEl.textContent = 'Loading balances…';

@@ -242,9 +242,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       provisional: true,
       effectiveFrom: todayDate(),
       packages: [
-        { id: 'p1', name: '1:1 Monthly Coaching', priceCents: 99500, cadence: 'monthly', blurb: 'Two 60-min coaching sessions per month + Voxer access for asks between sessions.' },
-        { id: 'p2', name: 'Group Cohort', priceCents: 49500, cadence: 'monthly', blurb: 'Weekly group call + private community Slack. Capped at 12 owners per cohort.' },
-        { id: 'p3', name: 'Strategic Intensive', priceCents: 350000, cadence: 'one-time', blurb: 'Full-day workshop, custom-built for your shop. Includes 30 days of follow-up support.' }
+        /* fromTemplate is PER PACKAGE and outlives the document-level flag below. Saving
+           makes the DOCUMENT the firm's own, but it does not make an untouched $995 package
+           a real price — and it is the individual package that gets emailed and signed for. */
+        { id: 'p1', fromTemplate: true, name: '1:1 Monthly Coaching', priceCents: 99500, cadence: 'monthly', blurb: 'Two 60-min coaching sessions per month + Voxer access for asks between sessions.' },
+        { id: 'p2', fromTemplate: true, name: 'Group Cohort', priceCents: 49500, cadence: 'monthly', blurb: 'Weekly group call + private community Slack. Capped at 12 owners per cohort.' },
+        { id: 'p3', fromTemplate: true, name: 'Strategic Intensive', priceCents: 350000, cadence: 'one-time', blurb: 'Full-day workshop, custom-built for your shop. Includes 30 days of follow-up support.' }
       ],
       updatedAt: nowIso()
     };
@@ -261,7 +264,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      "there is no rate sheet" is a perfectly successful prime that still leaves the demo
      packages on screen. Anything a customer would see has to ask this one. */
   function sheetIsProvisional(sheet) {
-    return !!(sheet && sheet.provisional);
+    if (sheet && sheet.provisional) return true;
+    // ...and a sheet that has been SAVED can still carry untouched starter packages. The
+    // document-level flag answers "has anyone adopted this sheet at all"; this answers the
+    // question that matters to a customer — "is any price on it one we invented?".
+    return ((sheet && sheet.packages) || []).some(function (p) { return p && p.fromTemplate; });
+  }
+  // Which ones, for a message that can actually be acted on.
+  function provisionalNames(sheet) {
+    return ((sheet && sheet.packages) || [])
+      .filter(function (p) { return p && p.fromTemplate; })
+      .map(function (p) { return p.name || 'Untitled package'; });
   }
   // Refuse an outbound use of the starter template, and say which of the two reasons it is.
   function refuseProvisionalSheet(what) {
@@ -317,7 +330,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
   }
   function ratesPrimeUi() {
-    var ready = ratesReady(), host = document.querySelector('.wrap') || document.body;
+    // `.page` is this file's container; `.wrap` belongs to dashboard/index/sign and was
+    // copied in with the banner. The body fallback puts it under the sticky topbar.
+    var ready = ratesReady(), host = document.querySelector('.page') || document.body;
     var w = document.getElementById('rates_prime_warn');
     if (!ready && !w && host) {
       w = document.createElement('div');
@@ -328,6 +343,22 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     if (ready && w) w.remove();
   }
+  /* Tier gate, with the same fail-open-when-unknown shape as crm.html's crmCanEdit and
+     documents.html's docsCanEdit: if the permission helper has not loaded, or we do not know
+     who this is yet, ALLOW. 'rates' is not in the member-default app list, so a bare
+     bccCanEdit('rates') answers false during an offline or auth-unknown boot and would take
+     the sheet read-only for the owner too. The server is the real gate; this exists so a
+     view-tier user is not told their work was saved when it was refused. */
+  function ratesCanEdit() {
+    if (!window.bccCanEdit || !(window.bccUser && window.bccUser.userDetails)) return true;
+    return !!window.bccCanEdit('rates');
+  }
+  var _ratesViewWarned = false;
+  function refuseRatesReadOnly() {
+    if (_ratesViewWarned) return;
+    _ratesViewWarned = true;
+    (window.bccNotify || alert)('Your Rate Sheet access is view-only, so nothing was saved. Ask an admin if you need to edit it.', 'warn', 8000);
+  }
   function saveSheet(s, quiet) {
     /* Gated at the STORE, so every path is covered: Save, Add package, Remove, the debounced
        commit, and anything added later.
@@ -335,6 +366,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        It says the refusal has already been announced — the message is the same either way, and
        repeating it per keystroke is how a warning becomes noise nobody reads. Every deliberate
        action (Save, Add, Remove) leaves it off and is always told. */
+    /* Checked at the STORE, which is the one chokepoint every path goes through — Save, Add,
+       Remove, the debounce, and commitNow. Latched, because the debounce fires on every
+       typing pause. */
+    if (!ratesCanEdit()) { if (!quiet) refuseRatesReadOnly(); return false; }
     if (!ratesReady()) {
       ratesPrime();
       if (!quiet) (window.bccNotify || alert)('The current rate sheet has not loaded yet, so nothing was saved. Try again in a moment.', 'warn', 7000);
@@ -386,16 +421,23 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        them from the firm's own sheet is that nobody has saved one yet (or this device has not
        received it). Anyone reading prices off this page deserves to know which they are. */
     var tn = document.getElementById('rates_template_note');
+    var tnNames = provisionalNames(sheet);
     if (sheetIsProvisional(sheet)) {
       if (!tn) {
-        var hostT = document.querySelector('.wrap') || document.body;
+        var hostT = document.querySelector('.page') || document.body;   // see ratesPrimeUi
         if (hostT) {
           tn = document.createElement('div');
           tn.id = 'rates_template_note';
           tn.style.cssText = 'background:#fdf6e3;border:1px solid #e6d9a8;border-radius:8px;padding:9px 12px;margin:0 0 10px;font-size:13px;color:#6a5310;';
-          tn.textContent = 'These are built-in EXAMPLE packages, not your rate sheet. Edit them below (they save as you type) — until then this sheet cannot be emailed or signed for.';
+          tn.textContent = '';   // filled below, so it can name which packages are still examples
           hostT.insertBefore(tn, hostT.firstChild);
         }
+      }
+      if (tn) {
+        tn.textContent = tnNames.length
+          ? ('Still built-in EXAMPLE packages, not your prices: ' + tnNames.join(', ') +
+             '. Edit each one below (they save as you type) — until then this sheet cannot be emailed or signed for.')
+          : 'These are built-in EXAMPLE packages, not your rate sheet. Edit them below (they save as you type) — until then this sheet cannot be emailed or signed for.';
       }
     } else if (tn) { tn.remove(); }
     document.getElementById('effectiveFrom').textContent = sheet.effectiveFrom || todayDate();
@@ -470,7 +512,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var dollars = (parsedPrice !== null && isFinite(parsedPrice)) ? parsedPrice : prevDollars;
       var cadence = el.querySelector('select[data-edit=cadence]').value;
       var blurb = el.querySelector('textarea[data-edit=blurb]').value.trim();
-      pkgs.push({ id: id, name: name, priceCents: Math.round(dollars * 100), cadence: cadence, blurb: blurb });
+      var next = { id: id, name: name, priceCents: Math.round(dollars * 100), cadence: cadence, blurb: blurb };
+      /* Carry the starter-package mark forward, and drop it the moment THIS package is
+         actually edited. harvestPackages rebuilds each package as a fresh literal, so a flag
+         that is not threaded through prevPkg disappears on the first keystroke in any package
+         — which is the document-level bug this replaces, re-created one level down. */
+      if (prevPkg && prevPkg.fromTemplate) {
+        var untouched = next.name === prevPkg.name && next.priceCents === (prevPkg.priceCents || 0)
+          && next.cadence === prevPkg.cadence && next.blurb === (prevPkg.blurb || '');
+        if (untouched) next.fromTemplate = true;
+      }
+      pkgs.push(next);
     });
     s.packages = pkgs;
     return s;
@@ -616,10 +668,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var name = document.getElementById('sig-name').value.trim();
     if (!name) { (window.bccNotify || alert)('Add the customer\'s name.', 'warn'); return; }
     var contactId = document.getElementById('sig-contact').value || '';
-    var sheet = loadSheet();
     /* Worse than the email, in one way: packagesSnapshot is what the customer is recorded as
-       having signed for, and the record syncs firm-wide and is durable. */
-    if (sheetIsProvisional(sheet)) { refuseProvisionalSheet('capturing a signature'); return; }
+       having signed for, and the record syncs firm-wide and is durable. Same order as the
+       send: judge the LIVE harvest, then commit, so the snapshot is what the customer is
+       looking at and a starter package can never reach it. */
+    if (sheetIsProvisional(harvestPackages(loadSheet()))) { refuseProvisionalSheet('capturing a signature'); return; }
+    var sheet = commitNow();
+    if (!sheet) return;
     var record = {
       id: SIG_PREFIX + uid(),
       tenantId: 'blue-collar-coach',
@@ -699,8 +754,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       return;
     }
     /* Checked BEFORE the recipient prompt: being asked to choose a prospect and only then
-       told the send is refused is its own small insult. */
-    if (sheetIsProvisional(loadSheet())) { refuseProvisionalSheet('emailing this sheet'); return; }
+       told the send is refused is its own small insult. On the LIVE harvest, not the stored
+       copy — a price typed in the last 250ms is still in the debounce — and BEFORE commitNow,
+       because commitNow SAVES, and saving is what strips the document-level marker. */
+    if (sheetIsProvisional(harvestPackages(loadSheet()))) { refuseProvisionalSheet('emailing this sheet'); return; }
     var contacts = loadContacts();
     if (contacts.length === 0) {
       (window.bccNotify || alert)('Add a contact in CRM first.', 'warn');
@@ -723,7 +780,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (!contact) { (window.bccNotify || alert)('Invalid choice.', 'warn'); return; }
     if (!contact.email) { (window.bccNotify || alert)('That contact has no email on file.', 'warn'); return; }
     var firstName = (contact.firstName || '').trim() || (contact.email || '').split('@')[0];
-    var sheet = loadSheet();
+    // Flush the 250ms debounce so the email quotes what is ON SCREEN, not the copy from
+    // before the last keystroke. Null = the store refused (view-only, or not primed).
+    /* Nothing has been disabled yet at this point — `btn` is not fetched until below — so
+       just return. Touching btn here would be a TypeError on the one path that is supposed to
+       fail gracefully, and there is no build step to catch it. */
+    var sheet = commitNow();
+    if (!sheet) return;
     var cfg = loadCfg();
     var co = (cfg && cfg.company) || {};
     var subject = (co.displayName || 'Blue Collar Coach') + ' — coaching packages';

@@ -366,7 +366,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       return hay.indexOf(q) >= 0;
     });
 
-    sublineEl.textContent = matched.length + ' of ' + all.length + ' document' + (all.length === 1 ? '' : 's') + (q || folder ? ' shown' : '');
+    /* Qualify the COUNT, not just the empty state. A single leftover local record was enough
+       to make "we could not read the library" render as a confident "1 of 1 documents" — the
+       failure only spoke when the list happened to be exactly empty. */
+    sublineEl.textContent = matched.length + ' of ' + all.length + ' document' + (all.length === 1 ? '' : 's')
+      + (q || folder ? ' shown' : '')
+      + (_serverDocsError ? ' · the server library could not be read, so this is incomplete' : '');
 
     rowsEl.innerHTML = '';
     if (matched.length === 0) {
