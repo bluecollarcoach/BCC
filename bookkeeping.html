@@ -5155,6 +5155,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             '<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:8px;">' + crumbs +
             (fileCount ? '<span style="flex:1;"></span><button class="btn btn-ghost" id="sp_importall" type="button" style="font-size:11px;min-height:26px;">⬇ Import ' + fileCount + ' file' + (fileCount === 1 ? '' : 's') + ' in this folder</button>' : '') +
             '</div>' +
+            '<div id="sp_dlreport" style="display:none;"></div>' +
+            '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">' +
+              '<button class="btn btn-ghost" id="sp_dlall" type="button" style="font-size:12px;min-height:30px;">\u2b07 Download</button>' +
+              '<span id="sp_dlmsg" style="font-size:12px;color:var(--muted);"></span>' +
+            '</div>' +
             '<div id="sp_status" style="font-size:12px;color:var(--muted);margin-bottom:6px;"></div>' + rows +
           '</div></div>';
         area.querySelectorAll('[data-spfolder]').forEach(function (b) { b.onclick = function () { var n = b.getAttribute('data-spfolder'); _spStack.push({ name: n }); _spPath = _spStack.map(function (s) { return s.name; }).join('/'); loadSharePoint(); }; });
@@ -5164,6 +5169,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         if (all) all.onclick = function () { spImport(items.filter(function (x) { return !x.folder; }).map(function (x) { return { id: x.id, name: x.name }; })); };
         var mig = document.getElementById('sp_migrate');
         if (mig) mig.onclick = function () { spMigrateAll(mig); };
+        /* Download, not import: this takes the files OUT of the app as a zip, where "Import"
+           copies them IN. Whatever folder you are looking at, and everything under it. */
+        var spDl = document.getElementById('sp_dlall');
+        if (spDl) {
+          dlIdleLabel('sp_dlall',
+            _spPath ? '⬇ Download this folder' : '⬇ Download all',
+            _spPath ? ('Download “' + _spPath + '” and everything under it as one .zip')
+                    : 'Download this client’s whole SharePoint folder, subfolders included, as one .zip');
+          spDl.onclick = function () { dlClick('sharepoint', spDownloadAll); };
+          // This block is rebuilt on every folder step, so a run in flight has to be re-shown
+          // on the NEW button — otherwise it reads "Download" and cancels on click.
+          dlRefreshControls();
+        }
         wirePreviews(area, '&');
       })
       .catch(function () { if (currentRealm === realmAt) area.innerHTML = ''; });
@@ -5289,6 +5307,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         '</div>' +
         '<input id="drv_search" type="search" placeholder="🔍 Search this drive by file name…" value="' + esc(_driveSearch) + '" style="width:100%;box-sizing:border-box;min-height:38px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;padding:8px 10px;font:inherit;font-size:13px;margin-bottom:10px;" />' +
         '<input type="file" id="drv_file" style="display:none;" />' +
+        '<div id="drv_dlreport" style="display:none;"></div>' +
+        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">' +
+          '<button class="btn btn-ghost" id="drv_dlall" type="button" style="font-size:12px;min-height:30px;">\u2b07 Download</button>' +
+          '<span id="drv_dlmsg" style="font-size:12px;color:var(--muted);"></span>' +
+        '</div>' +
         '<div id="drv_list"><div style="color:var(--muted);">Loading…</div></div>' +
       '</div></div>';
     var ds = document.getElementById('drv_search');
@@ -5302,6 +5325,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       fetch('/api/integrations/drive/' + encodeURIComponent(currentRealm), { method: 'DELETE', credentials: 'include' }).then(function () { loadDrive(); }).catch(function () { loadDrive(); });
     };
     var df = document.getElementById('drv_file'); df.onchange = function () { var f = df.files && df.files[0]; if (f) driveUpload(f); };
+    /* Whatever folder is open, and everything under it. The label follows the crumb trail so it
+       never claims to be taking more than it is. */
+    var drvDl = document.getElementById('drv_dlall');
+    if (drvDl) {
+      var here = _driveStack.length ? _driveStack[_driveStack.length - 1].name : (_driveRootName || 'this folder');
+      dlIdleLabel('drv_dlall',
+        _driveStack.length ? '⬇ Download this folder' : '⬇ Download all',
+        'Download “' + here + '” and everything under it as one .zip');
+      drvDl.onclick = function () { dlClick('drive', driveDownloadAll); };
+      dlRefreshControls();   // same as SharePoint: this browser re-renders on every folder step
+    }
     loadDriveFiles();
   }
   function drivePreviewMime(it) {
@@ -5473,7 +5507,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         + (_subN ? ' <span style="display:block;margin-top:6px;">There ' + (_subN === 1 ? 'is <strong>1</strong> file' : 'are <strong>' + _subN + '</strong> files') + ' filed under this client elsewhere (postal-mail scans). <button class="btn btn-ghost" id="fl_dlsub" type="button" style="font-size:12px;min-height:30px;margin-left:4px;">\u2b07 Download ' + (_subN === 1 ? 'it' : 'them') + '</button> <span id="fl_dlmsg2" style="font-size:12px;color:var(--muted);"></span></span>' : '')
         + '</div>';
       var subBtn = document.getElementById('fl_dlsub');
-      if (subBtn) subBtn.onclick = onDownloadAllClick;
+      if (subBtn) {
+        subBtn.onclick = onDownloadAllClick;
+        // Its resting label, so the control can be put BACK after a run — without this it kept
+        // reading "✕ Cancel" while a click on it would have started a fresh download.
+        dlIdleLabel('fl_dlsub', '⬇ Download ' + (_subN === 1 ? 'it' : 'them'),
+          'Download ' + (_subN === 1 ? 'this file' : 'these ' + _subN + ' files') + ' as one .zip');
+      }
       syncDownloadAllBtn(null);   // a download already running for this client owns this button too
       return;
     }
@@ -5492,30 +5532,41 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     list.querySelectorAll('[data-fdel]').forEach(function (b) { b.onclick = function () { delFile(b.getAttribute('data-fdel')); }; });
     wirePreviews(list, '?');
   }
-  /* ---- Download all of a client's internal files, as one .zip ----
-     Asked for directly. It is the piece that was missing whenever the whole set has to leave
-     the app at once: a client leaving, an accountant's request, a subpoena, a handoff to
-     another bookkeeper. Until now that meant clicking each file in turn and answering a
-     browser prompt each time — which is also how files get missed.
+  /* ---- Download a client's files, as one .zip ----
+     Asked for directly. It is the piece that was missing whenever a whole set has to leave the
+     app at once: a client leaving, an accountant's request, a subpoena, a handoff to another
+     bookkeeper. Until now that meant clicking each file in turn and answering a browser prompt
+     each time — which is also how files get missed.
 
-     WHAT "ALL" MEANS: every internal document filed under /clients/<realm>, INCLUDING the
-     postal-mail scans in the /mail subfolder, which the table above deliberately does not
-     list. They keep their subfolder inside the zip. When a search or category filter is
-     active the button switches to "Download these" and ships exactly the rows on screen —
-     the label always says which of the two it is about to do.
+     THREE SOURCES, THREE BUTTONS, THREE ARCHIVES — deliberately not one. Internal files are
+     private to BCC; SharePoint and the client's shared drive are things the client can see. A
+     single "download everything" would be one click away from handing a client BCC's own
+     working papers inside an archive somebody thought was theirs. Each block downloads its own
+     files, and the zip is named for the source it came from.
 
-     The archive is built in the BROWSER (window.bccZip). The alternative — zipping in the
-     Function — would have to buffer every blob inside an Azure Static Web Apps managed
-     function, which has a hard ~45s ceiling: a client with a few hundred MB of statements
-     would fail there and nowhere else, and the failure would arrive as a dead download.
+     ONE ENGINE for all three (zipAndSave). Three copies of this would drift — and "fixed one
+     of two identical branches" is the single most repeated defect in this app's history.
 
-     Access needs no new gate: every byte comes through /api/documents/<id>/download, which
-     runs docAccessFilter per file. This button can reach nothing the file links beside it
-     cannot already reach — and a file that IS refused is reported by name rather than
-     silently dropped from the archive. */
-  var _dlRun = null;                              // { cancel, ctrls[] } while a download runs
+     The archive is built in the BROWSER (window.bccZip). Zipping server-side would have to
+     buffer every blob inside an Azure Static Web Apps managed function, which has a hard ~45s
+     ceiling: a client with a few hundred MB would fail there and nowhere else, and the failure
+     would arrive as a dead download.
+
+     Access needs no new gate: every byte comes through the same per-file download endpoints the
+     links in each block already use, each of which checks access for that client. These buttons
+     can reach nothing the file links beside them cannot — and a file that IS refused is
+     reported by name rather than quietly left out of the archive. */
+  var _dlRun = null;                              // { cancel, ctrls[], realm, source } while running
   var DL_MAX_TOTAL = 2 * 1024 * 1024 * 1024;      // refuse rather than wedge the tab
   var DL_CONFIRM_FILES = 150, DL_CONFIRM_BYTES = 300 * 1024 * 1024;
+  var DL_WALK_MAX_FILES = 2000, DL_WALK_MAX_FOLDERS = 300;
+  /* Which controls belong to which source. Everything else in here is source-agnostic, so a
+     fourth file source would be a row in this table plus a collector. */
+  var DL_SOURCES = {
+    internal:   { label: 'internal files',     zipPart: 'internal files', buttons: ['fl_dlall', 'fl_dlsub'], msgs: ['fl_dlmsg', 'fl_dlmsg2'], report: 'fl_dlreport' },
+    sharepoint: { label: 'SharePoint files',   zipPart: 'SharePoint',     buttons: ['sp_dlall'],             msgs: ['sp_dlmsg'],              report: 'sp_dlreport' },
+    drive:      { label: 'shared-drive files', zipPart: 'shared drive',   buttons: ['drv_dlall'],            msgs: ['drv_dlmsg'],             report: 'drv_dlreport' }
+  };
   function flSizeText(bytes) {
     if (!bytes) return '';
     if (bytes < 1024 * 1024) return Math.max(1, Math.round(bytes / 1024)) + ' KB';
@@ -5523,132 +5574,132 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (mb < 1024) return (mb < 10 ? mb.toFixed(1) : Math.round(mb)) + ' MB';
     return (mb / 1024).toFixed(1) + ' GB';
   }
-  // BOTH message spans: the toolbar's, and the one beside the empty-state button (the
-  // toolbar is hidden in that state, so writing only to it says nothing to anyone).
-  function dlMsg(txt) {
-    ['fl_dlmsg', 'fl_dlmsg2'].forEach(function (id) {
-      var el = document.getElementById(id); if (el) el.textContent = txt || '';
-    });
-  }
-  /* The label states exactly what the click will do — all of them, or the filtered few. It is
-     never disabled: while a download runs it becomes the Cancel, and with nothing to download
-     the click says so rather than presenting a dead control. */
-  function syncDownloadAllBtn(rows) {
-    var btn = document.getElementById('fl_dlall');
-    var sub = document.getElementById('fl_dlsub');
-    /* Cancel is offered only in the workspace the download BELONGS to. _dlRun is one global,
-       so without the realm test the next client's Files tab showed "✕ Cancel" for an export
-       of somebody else's files — and clicking it would have cancelled that. A flag with one
-       clearing site leaking into an unrelated context is a shape this app has shipped before. */
-    var mine = !!(_dlRun && _dlRun.realm === currentRealm);
-    if (mine) {
-      if (btn) { btn.textContent = '✕ Cancel'; btn.title = 'Stop this download'; }
-      if (sub) { sub.textContent = '✕ Cancel'; sub.title = 'Stop this download'; }
-      return;
-    }
-    if (!btn) return;
-    var filtered = !!(rows && rows.length !== _intFiles.length);
-    var n = filtered ? rows.length : _intFilesAll.length;
-    btn.textContent = (filtered ? '⬇ Download these (' : '⬇ Download all (') + n + ')';
-    btn.title = filtered
-      ? 'Download the ' + n + ' file' + (n === 1 ? '' : 's') + ' listed below, as one .zip'
-      : 'Download every internal file for this client — postal-mail scans included — as one .zip';
-  }
-  function onDownloadAllClick() {
-    if (_dlRun) {
-      /* One at a time. Starting a second would overwrite _dlRun — the first download's cancel
-         list and its finish() bookkeeping with it — so say what is running instead of
-         quietly breaking it. */
-      if (_dlRun.realm !== currentRealm) {
-        (window.bccNotify || alert)('A download is already running for ' + companyName(_dlRun.realm) + '. Wait for it to finish, or switch back to that client to cancel it.', 'warn', 9000);
-        return;
-      }
-      _dlRun.cancel = true;
-      _dlRun.ctrls.forEach(function (c) { try { c.abort(); } catch (e) {} });
-      dlMsg('Cancelling…');
-      return;
-    }
-    downloadAllInternal();
+  // Writes to every message span the source owns — the internal block has two (the toolbar's,
+  // and the one beside the empty-state button), and only one of them is on screen at a time.
+  function dlMsg(source, txt) {
+    var cfg = DL_SOURCES[source]; if (!cfg) return;
+    cfg.msgs.forEach(function (id) { var el = document.getElementById(id); if (el) el.textContent = txt || ''; });
   }
   /* What the last run could not fetch, kept ON SCREEN. A toast is gone in fifteen seconds and
      the manifest is inside a zip nobody opens — so "half of them didn't download" was a thing
      you could only discover by counting. This says it, names them, and offers to go again for
      just those. Cleared when a fresh run starts. */
-  function dlReport(html) {
-    var el = document.getElementById('fl_dlreport'); if (!el) return;
+  function dlReport(source, html) {
+    var cfg = DL_SOURCES[source]; if (!cfg) return;
+    var el = document.getElementById(cfg.report); if (!el) return;
     el.innerHTML = html || '';
-    el.style.display = html ? '' : 'none';
     el.style.cssText = html
       ? 'background:#f7ecec;border:1px solid #e3b4b4;border-radius:8px;padding:9px 12px;margin:0 0 10px;font-size:12.5px;color:#6a1c1c;'
       : 'display:none;';
   }
-  function showDlReport(failedList, savedN, totalN) {
-    var names = failedList.slice(0, 8).map(function (f) { return esc(f.name) + ' (' + esc(f.why) + ')'; }).join('; ');
-    var more = failedList.length > 8 ? ' …and ' + (failedList.length - 8) + ' more' : '';
-    dlReport('<strong>' + failedList.length + ' of ' + totalN + ' file' + (totalN === 1 ? '' : 's') + ' could not be downloaded.</strong> '
-      + (savedN ? 'The other ' + savedN + ' are in the zip. ' : 'No zip was made. ')
-      + names + more
-      + ' <button class="btn btn-ghost" id="fl_dlretry" type="button" style="font-size:12px;min-height:28px;margin-left:6px;">↻ Try these ' + failedList.length + ' again</button>');
-    var rb = document.getElementById('fl_dlretry');
-    if (rb) rb.onclick = function () { downloadAllInternal(_dlLastFailedItems.slice(), true); };
+  /* The resting label lives on the button as data-idle, so each block owns its own wording and
+     this only has to know how to swap it for Cancel and back. */
+  function dlIdleLabel(id, text, title) {
+    var b = document.getElementById(id); if (!b) return;
+    b.dataset.idle = text;
+    b.dataset.idleTitle = title || '';
+    if (!(_dlRun && _dlRun.realm === currentRealm && _dlRun.source === dlSourceOfButton(id))) { b.textContent = text; b.title = title || ''; }
   }
-  var _dlLastFailedItems = [];
-  function downloadAllInternal(retryItems, isRetry) {
-    /* sw.js serves this page's scripts from cache, so a device can be running a bcc-api.js
-       from before the zip writer existed. Say that, rather than throwing a ReferenceError
-       into a click handler where nothing would show at all. */
-    if (!window.bccZip || !window.bccSaveBlob) {
-      (window.bccNotify || alert)('This device is still running an older cached copy of the app, which cannot build zips. Reload the page and try again.', 'warn', 10000);
-      return;
-    }
-    var realmAt = currentRealm;
-    if (!realmAt) return;
-    var base = '/clients/' + realmAt;
-    var rows = intFileRows();
-    var filtered = rows.length !== _intFiles.length;
-    var items = (retryItems && retryItems.length) ? retryItems.slice() : (filtered ? rows.slice() : _intFilesAll.slice());
-    if (isRetry) filtered = false;   // a retry is about the files that failed, not the filter
-    if (!items.length) {
-      (window.bccNotify || alert)(filtered
-        ? 'Nothing matches this search or category, so there is nothing to download.'
-        : 'There are no internal files for this client yet.', 'warn', 7000);
-      return;
-    }
-    // Folder, then name — so the archive reads in the order someone would file it.
-    if (!filtered && !isRetry) items.sort(function (a, b) {
-      return String(a.folder || '').localeCompare(String(b.folder || ''))
-        || String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' });
+  function dlSourceOfButton(id) {
+    var hit = null;
+    Object.keys(DL_SOURCES).forEach(function (s) { if (DL_SOURCES[s].buttons.indexOf(id) >= 0) hit = s; });
+    return hit;
+  }
+  /* Cancel is offered only on the source AND the client the run belongs to. _dlRun is one
+     global, so without both tests the next client's tab showed "✕ Cancel" for somebody else's
+     export — and clicking it would have cancelled that. */
+  function dlRefreshControls() {
+    Object.keys(DL_SOURCES).forEach(function (src) {
+      var busy = !!(_dlRun && _dlRun.realm === currentRealm && _dlRun.source === src);
+      DL_SOURCES[src].buttons.forEach(function (id) {
+        var b = document.getElementById(id); if (!b) return;
+        if (busy) { b.textContent = '✕ Cancel'; b.title = 'Stop this download'; }
+        else if (b.dataset.idle) { b.textContent = b.dataset.idle; b.title = b.dataset.idleTitle || ''; }
+      });
     });
-    var known = 0, unsized = 0;
-    items.forEach(function (it) { if (it.sizeBytes) known += it.sizeBytes; else unsized++; });
-    if (known > DL_MAX_TOTAL) {
-      (window.bccNotify || alert)('That is ' + flSizeText(known) + ' in one archive — more than a browser will reliably build. Narrow it with the search or category filter and take it in batches.', 'warn', 14000);
+  }
+  // The internal block's label states exactly what the click will do — all of them, or the
+  // filtered few. Never disabled: with nothing to download the click says so.
+  function syncDownloadAllBtn(rows) {
+    if (!document.getElementById('fl_dlall')) { dlRefreshControls(); return; }
+    var filtered = !!(rows && rows.length !== _intFiles.length);
+    var n = filtered ? rows.length : _intFilesAll.length;
+    dlIdleLabel('fl_dlall', (filtered ? '⬇ Download these (' : '⬇ Download all (') + n + ')',
+      filtered ? ('Download the ' + n + ' file' + (n === 1 ? '' : 's') + ' listed below, as one .zip')
+               : 'Download every internal file for this client — postal-mail scans included — as one .zip');
+    dlRefreshControls();
+  }
+  /* One at a time, across all three sources. Starting a second would overwrite _dlRun — the
+     first run's cancel list and its finish() bookkeeping with it — so say what is running
+     instead of quietly breaking it. */
+  function dlClick(source, start) {
+    if (_dlRun) {
+      if (_dlRun.realm === currentRealm && _dlRun.source === source) {
+        _dlRun.cancel = true;
+        _dlRun.ctrls.forEach(function (c) { try { c.abort(); } catch (e) {} });
+        dlMsg(source, 'Cancelling…');
+        return;
+      }
+      (window.bccNotify || alert)('A download is already running (' + DL_SOURCES[_dlRun.source].label
+        + (_dlRun.realm === currentRealm ? '' : ' for ' + companyName(_dlRun.realm))
+        + '). Wait for it to finish, or cancel it first.', 'warn', 9000);
       return;
+    }
+    start();
+  }
+  function onDownloadAllClick() { dlClick('internal', function () { downloadAllInternal(); }); }
+
+  /* ================= the engine =================
+     cfg: { source, realm, items[], zipLabel, notes[], isRetry, retry(items) }
+     Each item: { id, name, rel, when, size, url } — rel is the folder path inside the zip.
+     Everything above this line decides WHAT to download; everything below is the same for all
+     three sources. */
+  var _dlLastFailed = {};   // source -> the items to offer a retry for
+  function zipAndSave(cfg) {
+    var realmAt = cfg.realm, source = cfg.source, items = cfg.items || [];
+    // Self-sufficient: callers claim the run before walking a folder tree (so Cancel works
+    // while listing), but this must not depend on their having done so.
+    if (!_dlRun) _dlRun = { cancel: false, ctrls: [], realm: realmAt, source: source };
+    /* EVERY exit from here has to release the run. The caller claims _dlRun before calling in
+       — that is what makes Cancel work while a folder walk is still listing — so an early
+       return that only tidied the message left the page believing a download was in flight:
+       every button stuck reading "✕ Cancel", and no new download possible until a reload. */
+    function bail(msg, kind, ttl) {
+      _dlRun = null;
+      dlFinishState(source);
+      if (msg) (window.bccNotify || alert)(msg, kind || 'warn', ttl || 9000);
+      return Promise.resolve();
+    }
+    if (!window.bccZip || !window.bccSaveBlob) {
+      return bail('This device is still running an older cached copy of the app, which cannot build zips. Reload the page and try again.', 'warn', 10000);
+    }
+    if (!items.length) return bail(cfg.emptyMsg || 'There is nothing to download here.', 'warn', 7000);
+    var known = 0, unsized = 0;
+    items.forEach(function (it) { if (it.size) known += it.size; else unsized++; });
+    if (known > DL_MAX_TOTAL) {
+      return bail('That is ' + flSizeText(known) + ' in one archive — more than a browser will reliably build. Narrow it down and take it in batches.', 'warn', 14000);
     }
     if (items.length > DL_CONFIRM_FILES || known > DL_CONFIRM_BYTES) {
       var sizeNote = known ? (' (' + flSizeText(known) + (unsized ? ', plus ' + unsized + ' whose size is not recorded' : '') + ')') : '';
-      if (!confirm('Download ' + items.length + ' files' + sizeNote + ' as one .zip?\n\nThis can take a few minutes. Leave this page open until it finishes.')) return;
+      if (!confirm('Download ' + items.length + ' files' + sizeNote + ' as one .zip?\n\nThis can take a few minutes. Leave this page open until it finishes.')) {
+        return bail('');   // they said no — no message needed, but the run must still be released
+      }
     }
-
-    dlReport('');   // the previous run's verdict is not this run's
+    dlReport(source, '');   // the previous run's verdict is not this run's
     var zip = window.bccZip();
     var used = {}, failed = [], done = 0, saved = 0, overflow = '';
     var next = 0;
-    _dlRun = { cancel: false, ctrls: [], realm: realmAt };
-    syncDownloadAllBtn(rows);
 
-    /* Name inside the archive: the file's own subfolder, then a Windows-safe file name, then
-       a " (2)" suffix if that path is already taken. Two files really can share a name — the
-       same statement uploaded twice under different tags — and a zip that quietly holds one
-       entry for two files is a silent loss at exactly the moment someone is archiving. */
-    /* OWN properties only. The key here is a FILE NAME, which a bookkeeper chose — and a file
-       called "constructor.pdf" or "toString" resolves off Object.prototype, so a plain
-       `used[key]` reads truthy for a name nothing has taken and renames it to " (2)" for no
-       reason. Same shape as the chat channel-id bug: never test a user-supplied string against
-       a bare object. */
+    /* OWN properties only. The key is a FILE NAME, which a person chose — and a file called
+       "constructor.pdf" resolves off Object.prototype, so a plain used[key] reads truthy for a
+       name nothing has taken and renames it to " (2)" for no reason. */
     function taken(k) { return Object.prototype.hasOwnProperty.call(used, k); }
+    /* Name inside the archive: its own subfolder, then a Windows-safe file name, then a " (2)"
+       suffix if that path is already taken. Two files really can share a name, and a zip that
+       quietly holds one entry for two files is a silent loss at exactly the moment someone is
+       archiving. */
     function zipPathFor(it) {
-      var rel = String(it.folder || '').slice(base.length).replace(/^\/+/, '');
+      var rel = String(it.rel || '').replace(/^\/+/, '');
       var nm = window.bccSafeFileName(it.name, 'file');
       var key = (rel + '/' + nm).toLowerCase();
       if (taken(key)) {
@@ -5664,31 +5715,27 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     function tick() {
       if (currentRealm !== realmAt) return;   // they switched client — do not paint into another client's tab
-      dlMsg('Downloading ' + Math.min(done + 1, items.length) + ' of ' + items.length + '…');
+      dlMsg(source, 'Downloading ' + Math.min(done + 1, items.length) + ' of ' + items.length + '…');
     }
     tick();
 
-    /* ?bytes=1 streams the file back through the Function, same-origin. The plain download
-       route answers 302 to a blob SAS on *.blob.core.windows.net, which sends no CORS
-       headers — fetch() cannot follow it. (Same reason the PDF editor uses this route.) */
     function fetchOne(it) {
       var ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
       if (ctrl) _dlRun.ctrls.push(ctrl);
-      return fetch('/api/documents/' + encodeURIComponent(it.id) + '/download?bytes=1', {
-        credentials: 'include', signal: ctrl ? ctrl.signal : undefined
-      }).then(function (r) {
-        if (!r.ok) {
-          var err = new Error(r.status === 403 ? 'no access to this file' : ('HTTP ' + r.status));
-          err.status = r.status;
-          throw err;
-        }
-        return r.arrayBuffer();
-      });
+      return fetch(it.url, { credentials: 'include', signal: ctrl ? ctrl.signal : undefined })
+        .then(function (r) {
+          if (!r.ok) {
+            var err = new Error(r.status === 403 ? 'no access to this file' : ('HTTP ' + r.status));
+            err.status = r.status;
+            throw err;
+          }
+          return r.arrayBuffer();
+        });
     }
     /* ONE automatic retry, for transient failures only. Three requests run at once against a
        Function app that cold-starts, and a 502 or a dropped connection on one file is exactly
        the kind of blip that made a file "not download" with nothing wrong with it. A 403 or a
-       404 is an answer, not a blip — retrying those only wastes the person's time. */
+       404 is an answer, not a blip. */
     function fetchWithRetry(it) {
       return fetchOne(it).catch(function (e) {
         var st = e && e.status;
@@ -5705,9 +5752,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       return fetchWithRetry(it)
         .then(function (buf) {
           if (_dlRun.cancel) return;
-          var when = it.createdAt ? new Date(it.createdAt).getTime() : Date.now();
           try {
-            zip.add(zipPathFor(it), new Uint8Array(buf), when);
+            zip.add(zipPathFor(it), new Uint8Array(buf), it.when || Date.now());
             saved++;
           } catch (e) {
             /* The archive itself refused this entry (4 GB / entry-count ceiling). Stop
@@ -5729,10 +5775,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var lines = [
         'These files are NOT in this zip — they could not be downloaded.',
         'Client: ' + companyName(realmAt),
+        'Source: ' + DL_SOURCES[source].label,
         'Made: ' + new Date().toLocaleString(),
         ''
       ];
-      failed.forEach(function (f) { lines.push('- ' + f.name + '   (' + f.why + ')'); });
+      failed.forEach(function (f) { lines.push('- ' + (f.name || '') + '   (' + f.why + ')'); });
       lines.push('');
       lines.push('Open the client in BCC Connect and download these individually, or ask an admin.');
       return lines.join('\r\n');   // CRLF: this is opened in Notepad on Windows
@@ -5741,13 +5788,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     function finish() {
       var cancelled = !!(_dlRun && _dlRun.cancel) && !overflow;
       _dlRun = null;
-      dlMsg('');
-      syncDownloadAllBtn(intFileRows());
-      _dlLastFailedItems = items.filter(function (it) {
+      dlFinishState(source);
+      _dlLastFailed[source] = items.filter(function (it) {
         return failed.some(function (f) { return f.id === it.id; });
       });
-      if (!cancelled && failed.length) showDlReport(failed, saved, items.length);
       if (cancelled) { (window.bccNotify || alert)('Download cancelled — nothing was saved.', 'warn', 6000); return; }
+      if (failed.length) showDlReport(source, failed, saved, items.length, cfg);
       // Not one byte arrived: there is no archive to hand over, and saying otherwise with an
       // empty zip would be the worst possible outcome for someone archiving a client.
       if (!saved) {
@@ -5763,23 +5809,25 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       }
       var d = new Date();
       var stamp = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-      var fname = window.bccSafeFileName(companyName(realmAt), 'client') + ' — internal files'
-        + (isRetry ? ' (retry)' : (filtered ? ' (filtered)' : '')) + ' ' + stamp + '.zip';
+      var fname = window.bccSafeFileName(companyName(realmAt), 'client') + ' — ' + DL_SOURCES[source].zipPart
+        + (cfg.zipLabel ? ' ' + cfg.zipLabel : '') + ' ' + stamp + '.zip';
       window.bccSaveBlob(blob, fname);
       var zipSize = blob.size || zip.bytes();   // blob.size includes the central directory
       if (window.bccAudit) window.bccAudit('client-file-download', {
         path: '/bookkeeping.html',
-        meta: { realmId: realmAt, count: saved, bytes: zipSize, missing: failed.length, filtered: filtered }
+        meta: { realmId: realmAt, source: source, count: saved, bytes: zipSize, missing: failed.length, filtered: !!cfg.filtered }
       });
-      // Name the client if they have moved on — a toast about "12 files" is meaningless once
-      // a different client's workspace is on screen.
+      // Name the client if they have moved on — a toast about "12 files" is meaningless once a
+      // different client's workspace is on screen.
       var whose = (currentRealm === realmAt) ? '' : (' for ' + companyName(realmAt));
+      var noteTail = (cfg.notes && cfg.notes.length) ? ' ' + cfg.notes.join(' ') : '';
       if (failed.length || overflow) {
         (window.bccNotify || alert)('Downloaded ' + saved + ' of ' + items.length + ' files' + whose + ' (' + flSizeText(zipSize) + ').'
           + ' ' + failed.length + ' could not be included' + (overflow ? ' once the archive hit its limit' : '')
-          + ' — they are listed in _MISSING-FILES.txt inside the zip.', 'warn', 15000);
+          + ' — they are listed in _MISSING-FILES.txt inside the zip.' + noteTail, 'warn', 15000);
       } else {
-        (window.bccNotify || alert)('Downloaded ' + saved + ' file' + (saved === 1 ? '' : 's') + whose + ' (' + flSizeText(zipSize) + ') as “' + fname + '”.', 'success', 9000);
+        (window.bccNotify || alert)('Downloaded ' + saved + ' file' + (saved === 1 ? '' : 's') + whose + ' (' + flSizeText(zipSize) + ') as “' + fname + '”.' + noteTail,
+          noteTail ? 'warn' : 'success', noteTail ? 12000 : 9000);
       }
     }
 
@@ -5790,6 +5838,183 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // much asynchronous work and hands back undefined can only be tested with a sleep — and a
     // test that sleeps is a test that passes for the wrong reason the day a retry is added.
     return Promise.all(runners).then(finish, finish);
+  }
+  function dlFinishState(source) {
+    dlMsg(source, '');
+    if (source === 'internal') syncDownloadAllBtn(intFileRows()); else dlRefreshControls();
+  }
+  function showDlReport(source, failedList, savedN, totalN, cfg) {
+    var names = failedList.slice(0, 8).map(function (f) { return esc(f.name) + ' (' + esc(f.why) + ')'; }).join('; ');
+    var more = failedList.length > 8 ? ' …and ' + (failedList.length - 8) + ' more' : '';
+    dlReport(source, '<strong>' + failedList.length + ' of ' + totalN + ' file' + (totalN === 1 ? '' : 's') + ' could not be downloaded.</strong> '
+      + (savedN ? 'The other ' + savedN + ' are in the zip. ' : 'No zip was made. ')
+      + names + more
+      + ' <button class="btn btn-ghost" data-dlretry="' + esc(source) + '" type="button" style="font-size:12px;min-height:28px;margin-left:6px;">↻ Try these ' + failedList.length + ' again</button>');
+    var host = document.getElementById(DL_SOURCES[source].report);
+    var rb = host && host.querySelector('[data-dlretry]');
+    if (rb) rb.onclick = function () {
+      var again = (_dlLastFailed[source] || []).slice();
+      if (!again.length) return;
+      dlClick(source, function () {
+        _dlRun = { cancel: false, ctrls: [], realm: currentRealm, source: source };
+        dlRefreshControls();
+        zipAndSave({ source: source, realm: currentRealm, items: again, zipLabel: '(retry)', notes: [] });
+      });
+    };
+  }
+
+  /* ================= internal files ================= */
+  /* No retry parameters: the engine owns retries, and it hands back items it has already
+     normalised — feeding those back through the mapping below would produce rows with no url. */
+  function downloadAllInternal() {
+    var realmAt = currentRealm;
+    if (!realmAt) return;
+    var base = '/clients/' + realmAt;
+    var rows = intFileRows();
+    var filtered = rows.length !== _intFiles.length;
+    var src = filtered ? rows.slice() : _intFilesAll.slice();
+    // Folder, then name — so the archive reads in the order someone would file it.
+    if (!filtered) src.sort(function (a, b) {
+      return String(a.folder || '').localeCompare(String(b.folder || ''))
+        || String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' });
+    });
+    var items = src.map(function (it) {
+      return {
+        id: it.id,
+        name: it.name,
+        rel: String(it.folder || '').slice(base.length).replace(/^\/+/, ''),
+        when: it.createdAt ? new Date(it.createdAt).getTime() : Date.now(),
+        size: it.sizeBytes || 0,
+        url: '/api/documents/' + encodeURIComponent(it.id) + '/download?bytes=1'
+      };
+    });
+    _dlRun = { cancel: false, ctrls: [], realm: realmAt, source: 'internal' };
+    dlRefreshControls();
+    return zipAndSave({
+      source: 'internal', realm: realmAt, items: items, filtered: filtered,
+      zipLabel: filtered ? '(filtered)' : '',
+      emptyMsg: filtered ? 'Nothing matches this search or category, so there is nothing to download.'
+                         : 'There are no internal files for this client yet.'
+    });
+  }
+
+  /* ================= SharePoint ================= */
+  /* Walks the folder you are LOOKING AT, and everything under it. The listing is per folder
+     (that is what the browser above uses), so the walk is client-side and bounded — and when a
+     folder's own listing came back capped, that is carried into the result rather than quietly
+     producing a short archive. */
+  function dlWalk(opts) {
+    var out = [], notes = [], folders = 0;
+    var queue = [{ ref: opts.start, rel: '' }];
+    function step() {
+      if (!queue.length || out.length >= DL_WALK_MAX_FILES || folders >= DL_WALK_MAX_FOLDERS) return Promise.resolve();
+      if (_dlRun && _dlRun.cancel) return Promise.resolve();
+      var cur = queue.shift();
+      folders++;
+      dlMsg(opts.source, 'Listing ' + (cur.rel ? '“' + cur.rel + '”' : 'the folder') + '… (' + out.length + ' files so far)');
+      return opts.list(cur.ref).then(function (res) {
+        if (res.truncated) notes.push('“' + (cur.rel || 'the top folder') + '” holds more items than can be listed at once, so some are missing from this archive.');
+        (res.items || []).forEach(function (it) {
+          if (it.folder) {
+            queue.push({ ref: opts.into(cur.ref, it), rel: cur.rel ? (cur.rel + '/' + it.name) : it.name });
+            return;
+          }
+          if (out.length >= DL_WALK_MAX_FILES) return;
+          out.push(opts.file(it, cur.rel));
+        });
+        return step();
+      });
+    }
+    return step().then(function () {
+      if (out.length >= DL_WALK_MAX_FILES) notes.push('Stopped at ' + DL_WALK_MAX_FILES + ' files — open a subfolder and download that on its own to get the rest.');
+      if (folders >= DL_WALK_MAX_FOLDERS) notes.push('Stopped after ' + DL_WALK_MAX_FOLDERS + ' folders.');
+      return { items: out, notes: notes };
+    });
+  }
+  function spDownloadAll() {
+    var realmAt = currentRealm; if (!realmAt) return;
+    var startPath = _spPath || '';
+    _dlRun = { cancel: false, ctrls: [], realm: realmAt, source: 'sharepoint' };
+    dlRefreshControls();
+    dlReport('sharepoint', '');
+    return dlWalk({
+      source: 'sharepoint',
+      start: startPath,
+      list: function (path) {
+        return fetch('/api/integrations/sharepoint/' + encodeURIComponent(realmAt) + '?path=' + encodeURIComponent(path), { credentials: 'include' })
+          .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+          .then(function (resp) {
+            if (!resp || !resp.ok) throw new Error((resp && resp.error) || 'SharePoint listing failed');
+            if (!resp.mapped) throw new Error('no SharePoint folder is mapped to this client');
+            return resp;
+          });
+      },
+      into: function (path, it) { return path ? (path + '/' + it.name) : it.name; },
+      file: function (it, rel) {
+        return {
+          id: it.id, name: it.name, rel: rel, size: it.size || 0,
+          when: it.modified ? new Date(it.modified).getTime() : Date.now(),
+          url: '/api/integrations/sharepoint/' + encodeURIComponent(realmAt) + '/download/' + encodeURIComponent(it.id) + '?name=' + encodeURIComponent(it.name)
+        };
+      }
+    }).then(function (res) {
+      if (_dlRun && _dlRun.cancel) { _dlRun = null; dlFinishState('sharepoint'); (window.bccNotify || alert)('Download cancelled — nothing was saved.', 'warn', 6000); return; }
+      return zipAndSave({
+        source: 'sharepoint', realm: realmAt, items: res.items, notes: res.notes,
+        zipLabel: startPath ? ('(' + startPath.split('/').pop() + ')') : '',
+        emptyMsg: 'There are no files in this SharePoint folder to download.'
+      });
+    }).catch(function (e) {
+      _dlRun = null;
+      dlFinishState('sharepoint');
+      (window.bccNotify || alert)('Could not read this client’s SharePoint folder (' + ((e && e.message) || 'unknown error') + '), so nothing was downloaded.', 'error', 12000);
+    });
+  }
+
+  /* ================= the client's shared drive ================= */
+  function driveDownloadAll() {
+    var realmAt = currentRealm; if (!realmAt) return;
+    var startId = _driveFolder || '';
+    _dlRun = { cancel: false, ctrls: [], realm: realmAt, source: 'drive' };
+    dlRefreshControls();
+    dlReport('drive', '');
+    return dlWalk({
+      source: 'drive',
+      start: startId,
+      list: function (folderId) {
+        return fetch('/api/integrations/drive/' + encodeURIComponent(realmAt) + '/files?folderId=' + encodeURIComponent(folderId), { credentials: 'include' })
+          .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+          .then(function (resp) {
+            if (resp && resp.needsReconnect) throw new Error('the drive needs reconnecting');
+            if (resp && resp.needsRoot) throw new Error('no shared folder is set for this client yet');
+            if (!resp || !resp.ok) throw new Error((resp && resp.error) || 'drive listing failed');
+            return resp;
+          });
+      },
+      into: function (_id, it) { return it.id; },
+      file: function (it, rel) {
+        /* A Google Docs/Sheets/Slides file has no real bytes — the download proxy exports it as
+           a PDF, and names it .pdf when it does. Mirror that here or the archive holds a .gdoc
+           that is actually a PDF and Windows cannot open it. */
+        var nm = String(it.name || 'file');
+        if (/^application\/vnd\.google-apps\./.test(it.mimeType || '') && !/\.pdf$/i.test(nm)) nm += '.pdf';
+        return {
+          id: it.id, name: nm, rel: rel, size: it.size || 0,
+          when: it.modified ? new Date(it.modified).getTime() : Date.now(),
+          url: '/api/integrations/drive/' + encodeURIComponent(realmAt) + '/download/' + encodeURIComponent(it.id) + '?name=' + encodeURIComponent(it.name)
+        };
+      }
+    }).then(function (res) {
+      if (_dlRun && _dlRun.cancel) { _dlRun = null; dlFinishState('drive'); (window.bccNotify || alert)('Download cancelled — nothing was saved.', 'warn', 6000); return; }
+      return zipAndSave({
+        source: 'drive', realm: realmAt, items: res.items, notes: res.notes,
+        emptyMsg: 'There are no files in this drive folder to download.'
+      });
+    }).catch(function (e) {
+      _dlRun = null;
+      dlFinishState('drive');
+      (window.bccNotify || alert)('Could not read this client’s shared drive (' + ((e && e.message) || 'unknown error') + '), so nothing was downloaded.', 'error', 12000);
+    });
   }
 
   function uploadFile() {
