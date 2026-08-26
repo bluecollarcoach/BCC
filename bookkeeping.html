@@ -5092,6 +5092,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             '<span id="fl_dlmsg" style="font-size:12px;color:var(--muted);"></span>' +
             '<span id="fl_count" class="fl-count"></span>' +
           '</div>' +
+          '<div id="fl_dlreport" style="display:none;"></div>' +
           '<div id="fl_list"><div style="color:var(--muted);">Loading files…</div></div>' +
         '</div>' +
       '</div>';
@@ -5569,7 +5570,30 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     downloadAllInternal();
   }
-  function downloadAllInternal() {
+  /* What the last run could not fetch, kept ON SCREEN. A toast is gone in fifteen seconds and
+     the manifest is inside a zip nobody opens — so "half of them didn't download" was a thing
+     you could only discover by counting. This says it, names them, and offers to go again for
+     just those. Cleared when a fresh run starts. */
+  function dlReport(html) {
+    var el = document.getElementById('fl_dlreport'); if (!el) return;
+    el.innerHTML = html || '';
+    el.style.display = html ? '' : 'none';
+    el.style.cssText = html
+      ? 'background:#f7ecec;border:1px solid #e3b4b4;border-radius:8px;padding:9px 12px;margin:0 0 10px;font-size:12.5px;color:#6a1c1c;'
+      : 'display:none;';
+  }
+  function showDlReport(failedList, savedN, totalN) {
+    var names = failedList.slice(0, 8).map(function (f) { return esc(f.name) + ' (' + esc(f.why) + ')'; }).join('; ');
+    var more = failedList.length > 8 ? ' …and ' + (failedList.length - 8) + ' more' : '';
+    dlReport('<strong>' + failedList.length + ' of ' + totalN + ' file' + (totalN === 1 ? '' : 's') + ' could not be downloaded.</strong> '
+      + (savedN ? 'The other ' + savedN + ' are in the zip. ' : 'No zip was made. ')
+      + names + more
+      + ' <button class="btn btn-ghost" id="fl_dlretry" type="button" style="font-size:12px;min-height:28px;margin-left:6px;">↻ Try these ' + failedList.length + ' again</button>');
+    var rb = document.getElementById('fl_dlretry');
+    if (rb) rb.onclick = function () { downloadAllInternal(_dlLastFailedItems.slice(), true); };
+  }
+  var _dlLastFailedItems = [];
+  function downloadAllInternal(retryItems, isRetry) {
     /* sw.js serves this page's scripts from cache, so a device can be running a bcc-api.js
        from before the zip writer existed. Say that, rather than throwing a ReferenceError
        into a click handler where nothing would show at all. */
@@ -5582,7 +5606,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var base = '/clients/' + realmAt;
     var rows = intFileRows();
     var filtered = rows.length !== _intFiles.length;
-    var items = filtered ? rows.slice() : _intFilesAll.slice();
+    var items = (retryItems && retryItems.length) ? retryItems.slice() : (filtered ? rows.slice() : _intFilesAll.slice());
+    if (isRetry) filtered = false;   // a retry is about the files that failed, not the filter
     if (!items.length) {
       (window.bccNotify || alert)(filtered
         ? 'Nothing matches this search or category, so there is nothing to download.'
@@ -5590,7 +5615,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       return;
     }
     // Folder, then name — so the archive reads in the order someone would file it.
-    if (!filtered) items.sort(function (a, b) {
+    if (!filtered && !isRetry) items.sort(function (a, b) {
       return String(a.folder || '').localeCompare(String(b.folder || ''))
         || String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' });
     });
@@ -5605,6 +5630,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       if (!confirm('Download ' + items.length + ' files' + sizeNote + ' as one .zip?\n\nThis can take a few minutes. Leave this page open until it finishes.')) return;
     }
 
+    dlReport('');   // the previous run's verdict is not this run's
     var zip = window.bccZip();
     var used = {}, failed = [], done = 0, saved = 0, overflow = '';
     var next = 0;
@@ -5642,21 +5668,41 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     tick();
 
+    /* ?bytes=1 streams the file back through the Function, same-origin. The plain download
+       route answers 302 to a blob SAS on *.blob.core.windows.net, which sends no CORS
+       headers — fetch() cannot follow it. (Same reason the PDF editor uses this route.) */
+    function fetchOne(it) {
+      var ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
+      if (ctrl) _dlRun.ctrls.push(ctrl);
+      return fetch('/api/documents/' + encodeURIComponent(it.id) + '/download?bytes=1', {
+        credentials: 'include', signal: ctrl ? ctrl.signal : undefined
+      }).then(function (r) {
+        if (!r.ok) {
+          var err = new Error(r.status === 403 ? 'no access to this file' : ('HTTP ' + r.status));
+          err.status = r.status;
+          throw err;
+        }
+        return r.arrayBuffer();
+      });
+    }
+    /* ONE automatic retry, for transient failures only. Three requests run at once against a
+       Function app that cold-starts, and a 502 or a dropped connection on one file is exactly
+       the kind of blip that made a file "not download" with nothing wrong with it. A 403 or a
+       404 is an answer, not a blip — retrying those only wastes the person's time. */
+    function fetchWithRetry(it) {
+      return fetchOne(it).catch(function (e) {
+        var st = e && e.status;
+        if (_dlRun.cancel || (st && st < 500)) throw e;
+        return new Promise(function (res) { setTimeout(res, 700); }).then(function () {
+          if (_dlRun.cancel) throw e;
+          return fetchOne(it);
+        });
+      });
+    }
     function worker() {
       if (_dlRun.cancel || next >= items.length) return Promise.resolve();
       var it = items[next++];
-      var ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
-      if (ctrl) _dlRun.ctrls.push(ctrl);
-      /* ?bytes=1 streams the file back through the Function, same-origin. The plain download
-         route answers 302 to a blob SAS on *.blob.core.windows.net, which sends no CORS
-         headers — fetch() cannot follow it. (Same reason the PDF editor uses this route.) */
-      return fetch('/api/documents/' + encodeURIComponent(it.id) + '/download?bytes=1', {
-        credentials: 'include', signal: ctrl ? ctrl.signal : undefined
-      })
-        .then(function (r) {
-          if (!r.ok) throw new Error(r.status === 403 ? 'no access to this file' : ('HTTP ' + r.status));
-          return r.arrayBuffer();
-        })
+      return fetchWithRetry(it)
         .then(function (buf) {
           if (_dlRun.cancel) return;
           var when = it.createdAt ? new Date(it.createdAt).getTime() : Date.now();
@@ -5669,12 +5715,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
                hand are still worth handing over with an explanation. */
             overflow = (e && e.message) || 'the archive is full';
             _dlRun.cancel = true;
-            failed.push({ name: it.name || it.id, why: overflow });
+            failed.push({ id: it.id, name: it.name || it.id, why: overflow });
           }
         })
         .catch(function (e) {
           if (_dlRun.cancel) return;   // an abort is not a failure to report
-          failed.push({ name: it.name || it.id, why: (e && e.message) || 'could not be read' });
+          failed.push({ id: it.id, name: it.name || it.id, why: (e && e.message) || 'could not be read' });
         })
         .then(function () { done++; tick(); return worker(); });
     }
@@ -5697,6 +5743,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       _dlRun = null;
       dlMsg('');
       syncDownloadAllBtn(intFileRows());
+      _dlLastFailedItems = items.filter(function (it) {
+        return failed.some(function (f) { return f.id === it.id; });
+      });
+      if (!cancelled && failed.length) showDlReport(failed, saved, items.length);
       if (cancelled) { (window.bccNotify || alert)('Download cancelled — nothing was saved.', 'warn', 6000); return; }
       // Not one byte arrived: there is no archive to hand over, and saying otherwise with an
       // empty zip would be the worst possible outcome for someone archiving a client.
@@ -5713,7 +5763,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       }
       var d = new Date();
       var stamp = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-      var fname = window.bccSafeFileName(companyName(realmAt), 'client') + ' — internal files' + (filtered ? ' (filtered)' : '') + ' ' + stamp + '.zip';
+      var fname = window.bccSafeFileName(companyName(realmAt), 'client') + ' — internal files'
+        + (isRetry ? ' (retry)' : (filtered ? ' (filtered)' : '')) + ' ' + stamp + '.zip';
       window.bccSaveBlob(blob, fname);
       var zipSize = blob.size || zip.bytes();   // blob.size includes the central directory
       if (window.bccAudit) window.bccAudit('client-file-download', {
@@ -5735,7 +5786,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var pool = Math.min(3, items.length);   // gentle on the Function app, still ~3x quicker
     var runners = [];
     for (var w = 0; w < pool; w++) runners.push(worker());
-    Promise.all(runners).then(finish, finish);
+    // RETURN the promise. Nothing in the app awaits it today, but a function that does this
+    // much asynchronous work and hands back undefined can only be tested with a sleep — and a
+    // test that sleeps is a test that passes for the wrong reason the day a retry is added.
+    return Promise.all(runners).then(finish, finish);
   }
 
   function uploadFile() {

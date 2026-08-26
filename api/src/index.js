@@ -168,6 +168,23 @@ const EXT_CT = {
   txt: 'text/plain; charset=utf-8', log: 'text/plain; charset=utf-8', md: 'text/plain; charset=utf-8',
   json: 'text/plain; charset=utf-8', csv: 'text/csv; charset=utf-8'
 };
+/* RFC 6266 + RFC 5987, and the reason it matters: a file NAME goes into an HTTP header, and
+   Node throws ERR_INVALID_CHAR on any code point above 255. So a document called
+   "Patriot – Bank Statement.pdf" (en dash) or "O’Brien W-9.pdf" (curly apostrophe) — which is
+   what Word, macOS and every scanner produce — made this handler throw while writing its own
+   response headers. The outer catch turned that into a 500, so the file simply "wouldn't
+   download", and it hit precisely the half of a client's files whose names a human had typed.
+   Found when a bulk download of one client's files came back missing half of them.
+   Two forms, both pure ASCII so nothing can throw: a stripped `filename=` for anything
+   ancient, and `filename*=UTF-8''<percent-encoded>` — which every browser prefers, so the
+   saved file keeps its real name, dash and all. The extra escaping is because RFC 5987's
+   attr-char excludes ! ' ( ) * , which encodeURIComponent leaves alone. */
+function contentDispositionValue(disposition, name) {
+  const raw = String(name == null ? '' : name).replace(/[\r\n"\\]/g, '').trim() || 'file';
+  const ascii = raw.replace(/[^\x20-\x7E]/g, '_').replace(/\s+/g, ' ').trim() || 'file';
+  const enc = encodeURIComponent(raw).replace(/['()!*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  return disposition + '; filename="' + ascii + '"; filename*=UTF-8\'\'' + enc;
+}
 function effectiveContentType(ct, filename) {
   const base = String(ct || '').toLowerCase().split(';')[0].trim();
   const ext = String(filename || '').toLowerCase().split('.').pop();
@@ -3594,7 +3611,10 @@ app.http('sharepoint-download', {
       // realmId access alone doesn't prove itemId belongs to THIS client — verify it.
       if (!(await spItemBelongsToClient(access, driveId, itemId, folder))) return { status: 403, jsonBody: { ok: false, error: 'This file does not belong to this client.' } };
       const uq = new URL(request.url).searchParams;
-      const name = (uq.get('name') || 'download').replace(/[^a-zA-Z0-9._ -]+/g, '_').slice(0, 120);
+      /* No longer flattened to underscores: the old sanitiser existed to keep exotic
+         characters out of the header, which contentDispositionValue now does properly — so a
+         file called "Patriot – W-9.pdf" saves under its own name instead of "Patriot _ W-9.pdf". */
+      const name = String(uq.get('name') || 'download').slice(0, 160);
       const r = await fetch('https://graph.microsoft.com/v1.0/drives/' + driveId + '/items/' + encodeURIComponent(itemId) + '/content', { headers: { Authorization: 'Bearer ' + access } });
       if (!r.ok) return { status: 502, jsonBody: { ok: false, error: 'SharePoint download failed (' + r.status + ')' } };
       const buf = Buffer.from(await r.arrayBuffer());
@@ -3604,7 +3624,7 @@ app.http('sharepoint-download', {
       const wantInline = uq.get('inline') === '1' && inlineOk(ct);
       return { status: 200, headers: {
         'content-type': ct,
-        'content-disposition': (wantInline ? 'inline' : 'attachment') + '; filename="' + name + '"',
+        'content-disposition': contentDispositionValue(wantInline ? 'inline' : 'attachment', name),
         'x-content-type-options': 'nosniff', 'cache-control': 'private, no-store'
       }, body: buf };
     } catch (e) { context.error('sharepoint-download', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
@@ -4118,7 +4138,7 @@ app.http('drive-download', {
       if (!dlOwned) return { status: 403, jsonBody: { ok: false, error: 'This file does not belong to this client.' } };
       const uq = new URL(request.url).searchParams;
       const wantInlineReq = uq.get('inline') === '1'; // preview request
-      const name = (uq.get('name') || 'download').replace(/[^a-zA-Z0-9._ -]+/g, '_').slice(0, 120);
+      const name = String(uq.get('name') || 'download').slice(0, 160);   // see contentDispositionValue
       const renderableName = /\.(pdf|png|jpe?g|gif|webp|bmp|txt|csv)$/i.test(name);
       let mediaUrl, forceCt = null;
       if (dt.doc.provider === 'google') {
@@ -4148,7 +4168,7 @@ app.http('drive-download', {
       const wantInline = wantInlineReq && inlineOk(ct);
       // When we converted to PDF, give the inline file a .pdf name so the browser renders it.
       const dispName = (forceCt === 'application/pdf' && !/\.pdf$/i.test(name)) ? (name.replace(/\.[^.]+$/, '') + '.pdf') : name;
-      return { status: 200, headers: { 'Content-Type': ct, 'Content-Disposition': (wantInline ? 'inline' : 'attachment') + '; filename="' + dispName + '"', 'X-Content-Type-Options': 'nosniff' }, body: buf };
+      return { status: 200, headers: { 'Content-Type': ct, 'Content-Disposition': contentDispositionValue(wantInline ? 'inline' : 'attachment', dispName), 'X-Content-Type-Options': 'nosniff' }, body: buf };
     } catch (e) { context.error('drive-download', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
@@ -9880,7 +9900,7 @@ app.http('document-download', {
       const { BlobSASPermissions, generateBlobSASQueryParameters } = require('@azure/storage-blob');
       const now = new Date();
       const expiry = new Date(now.getTime() + 15 * 60 * 1000); // 15 minute window
-      const filename = String(meta.name || 'file').replace(/[\r\n"]/g, '');
+      const filename = String(meta.name || 'file');   // sanitised by contentDispositionValue
       // ?bytes=1 → stream the file through this function (same-origin) instead of a
       // 302 to the blob SAS. A fetch() can't follow that redirect: the SAS host sends
       // no CORS headers, so a credentialed cross-origin hop is blocked. Used by the
@@ -9892,7 +9912,7 @@ app.http('document-download', {
           status: 200,
           headers: {
             'content-type': meta.mimeType || 'application/octet-stream',
-            'content-disposition': 'attachment; filename="' + filename + '"',
+            'content-disposition': contentDispositionValue('attachment', filename),
             'cache-control': 'private, no-store'
           },
           body: buf
@@ -9913,7 +9933,9 @@ app.http('document-download', {
         permissions: BlobSASPermissions.parse('r'),
         startsOn: new Date(now.getTime() - 60 * 1000),
         expiresOn: expiry,
-        contentDisposition: (wantInline ? 'inline' : 'attachment') + '; filename="' + filename + '"',
+        // Signed into the SAS and returned verbatim by Blob Storage as the response header,
+        // so it needs to be as ASCII-clean as one we set ourselves.
+        contentDisposition: contentDispositionValue(wantInline ? 'inline' : 'attachment', filename),
         // The SAME derived type the inline decision was made from. Serving 'inline' with a
         // content type the browser will not render is how a preview turns into a blank tab.
         contentType: dlCt || 'application/octet-stream'
