@@ -3713,8 +3713,21 @@ async function spWalk(driveId, access, path, depth, out, limits) {
   let next = 'https://graph.microsoft.com/v1.0/drives/' + driveId + '/root:' + encodeURI(path) + ':/children?$top=200&$select=id,name,folder,file,size';
   const folders = [];
   while (next) {
-    const r = await fetch(next, { headers: { Authorization: 'Bearer ' + access } });
-    if (!r.ok) { limits.error = true; return; }
+    let r = await fetch(next, { headers: { Authorization: 'Bearer ' + access } });
+    /* One retry on a throttle or a server-side blip. Graph answers 429 routinely once a crawl
+       gets going, and a single unlucky listing here silently dropped an entire subtree —
+       "import all" then quietly meant "import most". */
+    if (!r.ok && (r.status === 429 || r.status >= 500)) {
+      const wait = Math.min(4000, Number(r.headers.get('retry-after') || 0) * 1000 || 900);
+      await new Promise((res) => setTimeout(res, wait));
+      r = await fetch(next, { headers: { Authorization: 'Bearer ' + access } });
+    }
+    if (!r.ok) {
+      limits.error = true;
+      // WHICH folder, so the message can name it instead of saying "some of it".
+      (limits.errorPaths = limits.errorPaths || []).push(path || '(top folder)');
+      return;
+    }
     const j = await r.json();
     for (const it of (j.value || [])) {
       if (it.folder) folders.push(it.name);
@@ -3736,6 +3749,12 @@ app.http('sharepoint-import-all', {
     try {
       const folder = await spFolderFor(realmId);
       if (!folder) return { jsonBody: { ok: false, error: 'No SharePoint folder is matched to this client.' } };
+      /* Item ids the CALLER has already been told about as failures this run. Without this the
+         queue is rebuilt from scratch every round and a file that cannot be imported sits at
+         the head of it forever — so once ~a batch of them accumulated, every file behind them
+         was never attempted, and the loop gave up on its stall guard reporting "done". */
+      const importBody = await request.json().catch(() => ({}));
+      const skipIds = new Set((Array.isArray(importBody.skipIds) ? importBody.skipIds : []).slice(0, 5000).map(String));
       const access = await getGraphToken();
       const driveId = await spDriveId();
       const clientRoot = spPathFor(folder, '');
@@ -3751,7 +3770,7 @@ app.http('sharepoint-import-all', {
         parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@f', value: dest }]
       }).fetchAll();
       const done = new Set(have.map(h => String(h.sharepointItemId)));
-      const notYet = all.filter(f => !done.has(String(f.id)));
+      const notYet = all.filter(f => !done.has(String(f.id)) && !skipIds.has(String(f.id)));
       // Files over the 25 MB cap can never import — pull them out of the queue up
       // front (size is known before download) so they can't loop forever, and
       // report them by name so nothing is silently left behind.
@@ -3763,13 +3782,24 @@ app.http('sharepoint-import-all', {
       const who = (p.userDetails || p.userId || '').toLowerCase();
       const batch = pending.slice(0, SP_BATCH);
       const results = [];
+      /* A RETRY BUDGET for the round, not one retry per file. This handler already does 20
+         downloads and 20 blob uploads inside a Static Web Apps managed function, which has a
+         hard ~45s ceiling — twenty extra 800ms waits would push a slow round over it, and a
+         round that times out fails ENTIRELY, which is worse than the blip being retried. */
+      let retryBudget = 3;
       for (const f of batch) {
         try {
-          if (f.size > MAX_UPLOAD_BYTES) { results.push({ name: f.name, ok: false, error: 'over 25 MB' }); continue; }
-          const dr = await fetch('https://graph.microsoft.com/v1.0/drives/' + driveId + '/items/' + encodeURIComponent(f.id) + '/content', { headers: { Authorization: 'Bearer ' + access } });
-          if (!dr.ok) { results.push({ name: f.name, ok: false, error: 'download ' + dr.status }); continue; }
+          if (f.size > MAX_UPLOAD_BYTES) { results.push({ id: f.id, name: f.name, ok: false, error: 'over 25 MB' }); continue; }
+          let dr = await fetch('https://graph.microsoft.com/v1.0/drives/' + driveId + '/items/' + encodeURIComponent(f.id) + '/content', { headers: { Authorization: 'Bearer ' + access } });
+          // Same one retry as the listing above, and for the same reason.
+          if (!dr.ok && retryBudget > 0 && (dr.status === 429 || dr.status >= 500)) {
+            retryBudget--;
+            await new Promise((res) => setTimeout(res, 800));
+            dr = await fetch('https://graph.microsoft.com/v1.0/drives/' + driveId + '/items/' + encodeURIComponent(f.id) + '/content', { headers: { Authorization: 'Bearer ' + access } });
+          }
+          if (!dr.ok) { results.push({ id: f.id, name: f.name, ok: false, error: 'download ' + dr.status }); continue; }
           const buf = Buffer.from(await dr.arrayBuffer());
-          if (buf.length > MAX_UPLOAD_BYTES) { results.push({ name: f.name, ok: false, error: 'over 25 MB' }); continue; }
+          if (buf.length > MAX_UPLOAD_BYTES) { results.push({ id: f.id, name: f.name, ok: false, error: 'over 25 MB' }); continue; }
           // Tag by the folder path RELATIVE to the client's root folder.
           const rel = String(f.path || '').slice(clientRoot.length).replace(/^\/+|\/+$/g, '');
           const tags = (rel ? rel.split('/').map(s => s.trim()).filter(Boolean) : []).concat(['SharePoint']).join(', ').slice(0, 200);
@@ -3789,7 +3819,7 @@ app.http('sharepoint-import-all', {
             createdAt: now, updatedAt: now
           });
           results.push({ name: f.name, ok: true, tags });
-        } catch (e) { results.push({ name: f.name, ok: false, error: String(e && e.message || e) }); }
+        } catch (e) { results.push({ id: f.id, name: f.name, ok: false, error: String(e && e.message || e) }); }
       }
       const importedNow = results.filter(r => r.ok).length;
       const failed = results.filter(r => !r.ok);
@@ -3804,12 +3834,16 @@ app.http('sharepoint-import-all', {
         ? ('Only part of the SharePoint folder could be listed ('
             + [spLimits.count ? 'over ' + SP_MAX_FILES + ' files' : null,
                spLimits.depth ? 'nested deeper than ' + SP_MAX_DEPTH + ' levels' : null,
-               spLimits.error ? 'SharePoint refused a listing request' : null].filter(Boolean).join('; ')
+               spLimits.error ? ('SharePoint refused to list: ' + (spLimits.errorPaths || []).slice(0, 4).join(', ')
+                 + ((spLimits.errorPaths || []).length > 4 ? ' and ' + ((spLimits.errorPaths || []).length - 4) + ' more' : '')) : null].filter(Boolean).join('; ')
             + '), so this is not the whole folder.')
         : '';
       return { jsonBody: {
         ok: true, folder, totalFiles: all.length, alreadyHad: done.size,
         imported: importedNow, failed, oversized, remaining,
+        // How many are still queued AFTER this batch, so the caller can show real progress
+        // rather than inferring it from a counter that only ever goes up.
+        queued: pending.length,
         done: remaining === 0 && !enumTruncated,
         enumTruncated, enumNote
       } };

@@ -5192,54 +5192,90 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function spMigrateAll(btn) {
     var realmAt = currentRealm;
     var st = document.getElementById('sp_status');
-    var total = 0, stall = 0;
+    var total = 0, stall = 0, rounds = 0;
+    /* Failures are carried FORWARD as skipIds. The server rebuilds the queue from scratch each
+       round, so without this a file that cannot be imported sits at the head of it forever and
+       everything behind it is never attempted — the loop then gave up on its stall guard and
+       said "Done". They are also accumulated by name, because the old summary showed only the
+       LAST round's failures: a file that failed in round 1 of 12 was named nowhere at all. */
+    var skipIds = [], seenFail = {}, failedAll = [], lastResp = null, alreadyBefore = null;
     if (btn) { btn.disabled = true; btn.textContent = 'Importing…'; }
     function say(t) { if (st && currentRealm === realmAt) st.textContent = t; }
     function step() {
-      return fetch('/api/integrations/sharepoint/' + encodeURIComponent(realmAt) + '/import-all', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: '{}' })
+      return fetch('/api/integrations/sharepoint/' + encodeURIComponent(realmAt) + '/import-all', {
+        method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ skipIds: skipIds })
+      })
         .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
         .then(function (resp) {
           if (currentRealm !== realmAt) return null;              // user navigated away
           if (!resp || !resp.ok) throw new Error((resp && resp.error) || 'import failed');
+          lastResp = resp;
+          rounds++;
+          /* From the FIRST round only. The server answers with what is in Files at the start of
+             each round, so by the last round that count includes everything this very run just
+             imported — reporting it would tell the bookkeeper most of the folder was "already
+             there" when the import had in fact just brought it over. */
+          if (alreadyBefore === null) alreadyBefore = resp.alreadyHad || 0;
           total += resp.imported || 0;
-          if (!resp.imported) stall++; else stall = 0;
-          say('Imported ' + total + ' file' + (total === 1 ? '' : 's') + '… ' + (resp.remaining ? resp.remaining + ' to go' : 'finishing up'));
-          if (resp.done || stall >= 2) return resp;
+          var newFails = 0;
+          (resp.failed || []).forEach(function (f) {
+            var k = f && f.id ? String(f.id) : ('name:' + (f && f.name));
+            if (seenFail[k]) return;
+            seenFail[k] = 1;
+            newFails++;
+            if (f && f.id) skipIds.push(String(f.id));
+            failedAll.push({ name: (f && f.name) || '(unnamed)', error: (f && f.error) || 'failed' });
+          });
+          /* A round that imported nothing but LEARNED about failures has made progress — those
+             are skipped next time. Only a round that did neither is a stall. */
+          if (!(resp.imported || 0) && !newFails) stall++; else stall = 0;
+          var left = (resp.queued || 0) - (resp.imported || 0);
+          say('Imported ' + total + ' file' + (total === 1 ? '' : 's') + '…' + (left > 0 ? ' ' + left + ' to go' : ' finishing up')
+              + (failedAll.length ? ' · ' + failedAll.length + ' could not be imported' : ''));
+          if (resp.done || resp.remaining === 0 || stall >= 2) return resp;
+          if (rounds > 400) return resp;   // a hard backstop; 400 rounds is 8000 files
           return step();
         });
     }
     step().then(function (resp) {
       if (!resp || currentRealm !== realmAt) return;
       if (btn) { btn.disabled = false; btn.textContent = '⬇ Import ALL files for this client'; }
-      var notes = [];
-      if (resp.alreadyHad) notes.push(resp.alreadyHad + ' already imported previously');
-      if ((resp.oversized || []).length) notes.push((resp.oversized || []).length + ' skipped over 25 MB: ' + resp.oversized.map(function (o) { return o.name + ' (' + o.mb + ' MB)'; }).join(', '));
-      if ((resp.failed || []).length) notes.push((resp.failed || []).length + ' failed');
-      // `done` is exactly "remaining === 0", so arriving here without it means the loop
-      // gave up on the stall guard (two rounds that imported nothing) — reporting that as
-      // "Done" hid however many files were never attempted. `remaining` understates it,
-      // because the server subtracts the whole batch even when every file in it failed.
-      // enumNote covers the other way this can fall short: the folder LISTING itself was
-      // cut off, so totalFiles was never the total in the first place.
-      if (resp.enumNote) (window.bccNotify || alert)(resp.enumNote, 'warn', 12000);
+      var oversized = resp.oversized || [];
+      /* Every category, every time — this is the message that has to answer "did it get
+         everything?" without anyone counting SharePoint by hand. */
+      var parts = [];
+      parts.push('imported ' + total);
+      if (alreadyBefore) parts.push(alreadyBefore + ' already in Files before this run');
+      if (oversized.length) parts.push(oversized.length + ' too big (over 25 MB)');
+      if (failedAll.length) parts.push(failedAll.length + ' could not be imported');
+      var detail = '';
+      if (oversized.length) detail += ' Too big: ' + oversized.slice(0, 6).map(function (o) { return o.name + ' (' + o.mb + ' MB)'; }).join(', ') + (oversized.length > 6 ? ', …' : '') + '.';
+      if (failedAll.length) detail += ' Failed: ' + failedAll.slice(0, 6).map(function (f) { return f.name + ' (' + f.error + ')'; }).join(', ') + (failedAll.length > 6 ? ', …' : '') + '.';
+      // The enumeration itself falling short is the one thing that makes every other number a
+      // guess, so it leads and it gets its own toast.
+      if (resp.enumNote) (window.bccNotify || alert)(resp.enumNote + ' Run the import again once it settles.', 'warn', 14000);
+      /* `done` is exactly "remaining === 0 and the listing was complete", so arriving here
+         without it means the loop gave up on the stall guard — reporting that as "Done" hid
+         however many files were never attempted. */
       var stalled = !resp.done && !resp.enumTruncated;
-      var leftover = (resp.remaining || 0) + ((resp.failed || []).length);
+      var summary = 'SharePoint import: ' + parts.join(', ') + ' — of ' + (resp.totalFiles || 0) + ' file'
+        + ((resp.totalFiles || 0) === 1 ? '' : 's') + ' in this client’s SharePoint folder.' + detail;
+      say(summary + (stalled ? ' Stopped early — run it again to retry the rest.' : ''));
+      loadFiles();
       if (stalled) {
-        say('Stopped early — ' + total + ' file' + (total === 1 ? '' : 's') + ' imported' + (notes.length ? ' (' + notes.join('; ') + ')' : '') +
-            '. About ' + leftover + ' file' + (leftover === 1 ? '' : 's') + ' could not be brought over; run the import again to retry them.');
-        (window.bccNotify || alert)('SharePoint import stopped early — roughly ' + leftover + ' file' + (leftover === 1 ? '' : 's') + ' were not imported. Run it again to retry.', 'warn', 10000);
-        // A partial import still imported files. Returning before this left them invisible
-        // in the Files list until a reload, which reads as "nothing came over at all".
-        loadFiles();
+        (window.bccNotify || alert)(summary + ' It stopped before finishing — run it again to pick up the rest.', 'warn', 14000);
         return;
       }
-      say('Done — ' + total + ' file' + (total === 1 ? '' : 's') + ' imported into Internal files, tagged by folder.' + (notes.length ? ' (' + notes.join('; ') + ')' : ''));
-      if (window.bccNotifySaved) window.bccNotifySaved(total + ' file' + (total === 1 ? '' : 's') + ' brought over from SharePoint.');
-      loadFiles();
+      if (failedAll.length || oversized.length || resp.enumTruncated) {
+        (window.bccNotify || alert)(summary + (resp.enumTruncated ? ' Part of the folder could not be listed, so this is not the whole of it.' : ''), 'warn', 14000);
+        return;
+      }
+      if (window.bccNotifySaved) window.bccNotifySaved(total + ' file' + (total === 1 ? '' : 's') + ' brought over from SharePoint.' + (alreadyBefore ? ' (' + alreadyBefore + ' were already there.)' : ''));
     }).catch(function (e) {
       if (btn) { btn.disabled = false; btn.textContent = '⬇ Import ALL files for this client'; }
       say('');
-      (window.bccNotify || alert)('Import failed: ' + e.message, 'error', 7000);
+      (window.bccNotify || alert)('Import failed: ' + e.message + (total ? ' — ' + total + ' file' + (total === 1 ? '' : 's') + ' were imported before it stopped.' : ''), 'error', 9000);
     });
   }
   function spImport(list) {
