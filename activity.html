@@ -284,6 +284,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     'client-email-send':   { label:'Sent a client email',         cat:'integration', ic:'&#9993;' },
     'client-file-upload':  { label:'Uploaded a client file',      cat:'doc', ic:'&#128206;' },
     'client-file-delete':  { label:'Deleted a client file',       cat:'doc', ic:'&#10005;' },
+    // Bulk export of a client's internal files. Worth its own row and its own words: it is
+    // the one action that takes a client's whole file set out of the app at once.
+    'client-file-download':{ label:'Downloaded a client\u2019s files', cat:'doc', ic:'&#11015;' },
     'document-upload':     { label:'Uploaded a document',         cat:'doc', ic:'&#128206;' },
     /* Everything below was emitted by the app but ABSENT from this table, so it fell
        through to the catch-all: filed under "System / access" whatever it really was,

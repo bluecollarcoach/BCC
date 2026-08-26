@@ -1295,7 +1295,10 @@ const ALLOWED_AUDIT_ACTIONS = new Set([
   'client-info-update', 'client-mailbox-set',
   'client-task-create', 'client-task-delete',
   'time-punch-in', 'time-punch-out', 'time-entry-add', 'time-entry-delete',
-  'client-email-send', 'client-file-upload', 'client-file-delete',
+  // ...and 'client-file-download' for the bulk export: one row per archive, with the file
+  // count and byte total in meta. A rejected action is dropped SILENTLY (see the note below),
+  // so taking a client's entire file set out of the app would have left no trace at all.
+  'client-email-send', 'client-file-upload', 'client-file-delete', 'client-file-download',
   'cpr-save', 'cpr-delete', 'cpr-print', 'monthend-notify',
   'financial-period-save', 'financial-period-delete',
   // Other recently-added events that were also being rejected

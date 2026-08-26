@@ -2712,6 +2712,181 @@
     }
   };
 
+  /* ---------- ZIP writer (store) + save-to-disk ----------
+   * Builds a .zip in the browser with no dependency and no build step. It exists because
+   * handing someone a whole set of files in one go needs the archive built SOMEWHERE, and
+   * the two obvious alternatives are worse:
+   *   - N sequential <a download> clicks: N browser prompts, no folder structure, and on a
+   *     phone most of them are silently dropped.
+   *   - a server-side zip: every blob would have to be buffered inside an Azure Static Web
+   *     Apps managed function, which has a hard ~45s ceiling and a response cap. A client
+   *     with 300 MB of statements would fail there and nowhere else, and the failure would
+   *     arrive as a dead download rather than as a message.
+   * The browser already fetches the bytes and has no timeout, so it builds the archive.
+   *
+   * STORE (no compression) on purpose. The payload is PDFs, JPEGs and Office files, all of
+   * which are already compressed — deflate would buy a few percent in exchange for a second
+   * implementation, and a second failure mode, in code that has no build step to catch it.
+   * Every size is known before its header is written, so no data descriptors either.
+   *
+   * NOT ZIP64: it refuses past 4 GB or 65534 entries rather than writing an archive that
+   * Windows Explorer opens as empty. A refusal you can read beats a file that lies.
+   *
+   * Memory: each file's bytes are copied into a Blob and the typed array dropped, so the JS
+   * heap only ever holds one file at a time — the browser backs the Blob with disk when it
+   * needs to. Only the small headers stay in memory.
+   */
+  var _bccCrcTable = null;
+  function _bccCrc32(u8) {
+    if (!_bccCrcTable) {
+      _bccCrcTable = new Int32Array(256);
+      for (var n = 0; n < 256; n++) {
+        var c = n;
+        for (var k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+        _bccCrcTable[n] = c;
+      }
+    }
+    var crc = -1;
+    for (var i = 0; i < u8.length; i++) crc = (crc >>> 8) ^ _bccCrcTable[(crc ^ u8[i]) & 0xFF];
+    return (crc ^ -1) >>> 0;
+  }
+  function _bccW16(a, o, v) { a[o] = v & 0xFF; a[o + 1] = (v >>> 8) & 0xFF; }
+  function _bccW32(a, o, v) { a[o] = v & 0xFF; a[o + 1] = (v >>> 8) & 0xFF; a[o + 2] = (v >>> 16) & 0xFF; a[o + 3] = (v >>> 24) & 0xFF; }
+  // MS-DOS date/time, which is what ZIP stores. Its epoch is 1980 and it has 2-second
+  // resolution; anything earlier is clamped rather than wrapping into a nonsense year.
+  function _bccDosStamp(ms) {
+    var d = new Date(typeof ms === 'number' && isFinite(ms) ? ms : Date.now());
+    if (isNaN(d.getTime())) d = new Date();
+    var y = d.getFullYear();
+    if (y < 1980) { d = new Date(1980, 0, 1); y = 1980; }
+    return {
+      time: ((d.getHours() & 31) << 11) | ((d.getMinutes() & 63) << 5) | ((d.getSeconds() / 2) & 31),
+      date: (((y - 1980) & 127) << 9) | (((d.getMonth() + 1) & 15) << 5) | (d.getDate() & 31)
+    };
+  }
+  /* Path INSIDE the archive. Backslashes become separators (ZIP uses '/'), leading slashes
+     and any '..' segment are dropped: an entry named '../../x' is a real, exploited class of
+     bug in unzippers, and this app has no business emitting one. */
+  function _bccZipPath(path) {
+    var segs = String(path == null ? '' : path).replace(/\\/g, '/').split('/');
+    var out = [];
+    for (var i = 0; i < segs.length; i++) {
+      var sg = segs[i].replace(/[\x00-\x1f\x7f]/g, '').trim();
+      if (!sg || sg === '.' || sg === '..') continue;
+      out.push(sg);
+    }
+    return out.join('/') || 'file';
+  }
+  var BCC_ZIP_MAX_BYTES = 4 * 1024 * 1024 * 1024 - 1;   // 32-bit offsets/sizes without ZIP64
+  var BCC_ZIP_MAX_FILES = 65534;                        // 16-bit entry count without ZIP64
+  window.bccZip = function () {
+    var parts = [], central = [], offset = 0, n = 0;
+    var enc = new TextEncoder();
+    function add(path, bytes, whenMs) {
+      var name = enc.encode(_bccZipPath(path));
+      /* Measure BEFORE converting. Reading the length off the input costs nothing, while
+         `new Uint8Array(huge)` allocates a second copy — so checking the ceiling afterwards
+         meant the one input the ceiling exists to refuse would take the tab down before the
+         refusal could be thrown. */
+      var len = (bytes && typeof bytes.byteLength === 'number') ? bytes.byteLength
+              : ((bytes && typeof bytes.length === 'number') ? bytes.length : 0);
+      if (n >= BCC_ZIP_MAX_FILES) throw new Error('too many files for one zip (' + BCC_ZIP_MAX_FILES + ' max)');
+      if (offset + 30 + name.length + len > BCC_ZIP_MAX_BYTES) throw new Error('zip would exceed 4 GB');
+      var u8 = (bytes instanceof Uint8Array) ? bytes : new Uint8Array(bytes || 0);
+      var st = _bccDosStamp(whenMs), crc = _bccCrc32(u8);
+      var h = new Uint8Array(30 + name.length);
+      _bccW32(h, 0, 0x04034b50);
+      _bccW16(h, 4, 20);            // version needed
+      _bccW16(h, 6, 0x0800);        // flag bit 11: the name below is UTF-8
+      _bccW16(h, 8, 0);             // method 0 = store
+      _bccW16(h, 10, st.time); _bccW16(h, 12, st.date);
+      _bccW32(h, 14, crc); _bccW32(h, 18, u8.length); _bccW32(h, 22, u8.length);
+      _bccW16(h, 26, name.length); _bccW16(h, 28, 0);
+      h.set(name, 30);
+      parts.push(h);
+      // Copy into a Blob so the caller's typed array can be released immediately.
+      parts.push(new Blob([u8]));
+      central.push({ name: name, crc: crc, size: u8.length, time: st.time, date: st.date, off: offset });
+      offset += h.length + u8.length;
+      n++;
+      return true;
+    }
+    function addText(path, text, whenMs) { return add(path, enc.encode(String(text == null ? '' : text)), whenMs); }
+    function finish() {
+      var cdSize = 0, i;
+      for (i = 0; i < central.length; i++) cdSize += 46 + central[i].name.length;
+      var cd = new Uint8Array(cdSize), o = 0;
+      for (i = 0; i < central.length; i++) {
+        var e = central[i];
+        _bccW32(cd, o, 0x02014b50);
+        _bccW16(cd, o + 4, 20); _bccW16(cd, o + 6, 20);
+        _bccW16(cd, o + 8, 0x0800); _bccW16(cd, o + 10, 0);
+        _bccW16(cd, o + 12, e.time); _bccW16(cd, o + 14, e.date);
+        _bccW32(cd, o + 16, e.crc); _bccW32(cd, o + 20, e.size); _bccW32(cd, o + 24, e.size);
+        _bccW16(cd, o + 28, e.name.length); _bccW16(cd, o + 30, 0); _bccW16(cd, o + 32, 0);
+        _bccW16(cd, o + 34, 0); _bccW16(cd, o + 36, 0); _bccW32(cd, o + 38, 0);
+        _bccW32(cd, o + 42, e.off);
+        cd.set(e.name, o + 46);
+        o += 46 + e.name.length;
+      }
+      var eo = new Uint8Array(22);
+      _bccW32(eo, 0, 0x06054b50);
+      _bccW16(eo, 4, 0); _bccW16(eo, 6, 0);
+      _bccW16(eo, 8, central.length); _bccW16(eo, 10, central.length);
+      _bccW32(eo, 12, cdSize); _bccW32(eo, 16, offset);
+      _bccW16(eo, 20, 0);
+      return new Blob(parts.concat([cd, eo]), { type: 'application/zip' });
+    }
+    return {
+      add: add,
+      addText: addText,
+      finish: finish,
+      count: function () { return n; },
+      bytes: function () { return offset; }
+    };
+  };
+  /* Hand a Blob to the user as a download. One implementation, because the two hand-rolled
+     copies of this in bookkeeping.html differ in whether they revoke the object URL — and a
+     URL that is never revoked pins the whole blob in memory for the life of the tab, which
+     for an archive of a client's files can be hundreds of megabytes. */
+  window.bccSaveBlob = function (blob, filename) {
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = String(filename || 'download');
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    // Revoke LATE: revoking synchronously cancels the download in some browsers, because the
+    // navigation the click starts has not read the blob yet.
+    setTimeout(function () { try { a.remove(); } catch (e) {} URL.revokeObjectURL(url); }, 60000);
+  };
+  /* A filename Windows, macOS and every zip tool will accept. \\ / : * ? " < > | are illegal
+     on Windows and a stray one turns a saved file into a silent failure. */
+  var _BCC_WIN_DEVICES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+  window.bccSafeFileName = function (name, fallback) {
+    var s = String(name == null ? '' : name)
+      .replace(/[\\/:*?"<>|\x00-\x1f]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^\.+/, '');      // a leading dot hides the file on unix and confuses Explorer
+    /* Truncate the STEM, never the extension. Chopping a long name at a fixed length took
+       ".pdf" off the end, and a file with no extension is one Windows will not open — a
+       silent break in the middle of an archive nobody is going to check file by file. */
+    if (s.length > 120) {
+      var dot = s.lastIndexOf('.');
+      var ext = (dot > 0 && s.length - dot <= 12) ? s.slice(dot) : '';
+      s = s.slice(0, 120 - ext.length).trim() + ext;
+    }
+    s = s.trim();
+    /* CON, PRN, AUX, NUL, COM1-9, LPT1-9 are reserved DEVICE names on Windows, with or
+       without an extension: "CON.pdf" cannot be created, so the whole extraction fails on
+       that one entry. Prefixing keeps the name readable and the file openable. */
+    var stemOnly = s.replace(/\.[^.]*$/, '');
+    if (_BCC_WIN_DEVICES.test(stemOnly)) s = '_' + s;
+    return s || String(fallback || 'file');
+  };
+
   /* ---------- Offline banner ----------
    * Pinned amber bar across the very top whenever the browser reports the
    * network is down. Saves are still queued by the sync layer; this just

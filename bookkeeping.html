@@ -5088,12 +5088,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             '<input id="fl_search" type="search" placeholder="🔍 Search files & tags…" />' +
             '<select id="fl_tagfilter"><option value="">All categories</option></select>' +
             '<select id="fl_sort"><option value="new">Newest first</option><option value="old">Oldest first</option><option value="az">Name A–Z</option><option value="za">Name Z–A</option><option value="big">Largest</option><option value="small">Smallest</option></select>' +
+            '<button class="btn btn-ghost" id="fl_dlall" type="button" style="font-size:12px;min-height:32px;">\u2b07 Download all</button>' +
+            '<span id="fl_dlmsg" style="font-size:12px;color:var(--muted);"></span>' +
             '<span id="fl_count" class="fl-count"></span>' +
           '</div>' +
           '<div id="fl_list"><div style="color:var(--muted);">Loading files…</div></div>' +
         '</div>' +
       '</div>';
     document.getElementById('fl_up').onclick = uploadFile;
+    var dlAllBtn = document.getElementById('fl_dlall'); if (dlAllBtn) dlAllBtn.onclick = onDownloadAllClick;
     var pdfToolsBtn = document.getElementById('fl_pdftools'); if (pdfToolsBtn) pdfToolsBtn.onclick = pickPdfForTools;
     ['fl_search', 'fl_tagfilter', 'fl_sort'].forEach(function (id) {
       var el = document.getElementById(id); if (el) el.addEventListener(id === 'fl_search' ? 'input' : 'change', renderIntFiles);
@@ -5382,6 +5385,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .catch(function (e) { (window.bccNotify || alert)('Upload failed: ' + e.message, 'error', 7000); });
   }
   var _intFiles = [];
+  /* Every internal document under this client's folder, SUBFOLDERS INCLUDED (see loadFiles).
+     _intFiles is what the table lists; this is what "Download all" means. */
+  var _intFilesAll = [];
   /* Why the list is empty. A 403 or 500 was substituted with { items: [] }, so the Files tab
      told the bookkeeper "No files yet for this client" when the client's documents simply
      could not be read — and a failed REFRESH left the previous list in memory for the next
@@ -5397,7 +5403,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .then(function (d) {
       if (currentRealm !== realmAt) return;
       _intFilesError = '';
-      _intFiles = ((d && d.items) || []).filter(function (it) { return (it.folder || '') === folder; });
+      /* TWO lists, deliberately. The table shows only files sitting directly in the client's
+         folder; the postal-mail scans live in <folder>/mail and have their own tab, so listing
+         them here would double them up. "Download all" means ALL of them though — a handoff or
+         an audit request that quietly omitted the mail scans would be wrong in the one
+         direction that matters. The GET already returns the subfolders (it is a STARTSWITH
+         query), so this costs nothing but a second reference. */
+      var _allDocs = (d && d.items) || [];
+      _intFilesAll = _allDocs.filter(function (it) { return String(it.folder || '') === folder || String(it.folder || '').indexOf(folder + '/') === 0; });
+      _intFiles = _allDocs.filter(function (it) { return (it.folder || '') === folder; });
       // Distinct categories/tags across this client's files → filter dropdown + upload autocomplete.
       var seen = {}, tags = [];
       _intFiles.forEach(function (it) { fileTags(it).forEach(function (t) { var k = t.toLowerCase(); if (!seen[k]) { seen[k] = 1; tags.push(t); } }); });
@@ -5412,26 +5426,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
          box repainted the stale files straight over this error, so a failed refresh looked
          like a successful one. */
       _intFiles = [];
+      _intFilesAll = [];
       _intFilesError = 'This client’s files could not be read (' + (e && e.message ? e.message : 'no response') + ').';
       list.innerHTML = '<div style="color:var(--burgundy);">' + esc(_intFilesError) + '</div>';
     });
   }
-  function renderIntFiles() {
-    var list = document.getElementById('fl_list'); if (!list) return;
-    var bar = document.getElementById('fl_toolbar');
-    var countEl = document.getElementById('fl_count');
-    if (!_intFiles.length) {
-      if (bar) bar.style.display = 'none';
-      // "No files yet" is a claim about the client. Only make it when we actually read them.
-      if (_intFilesError) { list.innerHTML = '<div style="color:var(--burgundy);padding:8px 0;">' + esc(_intFilesError) + '</div>'; return; }
-      list.innerHTML = '<div style="color:var(--muted);padding:8px 0;">No files yet for this client. Upload one above.</div>';
-      return;
-    }
-    if (bar) bar.style.display = 'flex';
-    var q = (document.getElementById('fl_search') || {}).value || '';
+  /* The rows the table is SHOWING, search/filter/sort applied. Factored out so the download
+     button ships exactly what is on screen rather than its own second opinion of it — the
+     two drifting apart is how a button labelled "these 4" hands over forty. */
+  function intFileRows() {
+    var q = ((document.getElementById('fl_search') || {}).value || '').trim().toLowerCase();
     var tag = (document.getElementById('fl_tagfilter') || {}).value || '';
     var sort = (document.getElementById('fl_sort') || {}).value || 'new';
-    q = q.trim().toLowerCase();
     var rows = _intFiles.filter(function (it) {
       if (tag && fileTags(it).map(function (t) { return t.toLowerCase(); }).indexOf(tag) < 0) return false;
       if (q) { var hay = (String(it.name || '') + ' ' + String(it.tags || '') + ' ' + String(it.uploaderUpn || '') + ' ' + (it.uploaderUpn && window.bccDisplayName ? window.bccDisplayName(it.uploaderUpn) : '')).toLowerCase(); if (hay.indexOf(q) < 0) return false; }
@@ -5447,7 +5453,33 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         default: return (b.createdAt || '').localeCompare(a.createdAt || '');
       }
     });
+    return rows;
+  }
+  function renderIntFiles() {
+    var list = document.getElementById('fl_list'); if (!list) return;
+    var bar = document.getElementById('fl_toolbar');
+    var countEl = document.getElementById('fl_count');
+    if (!_intFiles.length) {
+      if (bar) bar.style.display = 'none';
+      // "No files yet" is a claim about the client. Only make it when we actually read them.
+      if (_intFilesError) { list.innerHTML = '<div style="color:var(--burgundy);padding:8px 0;">' + esc(_intFilesError) + '</div>'; return; }
+      /* The table is empty but the CLIENT may not be: postal-mail scans live in a subfolder
+         and are deliberately not listed here. Saying "no files yet" and offering nothing would
+         be false, so offer the download for what does exist. Its own id, because the toolbar's
+         button is hidden rather than removed and two elements must never share one. */
+      var _subN = _intFilesAll.length;
+      list.innerHTML = '<div style="color:var(--muted);padding:8px 0;">No files yet for this client. Upload one above.'
+        + (_subN ? ' <span style="display:block;margin-top:6px;">There ' + (_subN === 1 ? 'is <strong>1</strong> file' : 'are <strong>' + _subN + '</strong> files') + ' filed under this client elsewhere (postal-mail scans). <button class="btn btn-ghost" id="fl_dlsub" type="button" style="font-size:12px;min-height:30px;margin-left:4px;">\u2b07 Download ' + (_subN === 1 ? 'it' : 'them') + '</button> <span id="fl_dlmsg2" style="font-size:12px;color:var(--muted);"></span></span>' : '')
+        + '</div>';
+      var subBtn = document.getElementById('fl_dlsub');
+      if (subBtn) subBtn.onclick = onDownloadAllClick;
+      syncDownloadAllBtn(null);   // a download already running for this client owns this button too
+      return;
+    }
+    if (bar) bar.style.display = 'flex';
+    var rows = intFileRows();
     if (countEl) countEl.textContent = rows.length + (rows.length === 1 ? ' file' : ' files') + (rows.length !== _intFiles.length ? (' of ' + _intFiles.length) : '');
+    syncDownloadAllBtn(rows);
     if (!rows.length) { list.innerHTML = '<div style="color:var(--muted);padding:8px 0;">No files match your search/filter.</div>'; return; }
     list.innerHTML = '<table><thead><tr><th>Name</th><th>Categories</th><th class="num">Size</th><th>Uploaded by</th><th></th></tr></thead><tbody>' + rows.map(function (it) {
       var kb = it.sizeBytes ? Math.max(1, Math.round(it.sizeBytes / 1024)) : 0;
@@ -5459,6 +5491,253 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     list.querySelectorAll('[data-fdel]').forEach(function (b) { b.onclick = function () { delFile(b.getAttribute('data-fdel')); }; });
     wirePreviews(list, '?');
   }
+  /* ---- Download all of a client's internal files, as one .zip ----
+     Asked for directly. It is the piece that was missing whenever the whole set has to leave
+     the app at once: a client leaving, an accountant's request, a subpoena, a handoff to
+     another bookkeeper. Until now that meant clicking each file in turn and answering a
+     browser prompt each time — which is also how files get missed.
+
+     WHAT "ALL" MEANS: every internal document filed under /clients/<realm>, INCLUDING the
+     postal-mail scans in the /mail subfolder, which the table above deliberately does not
+     list. They keep their subfolder inside the zip. When a search or category filter is
+     active the button switches to "Download these" and ships exactly the rows on screen —
+     the label always says which of the two it is about to do.
+
+     The archive is built in the BROWSER (window.bccZip). The alternative — zipping in the
+     Function — would have to buffer every blob inside an Azure Static Web Apps managed
+     function, which has a hard ~45s ceiling: a client with a few hundred MB of statements
+     would fail there and nowhere else, and the failure would arrive as a dead download.
+
+     Access needs no new gate: every byte comes through /api/documents/<id>/download, which
+     runs docAccessFilter per file. This button can reach nothing the file links beside it
+     cannot already reach — and a file that IS refused is reported by name rather than
+     silently dropped from the archive. */
+  var _dlRun = null;                              // { cancel, ctrls[] } while a download runs
+  var DL_MAX_TOTAL = 2 * 1024 * 1024 * 1024;      // refuse rather than wedge the tab
+  var DL_CONFIRM_FILES = 150, DL_CONFIRM_BYTES = 300 * 1024 * 1024;
+  function flSizeText(bytes) {
+    if (!bytes) return '';
+    if (bytes < 1024 * 1024) return Math.max(1, Math.round(bytes / 1024)) + ' KB';
+    var mb = bytes / (1024 * 1024);
+    if (mb < 1024) return (mb < 10 ? mb.toFixed(1) : Math.round(mb)) + ' MB';
+    return (mb / 1024).toFixed(1) + ' GB';
+  }
+  // BOTH message spans: the toolbar's, and the one beside the empty-state button (the
+  // toolbar is hidden in that state, so writing only to it says nothing to anyone).
+  function dlMsg(txt) {
+    ['fl_dlmsg', 'fl_dlmsg2'].forEach(function (id) {
+      var el = document.getElementById(id); if (el) el.textContent = txt || '';
+    });
+  }
+  /* The label states exactly what the click will do — all of them, or the filtered few. It is
+     never disabled: while a download runs it becomes the Cancel, and with nothing to download
+     the click says so rather than presenting a dead control. */
+  function syncDownloadAllBtn(rows) {
+    var btn = document.getElementById('fl_dlall');
+    var sub = document.getElementById('fl_dlsub');
+    /* Cancel is offered only in the workspace the download BELONGS to. _dlRun is one global,
+       so without the realm test the next client's Files tab showed "✕ Cancel" for an export
+       of somebody else's files — and clicking it would have cancelled that. A flag with one
+       clearing site leaking into an unrelated context is a shape this app has shipped before. */
+    var mine = !!(_dlRun && _dlRun.realm === currentRealm);
+    if (mine) {
+      if (btn) { btn.textContent = '✕ Cancel'; btn.title = 'Stop this download'; }
+      if (sub) { sub.textContent = '✕ Cancel'; sub.title = 'Stop this download'; }
+      return;
+    }
+    if (!btn) return;
+    var filtered = !!(rows && rows.length !== _intFiles.length);
+    var n = filtered ? rows.length : _intFilesAll.length;
+    btn.textContent = (filtered ? '⬇ Download these (' : '⬇ Download all (') + n + ')';
+    btn.title = filtered
+      ? 'Download the ' + n + ' file' + (n === 1 ? '' : 's') + ' listed below, as one .zip'
+      : 'Download every internal file for this client — postal-mail scans included — as one .zip';
+  }
+  function onDownloadAllClick() {
+    if (_dlRun) {
+      /* One at a time. Starting a second would overwrite _dlRun — the first download's cancel
+         list and its finish() bookkeeping with it — so say what is running instead of
+         quietly breaking it. */
+      if (_dlRun.realm !== currentRealm) {
+        (window.bccNotify || alert)('A download is already running for ' + companyName(_dlRun.realm) + '. Wait for it to finish, or switch back to that client to cancel it.', 'warn', 9000);
+        return;
+      }
+      _dlRun.cancel = true;
+      _dlRun.ctrls.forEach(function (c) { try { c.abort(); } catch (e) {} });
+      dlMsg('Cancelling…');
+      return;
+    }
+    downloadAllInternal();
+  }
+  function downloadAllInternal() {
+    /* sw.js serves this page's scripts from cache, so a device can be running a bcc-api.js
+       from before the zip writer existed. Say that, rather than throwing a ReferenceError
+       into a click handler where nothing would show at all. */
+    if (!window.bccZip || !window.bccSaveBlob) {
+      (window.bccNotify || alert)('This device is still running an older cached copy of the app, which cannot build zips. Reload the page and try again.', 'warn', 10000);
+      return;
+    }
+    var realmAt = currentRealm;
+    if (!realmAt) return;
+    var base = '/clients/' + realmAt;
+    var rows = intFileRows();
+    var filtered = rows.length !== _intFiles.length;
+    var items = filtered ? rows.slice() : _intFilesAll.slice();
+    if (!items.length) {
+      (window.bccNotify || alert)(filtered
+        ? 'Nothing matches this search or category, so there is nothing to download.'
+        : 'There are no internal files for this client yet.', 'warn', 7000);
+      return;
+    }
+    // Folder, then name — so the archive reads in the order someone would file it.
+    if (!filtered) items.sort(function (a, b) {
+      return String(a.folder || '').localeCompare(String(b.folder || ''))
+        || String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' });
+    });
+    var known = 0, unsized = 0;
+    items.forEach(function (it) { if (it.sizeBytes) known += it.sizeBytes; else unsized++; });
+    if (known > DL_MAX_TOTAL) {
+      (window.bccNotify || alert)('That is ' + flSizeText(known) + ' in one archive — more than a browser will reliably build. Narrow it with the search or category filter and take it in batches.', 'warn', 14000);
+      return;
+    }
+    if (items.length > DL_CONFIRM_FILES || known > DL_CONFIRM_BYTES) {
+      var sizeNote = known ? (' (' + flSizeText(known) + (unsized ? ', plus ' + unsized + ' whose size is not recorded' : '') + ')') : '';
+      if (!confirm('Download ' + items.length + ' files' + sizeNote + ' as one .zip?\n\nThis can take a few minutes. Leave this page open until it finishes.')) return;
+    }
+
+    var zip = window.bccZip();
+    var used = {}, failed = [], done = 0, saved = 0, overflow = '';
+    var next = 0;
+    _dlRun = { cancel: false, ctrls: [], realm: realmAt };
+    syncDownloadAllBtn(rows);
+
+    /* Name inside the archive: the file's own subfolder, then a Windows-safe file name, then
+       a " (2)" suffix if that path is already taken. Two files really can share a name — the
+       same statement uploaded twice under different tags — and a zip that quietly holds one
+       entry for two files is a silent loss at exactly the moment someone is archiving. */
+    /* OWN properties only. The key here is a FILE NAME, which a bookkeeper chose — and a file
+       called "constructor.pdf" or "toString" resolves off Object.prototype, so a plain
+       `used[key]` reads truthy for a name nothing has taken and renames it to " (2)" for no
+       reason. Same shape as the chat channel-id bug: never test a user-supplied string against
+       a bare object. */
+    function taken(k) { return Object.prototype.hasOwnProperty.call(used, k); }
+    function zipPathFor(it) {
+      var rel = String(it.folder || '').slice(base.length).replace(/^\/+/, '');
+      var nm = window.bccSafeFileName(it.name, 'file');
+      var key = (rel + '/' + nm).toLowerCase();
+      if (taken(key)) {
+        var dot = nm.lastIndexOf('.');
+        var stem = dot > 0 ? nm.slice(0, dot) : nm, ext = dot > 0 ? nm.slice(dot) : '';
+        var k = 2;
+        while (taken((rel + '/' + stem + ' (' + k + ')' + ext).toLowerCase())) k++;
+        nm = stem + ' (' + k + ')' + ext;
+        key = (rel + '/' + nm).toLowerCase();
+      }
+      used[key] = 1;
+      return (rel ? rel + '/' : '') + nm;
+    }
+    function tick() {
+      if (currentRealm !== realmAt) return;   // they switched client — do not paint into another client's tab
+      dlMsg('Downloading ' + Math.min(done + 1, items.length) + ' of ' + items.length + '…');
+    }
+    tick();
+
+    function worker() {
+      if (_dlRun.cancel || next >= items.length) return Promise.resolve();
+      var it = items[next++];
+      var ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
+      if (ctrl) _dlRun.ctrls.push(ctrl);
+      /* ?bytes=1 streams the file back through the Function, same-origin. The plain download
+         route answers 302 to a blob SAS on *.blob.core.windows.net, which sends no CORS
+         headers — fetch() cannot follow it. (Same reason the PDF editor uses this route.) */
+      return fetch('/api/documents/' + encodeURIComponent(it.id) + '/download?bytes=1', {
+        credentials: 'include', signal: ctrl ? ctrl.signal : undefined
+      })
+        .then(function (r) {
+          if (!r.ok) throw new Error(r.status === 403 ? 'no access to this file' : ('HTTP ' + r.status));
+          return r.arrayBuffer();
+        })
+        .then(function (buf) {
+          if (_dlRun.cancel) return;
+          var when = it.createdAt ? new Date(it.createdAt).getTime() : Date.now();
+          try {
+            zip.add(zipPathFor(it), new Uint8Array(buf), when);
+            saved++;
+          } catch (e) {
+            /* The archive itself refused this entry (4 GB / entry-count ceiling). Stop
+               fetching: everything after it would be refused too, and the files already in
+               hand are still worth handing over with an explanation. */
+            overflow = (e && e.message) || 'the archive is full';
+            _dlRun.cancel = true;
+            failed.push({ name: it.name || it.id, why: overflow });
+          }
+        })
+        .catch(function (e) {
+          if (_dlRun.cancel) return;   // an abort is not a failure to report
+          failed.push({ name: it.name || it.id, why: (e && e.message) || 'could not be read' });
+        })
+        .then(function () { done++; tick(); return worker(); });
+    }
+
+    function missingText() {
+      var lines = [
+        'These files are NOT in this zip — they could not be downloaded.',
+        'Client: ' + companyName(realmAt),
+        'Made: ' + new Date().toLocaleString(),
+        ''
+      ];
+      failed.forEach(function (f) { lines.push('- ' + f.name + '   (' + f.why + ')'); });
+      lines.push('');
+      lines.push('Open the client in BCC Connect and download these individually, or ask an admin.');
+      return lines.join('\r\n');   // CRLF: this is opened in Notepad on Windows
+    }
+
+    function finish() {
+      var cancelled = !!(_dlRun && _dlRun.cancel) && !overflow;
+      _dlRun = null;
+      dlMsg('');
+      syncDownloadAllBtn(intFileRows());
+      if (cancelled) { (window.bccNotify || alert)('Download cancelled — nothing was saved.', 'warn', 6000); return; }
+      // Not one byte arrived: there is no archive to hand over, and saying otherwise with an
+      // empty zip would be the worst possible outcome for someone archiving a client.
+      if (!saved) {
+        (window.bccNotify || alert)('None of the ' + items.length + ' file' + (items.length === 1 ? '' : 's') + ' could be downloaded' + (failed[0] ? ' (' + failed[0].why + ')' : '') + ', so no zip was made.', 'error', 12000);
+        return;
+      }
+      if (failed.length) { try { zip.addText('_MISSING-FILES.txt', missingText(), Date.now()); } catch (e) {} }
+      var blob;
+      try { blob = zip.finish(); }
+      catch (e) {
+        (window.bccNotify || alert)('The zip could not be assembled (' + ((e && e.message) || 'unknown error') + '), so nothing was saved.', 'error', 12000);
+        return;
+      }
+      var d = new Date();
+      var stamp = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+      var fname = window.bccSafeFileName(companyName(realmAt), 'client') + ' — internal files' + (filtered ? ' (filtered)' : '') + ' ' + stamp + '.zip';
+      window.bccSaveBlob(blob, fname);
+      var zipSize = blob.size || zip.bytes();   // blob.size includes the central directory
+      if (window.bccAudit) window.bccAudit('client-file-download', {
+        path: '/bookkeeping.html',
+        meta: { realmId: realmAt, count: saved, bytes: zipSize, missing: failed.length, filtered: filtered }
+      });
+      // Name the client if they have moved on — a toast about "12 files" is meaningless once
+      // a different client's workspace is on screen.
+      var whose = (currentRealm === realmAt) ? '' : (' for ' + companyName(realmAt));
+      if (failed.length || overflow) {
+        (window.bccNotify || alert)('Downloaded ' + saved + ' of ' + items.length + ' files' + whose + ' (' + flSizeText(zipSize) + ').'
+          + ' ' + failed.length + ' could not be included' + (overflow ? ' once the archive hit its limit' : '')
+          + ' — they are listed in _MISSING-FILES.txt inside the zip.', 'warn', 15000);
+      } else {
+        (window.bccNotify || alert)('Downloaded ' + saved + ' file' + (saved === 1 ? '' : 's') + whose + ' (' + flSizeText(zipSize) + ') as “' + fname + '”.', 'success', 9000);
+      }
+    }
+
+    var pool = Math.min(3, items.length);   // gentle on the Function app, still ~3x quicker
+    var runners = [];
+    for (var w = 0; w < pool; w++) runners.push(worker());
+    Promise.all(runners).then(finish, finish);
+  }
+
   function uploadFile() {
     var fi = document.getElementById('fl_file'); var f = fi.files[0]; if (!f) { (window.bccNotify || alert)('Pick a file first.', 'warn'); return; }
     if (f.size > 25 * 1024 * 1024) { (window.bccNotify || alert)('Max 25 MB.', 'warn'); return; }
