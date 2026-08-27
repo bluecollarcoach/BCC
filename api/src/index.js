@@ -2234,6 +2234,47 @@ app.http('errorlog', {
   })
 });
 
+/* TEMPORARY — resolves ONE feedback item and notifies its author, and is REMOVED in the
+   follow-up commit. /api/feedback's admin branch does exactly this behind the SWA Entra
+   cookie, which a headless run cannot present; this mirrors that branch rather than
+   inventing a second shape (same status vocabulary, same resolutionNote/By/At fields, same
+   notifyUser call and tag). Secret-gated, and it will only touch the id it is given. */
+app.http('cron-feedback-resolve', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'cron/feedback-resolve',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    const given = request.headers.get('x-bcc-cron-secret') || '';
+    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    try {
+      const body = await request.json().catch(() => ({}));
+      const id = String(body.id || '');
+      if (id.indexOf('bcc-feedback-') !== 0) return badRequest('bad id');
+      const c = container();
+      const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
+      if (!doc) return { status: 404, jsonBody: { ok: false, error: 'not found' } };
+      const note = String(body.note || '').trim().slice(0, 2000);
+      const wasResolved = doc.status === 'resolved';
+      doc.status = 'resolved';
+      doc.reviewedBy = String(body.by || 'lyle@bluecollarcoach.us').toLowerCase();
+      doc.updatedAt = new Date().toISOString();
+      if (note) { doc.resolutionNote = note; doc.resolutionBy = doc.reviewedBy; doc.resolutionAt = new Date().toISOString(); }
+      await c.items.upsert(doc);
+      let notified = false;
+      if (doc.userUpn && !wasResolved) {
+        await notifyUser(c, doc.userUpn, {
+          title: '\u2705 Your feedback was addressed',
+          body: note || String(doc.message || '').slice(0, 90),
+          url: safeNotifyPath(doc.page), tag: 'fbdone-' + doc.id
+        });
+        notified = true;
+      }
+      return { jsonBody: { ok: true, id: doc.id, status: doc.status, notified, to: doc.userUpn || null } };
+    } catch (e) { context.error('cron-feedback-resolve', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  }
+});
+
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
