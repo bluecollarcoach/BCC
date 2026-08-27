@@ -2234,29 +2234,6 @@ app.http('errorlog', {
   })
 });
 
-/* TEMPORARY — reads the in-app feedback queue headlessly during a sweep, and is REMOVED in
-   the follow-up commit. The /api/feedback GET is admin-only behind the SWA Entra cookie,
-   which a headless run cannot present. Read-only: it never writes, resolves or notifies. */
-app.http('cron-feedback-dump', {
-  methods: ['GET', 'POST'],
-  authLevel: 'anonymous',
-  route: 'cron/feedback-dump',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    const given = request.headers.get('x-bcc-cron-secret') || '';
-    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
-    try {
-      const c = container();
-      const { resources } = await c.items.query({
-        // Named fields, not SELECT * — this prints into a CI log.
-        query: 'SELECT c.id, c.createdAt, c.status, c.page, c.type, c.rating, c.message, c.userUpn, c.resolutionNote FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC',
-        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
-      }).fetchAll();
-      return { jsonBody: { ok: true, count: resources.length, feedback: resources } };
-    } catch (e) { context.error('cron-feedback-dump', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
-  }
-});
-
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
