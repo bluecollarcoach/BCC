@@ -410,6 +410,24 @@
      existing `pending.has(...)` guards at the pull and prune sites are what stop the
      server's older copy from landing on top, and they only work if `pending` is seeded
      first. Returns how many writes were recovered. */
+  function _bccSaneUpn(x) { return String(x || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40); }
+  /* Does this personal key belong to `who`? MODULE SCOPE, one implementation: it started as a
+     local of outboxRehydrate, and the moment a second caller needed the same rule (the
+     bootstrap flush guard) the choice was to hoist it or to write it twice — and two copies of
+     a rule about whose data may be sent is how they drift apart. */
+  function bccKeyOwnerOk(k, who) {
+    var me = String(who || '').toLowerCase();
+    if (!me) return false; // no identity to check against — do not guess
+    // These families embed a SANITISED upn (see emSigKey / myTasksKey).
+    if (k.indexOf('bcc-mytasks-') === 0) return k === 'bcc-mytasks-' + _bccSaneUpn(me);
+    // emSigKey's transform is NOT the same as _bccSaneUpn(): it does not trim edge dashes or
+    // truncate, so replicate it exactly rather than approximately.
+    if (k.indexOf('bcc-emailsig-') === 0) return k === 'bcc-emailsig-' + (me.replace(/[^a-z0-9]+/g, '-') || 'x');
+    // These embed it raw.
+    var m = /^(bcc-(?:daily-log|chat-last-read)-)/.exec(k);
+    if (m) return k.indexOf(m[1] + me + '-') === 0 || k === m[1] + me;
+    return true; // not a personal key shape
+  }
   function outboxRehydrate() {
     var o = outboxRead();
     var me = String((user && user.userDetails) || '').toLowerCase();
@@ -425,19 +443,8 @@
     // upn-only check would happily replay one person's offline clock-out under whoever
     // signs in next, where the server refuses it and THEY get the permission toast.
     // 'bcc-mytasks-' carries a sanitised upn; the rest carry it raw.
-    var sane = function (x) { return String(x || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40); };
-    var keyOwnerOk = function (k) {
-      if (!me) return false; // no identity to check against — do not guess
-      // These families embed a SANITISED upn (see emSigKey / myTasksKey).
-      if (k.indexOf('bcc-mytasks-') === 0) return k === 'bcc-mytasks-' + sane(me);
-      // emSigKey's transform is NOT the same as sane(): it does not trim edge dashes or
-      // truncate, so replicate it exactly rather than approximately.
-      if (k.indexOf('bcc-emailsig-') === 0) return k === 'bcc-emailsig-' + (me.replace(/[^a-z0-9]+/g, '-') || 'x');
-      // These embed it raw.
-      var m = /^(bcc-(?:daily-log|chat-last-read)-)/.exec(k);
-      if (m) return k.indexOf(m[1] + me + '-') === 0 || k === m[1] + me;
-      return true; // not a personal key shape
-    };
+    var sane = _bccSaneUpn;
+    var keyOwnerOk = function (k) { return bccKeyOwnerOk(k, me); };
     /* The owner a personal key NAMES, or '' if it is not a personal key shape. Parking is
        only useful if the entry lands in ITS OWNER's bucket: filing it under the current
        signer meant a colleague's unsent clock-out was parked where only the wrong person
@@ -1584,6 +1591,32 @@
       try {
         var _recovered = outboxRehydrate();
         if (_recovered) console.info('[bcc-api] recovered ' + _recovered + ' unsent change(s) from the outbox');
+      } catch (e) {}
+      /* ...and re-arm the push for whatever is ALREADY in `pending` from this same page.
+         Bootstrap had no flush() of its own: the only trigger was rehydrate's `if (kept)`.
+         A write made while /.auth/me had not answered (hotel wifi, a slow edge) sits in
+         `pending` — flush() refuses it because !signedIn — and its outbox copy is then
+         destroyed by the untrusted-drop rule, which is correct for attribution but leaves the
+         in-memory copy as the only surviving one, with nothing scheduled to send it. The user
+         is told it is queued and it never goes; on the next load the pull writes the server's
+         older copy over it and the edit is gone. It only survived if she happened to make some
+         OTHER write in the same tab.
+         Personal keys belonging to somebody else are dropped first, on the same rule
+         outboxRehydrate applies to the durable copy: the pre-auth capture at the top of this
+         file cannot know whose they are, and pushing A's day log under B is refused by
+         ownsPersonalKey — which fails the WHOLE batch and hands B a sync error for a record
+         she never touched. */
+      try {
+        if (pending.size) {
+          var _foreign = [];
+          pending.forEach(function (_v, k) {
+            if (/^bcc-(daily-log|mytasks|emailsig|chat-last-read)-/.test(k)
+                && !bccKeyOwnerOk(k, (user && user.userDetails) || '')) _foreign.push(k);
+          });
+          _foreign.forEach(function (k) { pending.delete(k); });
+          if (_foreign.length) console.info('[bcc-api] held back ' + _foreign.length + ' personal write(s) belonging to another account');
+          if (pending.size) schedulePush();
+        }
       } catch (e) {}
     }
 

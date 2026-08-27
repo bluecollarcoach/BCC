@@ -4238,6 +4238,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     return lvl === 'edit' || lvl === 'admin';
   }
   // One place to refuse, so every financial write path says the same true thing.
+  /* "May this user publish a client document?" — the same test bkRefuseIfReadOnly makes, with
+     no toast. Used where the ACTION is allowed but the accompanying write is not, so the
+     refusal can be worded for what actually happened instead of "that was not saved". */
+  function bkCanEditFinancialsRefused() { return !bkCanEditFinancials(); }
   function bkRefuseIfReadOnly() {
     if (bkCanEditFinancials()) return false;
     (window.bccNotify || alert)('Your Bookkeeping access is view-only, so that was not saved. Ask an admin for edit access.', 'warn', 8000);
@@ -5305,7 +5309,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
       .then(function (s) {
         if (currentRealm !== realmAt || !area) return;
-        if (!s || !s.ok) { area.innerHTML = ''; return; }
+        /* Say it, do not erase it. Blanking the area removed the entire "Client's shared
+           drive" card — no pill, no Connect/Reconnect, and now no Download — so a Cosmos blip
+           or an expired session read as "this client has no shared drive", which is a claim
+           about the client rather than about the request. */
+        if (!s || !s.ok) {
+          area.innerHTML = '<div class="fs-block fs-client"><div class="fs-head fs-head-client">' +
+            '<div><div class="fs-title">☁️ Client&rsquo;s shared drive</div>' +
+            '<div class="fs-sub" style="color:var(--burgundy);">Could not be checked: ' + esc((s && s.error) || 'the request failed') + ' — reload to try again. This does not mean the drive is disconnected.</div></div>' +
+            '</div></div>';
+          return;
+        }
         if (!s.connected) {
           var btns = '';
           if (s.googleConfigured) btns += '<a class="btn btn-ghost" style="text-decoration:none;" href="/api/integrations/google-drive/connect?realmId=' + encodeURIComponent(currentRealm) + '">Connect Google Drive</a> ';
@@ -5323,7 +5337,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         _driveProvider = s.provider; _driveAccount = s.account || ''; _driveRootName = s.rootName || ''; _driveStack = []; _driveFolder = ''; _driveSearch = '';
         renderDriveBrowser();
       })
-      .catch(function () { if (area) area.innerHTML = ''; });
+      .catch(function (e) {
+        if (!area || currentRealm !== realmAt) return;
+        area.innerHTML = '<div class="fs-block fs-client"><div class="fs-head fs-head-client">' +
+          '<div><div class="fs-title">☁️ Client&rsquo;s shared drive</div>' +
+          '<div class="fs-sub" style="color:var(--burgundy);">Could not be checked (' + esc((e && e.message) || 'network error') + ') — reload to try again. This does not mean the drive is disconnected.</div></div>' +
+          '</div></div>';
+      });
   }
   function renderDriveBrowser() {
     var area = document.getElementById('drive-area'); if (!area) return;
@@ -5499,7 +5519,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       _intFiles = [];
       _intFilesAll = [];
       _intFilesError = 'This client’s files could not be read (' + (e && e.message ? e.message : 'no response') + ').';
-      list.innerHTML = '<div style="color:var(--burgundy);">' + esc(_intFilesError) + '</div>';
+      /* Repaint through renderIntFiles instead of writing the error straight into the list.
+         Writing it here left everything AROUND the list untouched: the toolbar still showed
+         "12 files" and a live "⬇ Download all (15)" over an error saying the files could not
+         be read — and clicking it built an archive from the emptied array, so a client whose
+         files simply could not be listed was downloaded as "There are no internal files for
+         this client yet". renderIntFiles's own empty branch hides the toolbar and prints the
+         error, which is exactly what this needs. */
+      renderIntFiles();
     });
   }
   /* The rows the table is SHOWING, search/filter/sort applied. Factored out so the download
@@ -5690,7 +5717,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      Each item: { id, name, rel, when, size, url } — rel is the folder path inside the zip.
      Everything above this line decides WHAT to download; everything below is the same for all
      three sources. */
-  var _dlLastFailed = {};   // source -> the items to offer a retry for
+  /* Keyed by SOURCE **and CLIENT** ('drive|9130'), never by source alone. A download that
+     finishes after the bookkeeper has switched client used to hand its failures to whichever
+     client was on screen — and the retry button then built an archive of client A's files
+     named for client B, with the audit row agreeing. */
+  var _dlLastFailed = {};
+  function dlFailKey(source, realm) { return source + '|' + (realm || ''); }
   function zipAndSave(cfg) {
     var realmAt = cfg.realm, source = cfg.source, items = cfg.items || [];
     // Self-sufficient: callers claim the run before walking a folder tree (so Cancel works
@@ -5709,7 +5741,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (!window.bccZip || !window.bccSaveBlob) {
       return bail('This device is still running an older cached copy of the app, which cannot build zips. Reload the page and try again.', 'warn', 10000);
     }
-    if (!items.length) return bail(cfg.emptyMsg || 'There is nothing to download here.', 'warn', 7000);
+    /* Carry the notes into the empty case too. A walk that hit its ceiling and found no files
+       reported a bare "nothing to download here", which reads as an empty folder rather than a
+       crawl that never got that far. */
+    if (!items.length) {
+      var emptyNote = (cfg.notes && cfg.notes.length) ? (' ' + cfg.notes.join(' ')) : '';
+      return bail((cfg.emptyMsg || 'There is nothing to download here.') + emptyNote, 'warn', emptyNote ? 12000 : 7000);
+    }
     var known = 0, unsized = 0;
     items.forEach(function (it) { if (it.size) known += it.size; else unsized++; });
     if (known > DL_MAX_TOTAL) {
@@ -5735,7 +5773,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        quietly holds one entry for two files is a silent loss at exactly the moment someone is
        archiving. */
     function zipPathFor(it) {
-      var rel = String(it.rel || '').replace(/^\/+/, '');
+      /* EVERY segment, not just the file name. `rel` is built from remote folder names handed
+         back verbatim — and Google Drive allows : ? * < > | " in a folder name where Windows
+         does not. One such folder made the whole archive un-extractable: Expand-Archive either
+         throws partway through (everything after that entry silently missing) or, for < > | ",
+         returns with no error at all and writes nothing. A firm handing over a client's file
+         set would not find out.
+         Sanitised BEFORE the key below is computed, so the duplicate-name numbering still sees
+         the paths the archive will actually use. */
+      var rel = String(it.rel || '').split('/').map(function (seg) {
+        return seg ? window.bccSafeFileName(seg, 'folder') : '';
+      }).filter(Boolean).join('/');
       var nm = window.bccSafeFileName(it.name, 'file');
       var key = (rel + '/' + nm).toLowerCase();
       if (taken(key)) {
@@ -5807,17 +5855,33 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         .then(function () { done++; tick(); return worker(); });
     }
 
+    /* The archive says what is missing from it. Two ways it can be short — files that failed,
+       and a folder crawl that hit a ceiling — and until now only the first one wrote anything
+       into the zip. A truncated walk produced a smaller archive with NOTHING inside it saying
+       so, announced by a toast that is gone in twelve seconds; the file then gets forwarded as
+       a client's complete set. Whatever the reason, it is written down and it travels WITH the
+       archive. */
     function missingText() {
+      var notes = (cfg.notes && cfg.notes.length) ? cfg.notes : [];
       var lines = [
-        'These files are NOT in this zip — they could not be downloaded.',
+        (failed.length ? 'SOME FILES ARE NOT IN THIS ZIP.' : 'THIS ZIP IS NOT THE WHOLE FOLDER.'),
         'Client: ' + companyName(realmAt),
         'Source: ' + DL_SOURCES[source].label,
         'Made: ' + new Date().toLocaleString(),
+        'In this zip: ' + saved + ' of ' + items.length + ' file(s) that were listed.',
         ''
       ];
-      failed.forEach(function (f) { lines.push('- ' + (f.name || '') + '   (' + f.why + ')'); });
-      lines.push('');
-      lines.push('Open the client in BCC Connect and download these individually, or ask an admin.');
+      if (notes.length) {
+        lines.push('THE LISTING ITSELF WAS INCOMPLETE:');
+        notes.forEach(function (n) { lines.push('- ' + n); });
+        lines.push('');
+      }
+      if (failed.length) {
+        lines.push('COULD NOT BE DOWNLOADED:');
+        failed.forEach(function (f) { lines.push('- ' + (f.name || '') + '   (' + f.why + ')'); });
+        lines.push('');
+      }
+      lines.push('Open the client in BCC Connect to download these individually, or ask an admin.');
       return lines.join('\r\n');   // CRLF: this is opened in Notepad on Windows
     }
 
@@ -5825,18 +5889,38 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var cancelled = !!(_dlRun && _dlRun.cancel) && !overflow;
       _dlRun = null;
       dlFinishState(source);
-      _dlLastFailed[source] = items.filter(function (it) {
+      _dlLastFailed[dlFailKey(source, realmAt)] = items.filter(function (it) {
         return failed.some(function (f) { return f.id === it.id; });
       });
-      if (cancelled) { (window.bccNotify || alert)('Download cancelled — nothing was saved.', 'warn', 6000); return; }
-      if (failed.length) showDlReport(source, failed, saved, items.length, cfg);
+      /* Computed HERE, not beside the success toast, because the cancelled and
+         nothing-arrived messages are just as capable of appearing over a different client's
+         file list — and unattributed they read as being about the client on screen. */
+      var whose = (currentRealm === realmAt) ? '' : (' for ' + companyName(realmAt));
+      if (cancelled) { (window.bccNotify || alert)('Download cancelled' + whose + ' — nothing was saved.', 'warn', 6000); return; }
+      /* The report is painted into a block that belongs to the client on screen, so it is only
+         painted when that is still this run's client. When it is not, the toast above/below
+         carries the same information WITH the client's name — the one thing the red box in
+         somebody else's workspace could never say. */
+      if (currentRealm === realmAt) {
+        if (failed.length) showDlReport(source, failed, saved, items.length, realmAt);
+        else if (cfg.notes && cfg.notes.length) {
+          // No failures, but the crawl was cut short — that has to stay on screen too.
+          dlReport(source, '<strong>This archive is not the whole folder.</strong> '
+            + cfg.notes.map(function (n) { return esc(n); }).join(' ')
+            + ' The same note is inside the zip as <code>_INCOMPLETE.txt</code>.');
+        }
+      }
       // Not one byte arrived: there is no archive to hand over, and saying otherwise with an
       // empty zip would be the worst possible outcome for someone archiving a client.
       if (!saved) {
-        (window.bccNotify || alert)('None of the ' + items.length + ' file' + (items.length === 1 ? '' : 's') + ' could be downloaded' + (failed[0] ? ' (' + failed[0].why + ')' : '') + ', so no zip was made.', 'error', 12000);
+        (window.bccNotify || alert)('None of the ' + items.length + ' file' + (items.length === 1 ? '' : 's') + whose + ' could be downloaded' + (failed[0] ? ' (' + failed[0].why + ')' : '') + ', so no zip was made.', 'error', 12000);
         return;
       }
-      if (failed.length) { try { zip.addText('_MISSING-FILES.txt', missingText(), Date.now()); } catch (e) {} }
+      var _short = failed.length || (cfg.notes && cfg.notes.length);
+      if (_short) {
+        // Named for what it is: files missing, or a folder that could not be listed in full.
+        try { zip.addText(failed.length ? '_MISSING-FILES.txt' : '_INCOMPLETE.txt', missingText(), Date.now()); } catch (e) {}
+      }
       var blob;
       try { blob = zip.finish(); }
       catch (e) {
@@ -5853,9 +5937,6 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         path: '/bookkeeping.html',
         meta: { realmId: realmAt, source: source, count: saved, bytes: zipSize, missing: failed.length, filtered: !!cfg.filtered }
       });
-      // Name the client if they have moved on — a toast about "12 files" is meaningless once a
-      // different client's workspace is on screen.
-      var whose = (currentRealm === realmAt) ? '' : (' for ' + companyName(realmAt));
       var noteTail = (cfg.notes && cfg.notes.length) ? ' ' + cfg.notes.join(' ') : '';
       if (failed.length || overflow) {
         (window.bccNotify || alert)('Downloaded ' + saved + ' of ' + items.length + ' files' + whose + ' (' + flSizeText(zipSize) + ').'
@@ -5879,7 +5960,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     dlMsg(source, '');
     if (source === 'internal') syncDownloadAllBtn(intFileRows()); else dlRefreshControls();
   }
-  function showDlReport(source, failedList, savedN, totalN, cfg) {
+  function showDlReport(source, failedList, savedN, totalN, runRealm) {
     var names = failedList.slice(0, 8).map(function (f) { return esc(f.name) + ' (' + esc(f.why) + ')'; }).join('; ');
     var more = failedList.length > 8 ? ' …and ' + (failedList.length - 8) + ' more' : '';
     dlReport(source, '<strong>' + failedList.length + ' of ' + totalN + ' file' + (totalN === 1 ? '' : 's') + ' could not be downloaded.</strong> '
@@ -5889,12 +5970,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var host = document.getElementById(DL_SOURCES[source].report);
     var rb = host && host.querySelector('[data-dlretry]');
     if (rb) rb.onclick = function () {
-      var again = (_dlLastFailed[source] || []).slice();
+      var again = (_dlLastFailed[dlFailKey(source, runRealm)] || []).slice();
       if (!again.length) return;
+      /* Refuse BEFORE dlClick. A bail after dlClick has claimed _dlRun leaves the run flag set
+         forever: every button in that block reads "✕ Cancel" and every later click cancels
+         instead of starting, until the page is reloaded. */
+      if (runRealm && runRealm !== currentRealm) {
+        (window.bccNotify || alert)('Those files belong to ' + companyName(runRealm) + '. Open that client again to retry them.', 'warn', 9000);
+        return;
+      }
       dlClick(source, function () {
-        _dlRun = { cancel: false, ctrls: [], realm: currentRealm, source: source };
+        _dlRun = { cancel: false, ctrls: [], realm: runRealm || currentRealm, source: source };
         dlRefreshControls();
-        zipAndSave({ source: source, realm: currentRealm, items: again, zipLabel: '(retry)', notes: [] });
+        zipAndSave({ source: source, realm: runRealm || currentRealm, items: again, zipLabel: '(retry)', notes: [] });
       });
     };
   }
@@ -5906,6 +5994,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var realmAt = currentRealm;
     if (!realmAt) return;
     var base = '/clients/' + realmAt;
+    /* An unreadable list is not an empty client. Without this the archive built from the
+       emptied array and the message read "There are no internal files for this client yet" —
+       a claim about the CLIENT, made on the strength of a request that failed. */
+    if (_intFilesError) {
+      (window.bccNotify || alert)(_intFilesError + ' Nothing was downloaded — reload the Files tab and try again.', 'error', 12000);
+      return;
+    }
     var rows = intFileRows();
     var filtered = rows.length !== _intFiles.length;
     var src = filtered ? rows.slice() : _intFilesAll.slice();
@@ -6590,7 +6685,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // each other), so recomputing the count from BOTH functions' success handlers
   // — not just one — means whichever resolves last always lands the correct
   // final number, regardless of which happened to finish first.
+  /* The count is "messages this person has not read", and the read state lives entirely in the
+     collaboration map. When that map could not be loaded, loadEmailMeta deliberately KEEPS
+     whatever it holds (the previous client's, or {} on a first load) so real read stamps are
+     not dropped — which means recomputing from it produces a number nobody can stand behind.
+     Report "couldn't check" instead of a figure. */
   function recomputeUnreadBadge() {
+    if (_emMetaErr) { delete _emUnread[currentRealm]; _emUnreadErr[currentRealm] = 1; updateWsNav(); return; }
     if (_emLoadedFor !== currentRealm) return; // _emMsgs isn't for this realm yet
     if (_emLoadedFolder !== 'inbox') return;   // ...nor is it the inbox — Sent Items has no unread count
     /* ...and the inbox has to have been READ. _emLoadedFor is set by renderEmail before
@@ -9751,6 +9852,26 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var pd = new Date(+period.slice(0, 4), +period.slice(5, 7) - 1, 1);
       var label = pd.toLocaleDateString([], { month: 'long', year: 'numeric' });
       var note = (document.getElementById('close_menote') || {}).value || '';
+      /* PRIME GATE, BEFORE THE EMAIL GOES OUT. The stamp below is a whole-document write of
+         the close checklist through the hooked setter — i.e. a firm-wide publish — and it was
+         the one Close mutation that skipped the gate every other one goes through. On a device
+         that holds no copy of this month's checklist (new laptop, private window, a priming GET
+         that blipped), renderClose paints a blank one, ticking a box is correctly refused, and
+         this button then published that blank over the client's real month: every tick, every
+         step note and every reconciliation balance, with no tombstone.
+         Gated before the send because an email cannot be unsent.
+         'denied' is NOT the same as 'still loading': bccPrimeState says which, and a user the
+         server will not show this document to can still legitimately send the hand-off — they
+         just cannot record the stamp. Its own latch, because sharing _closeWarned with the
+         checkbox refusal would make this button a silent no-op after one refused tick. */
+      var _mePrimed = _closePrimed[(closeAt || {}).id] === true;
+      var _meDenied = !_mePrimed && window.bccPrimeState && window.bccPrimeState((closeAt || {}).id) === 'denied';
+      if (!_mePrimed && !_meDenied) {
+        if (st) st.textContent = '';
+        (window.bccNotify || alert)('Nothing was sent — this month’s checklist hasn’t finished loading, and sending now would replace it with an empty one. Try again in a moment.', 'warn', 10000);
+        primeClose((closeAt || {}).id, function () { adoptClose((closeAt || {}).id); });
+        return;
+      }
       btn.disabled = true; if (st) st.textContent = 'Sending…';
       monthEndNotify(label, note, function (err) {
         btn.disabled = false;
@@ -9759,14 +9880,31 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
            before the request. Writing the captured object back whole reverted every tick and
            note made while /api/notify was in flight. Still keyed to closeAt.id so a client
            switch cannot land this on a different client's checklist. */
+        /* The stamp is a WRITE, so it carries the write rules the send does not: the document
+           must be primed, and a read-only tier may not publish it. The notification itself has
+           no tier gate on the server (it grants no data access, and the same hand-off is
+           fireable from the Tasks tab by a 'tasks' user) — so refusing the SEND on tier would
+           block something they are entitled to do. Refuse only the stamp, and say so.
+           The `ndoc = closeAt` fallback stays: with the document primed, "no local copy" is the
+           server answering data:null — a real, authoritative empty — which is every client's
+           first close of the month. */
         var ndoc = null; try { ndoc = JSON.parse(localStorage.getItem(closeAt.id)); } catch (e) {}
-        if (!ndoc || !ndoc.id) ndoc = closeAt;
-        ndoc.meetingNotifiedAt = nowIso(); ndoc.meetingNotifiedTo = monthEndContact();
-        ndoc.updatedAt = nowIso(); ndoc.updatedBy = myUpn();
-        localStorage.setItem(closeAt.id, JSON.stringify(ndoc));
-        if (_close && _close.id === closeAt.id) _close = ndoc;   // keep the in-memory copy in step
-        if (window.bccAudit) window.bccAudit('monthend-notify', { key: closeAt.id, path: '/bookkeeping.html', meta: { realmId: realmAt, period: period, to: monthEndContact() } });
+        var canStamp = _closePrimed[closeAt.id] === true && !bkCanEditFinancialsRefused();
+        if (canStamp) {
+          if (!ndoc || !ndoc.id) ndoc = closeAt;
+          ndoc.meetingNotifiedAt = nowIso(); ndoc.meetingNotifiedTo = monthEndContact();
+          ndoc.updatedAt = nowIso(); ndoc.updatedBy = myUpn();
+          localStorage.setItem(closeAt.id, JSON.stringify(ndoc));
+          if (_close && _close.id === closeAt.id) _close = ndoc;   // keep the in-memory copy in step
+        }
+        if (window.bccAudit) window.bccAudit('monthend-notify', { key: closeAt.id, path: '/bookkeeping.html', meta: { realmId: realmAt, period: period, to: monthEndContact(), stamped: canStamp } });
         if (currentRealm === realmAt) renderClose(); // only repaint if still viewing the same client's Close tab
+        if (!canStamp) {
+          // The hand-off DID go out. Say that, and say what could not be recorded, rather than
+          // letting the badge's absence imply the email never left.
+          (window.bccNotify || alert)('Notification sent — ' + label + ' month-end hand-off. It could not be recorded on the checklist (this month’s copy is not available to you), so the “sent” badge will not appear.', 'warn', 12000);
+          return;
+        }
         if (window.bccNotifySaved) window.bccNotifySaved('Notification sent — ' + label + ' month-end meeting hand-off.');
       });
     };

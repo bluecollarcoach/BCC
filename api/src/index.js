@@ -3705,6 +3705,13 @@ const SP_BATCH = 20, SP_MAX_DEPTH = 8, SP_MAX_FILES = 3000;
    reporting a truncated crawl as the complete file list. Previously a folder with more
    than 300 children was silently cut off (no nextLink was followed), and hitting the
    depth or file ceiling looked identical to "that's everything". */
+/* `limits` also carries the RETRY BUDGET for the whole crawl. The retry added below sits
+   inside the per-page loop of a function that recurses over an unbounded number of folders,
+   and this crawl re-runs on EVERY round of the browser's import loop, before that round's 20
+   downloads and 20 blob uploads — inside a Static Web Apps managed function with a hard ~45s
+   ceiling. Unbudgeted, a throttled tenant turns each round into minutes of sleeping and the
+   round dies of the timeout, which fails it entirely. Same reasoning as the download loop's
+   own budget; this is that fix's missing half. */
 async function spWalk(driveId, access, path, depth, out, limits) {
   if (depth > SP_MAX_DEPTH) { limits.depth = true; return; }
   if (out.length >= SP_MAX_FILES) { limits.count = true; return; }
@@ -3717,8 +3724,10 @@ async function spWalk(driveId, access, path, depth, out, limits) {
     /* One retry on a throttle or a server-side blip. Graph answers 429 routinely once a crawl
        gets going, and a single unlucky listing here silently dropped an entire subtree —
        "import all" then quietly meant "import most". */
-    if (!r.ok && (r.status === 429 || r.status >= 500)) {
-      const wait = Math.min(4000, Number(r.headers.get('retry-after') || 0) * 1000 || 900);
+    if (!r.ok && (r.status === 429 || r.status >= 500) && (limits.retryBudget | 0) > 0) {
+      limits.retryBudget--;
+      // Capped at 1s, not 4s: three 4s waits already spend a quarter of the round's ceiling.
+      const wait = Math.min(1000, Number(r.headers.get('retry-after') || 0) * 1000 || 700);
       await new Promise((res) => setTimeout(res, wait));
       r = await fetch(next, { headers: { Authorization: 'Bearer ' + access } });
     }
@@ -3731,8 +3740,15 @@ async function spWalk(driveId, access, path, depth, out, limits) {
     const j = await r.json();
     for (const it of (j.value || [])) {
       if (it.folder) folders.push(it.name);
-      else if (out.length < SP_MAX_FILES) out.push({ id: it.id, name: it.name, size: it.size || 0, path: path });
-      else { limits.count = true; break; }
+      else {
+        limits.seen = (limits.seen | 0) + 1;
+        // Already in Files (or already failed this run) — counted, but it does not consume a
+        // slot in the enumeration window, which is what let a big folder finish.
+        const sid = String(it.id);
+        if ((limits.skip && limits.skip.has(sid)) || (limits.skipAlso && limits.skipAlso.has(sid))) continue;
+        if (out.length < SP_MAX_FILES) out.push({ id: it.id, name: it.name, size: it.size || 0, path: path });
+        else { limits.count = true; break; }
+      }
     }
     next = j['@odata.nextLink'] || null;
     if (limits.count) break;
@@ -3758,18 +3774,25 @@ app.http('sharepoint-import-all', {
       const access = await getGraphToken();
       const driveId = await spDriveId();
       const clientRoot = spPathFor(folder, '');
-      const all = [];
-      const spLimits = {};
-      await spWalk(driveId, access, clientRoot, 0, all, spLimits);
 
       const c = container();
       const dest = safeFolder('/clients/' + realmId);
-      // Which SharePoint items are already in this client's Files?
+      /* ASK WHAT IS ALREADY IMPORTED **BEFORE** WALKING, and let the walk skip those.
+         The 3,000-file enumeration cap used to be applied to the raw tree and the
+         already-imported set subtracted afterwards, so for a folder bigger than the cap the
+         window never moved: every run re-walked the same first 3,000 files, found them all
+         imported, and had nothing to do — while telling the bookkeeper "run the import again"
+         forever, and the files past #3000 could never be reached at all. Skipping them during
+         the walk advances the window every round until the folder is genuinely finished. */
       const { resources: have } = await c.items.query({
         query: 'SELECT c.sharepointItemId FROM c WHERE c.tenantId=@t AND c.docType="document" AND c.folder=@f AND IS_DEFINED(c.sharepointItemId)',
         parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@f', value: dest }]
       }).fetchAll();
       const done = new Set(have.map(h => String(h.sharepointItemId)));
+      const all = [];
+      const spLimits = { retryBudget: 3, skip: done, skipAlso: skipIds, seen: 0 };
+      await spWalk(driveId, access, clientRoot, 0, all, spLimits);
+
       const notYet = all.filter(f => !done.has(String(f.id)) && !skipIds.has(String(f.id)));
       // Files over the 25 MB cap can never import — pull them out of the queue up
       // front (size is known before download) so they can't loop forever, and
@@ -3810,7 +3833,14 @@ app.http('sharepoint-import-all', {
           const storageKey = (BCC_TENANT_ID + dest + '/' + stamp + '-' + spUniq + '-' + safeFilename(f.name)).replace(/\/+/g, '/').replace(/^\//, '');
           const ct = dr.headers.get('content-type') || 'application/octet-stream';
           await cont.getBlockBlobClient(storageKey).uploadData(buf, { blobHTTPHeaders: { blobContentType: ct } });
-          const docId = DOC_DOC_PREFIX + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
+          /* DETERMINISTIC id, derived from the client folder + the SharePoint item id. The
+             `done` set is a snapshot taken once per request, and nothing on the write side
+             enforced uniqueness — so a round that died of the function timeout after importing
+             (the browser sees a gateway error and the bookkeeper clicks Import again) came back
+             and created a SECOND row and a SECOND blob for every file it had already brought
+             over. With the id derived from the item, the upsert overwrites that item's own row
+             instead: re-running is idempotent by construction rather than by timing. */
+          const docId = DOC_DOC_PREFIX + 'sp-' + crypto.createHash('sha1').update(dest + ':' + String(f.id)).digest('hex').slice(0, 24);
           await c.items.upsert({
             id: docId, tenantId: BCC_TENANT_ID, docType: 'document', name: f.name,
             folder: dest, tags, sizeBytes: buf.length, mimeType: ct, storageKey,
@@ -3839,7 +3869,9 @@ app.http('sharepoint-import-all', {
             + '), so this is not the whole folder.')
         : '';
       return { jsonBody: {
-        ok: true, folder, totalFiles: all.length, alreadyHad: done.size,
+        // Everything the crawl SAW, not just what is left to do — this is the number the
+        // bookkeeper compares against SharePoint.
+        ok: true, folder, totalFiles: (spLimits.seen | 0) || all.length, alreadyHad: done.size,
         imported: importedNow, failed, oversized, remaining,
         // How many are still queued AFTER this batch, so the caller can show real progress
         // rather than inferring it from a counter that only ever goes up.
