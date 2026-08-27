@@ -132,6 +132,17 @@
       '.bpdf-padcanvas{border:1px solid var(--chrome-mute,#d9d6cf);border-radius:8px;width:100%;height:180px;touch-action:none;background:#fff;cursor:crosshair;display:block;}',
       '.bpdf-typed{width:100%;box-sizing:border-box;font-size:38px;padding:18px 10px;border:1px solid var(--chrome-mute,#d9d6cf);border-radius:8px;text-align:center;}',
       '.bpdf-pad-foot{display:flex;gap:8px;justify-content:flex-end;padding:12px 16px;border-top:1px solid var(--chrome-mute,#e6e5e1);}',
+      /* crop dialog */
+      '.bpdf-crop{background:#fff;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.4);width:min(860px,100%);max-height:94vh;display:flex;flex-direction:column;overflow:hidden;}',
+      '.bpdf-crop-body{padding:14px 16px;overflow:auto;display:flex;flex-direction:column;align-items:center;gap:10px;}',
+      '.bpdf-cropwrap{position:relative;line-height:0;touch-action:none;cursor:crosshair;user-select:none;}',
+      '.bpdf-cropwrap canvas{max-width:100%;height:auto;display:block;box-shadow:0 1px 6px rgba(0,0,0,.18);}',
+      /* The four dimmers show what is being cut away — a single outlined box left the */
+      /* discarded area looking just as kept as the rest. */
+      '.bpdf-shade{position:absolute;background:rgba(20,18,14,.45);pointer-events:none;}',
+      '.bpdf-croprect{position:absolute;border:2px solid var(--gold-deep,#b8860b);box-shadow:0 0 0 1px rgba(255,255,255,.85) inset;pointer-events:none;}',
+      '.bpdf-crophint{font-size:12.5px;color:var(--muted,#7a726a);text-align:center;}',
+      '.bpdf-cropbadge{position:absolute;left:4px;bottom:4px;background:var(--gold-deep,#b8860b);color:#fff;font-size:10px;font-weight:800;border-radius:4px;padding:1px 5px;}',
       '.bpdf-spin{display:inline-block;width:15px;height:15px;border:2px solid rgba(0,0,0,.18);border-top-color:var(--gold-deep,#b8860b);border-radius:50%;animation:bpdfspin .7s linear infinite;vertical-align:-2px;}',
       '@keyframes bpdfspin{to{transform:rotate(360deg);}}',
       '.bpdf-load{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;height:100%;color:var(--muted,#7a726a);font-size:14px;}',
@@ -305,6 +316,7 @@
         '<button class="bpdf-btn" data-act="add">➕ Add / merge PDF</button>' +
         '<span class="bpdf-sep"></span>' +
         '<button class="bpdf-btn" data-act="rotateSel" ' + (selCount ? '' : 'disabled') + '>⟳ Rotate</button>' +
+        '<button class="bpdf-btn" data-act="cropSel" ' + (selCount ? '' : 'disabled') + '>⬒ Crop</button>' +
         '<button class="bpdf-btn danger" data-act="delSel" ' + (selCount ? '' : 'disabled') + '>🗑 Delete</button>' +
         '<button class="bpdf-btn" data-act="extractSel" ' + (selCount ? '' : 'disabled') + '>✂️ Extract to new PDF</button>' +
         '<span class="bpdf-sep"></span>' +
@@ -321,6 +333,7 @@
       return '<div class="bpdf-card' + (e.sel ? ' sel' : '') + '" data-key="' + e.key + '" draggable="true">' +
         '<div class="bpdf-thumbwrap" data-key="' + e.key + '"><div class="bpdf-pageno">' + (idx + 1) + '</div>' +
           (e.ann && e.ann.length ? '<div class="bpdf-annbadge" title="Has signatures / marks">✍ ' + e.ann.length + '</div>' : '') +
+          (e.crop ? '<div class="bpdf-cropbadge" title="Cropped — keeping ' + Math.round(e.crop.fw * 100) + '% × ' + Math.round(e.crop.fh * 100) + '% of the page">⬒ cropped</div>' : '') +
         '</div>' +
         '<div class="bpdf-cardbar">' +
           '<label class="bpdf-chk"><input type="checkbox" data-sel="' + e.key + '" ' + (e.sel ? 'checked' : '') + '/> select</label>' +
@@ -415,6 +428,7 @@
     }
     var sel = ST.order.filter(function (e) { return e.sel; });
     if (act === 'rotateSel') { sel.forEach(function (e) { e.rot = (e.rot + 90) % 360; }); markDirty(ST); renderPages(ST); return; }
+    if (act === 'cropSel') { openCropDialog(ST, sel); return; }
     if (act === 'delSel') { deleteKeys(ST, sel.map(function (e) { return e.key; })); return; }
     if (act === 'extractSel') { extractSelected(ST, sel); return; }
   }
@@ -616,6 +630,198 @@
      overlays that belong to a page nobody is looking at. */
   function detachSignResize(ST) {
     if (ST._signRO) { try { ST._signRO.disconnect(); } catch (e) {} ST._signRO = null; }
+  }
+
+  /* ============================================================= *
+   *  Crop  (asked for by renee@ — "In our PDF tool could we get a
+   *  cropping function added?")
+   *
+   *  Drag a box over the page; everything outside it is trimmed. The
+   *  region is stored as FRACTIONS of the page's own box, never as
+   *  screen pixels, so it survives a later rotate, a re-render at a
+   *  different scale, and a window resize.
+   *
+   *  Screen -> PDF goes through pdf.js's own viewport.convertToPdfPoint,
+   *  the same conversion the signature tab uses. That is deliberate: it
+   *  is correct under any page /Rotate, and hand-derived rotation maths
+   *  is exactly how a crop ends up 90 degrees out on the one scanned
+   *  page that was landscape.
+   * ============================================================= */
+  function cropRectFor(entry, box) {
+    // box: { x, y, width, height } in PDF points (the page's crop/media box)
+    var c = entry.crop;
+    return {
+      x: box.x + c.fx * box.width,
+      y: box.y + c.fy * box.height,
+      w: Math.max(1, c.fw * box.width),
+      h: Math.max(1, c.fh * box.height)
+    };
+  }
+  function openCropDialog(ST, entries) {
+    if (!entries || !entries.length) return;
+    var first = entries[0];
+    var ov = document.createElement('div');
+    ov.className = 'bpdf-pad-ov';
+    var many = entries.length > 1;
+    ov.innerHTML =
+      '<div class="bpdf-crop">' +
+        '<div class="bpdf-pad-head">⬒ Crop ' + (many ? (entries.length + ' selected pages') : 'this page') + '</div>' +
+        '<div class="bpdf-crop-body">' +
+          '<div id="bpdf-cropwrap" class="bpdf-cropwrap"><div class="bpdf-load"><span class="bpdf-spin"></span>Rendering the page…</div></div>' +
+          '<div class="bpdf-crophint" id="bpdf-crophint">Drag a box over the part you want to KEEP.' +
+            (many ? ' The same region is applied to all ' + entries.length + ' selected pages.' : '') + '</div>' +
+        '</div>' +
+        '<div class="bpdf-pad-foot">' +
+          '<button class="bpdf-btn" data-cr="full">Whole page</button>' +
+          '<button class="bpdf-btn" data-cr="cancel">Cancel</button>' +
+          '<button class="bpdf-btn primary" data-cr="apply" disabled>Apply crop</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(ov);
+
+    var wrap = ov.querySelector('#bpdf-cropwrap');
+    var hint = ov.querySelector('#bpdf-crophint');
+    var applyBtn = ov.querySelector('[data-cr="apply"]');
+    var vp = null, canvas = null, view = null;
+    /* FRACTIONS of the page box (0..1, origin top-left of the displayed page), never CSS
+       pixels: the canvas is max-width:100%, so a window resize rescales it and any stored
+       pixel geometry silently means something else afterwards. */
+    var rect = null;           // { fl, ft, fw, fh }
+    var dragging = false, startPt = null;
+
+    function close() {
+      document.removeEventListener('keydown', onKey, true);
+      // move/up are function declarations, so they are hoisted and safe to reference here.
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('touchmove', move);
+      document.removeEventListener('mouseup', up);
+      document.removeEventListener('touchend', up);
+      if (ov.parentNode) ov.parentNode.removeChild(ov);
+    }
+    function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(); } }
+    // Captured, so Escape closes THIS dialog and not the editor behind it.
+    document.addEventListener('keydown', onKey, true);
+    ov.addEventListener('mousedown', function (e) { if (e.target === ov) close(); });
+
+    function paint() {
+      wrap.querySelectorAll('.bpdf-shade,.bpdf-croprect').forEach(function (n) { n.remove(); });
+      if (!canvas) return;
+      var W = canvas.clientWidth, H = canvas.clientHeight;
+      if (!rect || !W || !H) { applyBtn.disabled = true; return; }
+      var r = { l: rect.fl * W, t: rect.ft * H, w: rect.fw * W, h: rect.fh * H };
+      // Four dimmers around the kept area, so what is being cut is unmistakable.
+      [[0, 0, W, r.t], [0, r.t + r.h, W, H - r.t - r.h],
+       [0, r.t, r.l, r.h], [r.l + r.w, r.t, W - r.l - r.w, r.h]].forEach(function (b) {
+        if (b[2] <= 0 || b[3] <= 0) return;
+        var d = document.createElement('div');
+        d.className = 'bpdf-shade';
+        d.style.left = b[0] + 'px'; d.style.top = b[1] + 'px';
+        d.style.width = b[2] + 'px'; d.style.height = b[3] + 'px';
+        wrap.appendChild(d);
+      });
+      var box = document.createElement('div');
+      box.className = 'bpdf-croprect';
+      box.style.left = r.l + 'px'; box.style.top = r.t + 'px';
+      box.style.width = r.w + 'px'; box.style.height = r.h + 'px';
+      wrap.appendChild(box);
+      applyBtn.disabled = !(rect.fw > 0.02 && rect.fh > 0.02);
+      // Inches, because that is what a scanned document is measured in.
+      var wIn = (rect.fw * (vp ? vp.width : 0)) / 72, hIn = (rect.fh * (vp ? vp.height : 0)) / 72;
+      hint.textContent = 'Keeping ' + Math.round(rect.fw * 100) + '% × ' + Math.round(rect.fh * 100) + '%'
+        + ' (about ' + wIn.toFixed(1) + '" × ' + hIn.toFixed(1) + '")'
+        + (many ? ' — applied to all ' + entries.length + ' selected pages.' : '')
+        + '  Drag again to redraw.';
+    }
+    // Fractions of the displayed page, clamped to it.
+    function pt(e) {
+      var b = canvas.getBoundingClientRect();
+      var t = e.touches && e.touches[0];
+      if (!b.width || !b.height) return { x: 0, y: 0 };
+      var x = ((t ? t.clientX : e.clientX) - b.left) / b.width;
+      var y = ((t ? t.clientY : e.clientY) - b.top) / b.height;
+      return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
+    }
+    function down(e) { if (!canvas) return; dragging = true; startPt = pt(e); rect = null; paint(); e.preventDefault(); }
+    function move(e) {
+      if (!dragging || !canvas) return;
+      var q = pt(e);
+      rect = { fl: Math.min(startPt.x, q.x), ft: Math.min(startPt.y, q.y),
+               fw: Math.abs(q.x - startPt.x), fh: Math.abs(q.y - startPt.y) };
+      paint(); e.preventDefault();
+    }
+    function up() { dragging = false; }
+
+    ov.querySelector('[data-cr="cancel"]').onclick = close;
+    ov.querySelector('[data-cr="full"]').onclick = function () {
+      // Clears the crop on every selected page, rather than setting a full-page box —
+      // a page with no crop at all is the honest representation of "whole page".
+      entries.forEach(function (e) { delete e.crop; });
+      markDirty(ST);
+      close();
+      renderPages(ST);
+      toast('Crop removed — the whole page is kept.', 'success');
+    };
+    applyBtn.onclick = function () {
+      if (!rect || !vp || !canvas || !view) return;
+      /* Fractions straight to viewport pixels — no dependence on the element's current
+         layout, so a resize between drawing and applying cannot change what gets cut. */
+      var A = vp.convertToPdfPoint(rect.fl * vp.width, rect.ft * vp.height);
+      var B = vp.convertToPdfPoint((rect.fl + rect.fw) * vp.width, (rect.ft + rect.fh) * vp.height);
+      var x0 = Math.min(A[0], B[0]), x1 = Math.max(A[0], B[0]);
+      var y0 = Math.min(A[1], B[1]), y1 = Math.max(A[1], B[1]);
+      var bx = view[0], by = view[1], bw = view[2] - view[0], bh = view[3] - view[1];
+      if (!(bw > 0 && bh > 0)) { toast('That page has no usable size — it cannot be cropped.', 'error'); return; }
+      var clamp = function (v) { return Math.max(0, Math.min(1, v)); };
+      var fx = clamp((x0 - bx) / bw), fy = clamp((y0 - by) / bh);
+      var fw = clamp((x1 - x0) / bw), fh = clamp((y1 - y0) / bh);
+      if (fx + fw > 1) fw = 1 - fx;
+      if (fy + fh > 1) fh = 1 - fy;
+      // A sliver is almost always a mis-drag, and a zero-area box makes an unopenable PDF.
+      if (fw < 0.02 || fh < 0.02) { toast('That crop is too small — draw a larger box.', 'warn'); return; }
+      var crop = { fx: fx, fy: fy, fw: fw, fh: fh };
+      entries.forEach(function (e) { e.crop = { fx: crop.fx, fy: crop.fy, fw: crop.fw, fh: crop.fh }; });
+      markDirty(ST);
+      close();
+      renderPages(ST);
+      toast('Cropped ' + entries.length + ' page' + (entries.length === 1 ? '' : 's') + ' — the trim is applied when you save or download.', 'success', 7000);
+    };
+
+    entryPjsPage(ST, first).then(function (page) {
+      if (!ov.isConnected) return;
+      var rotation = (first.base + first.rot) % 360;
+      var vp0 = page.getViewport({ scale: 1, rotation: rotation });
+      var avail = Math.max(320, Math.min(760, (wrap.parentNode.clientWidth || 700)));
+      var scale = Math.min(2, avail / vp0.width);
+      var v = page.getViewport({ scale: scale, rotation: rotation });
+      var cv = document.createElement('canvas');
+      cv.width = Math.ceil(v.width); cv.height = Math.ceil(v.height);
+      return page.render({ canvasContext: cv.getContext('2d'), viewport: v }).promise.then(function () {
+        if (!ov.isConnected) return;
+        wrap.innerHTML = '';
+        wrap.appendChild(cv);
+        vp = v; canvas = cv; view = page.view;
+        wrap.addEventListener('mousedown', down);
+        wrap.addEventListener('touchstart', down, { passive: false });
+        document.addEventListener('mousemove', move);
+        document.addEventListener('touchmove', move, { passive: false });
+        document.addEventListener('mouseup', up);
+        document.addEventListener('touchend', up);
+        // Re-show an existing crop so it can be adjusted rather than redrawn blind.
+        if (first.crop) {
+          var bx = page.view[0], by = page.view[1];
+          var bw = page.view[2] - bx, bh = page.view[3] - by;
+          var p0 = v.convertToViewportPoint(bx + first.crop.fx * bw, by + first.crop.fy * bh);
+          var p1 = v.convertToViewportPoint(bx + (first.crop.fx + first.crop.fw) * bw, by + (first.crop.fy + first.crop.fh) * bh);
+          rect = { fl: Math.min(p0[0], p1[0]) / v.width, ft: Math.min(p0[1], p1[1]) / v.height,
+                   fw: Math.abs(p1[0] - p0[0]) / v.width, fh: Math.abs(p1[1] - p0[1]) / v.height };
+        }
+        paint();
+      });
+    }).catch(function (e) {
+      if (!ov.isConnected) return;
+      wrap.innerHTML = '<div style="padding:24px;color:#8a3b3b;font-size:13px;">That page could not be rendered ('
+        + esc((e && e.message) || 'unknown error') + '), so it cannot be cropped.</div>';
+    });
   }
 
   /* place a new annotation: prompt for content, then drop a draggable box */
@@ -1002,7 +1208,7 @@
     var srcDocs = {};
     var helv = null, ding = null;
     // What the save had to compromise on, so doSaveTarget/doDownload can say so.
-    ST._buildNotes = { degradedText: 0, droppedSig: 0, flattened: false };
+    ST._buildNotes = { degradedText: 0, droppedSig: 0, flattened: false, cropFailed: 0 };
     async function getSrc(id) {
       if (!srcDocs[id]) srcDocs[id] = await PDFLib.PDFDocument.load(ST.sources[id].bytes, { ignoreEncryption: true });
       return srcDocs[id];
@@ -1041,6 +1247,22 @@
       var pg = pages[i];
       if (!pg) throw new Error('Page ' + (i + 1) + ' could not be processed.');
       pg.setRotation(PDFLib.degrees(((e.base || 0) + e.rot) % 360));
+      /* CROP. Both boxes are set, deliberately: Acrobat's own crop moves only the CropBox,
+         but plenty of print shops and older viewers lay out from the MediaBox and would show
+         the trimmed-off margin anyway. Setting them together means the page really is that
+         size everywhere. Fractions of the page's own box, so a crop drawn on one page applies
+         correctly to selected pages of a different size, and survives a later rotate. */
+      if (e.crop) {
+        try {
+          var _cbox = pg.getCropBox();
+          var _cr = cropRectFor(e, _cbox);
+          pg.setMediaBox(_cr.x, _cr.y, _cr.w, _cr.h);
+          pg.setCropBox(_cr.x, _cr.y, _cr.w, _cr.h);
+        } catch (cropErr) {
+          // Never lose the page over a crop — keep it whole and say so at the end.
+          ST._buildNotes.cropFailed = (ST._buildNotes.cropFailed || 0) + 1;
+        }
+      }
       out.addPage(pg);
       for (var j = 0; j < e.ann.length; j++) {
         var a = e.ann[j];
