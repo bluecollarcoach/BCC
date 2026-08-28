@@ -592,7 +592,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         openPast.length + ' day' + (openPast.length === 1 ? '' : 's') + ' with no clock-out (' +
         openPast.map(function (l) { return esc(fmtDay(l.day)); }).join(', ') + '). Open it below to add your clock-out time.</div>'
       : '';
-    if (!logs.length) { listEl.innerHTML = '<div class="empty-mini">No time logged yet. Use “Clock in” above to start.</div>'; return; }
+    if (!logs.length) {
+      // Telling a bookkeeper they have never clocked in, when the request that would have
+      // shown their hours simply failed, is the worst sentence on this page.
+      listEl.innerHTML = (window.bccDataComplete && !window.bccDataComplete())
+        ? '<div class="empty-mini" style="color:var(--burgundy);">Couldn’t load your time log — this device hasn’t finished getting it from the server. Your hours are not lost; reload to try again.</div>'
+        : '<div class="empty-mini">No time logged yet. Use “Clock in” above to start.</div>';
+      return;
+    }
     var _paint = logs.map(function (l) {
       var open = l.clockedInAt && !l.clockedOutAt;
       var segs = logSegments(l);

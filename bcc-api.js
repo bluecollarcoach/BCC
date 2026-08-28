@@ -1237,6 +1237,29 @@
     placeOfflineBar(bar);
   }
   window.bccRefreshRefusedBar = refreshRefusedBar;
+  /* THE OTHER HALF OF THE SAME RULE. A device that could not load the firm's records must not
+     present its empty lists as facts — and until now it said nothing at all, because the
+     offline bar only fires when the browser is offline and this failure happens online.
+     Pinned, worded to name what the person is actually looking at, and offering the one thing
+     that fixes it. Pages ALSO guard their own empty states (bootDataOk and its siblings); this
+     is the firm-wide statement that covers the ones that cannot. */
+  function refreshIncompleteBar() {
+    if (!document.body) return;
+    var bad = !!window._bccBootPullFailed;
+    var bar = document.getElementById('bcc-incomplete-bar');
+    if (!bad) { if (bar) bar.classList.remove('show'); return; }
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'bcc-incomplete-bar';
+      bar.className = 'bcc-offline bcc-incomplete';
+      bar.innerHTML = '<span>⚠ This device could not load all of the firm’s records just now, so lists and counts on this page may be short. Nothing has been deleted.</span> <button type="button" class="bcc-incomplete-go">Reload</button>';
+      (document.body || document.documentElement).appendChild(bar);
+      bar.querySelector('.bcc-incomplete-go').onclick = function () { try { location.reload(); } catch (e) {} };
+    }
+    bar.classList.add('show');
+    placeOfflineBar(bar);
+  }
+  window.bccRefreshIncompleteBar = refreshIncompleteBar;
 
   /* ---------- live sync (cross-device, near-real-time) ----------
    * Every visible tab polls the delta endpoint (?since=<cursor>) on a short
@@ -1277,11 +1300,32 @@
     } catch (e) {}
     setTimeout(function () { try { livePoll(); } catch (e) {} }, 250);   // after this poll's .finally clears _liveBusy
   }
+  var _bootRetryAt = 0, _bootRetryWait = 15000;   // backoff, so a hard-down server is not hammered
+  /* Set only for the poll that rewinds the cursor to the epoch — the one that genuinely
+     re-delivers the whole tenant and can therefore restore the completeness claim. */
+  var _recoveryPoll = false;
   function livePoll() {
     if (!signedIn || _liveBusy || document.hidden) return;
+    _recoveryPoll = false;
     var since = ''; try { since = localStorage.getItem('bcc-sync-since-v1') || ''; } catch (e) {}
     var ts = since ? new Date(since).getTime() : NaN;
-    if (isNaN(ts)) return; // bootstrap full pull hasn't stamped a cursor yet
+    if (isNaN(ts)) {
+      /* NO CURSOR — which on a cold device means the bootstrap pull FAILED, because a
+         successful one always stamps it. Returning here left the app empty for the entire
+         session with no way back: every list rendering its empty state as a fact about the
+         firm, and reloading the only cure. Rewind to the epoch so this poll becomes the full
+         retry (the same device forceFullPull uses), backing off each time it does not take. */
+      if (!window._bccBootPullFailed) return;   // genuinely nothing to recover from yet
+      var nowB = Date.now();
+      if (nowB < _bootRetryAt) return;
+      _bootRetryAt = nowB + _bootRetryWait;
+      _bootRetryWait = Math.min(_bootRetryWait * 2, 5 * 60 * 1000);
+      try { _origSetItem.call(localStorage, 'bcc-sync-since-v1', new Date(0).toISOString()); } catch (e) { return; }
+      since = new Date(0).toISOString();
+      ts = 0;
+      _recoveryPoll = true;
+      console.info('[bcc-api] retrying the failed initial pull');
+    }
     _liveBusy = true;
     fetch(API_BASE + '/data?since=' + encodeURIComponent(new Date(ts - 60 * 1000).toISOString()))
       .then(function (r) {
@@ -1325,6 +1369,18 @@
           if (minFailedUpd) { var pt = new Date(minFailedUpd).getTime(); pcur = isNaN(pt) ? '' : new Date(pt - 1).toISOString(); }
           if (pcur && pcur > since) _origSetItem.call(localStorage, 'bcc-sync-since-v1', pcur);
         } catch (e) {}
+        /* Restore the completeness claim ONLY after a poll that actually re-delivered
+           everything — i.e. the recovery poll, whose cursor was rewound to the epoch.
+           An ORDINARY clean delta proves the server is reachable and nothing more: on the
+           quota path a cursor IS stamped (clamped below the first failure), so the records
+           that never landed sit BEFORE it and are never offered again. Clearing the flag
+           there would restore the claim over a device that is still missing them. */
+        if (!pollFailed && _recoveryPoll) {
+          window._bccBootPullFailed = false;
+          window._bccBootPullOk = true;
+          _bootRetryWait = 15000;
+          try { if (window.bccRefreshIncompleteBar) window.bccRefreshIncompleteBar(); } catch (e) {}
+        }
         if (changed.length) {
           if (changed.indexOf('bcc-admin-config-v1') >= 0) {
             try { recomputePcPeople(); } catch (e) {}
@@ -1636,6 +1692,30 @@
   window.bccCanEdit = function (appKey, upn) {
     return LEVEL_RANK[window.bccGetAppPermission(appKey, upn)] >= LEVEL_RANK.edit;
   };
+  /* Has the bootstrap pull actually delivered? The POSITIVE fact, not the absence of the
+     negative one: _bccBootPullFailed is undefined while the pull is still in flight, and the
+     lists that ask this render from parse time. Every empty state that says something about
+     the FIRM — "no contacts yet", "no events yet", "0 sessions today", "no to-dos" — has to
+     ask before it speaks, or a failed request is presented to a bookkeeper as their records
+     being gone. (bcc-api.js itself raises a banner too; this is what lets each page word its
+     own list honestly.) */
+  window.bccDataComplete = function () {
+    return !window._bccBootPullFailed && window._bccBootPullOk === true;
+  };
+  /* The write gate. Returns TRUE when the write must not happen, having already told the
+     person why — the same shape as each page's local refuse helper, so it reads the same at
+     every call site. `what` names the thing in their words: "message", "session", "article". */
+  window.bccRefuseIfNoEdit = function (appKey, what) {
+    /* Identity first. bccGetAppPermission answers 'none' for everyone until the principal
+       lands, and refusing every write for the first moment of every page load would tell a
+       legitimate user they are view-only. While it is unknown, let the SERVER decide — it is
+       the real gate. */
+    if (!window.bccUser || !window.bccUser.userDetails) return false;
+    if (window.bccCanEdit(appKey)) return false;
+    var thing = what || 'change';
+    (window.bccNotify || alert)('Your access to this section is view-only, so that ' + thing + ' was not saved. Ask an admin for edit access.', 'warn', 9000);
+    return true;
+  };
   window.bccCurrentAppKey = function () {
     var here = (location.pathname.split('/').pop() || 'index.html').toLowerCase();
     return window.BCC_PAGE_TO_APP[here] || 'home';
@@ -1862,11 +1942,13 @@
          this response, whoever touched it. */
       _pullIssuedAt = Date.now();
       var dataPromise = fetch(dataUrl).then(function (r) {
+        /* ONLY the negative here. The positive — "this device holds what the firm holds" — is
+           not a fact about the response headers; it is a fact about the body having been read
+           and every record having been stored, and it is stamped at the END of that work
+           below. Setting it here meant a body that failed to parse, or an apply loop that
+           threw part-way, still reported a complete pull to the numbering gates and the empty
+           states that ask this before they make a claim about a client. */
         if (!r || !r.ok) window._bccBootPullFailed = true;
-        // ...and the positive fact too. "Not failed" is also true BEFORE the pull has run,
-        // and bccIsAdmin's first-deploy bootstrap needs to know the difference between "the
-        // server said there is no config" and "we have not asked yet".
-        else window._bccBootPullOk = true;
         return r;
       }).catch(function (e) {
         console.warn('[bcc-api] initial pull failed', e);
@@ -1989,6 +2071,9 @@
               if (_pendingStamp) { try { _origSetItem.call(localStorage, ACCESS_STAMP_KEY, _pendingStamp); } catch (e) {} }
             }
           } catch (e) {}
+          /* HERE. The body was read, every item was applied, the prune has run. Only now is
+             it true that an empty family on this device means an empty family at the firm. */
+          if (!pullFailed) window._bccBootPullOk = true;
           if (pullFailed) {
             console.warn('[bcc-api] ' + pullFailed + ' record(s) could not be stored locally (storage full?) — they will be retried');
             /* And say so where it counts. Pages ask _bccBootPullOk before treating an empty
@@ -2001,7 +2086,12 @@
           }
         }
       } catch (e) {
+        /* This wraps READING and APPLYING the body — a parse failure, or a throw part-way
+           through the item loop. Warning to the console and leaving the flags alone meant a
+           half-applied pull still answered "complete" to every guard that asks. */
         console.warn('[bcc-api] initial pull failed', e);
+        window._bccBootPullFailed = true;
+        window._bccBootPullOk = false;
       }
 
       // 2b) One-time purge of OTHER people's email signatures.
@@ -2468,6 +2558,8 @@
          its own action button — the one control the person needs and the only way back to
          work the server would not take. */
       '.bcc-refused{background:#7f1d1d;z-index:59;}' +
+      '.bcc-incomplete{background:#92400e;z-index:58;}' +
+      '.bcc-incomplete .bcc-incomplete-go{margin-left:10px;background:#fff;color:#92400e;border:0;border-radius:6px;padding:4px 10px;font:inherit;font-size:12.5px;font-weight:700;cursor:pointer;min-height:28px;}' +
       '.bcc-refused .bcc-refused-go{margin-left:10px;background:#fff;color:#7f1d1d;border:0;border-radius:6px;padding:4px 10px;font:inherit;font-size:12.5px;font-weight:700;cursor:pointer;min-height:28px;}' +
       '.bcc-refused .bcc-refused-go[disabled]{opacity:.6;cursor:default;}' +
       // ---- Global hardening ----
@@ -3142,11 +3234,21 @@
     /* Two bars can be up at once — offline AND changes the server refused. Stack them, or the
        second covers the first and the person only ever sees one of two things they need to
        know. The offline bar keeps the topbar offset; the refused bar sits under it. */
-    if (bar.id === 'bcc-refused-bar') {
-      var ob = document.getElementById('bcc-offline-bar');
-      if (ob && ob.classList.contains('show')) {
+    /* Up to three bars can be showing — offline, refused changes, incomplete load. Stack them
+       in a fixed order: each sits below the ones ranked above it that are currently up.
+       Without this the last one painted covered the others, and the person saw one of three
+       things they needed to know. */
+    var ORDER = ['bcc-offline-bar', 'bcc-refused-bar', 'bcc-incomplete-bar'];
+    var myIdx = ORDER.indexOf(bar.id);
+    if (myIdx > 0) {
+      var stacked = null;
+      for (var oi = myIdx - 1; oi >= 0; oi--) {
+        var above = document.getElementById(ORDER[oi]);
+        if (above && above.classList.contains('show')) { stacked = above; break; }
+      }
+      if (stacked) {
         try {
-          var r = ob.getBoundingClientRect();
+          var r = stacked.getBoundingClientRect();
           bar.style.top = Math.round(r.bottom) + 'px';
           return;
         } catch (e) {}
@@ -3162,7 +3264,7 @@
     bar.style.top = top + 'px';
   }
   window.addEventListener('resize', function () {
-    ['bcc-offline-bar', 'bcc-refused-bar'].forEach(function (id) {
+    ['bcc-offline-bar', 'bcc-refused-bar', 'bcc-incomplete-bar'].forEach(function (id) {
       var b = document.getElementById(id);
       if (b && b.classList.contains('show')) placeOfflineBar(b);
     });
@@ -3177,13 +3279,17 @@
   window.addEventListener('bcc-auth-ready', refreshOnlineState);
   /* The refused-changes bar is raised from the DURABLE outbox, so a reload — the thing people
      do after "that wasn't saved" — brings it straight back with the work still held. */
-  window.addEventListener('bcc-auth-ready', function () { try { refreshRefusedBar(); } catch (e) {} });
+  window.addEventListener('bcc-auth-ready', function () { try { refreshRefusedBar(); } catch (e) {} try { refreshIncompleteBar(); } catch (e) {} });
+  // The boot pull settles after bcc-auth-ready in some paths, and the live poll can set the
+  // flag at any point in the session — so check again whenever data lands.
+  window.addEventListener('bcc-data-ready', function () { try { refreshIncompleteBar(); } catch (e) {} });
   // Defer the first check until DOM is ready so we can append to <body>.
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () { refreshOnlineState(); try { refreshRefusedBar(); } catch (e) {} });
+    document.addEventListener('DOMContentLoaded', function () { refreshOnlineState(); try { refreshRefusedBar(); } catch (e) {} try { refreshIncompleteBar(); } catch (e) {} });
   } else {
     refreshOnlineState();
     try { refreshRefusedBar(); } catch (e) {}
+    try { refreshIncompleteBar(); } catch (e) {}
   }
 
   /* ---------- Auto-lazy <img> ----------

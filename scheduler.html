@@ -365,7 +365,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var items = itemsOn(d);
     document.getElementById('modalDate').textContent = d.toLocaleDateString([], { weekday:'long', month:'long', day:'numeric', year:'numeric' });
     document.getElementById('dayEvs').innerHTML = items.length === 0
-      ? '<p style="color:var(--muted); font-style:italic; font-size:13px; padding:14px 0;">No sessions or events on this day.</p>'
+      ? ((window.bccDataComplete && !window.bccDataComplete())
+          ? '<p style="color:var(--burgundy); font-size:13px; padding:14px 0;">This device hasn’t finished loading the schedule — this isn’t an empty day. Reload to try again.</p>'
+          : '<p style="color:var(--muted); font-style:italic; font-size:13px; padding:14px 0;">No sessions or events on this day.</p>')
       : items.map(function (it) {
           var t = new Date(it.startAt);
           var time = t.toLocaleTimeString([], { hour:'numeric', minute:'2-digit' });

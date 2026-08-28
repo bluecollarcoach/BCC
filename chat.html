@@ -763,6 +763,12 @@ function send() {
     (window.bccNotify || alert)('Still loading this channel’s history — your message was not sent yet. Try again in a moment.', 'warn', 6000);
     return;
   }
+  /* The TIER gate, which this page never had. localStorage.setItem is hooked into a Cosmos
+     publish, so a view-tier user's message was painted into the thread, audit-logged as sent,
+     refused 403 by the server — and then erased from their own screen by the next poll,
+     because it exists nowhere on the server. They watched their message vanish, and nobody
+     ever received it. Refuse before anything is written, and leave their text in the box. */
+  if (window.bccRefuseIfNoEdit && window.bccRefuseIfNoEdit('chat', 'message')) return;
   const at = Date.now();
   const newMsg = {
     id: 'm' + at + '-' + Math.random().toString(36).slice(2, 6),

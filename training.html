@@ -330,6 +330,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   function getCourse(id) { if (!isCourseKey(id)) return null; try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (_) { return null; } }
   function saveCourse(c) {
+    if (window.bccRefuseIfNoEdit && window.bccRefuseIfNoEdit('training', 'course')) return null;
     c.updatedAt = nowIso();
     if (!c.createdAt) c.createdAt = c.updatedAt;
     if (!isCourseKey(c.id)) c.id = COURSE_PREFIX + uid();
@@ -339,7 +340,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     localStorage.setItem(c.id, JSON.stringify(c));
     return c;
   }
-  function deleteCourse(id) { if (!isCourseKey(id)) return; localStorage.removeItem(id); }
+  function deleteCourse(id) {
+    if (!isCourseKey(id)) return false;
+    if (window.bccRefuseIfNoEdit && window.bccRefuseIfNoEdit('training', 'deletion')) return false;
+    localStorage.removeItem(id);
+    return true;
+  }
 
   function totalMinutes(lessons) {
     return (lessons || []).reduce(function (s, l) { return s + (parseInt(l.durationMin, 10) || 0); }, 0);
@@ -465,7 +471,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (droppedRows) {
       (window.bccNotify || alert)(droppedRows + (droppedRows === 1 ? ' lesson was' : ' lessons were') + ' left out — a lesson needs a title or a video link to be saved.', 'warn', 8000);
     }
-    saveCourse(rec);
+    if (!saveCourse(rec)) return;   // refused — the modal stays open with the lessons in it
     if (window.bccAudit) window.bccAudit(id ? 'course-update' : 'course-create', { key: rec.id, path: '/training.html' });
     if (window.bccNotifySaved) window.bccNotifySaved('Course saved.');
     closeModal();
@@ -474,7 +480,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   document.getElementById('m-delete').addEventListener('click', function () {
     var id = document.getElementById('m-id').value; if (!id) return;
     if (!confirm('Delete this course?')) return;
-    deleteCourse(id);
+    if (!deleteCourse(id)) return;
     if (window.bccAudit) window.bccAudit('course-update', { key: id, path: '/training.html', meta: { action: 'delete' } });
     closeModal();
     renderGrid();

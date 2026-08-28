@@ -3881,7 +3881,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         '<div style="flex:1;min-width:0;">' + taskTitleHtml(t, isOpen, '') +
         (meta ? '<div style="font-size:12px;color:' + (overdue ? 'var(--burgundy)' : 'var(--muted)') + ';padding-left:12px;">' + esc(meta) + '</div>' : '') +
         (isOpen ? taskDetailHtml(t, true) : '') + '</div></div>';
-    }).join('') : '<div style="color:var(--muted);padding:12px 0;">' + (_todoMine && openAll.length ? 'No open to-dos assigned to you for this client.' : 'No open to-dos for this client. 🎉') + '</div>';
+    }).join('') : (bootDataOk()
+      ? '<div style="color:var(--muted);padding:12px 0;">' + (_todoMine && openAll.length ? 'No open to-dos assigned to you for this client.' : 'No open to-dos for this client. 🎉') + '</div>'
+      /* NOT a clear plate. A 🎉 over a list this device never received is the most expensive
+         wrong answer on the Overview — the bookkeeper skips the client for the day. */
+      : '<div style="color:var(--burgundy);padding:12px 0;font-size:12.5px;">This device hasn’t finished loading this client’s to-dos — that is not a count of zero. Reload before relying on it.</div>');
     body.innerHTML = actions +
       '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:4px 0 6px;flex-wrap:wrap;"><div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;">Open to-dos' + (open.length ? ' (' + open.length + (_todoMine && openAll.length !== open.length ? ' of ' + openAll.length : '') + ')' : '') + '</div>' +
       '<div style="display:flex;gap:8px;align-items:center;">' + todoMineToggleHtml('ov_mine') + '<button class="btn btn-ghost" data-ov="tasks" type="button" style="font-size:12px;">Manage tasks →</button></div></div>' +
@@ -4538,7 +4542,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var filterBar = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">' +
       '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;">Tasks' + (active.length ? ' (' + active.length + ')' : '') + '</div>' +
       todoMineToggleHtml('tk_mine') + '</div>';
-    var list = active.length ? active.map(function (t) { return taskRow(t, false); }).join('') : '<div style="color:var(--muted);padding:10px 0;">' + (_todoMine ? 'No tasks assigned to you for ' + esc(companyName(currentRealm)) + '.' : 'No active tasks for ' + esc(companyName(currentRealm)) + '.') + '</div>';
+    var list = active.length ? active.map(function (t) { return taskRow(t, false); }).join('') : (bootDataOk()
+      ? '<div style="color:var(--muted);padding:10px 0;">' + (_todoMine ? 'No tasks assigned to you for ' + esc(companyName(currentRealm)) + '.' : 'No active tasks for ' + esc(companyName(currentRealm)) + '.') + '</div>'
+      : '<div style="color:var(--burgundy);padding:10px 0;font-size:12.5px;">This device hasn’t finished loading ' + esc(companyName(currentRealm)) + '’s tasks — that is not "none". Reload to try again.</div>');
     if (upcoming.length) list += '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 6px;">Upcoming (recurring)</div>' + upcoming.map(function (t) { return taskRow(t, true); }).join('');
     body.innerHTML = add + filterBar + list;
     _taskEditRendered = _taskEdit;
@@ -6567,7 +6573,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       '<button class="btn btn-primary" id="nt_new" type="button">+ New notarization request</button></div>' +
       '<div style="font-size:12.5px;color:var(--muted);margin-bottom:8px;">Request a document be notarized by your team notary on your online-notary platform. The app tracks the request, can email the signer the session link, and files the finished notarized PDF back into <strong>Files</strong>. <em>The notarial act itself is performed by your commissioned notary on the RON platform.</em></div>' +
       '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);margin-bottom:12px;">🔔 Alert on every new request goes to<select id="nt_contact">' + assigneeOpts(notaryContact()) + '</select></div>';
-    var list = reqs.length ? reqs.map(notaryCard).join('') : (_notaryNew ? '' : '<div style="color:var(--muted);padding:10px 0;">No notarization requests yet. Click <strong>+ New notarization request</strong> to start one.</div>');
+    var list = reqs.length ? reqs.map(notaryCard).join('') : (_notaryNew ? '' : (bootDataOk()
+      ? '<div style="color:var(--muted);padding:10px 0;">No notarization requests yet. Click <strong>+ New notarization request</strong> to start one.</div>'
+      : '<div style="color:var(--burgundy);padding:10px 0;font-size:12.5px;">This device hasn’t finished loading the notarization requests — that is not "none". Reload before adding one.</div>'));
     body.innerHTML = head + (_notaryNew ? notaryForm() : '') + list;
     wireNotary(body);
   }

@@ -185,6 +185,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   function getArticle(id) { if (!isKbKey(id)) return null; try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (_) { return null; } }
   function saveArticle(a) {
+    if (window.bccRefuseIfNoEdit && window.bccRefuseIfNoEdit('kb', 'article')) return null;
     a.updatedAt = nowIso();
     if (!a.createdAt) a.createdAt = a.updatedAt;
     if (!isKbKey(a.id)) a.id = KB_PREFIX + uid();
@@ -194,7 +195,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     localStorage.setItem(a.id, JSON.stringify(a));
     return a;
   }
-  function deleteArticle(id) { if (!isKbKey(id)) return; localStorage.removeItem(id); }
+  function deleteArticle(id) {
+    if (!isKbKey(id)) return false;
+    if (window.bccRefuseIfNoEdit && window.bccRefuseIfNoEdit('kb', 'deletion')) return false;
+    localStorage.removeItem(id);
+    return true;
+  }
 
   var currentId = null;
   var qInput, tagFilter, listEl, readerEl;
@@ -259,7 +265,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     readerEl.querySelector('button[data-act=print]').addEventListener('click', function () { window.print(); });
     readerEl.querySelector('button[data-act=del]').addEventListener('click', function () {
       if (!confirm('Delete this article? It\'s gone from cloud sync too.')) return;
-      deleteArticle(id);
+      if (!deleteArticle(id)) return;
       if (window.bccAudit) window.bccAudit('kb-article-delete', { key: id, path: '/kb.html' });
       currentId = null;
       readerEl.innerHTML = '<div class="empty"><div class="big">Pick an article</div></div>';
@@ -296,7 +302,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       rec.tags = document.getElementById('ed-tags').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
       rec.body = document.getElementById('ed-body').value;
       rec.authorUpn = (window.bccUser && window.bccUser.userDetails) || rec.authorUpn || '';
-      saveArticle(rec);
+      if (!saveArticle(rec)) return;   // refused — the editor stays open with the draft in it
       if (window.bccAudit) window.bccAudit(id ? 'kb-article-update' : 'kb-article-create', { key: rec.id, path: '/kb.html' });
       if (window.bccNotifySaved) window.bccNotifySaved('Article saved.');
       openArticle(rec.id);

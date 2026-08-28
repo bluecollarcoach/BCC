@@ -722,7 +722,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (matched.length === 0) {
       emptyEl.hidden = false;
       var firstChild = emptyEl.querySelector('.big');
-      if (firstChild) firstChild.textContent = all.length === 0 ? 'No contacts yet.' : 'No matches.';
+      // "No contacts yet." is a statement about the FIRM's CRM. Only make it when this device
+      // has actually been told what the firm holds.
+      if (firstChild) firstChild.textContent = all.length !== 0 ? 'No matches.'
+        : ((window.bccDataComplete && !window.bccDataComplete())
+            ? 'Couldn’t load your contacts — this device hasn’t finished getting them from the server. Reload to try again.'
+            : 'No contacts yet.');
       return;
     }
     emptyEl.hidden = true;

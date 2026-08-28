@@ -242,6 +242,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function isSessionKey(id) { return typeof id === 'string' && id.indexOf(SESSION_PREFIX) === 0; }
   function getSession(id) { if (!isSessionKey(id)) return null; try { return JSON.parse(localStorage.getItem(id) || 'null'); } catch (e) { return null; } }
   function saveSession(s) {
+    // NULL on refusal, not the object — callers treat a returned record as proof it was
+    // written (they close the modal, toast "Session saved." and re-render from it).
+    if (window.bccRefuseIfNoEdit && window.bccRefuseIfNoEdit('sessions', 'session')) return null;
     s.updatedAt = nowIso();
     if (!s.createdAt) s.createdAt = s.updatedAt;
     if (!isSessionKey(s.id)) s.id = SESSION_PREFIX + uid();
@@ -252,7 +255,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     localStorage.setItem(s.id, JSON.stringify(s));
     return s;
   }
-  function deleteSession(id) { if (!isSessionKey(id)) return; localStorage.removeItem(id); }
+  function deleteSession(id) {
+    if (!isSessionKey(id)) return false;
+    if (window.bccRefuseIfNoEdit && window.bccRefuseIfNoEdit('sessions', 'deletion')) return false;
+    localStorage.removeItem(id);
+    return true;
+  }
 
   function allContacts() {
     var out = [];
@@ -611,7 +619,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     s.status   = document.getElementById('m-status').value;
     if (!s.startAt) { (window.bccNotify || alert)('Start time is required.', 'warn'); return; }
     if (!s.endAt) s.endAt = s.startAt;
-    saveSession(s);
+    // Refused: bccRefuseIfNoEdit has already said why. Nothing is audited, nothing is
+    // announced, and the modal stays open with their work still in it.
+    if (!saveSession(s)) return;
     if (window.bccAudit) window.bccAudit(id ? 'session-update' : 'session-create', { key: s.id, path: '/sessions.html' });
     if (window.bccNotifySaved) window.bccNotifySaved('Session saved.');
     else (window.bccNotify || alert)('Saved.', 'success');
@@ -652,7 +662,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var s = getSession(id);
     var btn = this;
     var finish = function () {
-      deleteSession(id);
+      // A refused delete must not close the modal and repaint as though it happened — the
+      // row would come straight back on the next pull, which reads as the delete not working.
+      if (!deleteSession(id)) return;
       if (window.bccAudit) window.bccAudit('session-delete', { key: id, path: '/sessions.html' });
       closeModal();
       renderWeek();
