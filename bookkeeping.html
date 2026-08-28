@@ -791,7 +791,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         // half-removed) but it now says which ones it could not clear — a surviving Drive
         // OAuth token or mailbox config is worth knowing about on a disconnect.
         if (j && j.leftBehind && j.leftBehind.length) {
-          (window.bccNotify || alert)(name + ' was disconnected, but ' + j.leftBehind.length + ' stored record(s) could not be removed. Tell an admin to check the error log.', 'warn', 12000);
+          /* Name what is still out there. A token that could not be revoked is not "a stored
+             record" — it is live access to the client's books that outlives the disconnect,
+             and it needs revoking by hand in the Intuit portal. */
+          (window.bccNotify || alert)(name + ' was disconnected, but ' + j.leftBehind.length + ' thing(s) could not be cleaned up: '
+            + j.leftBehind.slice(0, 3).join('; ') + (j.leftBehind.length > 3 ? '; …' : '')
+            + (j.tokenRevoked === false ? ' — REVOKE THE QUICKBOOKS TOKEN IN THE INTUIT PORTAL.' : ' Tell an admin to check the error log.'), 'warn', 16000);
         }
         // Drop the company's cached financial-period snapshots locally too.
         /* PER_ only — the SERVER-owned QuickBooks cache, which is what the comment above
@@ -5172,7 +5177,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         var all = document.getElementById('sp_importall');
         if (all) all.onclick = function () { spImport(items.filter(function (x) { return !x.folder; }).map(function (x) { return { id: x.id, name: x.name }; })); };
         var mig = document.getElementById('sp_migrate');
-        if (mig) mig.onclick = function () { spMigrateAll(mig); };
+        if (mig) {
+          mig.onclick = function () { spMigrateAll(mig); };
+          // A run in flight survives this repaint — show it, rather than offering a button
+          // that would start a second one over the same queue.
+          if (_spMigrateRun === currentRealm) { mig.disabled = true; mig.textContent = 'Importing…'; }
+        }
         /* Download, not import: this takes the files OUT of the app as a zip, where "Import"
            copies them IN. Whatever folder you are looking at, and everything under it. */
         var spDl = document.getElementById('sp_dlall');
@@ -5193,8 +5203,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   /* Full migration: walk this client's whole SharePoint tree into Internal files.
      The server does bounded batches and reports what's left, so we loop until it
      says done. Guarded so a batch that imports nothing can't spin forever. */
+  /* Module scope, because loadSharePoint() replaces the whole panel on every folder step: the
+     `btn` and `st` captured below become detached nodes, so the final summary was written into
+     an element nobody is looking at AND the freshly-rendered button came back enabled — a
+     second click then started a parallel import over the same queue. */
+  var _spMigrateRun = null;
   function spMigrateAll(btn) {
     var realmAt = currentRealm;
+    if (_spMigrateRun) {
+      (window.bccNotify || alert)('An import is already running for ' + companyName(_spMigrateRun) + '. Let it finish before starting another.', 'warn', 9000);
+      return;
+    }
+    _spMigrateRun = realmAt;
     var st = document.getElementById('sp_status');
     var total = 0, stall = 0, rounds = 0;
     /* Failures are carried FORWARD as skipIds. The server rebuilds the queue from scratch each
@@ -5204,7 +5224,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        LAST round's failures: a file that failed in round 1 of 12 was named nowhere at all. */
     var skipIds = [], seenFail = {}, failedAll = [], lastResp = null, alreadyBefore = null;
     if (btn) { btn.disabled = true; btn.textContent = 'Importing…'; }
-    function say(t) { if (st && currentRealm === realmAt) st.textContent = t; }
+    // Looked up fresh: the captured node is detached the moment the panel re-renders.
+    function say(t) { var el = document.getElementById('sp_status'); if (el && currentRealm === realmAt) el.textContent = t; }
     function step() {
       return fetch('/api/integrations/sharepoint/' + encodeURIComponent(realmAt) + '/import-all', {
         method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
@@ -5243,8 +5264,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         });
     }
     step().then(function (resp) {
+      _spMigrateRun = null;
       if (!resp || currentRealm !== realmAt) return;
-      if (btn) { btn.disabled = false; btn.textContent = '⬇ Import ALL files for this client'; }
+      var liveBtn = document.getElementById('sp_migrate') || btn;
+      if (liveBtn) { liveBtn.disabled = false; liveBtn.textContent = '⬇ Import ALL files for this client'; }
       var oversized = resp.oversized || [];
       /* Every category, every time — this is the message that has to answer "did it get
          everything?" without anyone counting SharePoint by hand. */
@@ -5277,26 +5300,59 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       }
       if (window.bccNotifySaved) window.bccNotifySaved(total + ' file' + (total === 1 ? '' : 's') + ' brought over from SharePoint.' + (alreadyBefore ? ' (' + alreadyBefore + ' were already there.)' : ''));
     }).catch(function (e) {
-      if (btn) { btn.disabled = false; btn.textContent = '⬇ Import ALL files for this client'; }
+      _spMigrateRun = null;
+      var liveBtn2 = document.getElementById('sp_migrate') || btn;
+      if (liveBtn2) { liveBtn2.disabled = false; liveBtn2.textContent = '⬇ Import ALL files for this client'; }
       say('');
       (window.bccNotify || alert)('Import failed: ' + e.message + (total ? ' — ' + total + ' file' + (total === 1 ? '' : 's') + ' were imported before it stopped.' : ''), 'error', 9000);
     });
   }
+  /* The server takes at most 50 per request (its time ceiling), so a folder button offering
+     "Import 137 files in this folder" has to come back for the rest. It used to send all 137,
+     the server kept the first 50, and the panel reported "Imported 50 files" — the other 87
+     appeared in no count, no error and no toast. Chunked here, accumulating across rounds. */
   function spImport(list) {
     if (!list || !list.length) return;
-    var st = document.getElementById('sp_status'); if (st) st.textContent = 'Importing ' + list.length + ' file' + (list.length === 1 ? '' : 's') + '…';
-    // Send the folder path so the server tags each file by its SharePoint folder
-    // (files themselves land flat in Internal files — no folder tree recreated).
-    fetch('/api/integrations/sharepoint/' + encodeURIComponent(currentRealm) + '/import', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ items: list, path: _spPath }) })
-      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
-      .then(function (resp) {
-        if (!resp || !resp.ok) throw new Error((resp && resp.error) || 'import failed');
-        var failed = (resp.results || []).filter(function (x) { return !x.ok; });
-        if (st) st.textContent = 'Imported ' + resp.imported + ' file' + (resp.imported === 1 ? '' : 's') + ' into Internal files.' + (failed.length ? ' ' + failed.length + ' skipped: ' + failed.map(function (f) { return f.name + ' (' + f.error + ')'; }).join(', ') : '');
-        if (window.bccNotifySaved && resp.imported) window.bccNotifySaved(resp.imported + ' file' + (resp.imported === 1 ? '' : 's') + ' imported from SharePoint.');
-        loadFiles();
-      })
-      .catch(function (e) { if (st) st.textContent = ''; (window.bccNotify || alert)('Import failed: ' + e.message, 'error', 7000); });
+    var realmAt = currentRealm, pathAt = _spPath;
+    var queue = list.slice(), total = list.length;
+    var importedAll = 0, failedAll = [], rounds = 0;
+    var st = document.getElementById('sp_status');
+    var say = function (t) { var el = document.getElementById('sp_status'); if (el && currentRealm === realmAt) el.textContent = t; };
+    say('Importing ' + total + ' file' + (total === 1 ? '' : 's') + '…');
+    function step() {
+      if (!queue.length) return Promise.resolve();
+      // Send the folder path so the server tags each file by its SharePoint folder
+      // (files themselves land flat in Internal files — no folder tree recreated).
+      var chunk = queue.slice(0, 50);
+      return fetch('/api/integrations/sharepoint/' + encodeURIComponent(realmAt) + '/import', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ items: chunk, path: pathAt }) })
+        .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+        .then(function (resp) {
+          if (!resp || !resp.ok) throw new Error((resp && resp.error) || 'import failed');
+          rounds++;
+          importedAll += (resp.imported || 0);
+          (resp.results || []).filter(function (x) { return !x.ok; }).forEach(function (f) { failedAll.push(f); });
+          /* Drop what the server ACCEPTED, not what we sent: an older deployment that caps
+             lower would otherwise leave this looping over files it never took. */
+          var accepted = (typeof resp.accepted === 'number' && resp.accepted > 0) ? resp.accepted : chunk.length;
+          queue = queue.slice(accepted);
+          say('Imported ' + importedAll + ' of ' + total + '…');
+          if (rounds > 200) { queue = []; return; }   // backstop; 200 rounds is 10,000 files
+          return step();
+        });
+    }
+    step().then(function () {
+      if (currentRealm !== realmAt) return;   // they moved on — the toast below would be about nothing they can see
+      say('Imported ' + importedAll + ' of ' + total + ' file' + (total === 1 ? '' : 's') + ' into Internal files.'
+        + (failedAll.length ? ' ' + failedAll.length + ' skipped: ' + failedAll.slice(0, 6).map(function (f) { return f.name + ' (' + f.error + ')'; }).join(', ') + (failedAll.length > 6 ? ', …' : '') : ''));
+      if (failedAll.length) (window.bccNotify || alert)('Imported ' + importedAll + ' of ' + total + ' — ' + failedAll.length + ' could not be imported.', 'warn', 10000);
+      else if (window.bccNotifySaved && importedAll) window.bccNotifySaved(importedAll + ' file' + (importedAll === 1 ? '' : 's') + ' imported from SharePoint.');
+      loadFiles();
+    })
+      .catch(function (e) {
+        say('');
+        (window.bccNotify || alert)('Import failed: ' + e.message + (importedAll ? ' — ' + importedAll + ' of ' + total + ' were imported before it stopped.' : ''), 'error', 9000);
+        if (importedAll) loadFiles();
+      });
   }
 
   /* ---- Shared client drive (Google Drive / OneDrive) ---- */
@@ -6303,8 +6359,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (bkRefuseIfReadOnly()) { renderNotary(); return; }
     localStorage.setItem(NOTARY_CONTACT_KEY, JSON.stringify({ id: NOTARY_CONTACT_KEY, tenantId: 'blue-collar-coach', docType: 'setting', upn: String(upn || '').trim().toLowerCase(), updatedAt: nowIso(), updatedBy: myUpn() }));
   }
+  /* RESOLVES with the outcome instead of swallowing it. /api/notify answers non-2xx for real
+     reasons a bookkeeper needs to hear — 400 when that person's admin row was set inactive or
+     hidden, 502 when the notification could not be saved — and the whole point of the notary
+     panel is that somebody is told. Silently dropping that under "Notarization request
+     created." is how a request sits in the queue for a week with the notary never knowing.
+     (Janice's original report was this exact gap on the assign path.) */
   function notarySendAlert(to, r, isAssignee) {
-    fetch('/api/notify', {
+    return fetch('/api/notify', {
       method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         toUpn: to,
@@ -6312,18 +6374,29 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         body: (r.docName || 'A document') + (r.signerName ? ' · signer ' + r.signerName : '') + (isAssignee ? ' — please set up the online notarization.' : ' has been requested.'),
         url: '/bookkeeping.html', tag: 'notary-' + r.id + '-' + to
       })
-    }).catch(function () {});
+    })
+      .then(function (resp) { return resp.json().catch(function () { return { ok: resp.ok }; }); })
+      .then(function (j) { return { to: to, ok: !!(j && j.ok !== false), why: (j && j.error) || '' }; })
+      .catch(function (e) { return { to: to, ok: false, why: (e && e.message) || 'could not be sent' }; });
   }
-  // Alert the assigned team notary (in-app bell + web push), AND the firm's designated
-  // notary contact so nothing in the queue goes unseen. Skips notifying yourself.
-  // This was missing — assigning a notary set notaryUpn but never notified them
-  // (Janice's original report).
   function notaryAssignNotify(r) {
     var me = String(myUpn() || '').toLowerCase();
     var assignee = String(r.notaryUpn || '').toLowerCase();
     var contact = String(notaryContact() || '').toLowerCase();
-    if (assignee && assignee !== me) notarySendAlert(assignee, r, true);
-    if (contact && contact !== me && contact !== assignee) notarySendAlert(contact, r, false);
+    var jobs = [];
+    if (assignee && assignee !== me) jobs.push(notarySendAlert(assignee, r, true));
+    if (contact && contact !== me && contact !== assignee) jobs.push(notarySendAlert(contact, r, false));
+    if (!jobs.length) return Promise.resolve([]);
+    return Promise.all(jobs).then(function (res) {
+      var bad = res.filter(function (x) { return x && !x.ok; });
+      if (bad.length) {
+        // Named, because "someone wasn't told" is only actionable if you know who.
+        (window.bccNotify || alert)('The request was saved, but ' + bad.map(function (b) {
+          return ((window.bccDisplayName && window.bccDisplayName(b.to)) || b.to) + (b.why ? ' (' + b.why + ')' : '');
+        }).join(' and ') + ' could not be notified — tell them directly.', 'warn', 12000);
+      }
+      return res;
+    });
   }
   function notaryCreate() {
     var docName = (document.getElementById('nt_docname').value || '').trim();

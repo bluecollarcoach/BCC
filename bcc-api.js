@@ -260,6 +260,8 @@
        Re-queues after a failed push deliberately KEEP the original stamp: the write is as
        old as when the user made it, not as old as the last retry. */
     var prevQt = o.items[key] && o.items[key].qt;
+    // No `rf` carried over: this is a NEW write of that key, not the one the server refused,
+    // and it deserves its own attempt.
     o.items[key] = { v: value, t: !!trusted, qt: (typeof prevQt === 'number' && prevQt > 0) ? prevQt : Date.now() };
     outboxWrite(o);
   }
@@ -509,6 +511,11 @@
       if (qAge && (Date.now() - qAge) > PARK_MAX_AGE_MS) {
         park[k] = { v: e.v, t: e.t, pk: qAge }; parkOwner[k] = keyOwner(k) || o.upn || me; return;
       }
+      /* Refused by the SERVER last time (see the settle sweep). Kept — it is the only copy
+         of that work — but not replayed on its own, or every page load re-sends it into the
+         same 403 and re-tells the user about it. bccRetrySync re-queues these deliberately,
+         after somebody has changed the permission that refused them. */
+      if (e.rf) { return; }
       // Untrusted (pre-auth / offline) writes are replayable only for owner-only families.
       // This one genuinely cannot be attributed to anyone, so it is the only real drop.
       if (!e.t && !owned) { drop.push(k); return; }
@@ -1081,7 +1088,29 @@
     // refused (in which case the user has already been told and replaying it forever
     // would just re-tell them). Whatever got re-queued above stays in the outbox so it
     // still survives a reload. This single sweep covers every exit path above.
-    var settledKeys = entries.map(function (e) { return e[0]; }).filter(function (k) { return !pending.has(k); });
+    /* A key the server REFUSED is not settled. It is not in `pending` (the per-key isolation
+       pass blacklists rather than re-queues it), so it used to fall into this sweep and have
+       its durable copy dropped as well — the user gets one toast, her edited text stays on
+       screen, and the write now exists nowhere but this tab. Reloading, which is exactly what
+       someone does after "you don't have permission", loses it for good, and bccRetrySync had
+       nothing left to resend. Keep refused keys in the outbox: they cost one entry each and
+       they are the only copy. */
+    var settledKeys = entries.map(function (e) { return e[0]; })
+      .filter(function (k) { return !pending.has(k) && !permanentlyFailed.has(k); });
+    /* Flag the refused ones where they sit. Keeping them alive in the queue would have the
+       next bootstrap re-send them into the same refusal and re-toast on every page load —
+       the "replayed forever" the old drop was avoiding. Flagged, they are skipped by the
+       replay and picked up only by bccRetrySync, which is what an admin clicks after
+       actually granting the permission. */
+    try {
+      var _refusedNow = entries.map(function (e) { return e[0]; }).filter(function (k) { return permanentlyFailed.has(k); });
+      if (_refusedNow.length) {
+        var _ob = outboxRead();
+        var _touched = false;
+        _refusedNow.forEach(function (k) { if (_ob.items[k]) { _ob.items[k].rf = 1; _touched = true; } });
+        if (_touched) outboxWrite(_ob);
+      }
+    } catch (e) {}
     /* What we actually SENT, after the _rehydrated reconcile above may have swapped in another
        tab's newer value — that reconcile rewrites e[1], so `entries` is the transmitted copy,
        and comparing against `pending` instead would compare with a write that never went. */
@@ -1098,7 +1127,20 @@
   // Manually clear the permanent-failure set (admins call this after granting
   // the right role) and re-trigger a flush.
   window.bccRetrySync = function () {
+    /* Re-seed from the durable outbox before flushing. Clearing the blacklist alone only
+       helped a key that happened to be still in memory — after the reload the person almost
+       certainly did, `pending` is empty and this flushed nothing at all while reporting
+       success. The outbox is where a refused write now lives (see the settle sweep). */
+    var reseeded = 0;
+    try {
+      var ob = outboxRead().items || {};
+      permanentlyFailed.forEach(function (k) {
+        var e = ob[k];
+        if (e && typeof e.v === 'string' && !pending.has(k)) { pending.set(k, e.v); reseeded++; }
+      });
+    } catch (e) {}
     permanentlyFailed.clear();
+    if (reseeded) console.info('[bcc-api] re-queued ' + reseeded + ' previously refused change(s)');
     return flush();
   };
 
@@ -1910,8 +1952,14 @@
       };
       var cachedUsers = null;
       try { var cu = JSON.parse(localStorage.getItem(USERS_CACHE_KEY) || 'null'); if (cu && Array.isArray(cu.users) && cu.users.length) cachedUsers = cu.users; } catch (e) {}
+      /* THROW on a non-2xx. fetch does not reject on a 500, so mapping it to null made a
+         throttled Graph or a lapsed consent indistinguishable from "this firm has no users":
+         on a cold device (no cache) bccPeopleFull stayed undefined and every assignee picker,
+         owner dropdown and name label came up empty with nothing logged, no toast and no
+         event. The catch below now has something to catch. */
       var consumeUsers = function (ur) {
-        if (!ur || !ur.ok) return Promise.resolve(null);
+        if (!ur) throw new Error('no response from the directory');
+        if (!ur.ok) { var e = new Error('directory HTTP ' + ur.status); e.status = ur.status; throw e; }
         return ur.json().then(function (uj) { return (uj.users || []).filter(function (u) { return u && u.displayName; }); });
       };
       try {
@@ -1921,8 +1969,18 @@
             if (live && live.length && JSON.stringify(live) !== JSON.stringify(cachedUsers)) applyUsers(live, true);
           }).catch(function (e) { console.warn('[bcc-api] users refresh failed', e); });
         } else {
-          var live0 = await usersPromise.then(consumeUsers);
-          if (live0 && live0.length) applyUsers(live0, true);
+          /* The COLD path: no cached directory at all, so a failure here is the difference
+             between "empty because that is the truth" and "empty because we could not ask".
+             Say which — an empty picker that explains itself is recoverable; a silent one
+             sends someone hunting for a colleague who is not missing. */
+          try {
+            var live0 = await usersPromise.then(consumeUsers);
+            if (live0 && live0.length) applyUsers(live0, true);
+            else console.warn('[bcc-api] the directory came back empty');
+          } catch (ue) {
+            console.warn('[bcc-api] users pull failed', ue);
+            if (window.bccNotify) window.bccNotify('The staff directory could not be loaded (' + ((ue && ue.message) || 'no response') + '), so name and assignee lists on this page will be empty. Reload to try again.', 'warn', 10000);
+          }
         }
       } catch (e) {
         console.warn('[bcc-api] users response parse failed', e);

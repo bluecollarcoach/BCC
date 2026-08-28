@@ -3516,9 +3516,18 @@ function spPathFor(folderName, sub) {
 // shared drive. This confirms the item's real parent path is under the client's own
 // mapped folder before its bytes are served or imported.
 async function spItemBelongsToClient(access, driveId, itemId, folder) {
+  /* THREE answers, not two: true (it is this client's), false (it demonstrably is not), and
+     null (Graph would not say). A throttle or a blip used to come back as `false`, which the
+     callers turn into "This file does not belong to this client." — a confidentiality-shaped
+     accusation about a file that is perfectly fine. That was survivable while it only affected
+     a single click; the bulk download now makes this call for every file in a tree, three at a
+     time, so one 429 mid-crawl put that message on an arbitrary handful of a client's files
+     and left them out of the archive. Unknown must fail CLOSED (still no bytes) but must say
+     something true. */
   try {
     const r = await fetch('https://graph.microsoft.com/v1.0/drives/' + driveId + '/items/' + encodeURIComponent(itemId) + '?$select=id,parentReference', { headers: { Authorization: 'Bearer ' + access } });
-    if (!r.ok) return false;
+    if (r.status === 404) return false;                 // genuinely not there = not ours
+    if (!r.ok) return null;                             // throttled / unavailable — not a verdict
     const j = await r.json();
     const parentPath = (j.parentReference && j.parentReference.path) || '';
     /* ANCHORED at the drive root, not found anywhere in the path. indexOf matched the marker
@@ -3556,7 +3565,7 @@ async function spItemBelongsToClient(access, driveId, itemId, folder) {
     // whose name merely starts with the same text cannot match, because this compares whole
     // segments rather than a string prefix.
     return true;
-  } catch (_) { return false; }
+  } catch (_) { return null; }   // network failure is not a verdict either
 }
 app.http('sharepoint-list', {
   methods: ['GET'], authLevel: 'anonymous', route: 'integrations/sharepoint/{realmId}',
@@ -3609,7 +3618,9 @@ app.http('sharepoint-download', {
       const folder = await spFolderFor(realmId);
       if (!folder) return { status: 404, jsonBody: { ok: false, error: 'no SharePoint folder mapped to this client' } };
       // realmId access alone doesn't prove itemId belongs to THIS client — verify it.
-      if (!(await spItemBelongsToClient(access, driveId, itemId, folder))) return { status: 403, jsonBody: { ok: false, error: 'This file does not belong to this client.' } };
+      const own = await spItemBelongsToClient(access, driveId, itemId, folder);
+      if (own === false) return { status: 403, jsonBody: { ok: false, error: 'This file does not belong to this client.' } };
+      if (own !== true) return { status: 502, jsonBody: { ok: false, error: 'SharePoint could not confirm this file just now — try again in a moment.' } };
       const uq = new URL(request.url).searchParams;
       /* No longer flattened to underscores: the old sanitiser existed to keep exotic
          characters out of the header, which contentDispositionValue now does properly — so a
@@ -3639,6 +3650,10 @@ app.http('sharepoint-import', {
     const acc = await driveClientAccess(p, realmId, { files: true, write: true }); if (acc.err) return acc.err;
     try {
       const body = await request.json().catch(() => ({}));
+      /* The cap stays — 50 downloads plus 50 blob uploads is already near this function's
+         time ceiling — but what was asked for is now recorded, so the response can say what it
+         did NOT take instead of reporting the truncated count as the whole job. */
+      const requestedCount = Array.isArray(body.items) ? body.items.length : (body.itemId ? 1 : 0);
       const items = Array.isArray(body.items) ? body.items.slice(0, 50) : (body.itemId ? [{ id: body.itemId, name: body.name }] : []);
       if (!items.length) return badRequest('items[] or itemId required');
       // Files land FLAT in the client's internal Files — we don't recreate the
@@ -3661,7 +3676,9 @@ app.http('sharepoint-import', {
         try {
           // realmId access alone doesn't prove this item belongs to THIS client's folder
           // — every item id is addressable across the whole shared SharePoint drive.
-          if (!(await spItemBelongsToClient(access, driveId, it.id, spFolder))) { out.push({ name: it.name, ok: false, error: 'this file does not belong to this client' }); continue; }
+          const owns = await spItemBelongsToClient(access, driveId, it.id, spFolder);
+          if (owns === false) { out.push({ name: it.name, ok: false, error: 'this file does not belong to this client' }); continue; }
+          if (owns !== true) { out.push({ name: it.name, ok: false, error: 'SharePoint could not confirm this file just now — try again' }); continue; }
           const r = await fetch('https://graph.microsoft.com/v1.0/drives/' + driveId + '/items/' + encodeURIComponent(it.id) + '/content', { headers: { Authorization: 'Bearer ' + access } });
           if (!r.ok) { out.push({ name: it.name, ok: false, error: 'download ' + r.status }); continue; }
           const buf = Buffer.from(await r.arrayBuffer());
@@ -3690,7 +3707,15 @@ app.http('sharepoint-import', {
           out.push({ name: it.name, ok: true, id: docId });
         } catch (e) { out.push({ name: it.name, ok: false, error: String(e && e.message || e) }); }
       }
-      return { jsonBody: { ok: true, results: out, imported: out.filter(x => x.ok).length } };
+      /* Say what was REQUESTED as well as what was accepted. The cap below keeps a round
+         inside the function's time ceiling, but the response reported only the 50 it took —
+         so "⬇ Import 137 files in this folder" answered "Imported 50 files" and the other 87
+         were mentioned nowhere at all. The client loops on `remaining`. */
+      return { jsonBody: {
+        ok: true, results: out, imported: out.filter(x => x.ok).length,
+        requested: requestedCount, accepted: items.length,
+        remaining: Math.max(0, requestedCount - items.length)
+      } };
     } catch (e) { context.error('sharepoint-import', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
@@ -6632,17 +6657,34 @@ app.http('qbo-company-update', {
       if (companyPrivateBlocked(doc, p)) return { status: 403, jsonBody: { error: 'no access to this company' } };
 
       if (request.method === 'DELETE') {
-        // Best-effort revoke the refresh token at Intuit so our access truly ends.
+        /* Revoke the refresh token at Intuit, and REPORT whether it worked. The delete two
+           blocks down destroys our only copy of that token, so a revoke that silently did not
+           happen leaves a live credential to the client's books at Intuit that nobody can now
+           revoke, under a clean "Disconnected" — the one outcome an engagement ending cannot
+           afford. Three ways it used to go quiet: the app credentials could not be read (the
+           _readFailed flag only cron-qbo-sync ever consulted), Intuit answered 4xx and nothing
+           looked at the status, or the fetch threw into a console line. */
+        let revoked = null;   // true | false | null (nothing to revoke)
+        let revokeWhy = '';
         try {
           const fields = await getIntegrationFields('qbo');
-          if (fields.clientId && fields.clientSecret && doc.refreshToken) {
-            await fetch('https://developer.api.intuit.com/v2/oauth2/tokens/revoke', {
+          if (fields._readFailed) throw new Error('the QuickBooks app credentials could not be read');
+          if (!doc.refreshToken) { revoked = null; revokeWhy = 'no stored token'; }
+          else if (!fields.clientId || !fields.clientSecret) { revoked = false; revokeWhy = 'the QuickBooks app credentials are not configured'; }
+          else {
+            const rv = await fetch('https://developer.api.intuit.com/v2/oauth2/tokens/revoke', {
               method: 'POST',
               headers: { Authorization: 'Basic ' + Buffer.from(fields.clientId + ':' + fields.clientSecret).toString('base64'), 'Content-Type': 'application/json', Accept: 'application/json' },
               body: JSON.stringify({ token: doc.refreshToken })
             });
+            revoked = rv.ok;
+            if (!rv.ok) revokeWhy = 'Intuit answered ' + rv.status;
           }
-        } catch (e) { context.error('qbo revoke failed (continuing)', e); }
+        } catch (e) {
+          revoked = false;
+          revokeWhy = String((e && e.message) || e);
+          context.error('qbo revoke failed (continuing)', e);
+        }
         // Revoke + delete the per-client SHARED-DRIVE OAuth token (a live credential)
         // so our access truly ends and nothing re-attaches if the realm is reconnected.
         try {
@@ -6667,8 +6709,11 @@ app.http('qbo-company-update', {
           const { resources: pers } = await c.items.query({ query: 'SELECT c.id FROM c WHERE c.tenantId=@t AND c.docType="financial-period" AND c.realmId=@r', parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@r', value: realmId }] }).fetchAll();
           for (const per of pers) { try { await c.item(per.id, BCC_TENANT_ID).delete(); } catch (e) { if (e.code !== 404) leftBehind.push(per.id); } }
         } catch (e) { leftBehind.push('financial-period query'); }
-        if (leftBehind.length) context.error('qbo disconnect ' + realmId + ': could not delete ' + leftBehind.join(', '));
-        return { jsonBody: { ok: true, disconnected: true, realmId, leftBehind } };
+        // A token we could not demonstrably revoke belongs in the same list as a document we
+        // could not delete: both are "still out there after a disconnect".
+        if (revoked === false) leftBehind.push('the QuickBooks token at Intuit was NOT revoked (' + revokeWhy + ') — revoke it in the Intuit developer portal');
+        if (leftBehind.length) context.error('qbo disconnect ' + realmId + ': ' + leftBehind.join(', '));
+        return { jsonBody: { ok: true, disconnected: true, realmId, leftBehind, tokenRevoked: revoked } };
       }
 
       const body = await request.json().catch(() => ({}));
