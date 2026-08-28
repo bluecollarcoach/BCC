@@ -2425,11 +2425,25 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       // A PAST month with no frozenAt did not freeze — almost always a degraded QBO pull.
       // Labelling it "Current month — live from QuickBooks" was simply false, and hiding
       // Refresh removed the only control that would have put it right.
+      /* THREE states, not two. A past month with no frozenAt now has two very different
+         causes, and only one of them is a problem with the client's books:
+           - notSettled: the month ended but is not closed yet, so the server deliberately
+             left it live. Perfectly healthy, and saying "some QuickBooks figures are missing"
+             about it sent the bookkeeper hunting for a fault that does not exist — and
+             steered her to Refresh, which FORCES the freeze and permanently locks in the very
+             unclosed month the server had just protected.
+           - degraded / anything else: the pull really did come back short. */
       var lockNote = d.frozenAt ? ('🔒 Locked in ' + new Date(d.frozenAt).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }))
+        : (d.notSettled ? '🔓 Not locked in yet — this month isn’t closed, so the figures are still live'
         : (d.isPast ? '⚠️ Not locked in — some QuickBooks figures are missing'
-        : (d.frozen === false ? '🔓 Current month — live from QuickBooks' : ''));
+        : (d.frozen === false ? '🔓 Current month — live from QuickBooks' : '')));
       if (st) st.textContent = d.periodLabel + ' · ' + d.method + ' basis' + (lockNote ? ' · ' + lockNote : '') + (d.observationsUpdatedAt ? ' · notes saved' : '') + (_mr.forecast ? ' · forecast ✓' : '');
-      if (rb) rb.style.display = (d.frozenAt || d.isPast) ? '' : 'none'; // a locked-in period, or a past one that failed to lock
+      /* Refresh stays available for a locked-in period (re-pull and re-freeze) and for one
+         that genuinely failed. It is HIDDEN for a not-yet-closed month: pressing it there
+         would lock in books nobody has closed, which is the one thing this whole gate exists
+         to stop, and the person pressing it would have no idea that is what it did. */
+      if (rb) rb.style.display = (d.frozenAt || (d.isPast && !d.notSettled)) ? '' : 'none';
+      if (rb) rb.title = d.frozenAt ? 'Re-pull from QuickBooks and lock in the new figures' : 'Try the QuickBooks pull again';
       mrBtns(false);
     }).catch(function (e) {
       if (stale()) return;   // an error for the PREVIOUS client must not paint into this modal
@@ -3431,10 +3445,27 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     hit = list.find(function (v) { var vt = normName(v.name).split(' ').filter(Boolean); return vt[0] && nt[0] && vt[0] === nt[0] && (vt[1] || '') === (nt[1] || ''); }); if (hit) return hit.id; // first two tokens
     return '';
   }
+  /* SHAPE FIRST, then escaping. The base64 alphabet contains no quote and no angle bracket,
+     so a URL that passes this cannot break out of an attribute at all — the same approach
+     chat.html's safePhoto() takes for message photos. The MIME type is matched exactly rather
+     than merely "starts with", because it is the parameter list after a ';' that carries the
+     attacker-controlled text. Anything that fails is not rendered: an empty preview with a
+     plain explanation, never a broken tag. */
+  function safeScanPreview(u) {
+    var s = String(u || '');
+    return /^data:(image\/(png|jpe?g|gif|webp|bmp|tiff?)|application\/pdf);base64,[A-Za-z0-9+/=]+$/i.test(s) ? s : '';
+  }
   function previewHtml(seed) {
-    var src = seed.preview;
-    if (seed.previewType === 'pdf') return '<embed src="' + src + '" type="application/pdf" style="width:100%;height:560px;border:1px solid var(--chrome-mute);border-radius:8px;" /><div style="margin-top:6px;"><a href="' + src + '" target="_blank" rel="noopener" style="font-size:12px;color:var(--gold-deep);font-weight:600;">Open full size</a></div>';
-    return '<a href="' + src + '" target="_blank" rel="noopener"><img src="' + src + '" alt="scanned receipt" style="width:100%;border:1px solid var(--chrome-mute);border-radius:8px;display:block;" /></a>';
+    var src = safeScanPreview(seed.preview);
+    if (!src) {
+      // Say what happened. A blank pane beside an AI-filled transaction reads as "the receipt
+      // was not read", on the one screen where somebody is about to post to a client's books.
+      return '<div style="padding:12px;background:#fbf6ec;border-radius:8px;font-size:12.5px;color:var(--ink);">The scan was read, but this file could not be previewed here. The figures beside it come from the scan — check them against the original before posting.</div>';
+    }
+    // esc() as well: belt and braces, and it costs nothing on a string that is already
+    // restricted to the base64 alphabet.
+    if (seed.previewType === 'pdf') return '<embed src="' + esc(src) + '" type="application/pdf" style="width:100%;height:560px;border:1px solid var(--chrome-mute);border-radius:8px;" /><div style="margin-top:6px;"><a href="' + esc(src) + '" target="_blank" rel="noopener" style="font-size:12px;color:var(--gold-deep);font-weight:600;">Open full size</a></div>';
+    return '<a href="' + esc(src) + '" target="_blank" rel="noopener"><img src="' + esc(src) + '" alt="scanned receipt" style="width:100%;border:1px solid var(--chrome-mute);border-radius:8px;display:block;" /></a>';
   }
   function createVendorAuto(name, ok, fail) {
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/write', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ entity: 'vendor', op: 'create', fields: { displayName: name } }) })
@@ -3485,7 +3516,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var reader = new FileReader();
     reader.onload = function () {
       var dataUrl = reader.result;
-      var previewType = /pdf/i.test(file.type || '') ? 'pdf' : 'image';
+      /* The BASE type only. file.type is remote on the mail-intake path, and mail clients
+         routinely send `application/pdf; name="Bank Statement Jan.pdf"` — the parameters after
+         the ';' are what carried the quotes into the data URL. */
+      var baseMime = String(file.type || '').split(';')[0].trim().toLowerCase();
+      var previewType = /pdf$/.test(baseMime) ? 'pdf' : 'image';
       var fd = new FormData(); fd.append('file', file); fd.append('realmId', realmAt);   // the PINNED realm — every other guard in this function tests it
       fetch('/api/ai/extract-receipt', { method: 'POST', credentials: 'include', body: fd })
         .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
@@ -8341,7 +8376,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       }
       return r.blob();
     }).then(function (b) {
-      var ty = b.type && b.type !== 'application/octet-stream' ? b.type : (type || b.type || 'application/octet-stream');
+      /* BASE TYPE ONLY, at the source. This value is remote — the download response's
+         Content-Type, which the server passes through verbatim, or the data-att-type attribute
+         the HTML parser has already decoded from &quot; back to a literal quote. Everything
+         downstream of this File inherits it, including FileReader.readAsDataURL, which splices
+         it into a data: URL character for character. Strip the parameter list here so no
+         consumer has to remember to. */
+      var tyRaw = b.type && b.type !== 'application/octet-stream' ? b.type : (type || b.type || 'application/octet-stream');
+      var ty = String(tyRaw).split(';')[0].trim() || 'application/octet-stream';
+      if (!/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i.test(ty)) ty = 'application/octet-stream';
       // A File, not a Blob: scanReceipt and the documents upload both read .name.
       try { return new File([b], name, { type: ty }); }
       catch (e) { try { b.name = name; } catch (e2) {} return b; }

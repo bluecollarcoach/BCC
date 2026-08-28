@@ -1157,19 +1157,86 @@
       permanentlyFailed.forEach(function (k) { want[k] = 1; });
       Object.keys(want).forEach(function (k) {
         var e = ob[k];
-        if (e && typeof e.v === 'string' && !pending.has(k)) { pending.set(k, e.v); reseeded++; }
+        if (!e) return;
+        /* A refused DELETE has v === null, which is a real queued value, not a missing one.
+           Requiring a string skipped exactly those — and the flag was stripped anyway, so the
+           entry became both un-resendable and un-findable: a deletion the person performed,
+           was told did not save, and could never make happen. */
+        if (!pending.has(k) && (typeof e.v === 'string' || e.v === null)) { pending.set(k, e.v); reseeded++; }
         /* Clear the flag as it goes back in: it is a live attempt again, and if it is refused
            a second time the settle sweep re-flags it. Leaving it set would make the replay
            skip it at the next reload even though it is queued. */
-        if (e) { delete e.rf; }
+        delete e.rf;
       });
-      if (reseeded) outboxWrite(_obAll);   // the whole object, so no other field is dropped
+      /* ALWAYS persisted, not only when something was re-queued. `delete e.rf` mutates the
+         cached object either way, so skipping the write left localStorage disagreeing with
+         memory — and the flag would come back at the next reload. */
+      outboxWrite(_obAll);
     } catch (e) {}
     permanentlyFailed.clear();
     if (reseeded) console.info('[bcc-api] re-queued ' + reseeded + ' previously refused change(s)');
-    window._bccLastRetryCount = reseeded;   // so the button that calls this can say what it did
-    return flush().then(function () { return reseeded; }, function () { return reseeded; });
+    /* Report what was SAVED, not what was queued. Counting the re-queue meant the banner
+       could say "5 changes saved" over five that were refused a second time — which is the
+       kind of message that costs more trust than the original failure. */
+    return flush().then(finishRetry, finishRetry);
+    function finishRetry() {
+      var still = bccRefusedCount();
+      var saved = Math.max(0, reseeded - still);
+      window._bccLastRetryCount = saved;
+      refreshRefusedBar();
+      return { requeued: reseeded, saved: saved, stillRefused: still };
+    }
   };
+  /* How many of the user's changes the server has refused and we are still holding. Read from
+     the DURABLE outbox, so it survives a reload — which is when somebody comes back to this. */
+  function bccRefusedCount() {
+    try {
+      var it = outboxRead().items || {};
+      return Object.keys(it).filter(function (k) { return it[k] && it[k].rf; }).length;
+    } catch (e) { return 0; }
+  }
+  window.bccRefusedCount = bccRefusedCount;
+  /* THE CALLER. A pinned bar, because this has to survive the reload the person almost
+     certainly does and be there when an admin finally grants the access that was missing —
+     a toast that vanished in eight seconds could never do that job. Same placement machinery
+     as the offline bar, so it sits under the topbar rather than over the only navigation. */
+  var _refusedBusy = false;
+  function refreshRefusedBar() {
+    if (!document.body) return;
+    var n = bccRefusedCount();
+    var bar = document.getElementById('bcc-refused-bar');
+    if (!n) { if (bar) bar.classList.remove('show'); return; }
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'bcc-refused-bar';
+      bar.className = 'bcc-offline bcc-refused';
+      bar.innerHTML = '<span class="bcc-refused-msg"></span> <button type="button" class="bcc-refused-go">Try saving them again</button>';
+      (document.body || document.documentElement).appendChild(bar);
+      bar.querySelector('.bcc-refused-go').onclick = function () {
+        if (_refusedBusy) return;
+        _refusedBusy = true;
+        var btn = bar.querySelector('.bcc-refused-go');
+        btn.disabled = true; btn.textContent = 'Trying…';
+        window.bccRetrySync().then(function (r) {
+          _refusedBusy = false;
+          btn.disabled = false; btn.textContent = 'Try saving them again';
+          if (r && r.saved) {
+            if (window.bccNotify) window.bccNotify(r.saved + ' change' + (r.saved === 1 ? '' : 's') + ' saved.', 'success', 6000);
+          } else if (window.bccNotify) {
+            window.bccNotify('Still not saved — the server is still refusing those changes. Ask an admin to check your access, then try again. Nothing has been lost.', 'warn', 12000);
+          }
+        }, function () {
+          _refusedBusy = false;
+          btn.disabled = false; btn.textContent = 'Try saving them again';
+        });
+      };
+    }
+    bar.querySelector('.bcc-refused-msg').textContent =
+      '⚠ ' + n + ' change' + (n === 1 ? '' : 's') + ' could not be saved — ' + (n === 1 ? 'it is' : 'they are') + ' still here on this device, nothing has been lost.';
+    bar.classList.add('show');
+    placeOfflineBar(bar);
+  }
+  window.bccRefreshRefusedBar = refreshRefusedBar;
 
   /* ---------- live sync (cross-device, near-real-time) ----------
    * Every visible tab polls the delta endpoint (?since=<cursor>) on a short
@@ -1266,7 +1333,15 @@
           }
           window.dispatchEvent(new CustomEvent('bcc-data-ready', { detail: { keys: changed, live: true } }));
         }
-        if (pollFailed) console.warn('[bcc-api] ' + pollFailed + ' live update(s) could not be stored locally (storage full?) — they will be retried');
+        if (pollFailed) {
+          console.warn('[bcc-api] ' + pollFailed + ' live update(s) could not be stored locally (storage full?) — they will be retried');
+          /* Same withdrawal as the boot pull's. What landed is still applied; what is
+             withdrawn is only the CLAIM that this device holds the whole picture — which is
+             what the payroll/pay-app numbering gates and the "not loaded" empty states ask
+             before they speak. The cursor is clamped below the first failure, so this repeats
+             every cycle while storage is full: it is a state, not a blip. */
+          window._bccBootPullFailed = true;
+        }
       })
       .catch(function (e) {
         /* Say it ONCE, and say the right thing. A 401 is the routine mid-day session
@@ -2389,6 +2464,12 @@
       // ---- Offline banner ----
       '.bcc-offline{position:fixed;top:0;left:0;right:0;z-index:60;background:#a16207;color:#fff;padding:8px 14px;font-size:13px;font-weight:700;text-align:center;display:none;}' +
       '.bcc-offline.show{display:block;}' +
+      /* The refused-changes bar sits just under the offline one when both are up, and carries
+         its own action button — the one control the person needs and the only way back to
+         work the server would not take. */
+      '.bcc-refused{background:#7f1d1d;z-index:59;}' +
+      '.bcc-refused .bcc-refused-go{margin-left:10px;background:#fff;color:#7f1d1d;border:0;border-radius:6px;padding:4px 10px;font:inherit;font-size:12.5px;font-weight:700;cursor:pointer;min-height:28px;}' +
+      '.bcc-refused .bcc-refused-go[disabled]{opacity:.6;cursor:default;}' +
       // ---- Global hardening ----
       // Stop accidental horizontal scroll on phones (a single too-wide
       // image or table can drag the whole page sideways).
@@ -2798,9 +2879,11 @@
         window.bccNotify(
           (ev.detail && ev.detail.transient)
             ? ('Saving is taking a moment (error ' + status + ') — your change is still queued and will retry automatically.')
-            : ('That change wasn’t saved (error ' + status + ') — please try again, and let an admin know if it keeps happening.'),
-          'warn', 8000);
+            : ('That change wasn’t saved (error ' + status + ') — it is still here on this device. Use the bar at the top of the page to try again once an admin has checked your access.'),
+          'warn', 9000);
       }
+      // The toast is gone in nine seconds; the bar is what is still there tomorrow.
+      try { refreshRefusedBar(); } catch (e) {}
     }
   });
 
@@ -3056,6 +3139,19 @@
     bar = bar || document.getElementById('bcc-offline-bar');
     if (!bar) return;
     var top = 0;
+    /* Two bars can be up at once — offline AND changes the server refused. Stack them, or the
+       second covers the first and the person only ever sees one of two things they need to
+       know. The offline bar keeps the topbar offset; the refused bar sits under it. */
+    if (bar.id === 'bcc-refused-bar') {
+      var ob = document.getElementById('bcc-offline-bar');
+      if (ob && ob.classList.contains('show')) {
+        try {
+          var r = ob.getBoundingClientRect();
+          bar.style.top = Math.round(r.bottom) + 'px';
+          return;
+        } catch (e) {}
+      }
+    }
     try {
       var tb = document.querySelector('header.topbar');
       if (tb) {
@@ -3066,8 +3162,10 @@
     bar.style.top = top + 'px';
   }
   window.addEventListener('resize', function () {
-    var b = document.getElementById('bcc-offline-bar');
-    if (b && b.classList.contains('show')) placeOfflineBar(b);
+    ['bcc-offline-bar', 'bcc-refused-bar'].forEach(function (id) {
+      var b = document.getElementById(id);
+      if (b && b.classList.contains('show')) placeOfflineBar(b);
+    });
   });
   window.addEventListener('online',  refreshOnlineState);
   window.addEventListener('offline', refreshOnlineState);
@@ -3077,11 +3175,15 @@
      their time log "stays on this device only". bcc-auth-ready is dispatched at the end of
      every bootstrap, including the unknown-verdict one. */
   window.addEventListener('bcc-auth-ready', refreshOnlineState);
+  /* The refused-changes bar is raised from the DURABLE outbox, so a reload — the thing people
+     do after "that wasn't saved" — brings it straight back with the work still held. */
+  window.addEventListener('bcc-auth-ready', function () { try { refreshRefusedBar(); } catch (e) {} });
   // Defer the first check until DOM is ready so we can append to <body>.
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', refreshOnlineState);
+    document.addEventListener('DOMContentLoaded', function () { refreshOnlineState(); try { refreshRefusedBar(); } catch (e) {} });
   } else {
     refreshOnlineState();
+    try { refreshRefusedBar(); } catch (e) {}
   }
 
   /* ---------- Auto-lazy <img> ----------

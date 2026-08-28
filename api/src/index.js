@@ -8506,7 +8506,12 @@ async function periodSettled(realmId, period) {
       .then(r => r.resource)
       .catch(e => { if (e && (e.code === 404 || e.statusCode === 404)) return null; throw e; });
     const steps = (d && d.data && d.data.steps) || {};
-    return !!steps.lock;
+    /* .done, not the object. Each step is stored as { done, note } — the browser reads it as
+       `_close.steps[s.key] && _close.steps[s.key].done` — and an object is always truthy, so
+       typing a note against "Confirm the books are closed" (even one saying they are NOT)
+       read as closed and froze the report against unclosed books. */
+    const lock = steps.lock;
+    return !!(lock && (lock === true || lock.done));
   } catch (e) {
     return false;   // could not tell -> do not lock anything in
   }
@@ -8743,10 +8748,15 @@ app.http('qbo-monthly-report', {
       // last few hours of a US business's month would already read as "past" server-side
       // and could freeze a snapshot missing that day's closing entries.
       const isPast = period < currentPeriodInBusinessTz();
+      // Published to the client so it can tell "not locked in because the month is not
+      // finished" from "not locked in because figures are missing" — two very different
+      // sentences to put on a client-facing report.
+      let notSettled = false;
       /* SEPARATE from isPast. isPast decides what to SERVE (and drives the Refresh button);
          this decides what may be LOCKED IN, and locking in a month nobody has closed yet is
          how a client gets a report off unclosed books. */
       const mayFreeze = isPast && (wantRefresh || await periodSettled(realmId, period));
+      notSettled = isPast && !mayFreeze;
       let [saved, goals] = await Promise.all([
         c.item(docId(period), BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; }),
         getReportGoals()
@@ -8855,6 +8865,11 @@ app.http('qbo-monthly-report', {
       // pull) was labelled "Current month — live from QuickBooks" and had its Refresh button
       // hidden — the one control that would have fixed it.
       data.isPast = isPast;
+      /* THE THIRD STATE. "Past and not frozen" used to mean exactly one thing — a degraded
+         QuickBooks pull — and the client says so. Now it can also mean "the month is finished
+         on the calendar but the books are not closed, so nothing is locked in yet", which is
+         correct and expected and must not be reported as missing figures. */
+      data.notSettled = !!notSettled && !data.degraded;
       return { jsonBody: data };
     } catch (e) {
       context.error('qbo-monthly-report error', e);
