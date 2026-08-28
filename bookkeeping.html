@@ -1611,6 +1611,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   /* ===== QuickBooks live KPIs + reports ===== */
   var qboActiveReport = null;
   var _qboReportRealm = null; // which client the report output currently belongs to
+  /* Generation counters, one per panel. The realm guard only catches a CLIENT switch; these
+     catch the far commoner race — a second request for the same client, fired by changing the
+     basis, the period, or the report type while the first is still running. Only the newest
+     request may paint, whichever order the responses come back in. Same device admin.html
+     uses, and for the same reason. */
+  var _qboReportGen = 0, _qboKpiGen = 0;
   // Cents matter on a financial statement. Rounding each cell to whole dollars while the
   // footer total was accumulated at full precision meant the column and its total were
   // computed differently and visibly disagreed — and the same statement in the monthly
@@ -2013,10 +2019,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // reported roughly 2.4x the runway that the client's own monthly report prints for the
     // same company — two "Months of cash" figures, both from us, disagreeing. dashboard.html
     // and assembleMonthlyReport both already use 3.
+    var myGen = ++_qboKpiGen;   // qboRefresh re-fires this on the same events as the report
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/kpis?method=' + rg.method + '&asOf=' + rg.to + '&burnMonths=3', { credentials: 'include' })
       .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
       .then(function (resp) {
-        if (currentRealm !== realmAt) return; // user switched clients while this KPI pull was in flight
+        if (myGen !== _qboKpiGen || currentRealm !== realmAt) return; // superseded, or they switched clients
         var k = resp.kpis || {};
         // Monthly trend series from the synced history (oldest→newest).
         // Burn = operating expenses (overhead) only, matching the KPI calc — COGS excluded.
@@ -2037,9 +2044,24 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           kpiTile('Net margin', k.netMargin == null ? '—' : (k.netMargin * 100).toFixed(1) + '%', 'trailing ' + resp.burnMonths + ' mo', kpiTone('netMargin', k.netMargin), sparkline(sMargin, { labels: L, fmt: fPct }));
         document.getElementById('qboKpiNote').textContent = 'As of ' + resp.asOf + ' · ' + resp.method + ' basis · trend = last 12 synced months · monthly overhead ' + money2(k.monthlyBurn) + ' (avg of ' + resp.burnMonths + ' mo, COGS excluded).';
       })
-      .catch(function (e) { if (currentRealm !== realmAt) return; tiles.innerHTML = ''; document.getElementById('qboKpiNote').innerHTML = '<span style="color:var(--burgundy);">' + esc(qboFriendly(e && e.message)) + '</span>'; });
+      .catch(function (e) { if (myGen !== _qboKpiGen || currentRealm !== realmAt) return; tiles.innerHTML = ''; document.getElementById('qboKpiNote').innerHTML = '<span style="color:var(--burgundy);">' + esc(qboFriendly(e && e.message)) + '</span>'; });
   }
   function qboRefresh() { if (!currentRealm) return; loadQboKpis(); if (qboActiveReport) loadQboReport(qboActiveReport, null); }
+  /* What this report actually IS, printed on the report. Bookkeepers read these figures to
+     the client, and a P&L is a different document on a cash basis than an accrual one. */
+  function reportStamp(resp) {
+    var d = (resp && resp.data) || {};
+    var rg = d.range || {};
+    var bits = [];
+    if (rg.from) bits.push(rg.from + ' – ' + rg.to);
+    else if (rg.asOf) bits.push('as of ' + rg.asOf);
+    // The server stamps the basis INSIDE data.range (see the /report handler), not at the top
+    // level — reading resp.method would have printed a range with no basis on every report.
+    var m = rg.method || (resp && resp.method) || d.method;
+    if (m) bits.push(String(m).toLowerCase() === 'cash' ? 'Cash basis' : 'Accrual basis');
+    if (!bits.length) return '';
+    return '<div style="font-size:12px;color:var(--muted);margin:0 0 8px;">' + esc(bits.join(' · ')) + '</div>';
+  }
   function renderReport(resp, drillable) {
     var d = (resp && resp.data) || {};
     if (d.kind === 'list') {
@@ -2047,7 +2069,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var cols = Object.keys(d.items[0]).filter(function (k) { return k !== 'id'; });
       var head = '<tr>' + cols.map(function (k) { return '<th' + ((k === 'balance' || k === 'total') ? ' class="num"' : '') + '>' + esc(k) + '</th>'; }).join('') + (d.editable ? '<th></th>' : '') + '</tr>';
       var bodyL = d.items.map(function (it) { return '<tr>' + cols.map(function (k) { var v = it[k]; var num = (k === 'balance' || k === 'total'); return '<td' + (num ? ' class="num"' : '') + '>' + (num ? money2(v) : (v === true ? 'yes' : v === false ? 'no' : esc(v == null ? '' : v))) + '</td>'; }).join('') + (d.editable ? ('<td style="text-align:right;">' + (it.id ? '<button class="btn btn-ghost" data-txedit="' + esc(it.id) + '" type="button" style="font-size:11px;min-height:26px;">Edit</button>' : '') + '</td>') : '') + '</tr>'; }).join('');
-      return '<table><thead>' + head + '</thead><tbody>' + bodyL + '</tbody></table>';
+      return reportStamp(resp) + '<table><thead>' + head + '</thead><tbody>' + bodyL + '</tbody></table>';
     }
     var cc = d.columns || [];
     if (!(d.rows || []).length) return '<div style="color:var(--muted);padding:10px;">No data in this report' + (d.range ? ' for ' + esc(d.range.from ? (d.range.from + ' – ' + d.range.to) : ('as of ' + d.range.asOf)) : '') + '.</div>';
@@ -2076,7 +2098,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var pads = ''; for (var k = (row.cells || []).length; k < cc.length - 1; k++) pads += '<td' + (moneyCol[k + 1] ? ' class="num"' : '') + '></td>';
       return '<tr' + drill + (canDrill ? ' style="cursor:pointer;" title="See the transactions behind this line"' : '') + '><td style="' + style + '">' + esc(row.label) + (canDrill ? ' ›' : '') + '</td>' + cells + pads + '</tr>';
     }).join('');
-    return '<table><thead>' + head2 + '</thead><tbody>' + body + '</tbody></table>';
+    return reportStamp(resp) + '<table><thead>' + head2 + '</thead><tbody>' + body + '</tbody></table>';
   }
   // Default the 1099 year to the PRIOR calendar year during Jan–Mar (filing season), else current.
   var _report1099Year = (function () { var d = new Date(); return String(d.getMonth() <= 2 ? d.getFullYear() - 1 : d.getFullYear()); })();
@@ -2093,15 +2115,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var out = document.getElementById('qboReportOut');
     out.innerHTML = '<div style="color:var(--muted);padding:10px;">Loading ' + esc(type) + '…</div>';
     var realmAt = currentRealm; // realm-race guard — some reports (1099, for-review) can take many seconds
+    var myGen = ++_qboReportGen;
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/report?' + q, { credentials: 'include' })
       .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
       .then(function (resp) {
-        if (currentRealm !== realmAt) return; // user switched clients while this report was in flight
+        if (myGen !== _qboReportGen || currentRealm !== realmAt) return; // superseded, or they switched clients
         if (resp && resp.data && resp.data.kind === 'for-review') { out.innerHTML = renderForReview(resp.data); wireForReview(out); }
         else if (resp && resp.data && resp.data.kind === 'vendors-1099') { out.innerHTML = renderVendors1099(resp.data); var ys = out.querySelector('#v1099_year'); if (ys) ys.onchange = function () { _report1099Year = ys.value; loadQboReport('vendors-1099'); }; }
         else { out.innerHTML = renderReport(resp); wireTxEdit(out, resp.data); }
       })
-      .catch(function (e) { if (currentRealm !== realmAt) return; out.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:10px;font-size:13px;">' + esc(qboFriendly(e && e.message)) + '</div>'; });
+      // Also generation-guarded: a stale rejection landing last would pin an error box over
+      // a report that had already rendered correctly.
+      .catch(function (e) { if (myGen !== _qboReportGen || currentRealm !== realmAt) return; out.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:10px;font-size:13px;">' + esc(qboFriendly(e && e.message)) + '</div>'; });
   }
   // ===== "For review" — transactions sitting in Uncategorized / Ask-My-Accountant accounts =====
   function forReviewEntity(txnType) {
@@ -5337,7 +5362,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       if (!queue.length) return Promise.resolve();
       // Send the folder path so the server tags each file by its SharePoint folder
       // (files themselves land flat in Internal files — no folder tree recreated).
-      var chunk = queue.slice(0, 50);
+      var chunk = queue.slice(0, 20);   // matches the server's cap; a bigger ask is silently truncated
       return fetch('/api/integrations/sharepoint/' + encodeURIComponent(realmAt) + '/import', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ items: chunk, path: pathAt }) })
         .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
         .then(function (resp) {
@@ -5367,8 +5392,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     })
       .catch(function (e) {
         say('');
-        (window.bccNotify || alert)('Import failed: ' + e.message + (importedAll ? ' — ' + importedAll + ' of ' + total + ' were imported before it stopped.' : ''), 'error', 9000);
-        if (importedAll) loadFiles();
+        /* Named, like the bulk import's — an unnamed "import failed" lands in whatever
+           workspace they moved to and reads as being about the client on screen. And the
+           list is refreshed either way: a chunk can die of the function's time ceiling
+           part-way through, so "0 imported" is what we know, not what happened, and
+           re-importing on that belief is how files get duplicated. */
+        var whose = (currentRealm === realmAt) ? '' : (' for ' + companyName(realmAt));
+        (window.bccNotify || alert)('Import' + whose + ' failed: ' + e.message
+          + (importedAll ? ' — ' + importedAll + ' of ' + total + ' were imported before it stopped.'
+                         : ' Some files may still have been imported — check the list before trying again.'), 'error', 12000);
+        if (currentRealm === realmAt) loadFiles();
       });
   }
 
@@ -7730,7 +7763,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         '<button class="btn btn-ghost" data-cpr-del="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;">Delete</button></td></tr>';
     }).join('') + '</tbody></table>') : (q
       ? '<div style="color:var(--muted);padding:10px 0;">No payroll reports match &ldquo;' + esc(_cprSearch) + '&rdquo;.</div>'
-      : '<div style="color:var(--muted);padding:10px 0;">No payroll reports yet. Click <strong>+ New payroll report</strong> to create one.</div>');
+      : (cprLoadOk()
+        ? '<div style="color:var(--muted);padding:10px 0;">No payroll reports yet. Click <strong>+ New payroll report</strong> to create one.</div>'
+        /* NOT "none yet". This device has not been told what the firm holds, so an empty list
+           is a statement about the request, not about the client — and the numbering below
+           is computed from this same set. */
+        : '<div style="background:#f7ecec;border:1px solid #e3b4b4;border-radius:8px;padding:10px 12px;color:#6a1c1c;font-size:12.5px;">'
+          + '<strong>This client’s certified payrolls could not be loaded.</strong> Nothing is missing — this device has not finished '
+          + 'getting them from the server. Reload the page before adding a report, so the next payroll number continues the job instead of restarting at&nbsp;1.</div>'));
     body.innerHTML = head + cprNotesBox('', 'Notes for ' + companyName(currentRealm) + '’s certified payroll') + list;
     cprNotesWire('');
     document.getElementById('cpr_new').onclick = cprNew;
@@ -7897,7 +7937,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     if (st) st.textContent = '';
   }
+  /* Has this device actually been told what certified payrolls exist? Require the POSITIVE
+     fact, exactly as the Sessions import does — _bccBootPullFailed is undefined while the
+     pull is still in flight, and this button is live from parse time. Everything downstream
+     (the empty state, cprNextNo's max(), the number frozen onto a filed form) is only as
+     true as this. */
+  function cprLoadOk() { return !window._bccBootPullFailed && window._bccBootPullOk === true; }
   function cprNew() {
+    if (!cprLoadOk()) {
+      (window.bccNotify || alert)('This device hasn’t finished loading ' + companyName(currentRealm) + '’s existing payroll reports yet. '
+        + 'Starting one now would number it #1 and duplicate a payroll number already filed for this job. Reload the page and try again.', 'warn', 12000);
+      return;
+    }
     var info = {}; try { info = JSON.parse(localStorage.getItem('bcc-client-info-' + currentRealm)) || {}; } catch (e) {}
     // No job is chosen yet, so this is the client-wide next number; it is re-scoped to the
     // job the moment one is entered (see cprJobAutofill).
@@ -7924,6 +7975,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // dates, daily hours, gross, deductions) for the new pay period. (Jenna's ask.)
   function cprDuplicate(id) {
     if (bkRefuseIfReadOnly()) return;
+    if (!cprLoadOk()) {
+      (window.bccNotify || alert)('This device hasn’t finished loading ' + companyName(currentRealm) + '’s existing payroll reports yet, so the copy would take a payroll number already in use. Reload the page and try again.', 'warn', 12000);
+      return;
+    }
     var src; try { src = JSON.parse(localStorage.getItem(id)); } catch (e) {} if (!src) return;
     var d = JSON.parse(JSON.stringify(src));
     // Continues the SOURCE report's job, so it takes that job's next number.
@@ -9454,6 +9509,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var inp = document.querySelector('[data-pf="appNo"]'); if (inp) inp.value = no;
   }
   function payappNew(carryFromId) {
+    if (!cprLoadOk()) {
+      (window.bccNotify || alert)('This device hasn’t finished loading ' + companyName(currentRealm) + '’s existing pay applications yet. '
+        + 'Starting one now would number it #1 and repeat an application number already sent to the owner. Reload the page and try again.', 'warn', 12000);
+      return;
+    }
     var info = {}; try { info = JSON.parse(localStorage.getItem('bcc-client-info-' + currentRealm)) || {}; } catch (e) {}
     var prior = null;
     if (carryFromId) { try { prior = JSON.parse(localStorage.getItem(carryFromId)); } catch (e) {} }
@@ -9529,7 +9589,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         '<button class="btn btn-ghost" data-pa-next="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;" title="Start the next application, carrying this schedule of values forward">Next app →</button> ' +
         '<button class="btn btn-ghost" data-pa-print="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;">Print</button> ' +
         '<button class="btn btn-ghost" data-pa-del="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;">Delete</button></td></tr>';
-    }).join('') + '</tbody></table>') : '<div style="color:var(--muted);padding:10px 0;">No pay applications yet. Click <strong>+ New pay application</strong> to create one.</div>';
+    }).join('') + '</tbody></table>') : (cprLoadOk()
+      ? '<div style="color:var(--muted);padding:10px 0;">No pay applications yet. Click <strong>+ New pay application</strong> to create one.</div>'
+      : '<div style="background:#f7ecec;border:1px solid #e3b4b4;border-radius:8px;padding:10px 12px;color:#6a1c1c;font-size:12.5px;">'
+        + '<strong>This client’s pay applications could not be loaded.</strong> Nothing is missing — this device has not finished getting them '
+        + 'from the server. Reload before adding one, so the next application number continues the contract instead of restarting at&nbsp;1.</div>');
     body.innerHTML = head + list;
     document.getElementById('payapp_new').onclick = function () { payappNew(null); };
     body.querySelectorAll('[data-pa-open]').forEach(function (b) { b.onclick = function () { payappEditingId = b.getAttribute('data-pa-open'); try { payappDraft = JSON.parse(localStorage.getItem(payappEditingId)); } catch (e) { payappDraft = null; } if (!payappDraft) { payappEditingId = null; return; } if (!payappDraft.lines) payappDraft.lines = [blankPayLine()]; if (!payappDraft.changeOrderRows) payappDraft.changeOrderRows = []; renderPayApp(); }; });

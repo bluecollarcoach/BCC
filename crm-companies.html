@@ -789,6 +789,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
 
   /* ===== Detail render ===== */
   function renderDetail(id) {
+    /* A deliberate repaint makes the pane authoritative again. Without this the flag set by
+       a single keystroke never cleared, live refresh stopped for the life of the page, and
+       Save then reverted whatever a colleague had changed in the meantime. */
+    _coDirty = false;
     var c = getCompany(id);
     var el = document.getElementById('detailMode');
     if (!c) {
@@ -1061,7 +1065,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   var _coDirty = false;
   document.addEventListener('input', function (ev) {
     var pane = document.getElementById('detailMode');
-    if (pane && pane.contains(ev.target)) _coDirty = true;
+    if (!pane || !pane.contains(ev.target)) return;
+    /* These two persist on change and never repaint from the DOM, so marking them dirty only
+       latched the flag and killed live refresh — the same exclusion, and the same reason, as
+       crm.html's twin. */
+    var tid = ev.target && ev.target.id;
+    if (tid === 'd-industry' || tid === 'd-size') return;
+    _coDirty = true;
   }, true);
   window.addEventListener('bcc-data-ready', function () {
     var id = getParam('id');

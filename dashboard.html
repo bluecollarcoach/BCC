@@ -672,7 +672,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         if (savedPull) { if (window.bccNotifySaved) window.bccNotifySaved('Financials pulled from QuickBooks.'); }
         else (window.bccNotify || function () {})('Pulled the figures from QuickBooks, but they are NOT saved yet — this client’s plan is still loading. They will save once it lands; if they vanish, press Pull again.', 'warn', 11000);
       })
-      .catch(function (){ if (current === clientAt) (window.bccNotify||alert)('Could not reach QuickBooks.', 'error'); })
+      .catch(function (e){
+        /* `idAt`, the pin the success handler uses — this read `clientAt`, which exists
+           nowhere, so it threw before it could speak and every failure was silent. Any throw
+           from the success handler above lands here too, which is why it names the figures
+           rather than only the connection. */
+        if (currentId !== idAt) return;
+        (window.bccNotify||alert)('Could not reach QuickBooks (' + ((e && e.message) || 'connection lost') + ') — the figures on screen were NOT updated.', 'error', 9000);
+      })
       .finally(function (){ pulling = false; btn.textContent = old; updatePullState(); });
   }
 

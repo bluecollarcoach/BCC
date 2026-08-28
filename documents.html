@@ -626,9 +626,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           // 404 = nothing server-side to remove (metadata-only row) or the
           // endpoint isn't deployed yet; the local-only delete still stands.
           .then(function (r) { return (r.ok || r.status === 404) ? null : r.status; })
-          // Network/offline error: same local-first fallback as the rest of the
-          // app — the local removal stands and gets audited.
-          .catch(function () { return null; })
+          /* NOT the success sentinel. The request never reached the server, so nothing was
+             deleted — and this is the one action in the app whose confirm promises the file is
+             gone for good. Put the row back and say so, rather than auditing a destruction
+             that did not happen. */
+          .catch(function () { return 'network'; })
           .then(function (refusedStatus) {
             if (refusedStatus === null) {
               if (window.bccAudit) window.bccAudit('document-delete', { key: doc.id, path: '/documents.html' });
@@ -636,6 +638,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             }
             restoreDoc(doc);
             renderList();
+            if (refusedStatus === 'network') {
+              (window.bccNotify || alert)('That delete never reached the server, so "' + doc.name + '" was NOT deleted — it is still in the client’s files. Check your connection and try again.', 'warn', 11000);
+              return;
+            }
             (window.bccNotify || alert)('Server refused the delete (HTTP ' + refusedStatus + '); "' + doc.name + '" was not removed.', 'warn');
           });
       } else if (btn.dataset.act === 'download') {

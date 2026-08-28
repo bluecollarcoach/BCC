@@ -3629,7 +3629,11 @@ app.http('sharepoint-list', {
       // folder. Bounded because bookkeeping.html builds the entire listing as one
       // innerHTML string, so an unbounded crawl would be its own problem.
       const SP_LIST_MAX = 1000, SP_LIST_PAGES = 5;
-      let listNext = 'https://graph.microsoft.com/v1.0/drives/' + driveId + '/root:' + encodeURI(path) + ':/children?$top=200&$select=id,name,folder,file,size,lastModifiedDateTime,webUrl';
+      // PER SEGMENT, the same as spWalk. encodeURI leaves '#', '?' and '&' intact, so one
+      // folder with a job number in its name was unreachable here and killed the download of
+      // every client folder under it.
+      const encListPath = String(path).split('/').map(encodeURIComponent).join('/');
+      let listNext = 'https://graph.microsoft.com/v1.0/drives/' + driveId + '/root:' + encListPath + ':/children?$top=200&$select=id,name,folder,file,size,lastModifiedDateTime,webUrl';
       const raw = [];
       let listTruncated = false;
       for (let page = 0; listNext; page++) {
@@ -3698,7 +3702,11 @@ app.http('sharepoint-import', {
          time ceiling — but what was asked for is now recorded, so the response can say what it
          did NOT take instead of reporting the truncated count as the whole job. */
       const requestedCount = Array.isArray(body.items) ? body.items.length : (body.itemId ? 1 : 0);
-      const items = Array.isArray(body.items) ? body.items.slice(0, 50) : (body.itemId ? [{ id: body.itemId, name: body.name }] : []);
+      /* 20, the same as SP_BATCH in the bulk twin below — and this loop is HEAVIER than that
+          one (four serial round trips per file against its three), so it cannot take a larger
+          batch inside the same ~45s ceiling. The client loops on `accepted`, so a smaller
+          batch costs another round trip, not any files. */
+      const items = Array.isArray(body.items) ? body.items.slice(0, 20) : (body.itemId ? [{ id: body.itemId, name: body.name }] : []);
       if (!items.length) return badRequest('items[] or itemId required');
       // Files land FLAT in the client's internal Files — we don't recreate the
       // SharePoint folder tree. Instead each folder level becomes a TAG, so the
@@ -5464,7 +5472,46 @@ app.http('msgraph-callback', {
  * The Graph token is app-only, so naming the owning mailbox is a change of TARGET, not of
  * permission — and it is still confined to our own domains. An unrecognised or off-domain
  * claim silently falls back to the caller rather than being honoured.
+ *
+ * THE CLAIM IS NOT ENOUGH ON ITS OWN. In-domain is not authorisation: it let any signed-in
+ * user name any colleague and patch or delete an arbitrary event id out of that person's
+ * calendar. graphOwnerForEvent below is what the two mirror routes actually use — it looks
+ * the event up in the firm's own session records and trusts THAT, falling back to the caller
+ * when we hold no record of it. graphOwnerFor stays for the shape/domain check it does well.
  */
+/* Which mailbox does the firm's own record say this event lives in? A session document is
+   the authority on its own Outlook copy, so a caller cannot retarget the request by asserting
+   someone else's address. Returns null when we hold no record of that event id — the caller's
+   own mailbox is then the only safe target, and Graph's 404 path already handles it. */
+async function graphOwnerOfRecord(graphEventId) {
+  const id = String(graphEventId || '');
+  if (!id) return null;
+  const { resources } = await container().items.query({
+    query: 'SELECT TOP 1 c.data FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-session-") AND c.data.msGraphId = @g',
+    parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@g', value: id }]
+  }).fetchAll();
+  const d = resources && resources[0] && resources[0].data;
+  const who = d && String(d.msGraphOwner || '').trim().toLowerCase();
+  return (who && who.indexOf('@') > 0 && ALLOWED_DOMAINS.indexOf(who.split('@')[1] || '') >= 0) ? who : null;
+}
+/* The mailbox a mirror request may address: what the firm's record says, or the caller's own.
+   NEVER the raw claim. A read that fails throws rather than quietly falling back — falling
+   back would send a PATCH meant for a colleague's calendar into the caller's, where it 404s
+   and the change silently never reaches Outlook. */
+async function graphOwnerForEvent(graphEventId, claimed, p) {
+  const me = String(p.userDetails || p.userId || '');
+  if (!graphEventId) return { owner: me, ofRecord: false };
+  const ofRecord = await graphOwnerOfRecord(graphEventId);
+  /* `ofRecord` is what the 404 branches mean by "we addressed the mailbox that actually holds
+     it" — so it is the RECORD answering, not the caller's claim matching. Comparing against
+     the claim made a session saved before msGraphOwner existed (claim null, record known) read
+     as unknown, and a 404 there asked the user a question the server could already answer. */
+  if (ofRecord) return { owner: ofRecord, ofRecord: true };
+  // No session record names this event. Honour the claim ONLY when it is the caller's own
+  // mailbox (harmless, and it keeps events created outside a session doc working).
+  const c = String(claimed || '').trim().toLowerCase();
+  return { owner: (c && c === me.toLowerCase()) ? c : me, ofRecord: false };
+}
 function graphOwnerFor(claimed, p) {
   const me = String(p.userDetails || p.userId || '');
   const c = String(claimed || '').trim().toLowerCase();
@@ -5480,13 +5527,18 @@ app.http('msgraph-upsert-event', {
     const p = principal(request);
     if (!p) return unauthorized();
     if (!domainAllowed(p)) return domainBlocked();
+    /* The SAME gate the session record itself is under. Without it a view-only user's Save was
+       refused on the app record and honoured on the calendar — the client's invite moved while
+       BCC Connect kept the original time, and the only message was about the app record. */
+    if (!tierAtLeast(await appTierFor(p, 'sessions'), 'edit')) return forbidden('your Sessions access is view-only, so the Outlook copy was not changed');
     try {
       const body = await request.json().catch(() => ({}));
       // App-only Graph: works automatically for every signed-in user — no per-user "Connect".
       // A NEW event is always created in the caller's own calendar; an EXISTING one is patched
-      // wherever it actually lives (see graphOwnerFor).
-      const owner = body.graphEventId ? graphOwnerFor(body.graphOwner, p) : String(p.userDetails || p.userId || '');
-      const ownerKnown = owner === String(body.graphOwner || '').trim().toLowerCase();
+      // wherever the FIRM'S RECORD says it lives (see graphOwnerForEvent — not the claim).
+      const _own = body.graphEventId ? await graphOwnerForEvent(body.graphEventId, body.graphOwner, p) : { owner: String(p.userDetails || p.userId || ''), ofRecord: true };
+      const owner = _own.owner;
+      const ownerKnown = _own.ofRecord;
       const upn = encodeURIComponent(owner);
       const access = await getGraphToken();
 
@@ -5543,11 +5595,15 @@ app.http('msgraph-delete-event', {
     const p = principal(request);
     if (!p) return unauthorized();
     if (!domainAllowed(p)) return domainBlocked();
+    // The twin of the upsert gate. A calendar deletion is not undoable and cancels the
+    // client's invite; it cannot be looser than the app record it mirrors.
+    if (!tierAtLeast(await appTierFor(p, 'sessions'), 'edit')) return forbidden('your Sessions access is view-only, so the Outlook event was not deleted');
     try {
       const body = await request.json().catch(() => ({}));
       if (!body.graphEventId) return badRequest('graphEventId required');
-      const owner = graphOwnerFor(body.graphOwner, p);
-      const ownerKnown = owner === String(body.graphOwner || '').trim().toLowerCase();
+      const _own = await graphOwnerForEvent(body.graphEventId, body.graphOwner, p);
+      const owner = _own.owner;
+      const ownerKnown = _own.ofRecord;
       const upn = encodeURIComponent(owner);
       const access = await getGraphToken();
       const r = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/events/' + encodeURIComponent(body.graphEventId), {
@@ -8284,6 +8340,37 @@ function currentPeriodInBusinessTz(atDate) {
   const y = parts.find(p => p.type === 'year').value, m = parts.find(p => p.type === 'month').value;
   return y + '-' + m;
 }
+/* Has this client's month actually finished — not merely "the calendar rolled over"?
+   Two answers count, both of them the firm's own:
+     1. the Month-end close checklist for this client+period has the "books are closed /
+        locked" step ticked, which is the bookkeeper saying so explicitly; or
+     2. the period ended more than CLOSE_GRACE_DAYS ago, the same grace the browser's
+        periodInProgress() already applies before it will count a period at all.
+   Anything else is still in progress, and its numbers must not be locked in.
+   A read failure answers FALSE — "we could not tell" must never become "go ahead and
+   freeze", because a freeze is the irreversible half. 404 is a real answer: no checklist
+   for this month, so the grace window decides. */
+const CLOSE_GRACE_DAYS = 5;
+async function periodSettled(realmId, period) {
+  const m = /^(\d{4})-(\d{2})$/.exec(String(period || ''));
+  if (!m) return false;
+  const y = +m[1], mo = +m[2];
+  // Last day of that month + the grace, evaluated in BCC's operating timezone so the final
+  // hours of a US business's month are not counted as already past.
+  const graceEnd = new Date(Date.UTC(y, mo, 0 + CLOSE_GRACE_DAYS, 23, 59, 59));
+  const nowP = currentPeriodInBusinessTz();
+  const graceP = graceEnd.toISOString().slice(0, 7);
+  if (nowP > graceP || (nowP === graceP && Date.now() > graceEnd.getTime())) return true;
+  try {
+    const d = await container().item('bcc-close-' + realmId + '-' + period, BCC_TENANT_ID).read()
+      .then(r => r.resource)
+      .catch(e => { if (e && (e.code === 404 || e.statusCode === 404)) return null; throw e; });
+    const steps = (d && d.data && d.data.steps) || {};
+    return !!steps.lock;
+  } catch (e) {
+    return false;   // could not tell -> do not lock anything in
+  }
+}
 // Build the full monthly-report dataset (KPIs + statements) for a company. Extracted so
 // both the access-scoped GET endpoint and the cron verification path share ONE code path.
 async function assembleMonthlyReport(apiGet, comp, per, method) {
@@ -8516,6 +8603,10 @@ app.http('qbo-monthly-report', {
       // last few hours of a US business's month would already read as "past" server-side
       // and could freeze a snapshot missing that day's closing entries.
       const isPast = period < currentPeriodInBusinessTz();
+      /* SEPARATE from isPast. isPast decides what to SERVE (and drives the Refresh button);
+         this decides what may be LOCKED IN, and locking in a month nobody has closed yet is
+         how a client gets a report off unclosed books. */
+      const mayFreeze = isPast && (wantRefresh || await periodSettled(realmId, period));
       let [saved, goals] = await Promise.all([
         c.item(docId(period), BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; }),
         getReportGoals()
@@ -8565,7 +8656,7 @@ app.http('qbo-monthly-report', {
            below is a whole-document write built from `saved`; doing it with a stale or
            unknown copy is how an observations save that landed during the QuickBooks pull
            gets destroyed. Skipping the freeze costs one re-pull on the next view. */
-        if (isPast && !data.degraded && !rereadFailed) {
+        if (mayFreeze && !data.degraded && !rereadFailed) {
           const frozenAt = new Date().toISOString();
           const priorFrozenByMethod = (saved && saved.frozenByMethod) || {};
           // "method-switch" = some OTHER method was already frozen for this period (this

@@ -400,7 +400,16 @@
      overwrote it with Cosmos' older copy, and the first tab then pushed that stale value.
      Deliberately the LIVE outbox only, never the parked store — a parked entry can be weeks
      old and must not pin a key forever. */
-  function outboxPendingAnyTab(k) { return outboxRead().items[k] !== undefined; }
+  /* `rf` is deliberately excluded. A refused entry is kept as the durable copy of the user's
+     work (see the settle sweep and bccRetrySync), but the server has already answered on that
+     key: it is not a newer write, it must not pin the key against pulls, and it must not
+     stand in for an authoritative read. Counting it here froze the document on that device
+     until the entry aged out — colleagues' edits never landed, and the stale copy then
+     reported as "primed" with no server read behind it (house rule 3). */
+  function outboxPendingAnyTab(k) {
+    var e = outboxRead().items[k];
+    return e !== undefined && !e.rf;
+  }
   // Is this key still held anywhere unsent? The bootstrap purge must not remove the last copy.
   function outboxHas(k) {
     if (outboxRead().items[k] !== undefined) return true;
@@ -960,16 +969,20 @@
       // refused), so release the hold immediately — leaving these at 0 would block the
       // pull from ever updating those keys again for the life of the page.
       entries.forEach(function (e) { inFlight.delete(e[0]); });
-      /* ...and retire them from the OUTBOX too. Skipping the settle sweep below left every
-         refused key queued forever, and outboxPendingAnyTab reads that queue on every pull:
-         the document could never be refreshed from the server again for the life of the tab,
-         so the browser kept showing a copy it already knew the server had rejected. The user
-         has already been told about the refusal (flush dispatches bcc-sync-error), so
-         replaying it forever only re-tells them. Value-checked, so another tab's newer queued
-         write is still left alone. */
-      var refusedVals = {};
-      entries.forEach(function (e) { refusedVals[e[0]] = e[1]; });
-      outboxDrop(entries.map(function (e) { return e[0]; }), refusedVals);
+      /* FLAGGED, NOT DROPPED — the same rule the settle sweep applies, because this is its
+         twin and it is the branch a real person reaches: they are told "that was not saved",
+         they type it again, and every entry in this flush is a key already refused, so
+         nothing goes over the wire and control arrives here. Dropping retired the copy they
+         had just re-entered, leaving it only in this tab's memory: gone at the next reload,
+         and nothing left for bccRetrySync to resend.
+         The `rf` flag is what keeps it from being replayed into the same refusal on every
+         page load, and outboxPendingAnyTab now ignores flagged entries, so keeping it costs
+         one outbox row and pins nothing. */
+      try {
+        var _ob0 = outboxRead(), _t0 = false;
+        entries.forEach(function (e) { if (_ob0.items[e[0]]) { _ob0.items[e[0]].rf = 1; _t0 = true; } });
+        if (_t0) outboxWrite(_ob0);
+      } catch (e) {}
       setSyncState('idle');
       return;
     }
@@ -1133,15 +1146,29 @@
        success. The outbox is where a refused write now lives (see the settle sweep). */
     var reseeded = 0;
     try {
-      var ob = outboxRead().items || {};
-      permanentlyFailed.forEach(function (k) {
+      var _obAll = outboxRead();
+      var ob = _obAll.items || {};
+      /* Every key the outbox still holds a REFUSED copy of, plus anything refused in this
+         session. permanentlyFailed alone was empty after a reload — which is exactly when
+         somebody clicks this — so the recovery path recovered nothing and reported success.
+         The outbox is durable and survives the reload; it is the real list. */
+      var want = {};
+      Object.keys(ob).forEach(function (k) { if (ob[k] && ob[k].rf) want[k] = 1; });
+      permanentlyFailed.forEach(function (k) { want[k] = 1; });
+      Object.keys(want).forEach(function (k) {
         var e = ob[k];
         if (e && typeof e.v === 'string' && !pending.has(k)) { pending.set(k, e.v); reseeded++; }
+        /* Clear the flag as it goes back in: it is a live attempt again, and if it is refused
+           a second time the settle sweep re-flags it. Leaving it set would make the replay
+           skip it at the next reload even though it is queued. */
+        if (e) { delete e.rf; }
       });
+      if (reseeded) outboxWrite(_obAll);   // the whole object, so no other field is dropped
     } catch (e) {}
     permanentlyFailed.clear();
     if (reseeded) console.info('[bcc-api] re-queued ' + reseeded + ' previously refused change(s)');
-    return flush();
+    window._bccLastRetryCount = reseeded;   // so the button that calls this can say what it did
+    return flush().then(function () { return reseeded; }, function () { return reseeded; });
   };
 
   /* ---------- live sync (cross-device, near-real-time) ----------
@@ -1887,7 +1914,16 @@
               if (_pendingStamp) { try { _origSetItem.call(localStorage, ACCESS_STAMP_KEY, _pendingStamp); } catch (e) {} }
             }
           } catch (e) {}
-          if (pullFailed) console.warn('[bcc-api] ' + pullFailed + ' record(s) could not be stored locally (storage full?) — they will be retried');
+          if (pullFailed) {
+            console.warn('[bcc-api] ' + pullFailed + ' record(s) could not be stored locally (storage full?) — they will be retried');
+            /* And say so where it counts. Pages ask _bccBootPullOk before treating an empty
+               local family as fact — "this client has no certified payrolls", "no sessions
+               yet", "nothing due" — and before minting a number from max() over that family.
+               A pull that fetched everything and stored some of it is exactly the case those
+               guards exist for, so it must read as NOT ok. The records that did land are
+               still applied; only the claim of completeness is withdrawn. */
+            window._bccBootPullFailed = true;
+          }
         }
       } catch (e) {
         console.warn('[bcc-api] initial pull failed', e);

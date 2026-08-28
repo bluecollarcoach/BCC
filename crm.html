@@ -1273,6 +1273,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         Object.keys(c).forEach(function (k) {
           var v = c[k];
           if (k === 'id' || k === 'createdAt' || k === 'needs' || k === 'tags') return;
+          /* PANEL DEFAULTS, not edits. These three are never blank — stage falls back to
+             'lead', customerType to the first type in the list, ownerId to the person
+             clicking Save — so the blank filter below could never stop them, and merging
+             them demoted an existing customer to a lead and reassigned them. The batch-scan
+             merge and importCsv both exclude the same three. */
+          if (k === 'stage' || k === 'customerType' || k === 'ownerId') return;
           if (v === '' || v == null) return;              // don't overwrite with a blank
           if (Array.isArray(v) && !v.length) return;
           incoming[k] = v;

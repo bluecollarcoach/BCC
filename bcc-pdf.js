@@ -647,6 +647,49 @@
    *  is exactly how a crop ends up 90 degrees out on the one scanned
    *  page that was landscape.
    * ============================================================= */
+  /* ---------- crop geometry across differently-rotated pages ----------
+     Two frames. UNROTATED box space: u left→right, v bottom→top — PDF's own convention, and
+     what {fx,fy,fw,fh} and cropRectFor below are in. DISPLAY space: s left→right, t top→bottom
+     — what the person actually drew on, which is the page turned clockwise by its effective
+     rotation. Each 90° step is an axis swap and/or a flip, so an axis-aligned rectangle stays
+     axis-aligned and two opposite corners fix it. */
+  function _uvToST(u, v, R) {
+    switch (R) {
+      case 90:  return [v, u];
+      case 180: return [1 - u, v];
+      case 270: return [1 - v, 1 - u];
+      default:  return [u, 1 - v];
+    }
+  }
+  function _stToUV(s, t, R) {
+    switch (R) {
+      case 90:  return [t, s];
+      case 180: return [1 - s, t];
+      case 270: return [1 - t, 1 - s];
+      default:  return [s, 1 - t];
+    }
+  }
+  function _norm90(r) { var n = ((r % 360) + 360) % 360; return (n % 90 === 0) ? n : null; }
+  /* The same visible region, expressed in the target page's own unrotated box. Returns null
+     when either rotation is not a quarter turn — a malformed /Rotate — because there is no
+     honest answer then, and writing a wrong one is the failure this exists to stop. */
+  function cropForDisplayRotation(crop, fromR, toR) {
+    var a = _norm90(fromR), b = _norm90(toR);
+    if (a === null || b === null) return null;
+    if (a === b) return { fx: crop.fx, fy: crop.fy, fw: crop.fw, fh: crop.fh };
+    var c0 = _uvToST(crop.fx, crop.fy, a);
+    var c1 = _uvToST(crop.fx + crop.fw, crop.fy + crop.fh, a);
+    var s0 = Math.min(c0[0], c1[0]), s1 = Math.max(c0[0], c1[0]);
+    var t0 = Math.min(c0[1], c1[1]), t1 = Math.max(c0[1], c1[1]);
+    var p0 = _stToUV(s0, t0, b), p1 = _stToUV(s1, t1, b);
+    var cl = function (x) { return Math.max(0, Math.min(1, x)); };
+    var fx = cl(Math.min(p0[0], p1[0])), fy = cl(Math.min(p0[1], p1[1]));
+    var fw = cl(Math.abs(p1[0] - p0[0])), fh = cl(Math.abs(p1[1] - p0[1]));
+    if (fx + fw > 1) fw = 1 - fx;
+    if (fy + fh > 1) fh = 1 - fy;
+    if (!(fw > 0.001 && fh > 0.001)) return null;
+    return { fx: fx, fy: fy, fw: fw, fh: fh };
+  }
   function cropRectFor(entry, box) {
     // box: { x, y, width, height } in PDF points (the page's crop/media box)
     var c = entry.crop;
@@ -779,11 +822,29 @@
       // A sliver is almost always a mis-drag, and a zero-area box makes an unopenable PDF.
       if (fw < 0.02 || fh < 0.02) { toast('That crop is too small — draw a larger box.', 'warn'); return; }
       var crop = { fx: fx, fy: fy, fw: fw, fh: fh };
-      entries.forEach(function (e) { e.crop = { fx: crop.fx, fy: crop.fy, fw: crop.fw, fh: crop.fh }; });
+      /* The box was drawn on THIS page, at THIS page's rotation. Every other selected page is
+         given the same region in the frame the person was looking at, converted into its own
+         unrotated box — not the same numbers, which would mean a different part of the page. */
+      var fromR = (first.base + first.rot) % 360;
+      var cropped = 0, skipped = [];
+      entries.forEach(function (e, i) {
+        var toR = (e.base + e.rot) % 360;
+        var c = cropForDisplayRotation(crop, fromR, toR);
+        if (!c) { skipped.push(i + 1); return; }
+        e.crop = c;
+        cropped++;
+      });
       markDirty(ST);
       close();
       renderPages(ST);
-      toast('Cropped ' + entries.length + ' page' + (entries.length === 1 ? '' : 's') + ' — the trim is applied when you save or download.', 'success', 7000);
+      if (skipped.length) {
+        toast('Cropped ' + cropped + ' page' + (cropped === 1 ? '' : 's') + '. Page' + (skipped.length === 1 ? ' ' : 's ') + skipped.slice(0, 6).join(', ')
+          + (skipped.length > 6 ? ' and ' + (skipped.length - 6) + ' more' : '')
+          + ' could not be cropped to match — ' + (skipped.length === 1 ? 'it is' : 'they are') + ' rotated by an amount this cannot map, so '
+          + (skipped.length === 1 ? 'it was' : 'they were') + ' left whole. Crop ' + (skipped.length === 1 ? 'it' : 'them') + ' on ' + (skipped.length === 1 ? 'its' : 'their') + ' own.', 'warn', 12000);
+        return;
+      }
+      toast('Cropped ' + cropped + ' page' + (cropped === 1 ? '' : 's') + ' — the trim is applied when you save or download.', 'success', 7000);
     };
 
     entryPjsPage(ST, first).then(function (page) {
@@ -1343,6 +1404,11 @@
     var out = [];
     if (n.droppedSig) out.push(n.droppedSig + ' signature/image stamp' + (n.droppedSig === 1 ? '' : 's') + ' could NOT be written into the file');
     if (n.degradedText) out.push(n.degradedText + ' text stamp' + (n.degradedText === 1 ? '' : 's') + ' contained characters this PDF font cannot show — they were saved as "?"');
+    /* A helper nobody calls is a non-fix, and a counter nobody reads is the same thing. This
+       was incremented on every crop that threw and never mentioned anywhere, so a page saved
+       at FULL SIZE — margins, scanner shadow, the next document's edge — went into the
+       client's Files under a plain green "Saved". */
+    if (n.cropFailed) out.push(n.cropFailed + ' page' + (n.cropFailed === 1 ? '' : 's') + ' could NOT be cropped and ' + (n.cropFailed === 1 ? 'was' : 'were') + ' saved at full size');
     if (n.flattened) out.push('this PDF had fillable form fields or a digital signature; the saved copy is flattened, so fields are no longer editable and any signature is no longer valid');
     return out;
   }
