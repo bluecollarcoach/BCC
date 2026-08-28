@@ -839,6 +839,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           .then(function (j) {
             if (it) { it.status = payload.status; if (j && j.resolutionNote) { it.resolutionNote = j.resolutionNote; it.resolutionBy = j.resolutionBy; it.resolutionAt = j.resolutionAt; } }
             setFbBadge(newCount()); renderFbList();
+            /* "Reply sent" only when it actually reached them. The reply is saved on the
+               record either way, but the notification is a separate write that can fail — and
+               announcing a send that did not happen leaves the person who raised the feedback
+               waiting and gives the admin no reason to follow up. */
+            if (j && j.notified === false) {
+              (window.bccNotify || alert)('Saved, but the submitter could NOT be notified — tell them directly. The reply is on the record.', 'warn', 12000);
+              return;
+            }
             if (window.bccNotify) window.bccNotify(act === 'reply' ? 'Reply sent to the submitter.' : ('Marked ' + payload.status + (payload.note ? ' — reply sent.' : '.')), 'success');
           })
           .catch(function () { b.disabled = false; (window.bccNotify || alert)('Update failed.', 'warn'); });

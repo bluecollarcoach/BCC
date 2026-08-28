@@ -789,9 +789,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   // renderDetail + carry. Every in-pane handler uses this instead of renderDetail directly.
   function renderDetailKeepTyped(id) {
+    /* renderDetail clears the dirty flag — correctly, for a deliberate repaint. But this
+       function's whole purpose is to repaint AND put the unsaved text back, so the pane is
+       still holding work the record does not have. Leaving the flag cleared meant the next
+       colleague's save anywhere in the tenant fired bcc-data-ready within eight seconds and
+       the listener repainted from the stored record, erasing the paragraph mid-sentence with
+       no click and no warning — the exact failure the flag was added to prevent. */
+    var wasDirty = _crmDirty;
     var snap = _crmSnapshotTyped();
     renderDetail(id);
     _crmRestoreTyped(snap);
+    _crmDirty = wasDirty;
   }
   function renderDetail(id) {
     // Every caller of this is a deliberate repaint (open, post-save, post-delete), so the

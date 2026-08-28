@@ -505,13 +505,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   var _ownBooksRealm = null;
   function checkOwnBooks() {
     return fetch('/api/integrations/qbo/companies', { credentials: 'include' })
-      .then(function (r) { return r.ok ? r.json() : { companies: [] }; })
+      /* REJECT, like the sibling above. Substituting an empty list made a failed request
+         indistinguishable from "you have no own-books company", which HIDES the Import
+         button — a working control disappearing on a blip, with nothing said. */
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
       .then(function (d) {
         var own = ((d && d.companies) || []).filter(function (q) { return q.isOwnBooks; })[0];
         _ownBooksRealm = own ? String(own.realmId) : null;
         var btn = document.getElementById('custImportBtn');
         if (btn) { btn.style.display = _ownBooksRealm ? '' : 'none'; if (own) btn.title = 'Import the customer list from ' + (own.companyName || 'your QuickBooks') + ' into the CRM'; }
       })
+      // Leave whatever the button already shows: we did not learn that it should be hidden.
       .catch(function () {});
   }
   function importOwnCustomers() {

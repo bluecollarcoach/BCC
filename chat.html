@@ -322,6 +322,13 @@ function primeChat(done) {
   };
   window.bccPrimeDoc(LS_MSGS, fin);
   window.bccPrimeDoc(LS_CHANS, fin);
+  /* The read map too. saveRead() writes the whole document through the hooked setter, so an
+     unprimed loadRead() returning {} publishes a one-channel map over the read state for every
+     other channel — every conversation already caught up on comes back unread, everywhere.
+     Deliberately NOT part of the `left` count above: the composer must not wait on it, and a
+     read stamp that does not land is recoverable in a way lost history is not. */
+  var _rk = readKey();
+  if (_rk) window.bccPrimeDoc(_rk, function () {});
 }
 function chatReady() {
   // No sync layer at all (offline demo / bcc-api.js failed to load) = nothing to protect.
@@ -430,7 +437,14 @@ function loadRead() {
   try { return JSON.parse(localStorage.getItem(k)) || JSON.parse(localStorage.getItem('bcc-chat-last-read-v1')) || {}; }
   catch { return {}; }
 }
-function saveRead(v) { const k = readKey(); if (k) localStorage.setItem(k, JSON.stringify(v)); }
+/* Never publish a read map we have not been shown. Until the server answers, the stamp is
+   dropped — the channel simply stays marked unread for a moment longer, which is the harmless
+   side of this trade. Writing instead would erase read state for every other channel. */
+function saveRead(v) {
+  const k = readKey(); if (!k) return;
+  if (window.bccDocPrimed && !window.bccDocPrimed(k)) { if (window.bccPrimeDoc) window.bccPrimeDoc(k, function () {}); return; }
+  localStorage.setItem(k, JSON.stringify(v));
+}
 
 // No seed messages — every chat starts empty so the first thing anyone
 // sees is real conversation, not demo content with hardcoded employee names.

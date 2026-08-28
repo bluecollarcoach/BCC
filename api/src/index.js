@@ -1177,8 +1177,12 @@ app.http('profile', {
     // SWA 'administrator' role) without duplicating that logic
     // client-side. Field is added without modifying the original
     // principal shape so existing consumers keep working.
-    let isAdmin = false;
-    try { isAdmin = await isAppAdmin(p); } catch (e) { isAdmin = false; }
+    /* null = WE COULD NOT TELL, which is not the same as "no". Publishing false on a failed
+       config read stripped every admin control from a real admin and sent them away from
+       admin.html. bcc-api.js gates on `typeof pj.isAppAdmin === 'boolean'`, so omitting the
+       field below leaves its SWA-role and local-config fallbacks to answer instead. */
+    let isAdmin = null;
+    try { isAdmin = await isAppAdmin(p); } catch (e) { isAdmin = null; }
     /* A stamp of WHAT THIS CALLER MAY SEE. The browser's delta pull only ever asks for docs
        changed after its cursor, so the moment an admin adds someone to a client, every record
        that just became visible to them is OLDER than that cursor and never arrives — the newly
@@ -1196,7 +1200,10 @@ app.http('profile', {
         .update(JSON.stringify([isAdmin, bk, mine]))
         .digest('hex').slice(0, 32);
     } catch (_) { accessStamp = ''; }   // never fail the profile call over this
-    return { jsonBody: Object.assign({}, p, { isAppAdmin: isAdmin, accessStamp }) };
+    /* OMITTED, not false, when the config could not be read. bcc-api.js only believes the
+       field when it is a boolean, so leaving it out keeps its own fallbacks in play instead of
+       publishing a verdict the server never reached. */
+    return { jsonBody: Object.assign({}, p, isAdmin === null ? { accessStamp } : { isAppAdmin: isAdmin, accessStamp }) };
   })
 });
 
@@ -1899,10 +1906,12 @@ app.http('feedback', {
         await c.items.upsert(doc);
         // Notify the submitter with the reply on a fresh resolve, or when explicitly re-sending a reply.
         const isNewResolve = st === 'resolved' && !wasResolved;
-        if (doc.userUpn && (isNewResolve || (note && body.notify))) {
+        let _notified = false;
+        const _notifyAttempted = !!(doc.userUpn && (isNewResolve || (note && body.notify)));
+        if (_notifyAttempted) {
           const msg = String(doc.message || '');
           const bodyText = note || (msg.length > 90 ? msg.slice(0, 90) + '…' : msg);
-          await notifyUser(c, doc.userUpn, {
+          _notified = await notifyUser(c, doc.userUpn, {   // assign the OUTER one; a const here shadowed it
             title: isNewResolve ? '✅ Your feedback was addressed' : '💬 Reply to your feedback',
             // Same normalisation /api/notify applies: this reaches sw.js, which opens
             // it with clients.openWindow(). Accept only a same-origin path — "//host"
@@ -1911,7 +1920,12 @@ app.http('feedback', {
             body: bodyText, url: safeNotifyPath(doc.page), tag: 'fbdone-' + doc.id
           });
         }
-        return { jsonBody: { ok: true, id: doc.id, status: doc.status, resolutionNote: doc.resolutionNote || '', resolutionBy: doc.resolutionBy || '', resolutionAt: doc.resolutionAt || '' } };
+        /* Say whether the submitter was actually told. The reply IS saved on the record
+           either way — that part succeeded and must not be undone — but reporting a clean
+           "reply sent" over a notification that was never stored leaves the person who raised
+           it waiting, and the admin with no reason to follow up. */
+        return { jsonBody: { ok: true, id: doc.id, status: doc.status, notified: _notifyAttempted ? !!_notified : null,
+          resolutionNote: doc.resolutionNote || '', resolutionBy: doc.resolutionBy || '', resolutionAt: doc.resolutionAt || '' } };
       }
       // new submission
       const message = String(body.message || '').trim();
@@ -2755,7 +2769,12 @@ function verifyOAuthState(state, channel) {
 }
 function driveBack(realmId, msg) { return { status: 302, headers: { Location: '/bookkeeping.html?drive=' + (msg ? 'error' : 'connected') + (realmId ? ('&realmId=' + encodeURIComponent(realmId)) : '') + (msg ? ('&detail=' + encodeURIComponent(String(msg).slice(0, 120))) : '') } }; }
 async function driveAppCreds(provider) {
-  if (provider === 'google') { const f = await getIntegrationFields('google-drive'); const id = f.clientId || f.client_id, secret = f.clientSecret || f.client_secret; return { provider, clientId: id, clientSecret: secret, ok: !!(id && secret) }; }
+  if (provider === 'google') {
+    const f = await getIntegrationFields('google-drive');
+    const id = f.clientId || f.client_id, secret = f.clientSecret || f.client_secret;
+    // readFailed travels with the answer so "not configured" is never said on a blip.
+    return { provider, clientId: id, clientSecret: secret, ok: !!(id && secret), readFailed: !!f._readFailed };
+  }
   if (provider === 'onedrive') { return { provider, clientId: process.env.ONEDRIVE_CLIENT_ID, clientSecret: process.env.ONEDRIVE_CLIENT_SECRET, tenant: process.env.ONEDRIVE_TENANT || 'common', ok: !!(process.env.ONEDRIVE_CLIENT_ID && process.env.ONEDRIVE_CLIENT_SECRET) }; }
   return { provider, ok: false };
 }
@@ -3326,7 +3345,11 @@ function driveConnectHandler(provider) {
        "no access", so a blocked user is told why. */
     const acc = await driveClientAccess(p, realmId, { files: true, write: true });
     if (acc.err) return driveBack(realmId, (acc.err.jsonBody && acc.err.jsonBody.error) || 'no access to this client');
-    const creds = await driveAppCreds(provider); if (!creds.ok) return driveBack(realmId, (provider === 'google' ? 'Google Drive' : 'OneDrive') + ' app not configured yet');
+    const creds = await driveAppCreds(provider);
+    // "Not configured yet" is a claim about the firm's setup, and sends an admin to re-enter
+    // credentials that are already there. A failed READ is a different sentence.
+    if (creds.readFailed) return driveBack(realmId, 'could not check the ' + (provider === 'google' ? 'Google Drive' : 'OneDrive') + ' app settings just now — nothing is missing, try again in a moment');
+    if (!creds.ok) return driveBack(realmId, (provider === 'google' ? 'Google Drive' : 'OneDrive') + ' app not configured yet');
     const redirect = driveRedirect(request, provider);
     const state = driveSignState(realmId, p.userDetails || p.userId || '', provider);
     let url;
@@ -3354,7 +3377,9 @@ function driveCallbackHandler(provider) {
       // code against someone else's already-verified connect attempt.
       if (!(await consumeOAuthStateOnce(rawState))) return driveBack(null, 'this sign-in link was already used — start the connect again');
       const realmId = st.realmId;
-      const creds = await driveAppCreds(provider); if (!creds.ok) return driveBack(realmId, 'app not configured');
+      const creds = await driveAppCreds(provider);
+      if (creds.readFailed) return driveBack(realmId, 'could not check the app settings just now — try again in a moment');
+      if (!creds.ok) return driveBack(realmId, 'app not configured');
       const tok = await driveExchangeCode(creds, code, driveRedirect(request, provider));
       if (!tok.refresh_token) return driveBack(realmId, 'no refresh token returned — re-consent');
       // Verify the Drive scope was actually granted. Google's granular consent lets a
@@ -3408,7 +3433,11 @@ app.http('drive-status', {
     const c = container(); const id = 'bcc-clientdrive-' + realmId;
     if (request.method === 'DELETE') { try { await c.item(id, BCC_TENANT_ID).delete(); } catch (e) { if (e.code !== 404) throw e; } return { jsonBody: { ok: true, connected: false } }; }
     const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
-    return { jsonBody: { ok: true, connected: !!doc, provider: doc ? doc.provider : null, account: doc ? doc.account : null, rootName: (doc && doc.root && doc.root.name) || null, googleConfigured: (await driveAppCreds('google')).ok, onedriveConfigured: (await driveAppCreds('onedrive')).ok } };
+    const _gc = await driveAppCreds('google');
+    /* null, not false, when we could not tell. false renders as "Google Drive isn't set up for
+       the firm" — a statement about the firm's configuration made on the strength of a read
+       that failed. */
+    return { jsonBody: { ok: true, connected: !!doc, provider: doc ? doc.provider : null, account: doc ? doc.account : null, rootName: (doc && doc.root && doc.root.name) || null, googleConfigured: _gc.readFailed ? null : _gc.ok, onedriveConfigured: (await driveAppCreds('onedrive')).ok } };
   })
 });
 
@@ -3747,7 +3776,12 @@ app.http('sharepoint-import', {
           const storageKey = (BCC_TENANT_ID + folder + '/' + stamp + '-' + uniq + '-' + fname).replace(/\/+/g, '/').replace(/^\//, '');
           const ct = r.headers.get('content-type') || 'application/octet-stream';
           await cont.getBlockBlobClient(storageKey).uploadData(buf, { blobHTTPHeaders: { blobContentType: ct } });
-          const docId = DOC_DOC_PREFIX + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
+          /* DETERMINISTIC, exactly like the bulk twin below: same client folder + same
+             SharePoint item id = same document row. Re-importing a file now REPLACES its own
+             row instead of adding a second one, so pressing the button again after a failed
+             or half-finished round is safe — which is the thing a person actually does. */
+          const docId = DOC_DOC_PREFIX + 'sp-' + crypto.createHash('sha1').update(folder + ':' + String(it.id)).digest('hex').slice(0, 24);
+          const priorKey = await priorDocStorageKey(c, docId);
           await c.items.upsert({
             id: docId, tenantId: BCC_TENANT_ID, docType: 'document', name: it.name || fname,
             folder, tags: importTags, sizeBytes: buf.length, mimeType: ct, storageKey,
@@ -3755,8 +3789,9 @@ app.http('sharepoint-import', {
             source: 'sharepoint', sharepointItemId: String(it.id), sharepointPath: subPath,
             createdAt: now, updatedAt: now
           });
-          logAudit('document-upload', { user: who, path: '/api/integrations/sharepoint/import', key: docId, meta: { folder, realmId, source: 'sharepoint' } });
-          out.push({ name: it.name, ok: true, id: docId });
+          await dropSupersededBlob(cont, priorKey, storageKey);
+          logAudit('document-upload', { user: who, path: '/api/integrations/sharepoint/import', key: docId, meta: { folder, realmId, source: 'sharepoint', replaced: !!priorKey } });
+          out.push({ name: it.name, ok: true, id: docId, replaced: !!priorKey });
         } catch (e) { out.push({ name: it.name, ok: false, error: String(e && e.message || e) }); }
       }
       /* Say what was REQUESTED as well as what was accepted. The cap below keeps a round
@@ -3771,6 +3806,21 @@ app.http('sharepoint-import', {
     } catch (e) { context.error('sharepoint-import', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
+/* The blob the previous version of this document pointed at. A deterministic document id
+   means a re-import REPLACES the row — and the new upload has a fresh storageKey, so the old
+   blob is left behind with nothing referencing it. Read it before the upsert; delete it after.
+   Best-effort throughout: an import must never fail over housekeeping. */
+async function priorDocStorageKey(c, docId) {
+  try {
+    const prior = await c.item(docId, BCC_TENANT_ID).read().then(r => r.resource)
+      .catch(e => { if (e && (e.code === 404 || e.statusCode === 404)) return null; throw e; });
+    return (prior && prior.storageKey) || null;
+  } catch (_) { return null; }
+}
+async function dropSupersededBlob(cont, priorKey, newKey) {
+  if (!priorKey || priorKey === newKey) return;
+  try { await cont.getBlockBlobClient(priorKey).deleteIfExists(); } catch (_) {}
+}
 /* Bulk RECURSIVE import: walk a client's whole SharePoint tree and copy every
  * file into their internal Files. Everything lands FLAT — the folder tree is not
  * recreated; each folder level becomes a tag instead. Resumable: each call does a
@@ -3923,6 +3973,9 @@ app.http('sharepoint-import-all', {
              over. With the id derived from the item, the upsert overwrites that item's own row
              instead: re-running is idempotent by construction rather than by timing. */
           const docId = DOC_DOC_PREFIX + 'sp-' + crypto.createHash('sha1').update(dest + ':' + String(f.id)).digest('hex').slice(0, 24);
+          // Deterministic ids REPLACE the row; without this the superseded blob stayed behind,
+          // one orphan per file per re-run. The folder-import twin does the same.
+          const bulkPriorKey = await priorDocStorageKey(c, docId);
           await c.items.upsert({
             id: docId, tenantId: BCC_TENANT_ID, docType: 'document', name: f.name,
             folder: dest, tags, sizeBytes: buf.length, mimeType: ct, storageKey,
@@ -3930,6 +3983,7 @@ app.http('sharepoint-import-all', {
             source: 'sharepoint', sharepointItemId: String(f.id), sharepointPath: rel,
             createdAt: now, updatedAt: now
           });
+          await dropSupersededBlob(cont, bulkPriorKey, storageKey);
           results.push({ name: f.name, ok: true, tags });
         } catch (e) { results.push({ id: f.id, name: f.name, ok: false, error: String(e && e.message || e) }); }
       }
@@ -3980,12 +4034,15 @@ app.http('sharepoint-map', {
            carried over from what is stored rather than taken from the payload — otherwise the
            owner-only client's folder could be repointed (or dropped) by anyone who could
            reach this route, even though the GET above never showed it to them. */
+        /* NO outer swallow — the twin GET on this same route already refuses to. The entries
+           carried over from this read include the owner-only client's, which the admin saving
+           the form cannot see and therefore cannot re-supply; resetting to {} on a blip
+           silently deleted that mapping and let the name matcher answer for the client
+           instead. A read that fails must fail. */
         let spPrev = {};
-        try {
-          const dPrev = await c.item(SP_MAP_ID, BCC_TENANT_ID).read().then(r => r.resource)
-            .catch(e => { if (e && (e.code === 404 || e.statusCode === 404)) return null; throw e; });
-          if (dPrev && dPrev.map) spPrev = dPrev.map;
-        } catch (_) { spPrev = {}; }
+        const dPrev = await c.item(SP_MAP_ID, BCC_TENANT_ID).read().then(r => r.resource)
+          .catch(e => { if (e && (e.code === 404 || e.statusCode === 404)) return null; throw e; });
+        if (dPrev && dPrev.map) spPrev = dPrev.map;
         const spHidden = new Set();
         try {
           const { resources: spComps } = await c.items.query({
@@ -3999,7 +4056,13 @@ app.http('sharepoint-map', {
           else delete map[rid];
         }
         await c.items.upsert({ id: SP_MAP_ID, tenantId: BCC_TENANT_ID, docType: 'sharepoint-map', map, updatedAt: new Date().toISOString(), updatedBy: (p.userDetails || '').toLowerCase() });
-        return { jsonBody: { ok: true, map } };
+        /* Echo back only what this caller may see. The stored map now holds the owner-only
+           client's entry again (carried over just above); handing it back would disclose
+           through the save response the very thing the carry-over exists to protect. The next
+           save re-inserts it from storage, so the round trip is unaffected. */
+        const savedVisible = {};
+        Object.keys(map).forEach(function (rid) { if (!spHidden.has(String(rid))) savedVisible[rid] = map[rid]; });
+        return { jsonBody: { ok: true, map: savedVisible } };
       }
       let map = {};
       /* 404-ONLY, no outer swallow: this map is the single source of truth for which
@@ -4015,6 +4078,13 @@ app.http('sharepoint-map', {
         query: 'SELECT c.realmId, c.companyName, c.privateToUpn FROM c WHERE c.tenantId=@t AND c.docType="qbo-company"',
         parameters: [{ name: '@t', value: BCC_TENANT_ID }]
       }).fetchAll();
+      /* The rows below drop the owner-only client. The MAP has to drop it too — it is keyed
+         by realmId and names the folder that client's documents live in, so returning it raw
+         disclosed in one field exactly what the row filter was written to withhold. */
+      const _hiddenHere = new Set();
+      for (const co of comps) { if (companyPrivateBlocked(co, p)) _hiddenHere.add(String(co.realmId)); }
+      const visibleMap = {};
+      Object.keys(map).forEach(function (rid) { if (!_hiddenHere.has(String(rid))) visibleMap[rid] = map[rid]; });
       // Include the auto-match so the UI can show what it WOULD use.
       const rows = [];
       for (const co of comps) {
@@ -4034,7 +4104,7 @@ app.http('sharepoint-map', {
           suggest: m ? m.suggestions : []
         });
       }
-      return { jsonBody: { ok: true, folders, map, companies: rows } };
+      return { jsonBody: { ok: true, folders, map: visibleMap, companies: rows } };
     } catch (e) { context.error('sharepoint-map', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
@@ -4853,6 +4923,13 @@ app.http('integrations-qbo-sync', {
     if (!domainAllowed(p)) return domainBlocked();
     try {
       const fields = await getIntegrationFields('qbo');
+      /* "Missing" is a claim about what is stored. A failed READ is a claim about the request,
+         and telling a bookkeeper their QuickBooks credentials are missing sends them to Admin
+         to re-enter secrets that are sitting there intact. The flag exists for exactly this;
+         the nightly cron already checks it. */
+      if (fields._readFailed) {
+        return { status: 503, jsonBody: { ok: false, error: 'Could not read the QuickBooks app credentials just now — nothing was synced. Nothing is missing; try again in a moment.' } };
+      }
       if (!fields.clientId || !fields.clientSecret) {
         return { status: 400, jsonBody: { ok: false, error: 'QBO app credentials missing (clientId/clientSecret). Set them in Admin → Integrations.' } };
       }
@@ -5024,13 +5101,23 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
           // Parse the P&L by EXACT QBO group (mirrors the qbo-kpis parser; a loose
           // /income/i also matched the computed NetIncome rows and inflated revenue).
           let income = 0, cogs = 0, opex = 0, net = 0;
+          let plOk = false;
           try {
             const pl = flattenQboReport(j);
             income = (findByGroup(pl, 'Income') ?? findByLabel(pl, /total income/i)) || 0;
             cogs   = (findByGroup(pl, 'COGS') ?? findByLabel(pl, /total cost of goods sold|total cogs/i)) || 0;
             opex   = (findByGroup(pl, 'Expenses') ?? findByLabel(pl, /total expenses/i)) || 0;
             net    = (findByGroup(pl, 'NetIncome') ?? (income - cogs - opex)) || 0;
+            plOk = true;
           } catch (_) {}
+          /* The balance sheet below tracks bsOk and refuses to persist figures it did not
+             read; this had a bare catch and did not. An unparseable P&L body left these at
+             their initialised zeroes and the month was written whole as revenue $0, expenses
+             $0, net $0 — the client shown as having had no revenue, on every dashboard, KPI
+             tile and monthly report, under a sync reported as successful. Fail the month
+             instead: it joins failedMonths, takes the existing retry pass, and the stored
+             document is left exactly as it was. */
+          if (!plOk) return { i, status, body: 'P&L body unreadable' };
           let cash = 0, ca = 0, cl = 0, bsOk = false;
           try {
             if (br && br.ok) {
@@ -5132,7 +5219,16 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
              nothing to the Errors page. Nobody was told the client's figures had not moved.
              syncStatus is 'failed' in exactly this case and is already stored on the company
              doc; this makes the two agree. */
-          error: built > 0 ? undefined : ('no periods synced' + (diag.firstStatus ? ' (first response HTTP ' + diag.firstStatus + (diag.firstBody ? ': ' + String(diag.firstBody).slice(0, 200) : '') + ')' : '')),
+          /* A PARTIAL run is reported too. `error` is what the caller's logError loop keys on,
+             so a run that fetched nine months of twelve returned partial:true, no error, a
+             green workflow and a freshly stamped "Last sync" — three months of the client's
+             figures simply not there, with nobody told. syncStatus already says 'partial';
+             this is what makes the report agree with it. */
+          error: built > 0
+            ? ((failedMonths || failedWrites)
+                ? (failedMonths + ' month(s) could not be fetched and ' + failedWrites + ' could not be written — this client\'s figures are incomplete')
+                : undefined)
+            : ('no periods synced' + (diag.firstStatus ? ' (first response HTTP ' + diag.firstStatus + (diag.firstBody ? ': ' + String(diag.firstBody).slice(0, 200) : '') + ')' : '')),
           firstStatus: diag.firstStatus, firstBody: diag.firstBody, periods };
   }
 }
@@ -5179,7 +5275,11 @@ app.http('cron-qbo-sync', {
           if (o && o.error) await logError('cron/qbo-sync ' + (o.companyName || o.realmId || '?'), { message: String(o.error) }, { user: 'cron' });
         }
       } catch (_) {}
-      const anyOk = out.some(o => o && !o.error);
+      /* "Did anything land?", not "was anything imperfect?". A PARTIAL company now carries an
+         `error` so it reaches the Errors page — but a night where every company synced most of
+         its months is not a failed run, and returning 500 for it would turn the workflow red
+         every time one client's QuickBooks was throttled. Key this on periods actually built. */
+      const anyOk = out.some(o => o && (o.periodsBuilt || 0) > 0);
       if (out.length && !anyOk) {
         return { status: 500, jsonBody: { ok: false, error: 'every company failed to sync', synced: 0, companies: summary } };
       }
@@ -6808,13 +6908,27 @@ app.http('qbo-company-update', {
         }
         // Revoke + delete the per-client SHARED-DRIVE OAuth token (a live credential)
         // so our access truly ends and nothing re-attaches if the realm is reconnected.
+        /* CHECKED, exactly like the Intuit revoke above. This was fire-and-forget inside two
+           empty catches, so a Google refusal — or a client-drive document we could not even
+           read — reported the same clean disconnect as a perfect run, while the firm kept a
+           live OAuth token into that client's Drive. */
+        let driveRevoked = null, driveWhy = '';
         try {
           const dd = await c.item('bcc-clientdrive-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
           if (dd && dd.refreshToken && dd.provider === 'google') {
-            try { await fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(dd.refreshToken), { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }); } catch (_) {}
+            try {
+              const rvd = await fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(dd.refreshToken), { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+              driveRevoked = rvd.ok;
+              if (!rvd.ok) driveWhy = 'Google answered ' + rvd.status;
+            } catch (e) { driveRevoked = false; driveWhy = String((e && e.message) || e); }
             // (Microsoft has no simple programmatic delegated-token revoke; deleting the stored token ends our use.)
           }
-        } catch (_) {}
+        } catch (e) {
+          // We could not even establish whether a Google token exists — which is not "there
+          // was none", and the honest disconnect report has to say so.
+          driveRevoked = false;
+          driveWhy = 'the stored drive connection could not be read (' + String((e && e.message) || e) + ')';
+        }
         // Delete the company doc + every other realm-keyed doc (drive link, client
         // mailbox config, email collaboration metadata, financial periods).
         // Track what did NOT get cleaned up. These swallowed catches are deliberate — a
@@ -6833,8 +6947,9 @@ app.http('qbo-company-update', {
         // A token we could not demonstrably revoke belongs in the same list as a document we
         // could not delete: both are "still out there after a disconnect".
         if (revoked === false) leftBehind.push('the QuickBooks token at Intuit was NOT revoked (' + revokeWhy + ') — revoke it in the Intuit developer portal');
+        if (driveRevoked === false) leftBehind.push('the Google Drive token for this client was NOT revoked (' + driveWhy + ') — remove this app\'s access from the connected Google account');
         if (leftBehind.length) context.error('qbo disconnect ' + realmId + ': ' + leftBehind.join(', '));
-        return { jsonBody: { ok: true, disconnected: true, realmId, leftBehind, tokenRevoked: revoked } };
+        return { jsonBody: { ok: true, disconnected: true, realmId, leftBehind, tokenRevoked: revoked, driveTokenRevoked: driveRevoked } };
       }
 
       const body = await request.json().catch(() => ({}));
@@ -6923,11 +7038,36 @@ async function qboAccessForCompany(comp, fields) {
   if (!r.ok) throw new Error('QBO token refresh ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 200));
   const tok = await r.json();
   if (tok.refresh_token && tok.refresh_token !== comp.refreshToken) {
-    comp.refreshToken = tok.refresh_token;
-    // Persist the rotated token; if this write fails, the OLD token is already
-    // invalidated by Intuit, so surface it loudly rather than silently bricking.
-    try { await container().items.upsert(comp); }
-    catch (e) { console.error('QBO refresh-token persist FAILED for realm ' + comp.realmId + ' — connection may need reauth:', e && e.message || e); }
+    comp.refreshToken = tok.refresh_token;   // in memory, for the rest of THIS request
+    /* ONE FIELD, ON A FRESH COPY, UNDER AN ETAG. This runs on essentially every live
+       QuickBooks call, and upserting the whole `comp` read at the top of the request silently
+       reverted anything an admin changed in between — enabled, allowedUserUpns, privateToUpn,
+       the client's app link. Same pattern the nightly sync already uses for this exact write. */
+    let saved = false, lastErr = null;
+    for (let attempt = 0; attempt < 3 && !saved; attempt++) {
+      try {
+        const fresh = await container().item(comp.id, BCC_TENANT_ID).read().then(r => r.resource);
+        if (!fresh) break;
+        fresh.refreshToken = tok.refresh_token;
+        fresh.updatedAt = new Date().toISOString();
+        await container().items.upsert(fresh, { accessCondition: { type: 'IfMatch', condition: fresh._etag } });
+        saved = true;
+      } catch (e) {
+        lastErr = e;
+        if (!(e && (e.code === 412 || e.statusCode === 412))) break;   // only a version clash is worth retrying
+      }
+    }
+    if (!saved) {
+      /* Intuit has already invalidated the token we arrived with, so this company's
+         QuickBooks connection is now dead. A console line is not a report — this has to reach
+         the Errors page where somebody will see it and reconnect. */
+      console.error('QBO refresh-token persist FAILED for realm ' + comp.realmId + ' — connection may need reauth:', (lastErr && lastErr.message) || lastErr);
+      try {
+        await logError('qbo refresh-token persist [' + (comp.companyName || comp.realmId) + ']',
+          { message: 'The rotated Intuit refresh token was NOT saved, so this company will need reconnecting. ' + ((lastErr && lastErr.message) || '') },
+          { source: 'server' });
+      } catch (_) {}
+    }
   }
   // comp.environment is authoritative — never let the shared connector field
   // override a sandbox company up to production (or vice-versa).

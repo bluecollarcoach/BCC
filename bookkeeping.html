@@ -1049,7 +1049,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
          view (rather than pruning the local keys) keeps this non-destructive. */
       var live = {}; companies.forEach(function (c) { live[String(c.realmId)] = 1; });
       var realms = Object.keys(map).filter(function (r) { return r && live[r]; });
-      if (realms.length === 0) { ids.forEach(function (k){ document.getElementById(k).textContent='—'; }); setDelta(document.getElementById('kpiRevD'),'no closed month yet'); return; }
+      // Same distinction firm-wide: "no closed month yet" across every tile is a statement
+      // about the whole practice, and it must not be made on the strength of a failed read.
+      if (realms.length === 0) { ids.forEach(function (k){ document.getElementById(k).textContent='—'; }); setDelta(document.getElementById('kpiRevD'), periodsLoadFailed ? 'couldn’t read the firm’s months — reload' : 'no closed month yet', periodsLoadFailed ? 'down' : ''); return; }
       var rev=0, exp=0, net=0; realms.forEach(function(r){ rev += (map[r].revenueCents||0); exp += (map[r].expensesCents||0); net += netOf(map[r]); });
       document.getElementById('kpiRev').textContent = dollars(rev);
       document.getElementById('kpiExp').textContent = dollars(exp);
@@ -1077,7 +1079,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // never array-index-like, so insertion (i.e. descending) order survives.
     var all = dedupePeriods(periodsFor(currentRealm));
     if (all.length === 0) { ids.forEach(function (k){ document.getElementById(k).textContent='—'; });
-      setDelta(document.getElementById('kpiRevD'),'no data — Sync from QBO'); setDelta(document.getElementById('kpiExpD'),''); setDelta(document.getElementById('kpiNetD'),''); setDelta(document.getElementById('kpiYtdD'),''); return; }
+      /* WHICH of the two it is. "No data" says the client has no closed months; the read
+         having failed says nothing about the client at all, and sending someone to re-sync
+         QuickBooks over a dropped request wastes minutes and teaches them the figures vanish. */
+      setDelta(document.getElementById('kpiRevD'), periodsLoadFailed ? 'couldn’t read this client’s months — reload' : 'no data — Sync from QBO', periodsLoadFailed ? 'down' : '');
+      setDelta(document.getElementById('kpiExpD'),''); setDelta(document.getElementById('kpiNetD'),''); setDelta(document.getElementById('kpiYtdD'),''); return; }
     // "Last month" = most recent CLOSED month (skip the in-progress current month).
     var closed = all.filter(function (p) { return !periodInProgress(p.period); });
     var last = closed[0] || all[0], prev = closed[1] || null;
@@ -1184,9 +1190,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     rowsEl.innerHTML = sorted.map(function (c) {
       var t = ti(c.realmId);
       var ls = taskOnly ? '—' : (c.lastSyncAt ? fmtSyncTime(c.lastSyncAt, true) : 'never');
+      /* "—" is a claim that this client has nothing outstanding. The counts come from a
+         localStorage enumeration, so on a device that never finished loading they are all
+         zero and the whole queue reads as a clear day. Say which of the two it is. */
       var bell = t.count > 0
         ? '<span style="display:inline-flex;align-items:center;gap:5px;font-weight:700;font-size:12.5px;color:' + (t.overdue ? 'var(--burgundy)' : 'var(--gold-deep)') + ';">🔔 ' + t.count + ' to-do' + (t.count === 1 ? '' : 's') + (t.overdue ? ' · overdue' : '') + '</span>'
-        : '<span style="color:var(--muted);font-size:12.5px;">—</span>';
+        : (bootDataOk()
+            ? '<span style="color:var(--muted);font-size:12.5px;">—</span>'
+            : '<span style="color:var(--burgundy);font-size:12.5px;" title="This device has not finished loading the firm\u2019s to-dos from the server — this is not a count of zero.">not loaded</span>');
       return '<tr data-realm="' + esc(c.realmId) + '" style="cursor:pointer;">' +
         '<td data-label="Client"><strong style="font-size:16px;font-weight:800;">' + esc(c.companyName || ('Company ' + c.realmId)) + '</strong></td>' +
         '<td data-label="To-dos">' + bell + '</td>' +
@@ -2042,7 +2053,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           kpiTile('Cash on hand', money2(k.cash), '', '', sparkline(sCash, { labels: L, fmt: fMoney })) +
           kpiTile('Working capital', money2(k.workingCapital), 'current assets − liabilities', kpiTone('posneg', k.workingCapital), sparkline(sWC, { labels: L, fmt: fMoney })) +
           kpiTile('Net margin', k.netMargin == null ? '—' : (k.netMargin * 100).toFixed(1) + '%', 'trailing ' + resp.burnMonths + ' mo', kpiTone('netMargin', k.netMargin), sparkline(sMargin, { labels: L, fmt: fPct }));
-        document.getElementById('qboKpiNote').textContent = 'As of ' + resp.asOf + ' · ' + resp.method + ' basis · trend = last 12 synced months · monthly overhead ' + money2(k.monthlyBurn) + ' (avg of ' + resp.burnMonths + ' mo, COGS excluded).';
+        /* The TILES follow the Cash/Accrual selector; the sparklines are drawn from the
+           synced monthly history, which is always accrual. Reading one basis off the tile and
+           the other off the line under it, with the header naming only the tile's, is how two
+           numbers from us disagree in front of a client. Name both. */
+        var _trendNote = String(resp.method || '').toLowerCase() === 'cash'
+          ? 'trend = last 12 synced months (accrual basis — the tiles above are cash)'
+          : 'trend = last 12 synced months';
+        document.getElementById('qboKpiNote').textContent = 'As of ' + resp.asOf + ' · ' + resp.method + ' basis · ' + _trendNote + ' · monthly overhead ' + money2(k.monthlyBurn) + ' (avg of ' + resp.burnMonths + ' mo, COGS excluded).';
       })
       .catch(function (e) { if (myGen !== _qboKpiGen || currentRealm !== realmAt) return; tiles.innerHTML = ''; document.getElementById('qboKpiNote').innerHTML = '<span style="color:var(--burgundy);">' + esc(qboFriendly(e && e.message)) + '</span>'; });
   }
@@ -3850,7 +3868,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             '<div style="flex:1;min-width:0;"><span style="font-size:13.5px;">' + esc(actDesc(a)) + '</span> <span style="font-size:11.5px;color:var(--muted);">· ' + esc(who) + ' · ' + esc(relTime(d)) + '</span></div></div>';
         }).join('');
       })
-      .catch(function () { if (box) box.innerHTML = ''; });
+      .catch(function () { if (box) box.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:6px 0;">Could not load recent activity — this is not a record of nothing happening. Reload to try again.</div>'; });
   }
 
   /* ---- Activity (recent changes to this client, from the audit log) ---- */
@@ -5430,7 +5448,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           var btns = '';
           if (s.googleConfigured) btns += '<a class="btn btn-ghost" style="text-decoration:none;" href="/api/integrations/google-drive/connect?realmId=' + encodeURIComponent(currentRealm) + '">Connect Google Drive</a> ';
           if (s.onedriveConfigured) btns += '<a class="btn btn-ghost" style="text-decoration:none;" href="/api/integrations/onedrive/connect?realmId=' + encodeURIComponent(currentRealm) + '">Connect OneDrive</a>';
-          if (!s.googleConfigured && !s.onedriveConfigured) btns = '<span style="color:var(--muted);font-size:12.5px;">No drive provider is configured yet — an admin adds Google Drive credentials in <a href="admin.html" style="color:var(--gold-deep);font-weight:600;">Admin → Integrations</a> (OneDrive is configured centrally).</span>';
+          /* null means the server could not READ the configuration — a different thing from
+             "nobody has set one up", and sending an admin to re-enter credentials that are
+             already there is the wrong instruction. */
+          if (s.googleConfigured === null && !s.onedriveConfigured) btns = '<span style="color:var(--burgundy);font-size:12.5px;">Couldn’t check which drive providers are set up — nothing is missing, this is a failed read. Reload to try again.</span>';
+          else if (!s.googleConfigured && !s.onedriveConfigured) btns = '<span style="color:var(--muted);font-size:12.5px;">No drive provider is configured yet — an admin adds Google Drive credentials in <a href="admin.html" style="color:var(--gold-deep);font-weight:600;">Admin → Integrations</a> (OneDrive is configured centrally).</span>';
           area.innerHTML = '<div class="fs-block fs-client">' +
             '<div class="fs-head fs-head-client">' +
               '<div><div class="fs-title">☁️ Client&rsquo;s shared drive</div>' +
@@ -5477,7 +5499,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         '<div id="drv_list"><div style="color:var(--muted);">Loading…</div></div>' +
       '</div></div>';
     var ds = document.getElementById('drv_search');
-    if (ds) { var dsT = null; ds.addEventListener('input', function () { var v = ds.value.trim(); clearTimeout(dsT); dsT = setTimeout(function () { if (v === _driveSearch) return; _driveSearch = v; loadDriveFiles(); }, 300); }); }
+    if (ds) { var dsT = null; ds.addEventListener('input', function () { var v = ds.value.trim(); clearTimeout(dsT); dsT = setTimeout(function () { if (v === _driveSearch) return; _driveSearch = v; syncDriveDlBtn(); loadDriveFiles(); }, 300); }); }
     document.getElementById('drv_setroot').onclick = function () { showSetRootForm(document.getElementById('drv_list'), null); };
     area.querySelectorAll('[data-crumb]').forEach(function (b) {
       b.onclick = function () { var i = +b.getAttribute('data-crumb'); if (i < 0) { _driveStack = []; _driveFolder = ''; } else { _driveStack = _driveStack.slice(0, i + 1); _driveFolder = _driveStack[i].id; } renderDriveBrowser(); };
@@ -5491,14 +5513,30 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        never claims to be taking more than it is. */
     var drvDl = document.getElementById('drv_dlall');
     if (drvDl) {
-      var here = _driveStack.length ? _driveStack[_driveStack.length - 1].name : (_driveRootName || 'this folder');
-      dlIdleLabel('drv_dlall',
-        _driveStack.length ? '⬇ Download this folder' : '⬇ Download all',
-        'Download “' + here + '” and everything under it as one .zip');
+      syncDriveDlBtn();
       drvDl.onclick = function () { dlClick('drive', driveDownloadAll); };
       dlRefreshControls();   // same as SharePoint: this browser re-renders on every folder step
     }
     loadDriveFiles();
+  }
+  /* The label has to describe what the CLICK will do. With a search active the click takes the
+     search hits, not the folder — and the button sitting under twelve results still read
+     "Download all … and everything under it". Called from the render and from the search box,
+     so the two can never disagree. */
+  function syncDriveDlBtn() {
+    var q = String(_driveSearch || '').trim();
+    if (q) {
+      dlIdleLabel('drv_dlall', '⬇ Download these results',
+        'Download the files matching “' + q + '” as one .zip. Folders in the results are not opened.');
+      return;
+    }
+    /* Derived here, from the same stack the crumbs use — the search box calls this with no
+       argument, and taking a folder name from the caller meant clearing a search inside a
+       subfolder named the ROOT in the tooltip. */
+    var where = _driveStack.length ? _driveStack[_driveStack.length - 1].name : (_driveRootName || 'this folder');
+    dlIdleLabel('drv_dlall',
+      _driveStack.length ? '⬇ Download this folder' : '⬇ Download all',
+      'Download “' + where + '” and everything under it as one .zip');
   }
   function drivePreviewMime(it) {
     var m = it.mimeType || '';
@@ -5510,10 +5548,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function loadDriveFiles() {
     var list = document.getElementById('drv_list'); if (!list) return;
     list.innerHTML = '<div style="color:var(--muted);">' + (_driveSearch ? 'Searching…' : 'Loading…') + '</div>';
-    var url = '/api/integrations/drive/' + encodeURIComponent(currentRealm) + '/files?folderId=' + encodeURIComponent(_driveFolder) + (_driveSearch ? '&q=' + encodeURIComponent(_driveSearch) : '');
+    /* Pinned: the client, the folder AND the query this response belongs to. Typing in the
+       search box fires a request per keystroke-burst, so without this a slower earlier one
+       painted last over results already on screen — and the header naming the search term was
+       built from whatever the box held at paint time, not from what was asked. */
+    var realmAt = currentRealm, folderAt = _driveFolder, qAt = _driveSearch;
+    var mine = function () { return currentRealm === realmAt && _driveFolder === folderAt && _driveSearch === qAt; };
+    var url = '/api/integrations/drive/' + encodeURIComponent(realmAt) + '/files?folderId=' + encodeURIComponent(folderAt) + (qAt ? '&q=' + encodeURIComponent(qAt) : '');
     fetch(url, { credentials: 'include' })
       .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
       .then(function (resp) {
+        if (!mine()) return;
         if (resp && resp.needsRoot) { showSetRootForm(list, resp); return; }
         if (resp && resp.needsReconnect) {
           list.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:14px;font-size:13px;">' + esc(resp.error || 'Drive access needs reconnecting.') + '</div>' +
@@ -5531,18 +5576,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
            client's folder are dropped server-side. Say so: a silent drop reads as "the file
            isn't there", and the count was being reported to nobody. */
         if (resp.filteredOut) head += '<div style="background:#fbf6ec;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12.5px;">' + resp.filteredOut + ' result' + (resp.filteredOut === 1 ? '' : 's') + ' matched elsewhere on the connected account and ' + (resp.filteredOut === 1 ? 'was' : 'were') + ' not shown — only files inside this client’s folder are listed here.</div>';
-        head += _driveSearch ? '<div style="font-size:12px;color:var(--muted);margin-bottom:6px;">' + items.length + ' result' + (items.length === 1 ? '' : 's') + ' for “' + esc(_driveSearch) + '” · <a href="#" id="drv_clear" style="color:var(--gold-deep);font-weight:600;">clear</a></div>' : '';
-        if (!items.length) { list.innerHTML = head + '<div style="color:var(--muted);padding:8px 0;">' + (_driveSearch ? 'No files match your search.' : 'This folder is empty.') + '</div>'; var cl0 = document.getElementById('drv_clear'); if (cl0) cl0.onclick = function (e) { e.preventDefault(); _driveSearch = ''; renderDriveBrowser(); }; return; }
+        head += qAt ? '<div style="font-size:12px;color:var(--muted);margin-bottom:6px;">' + items.length + ' result' + (items.length === 1 ? '' : 's') + ' for “' + esc(qAt) + '” · <a href="#" id="drv_clear" style="color:var(--gold-deep);font-weight:600;">clear</a></div>' : '';
+        if (!items.length) { list.innerHTML = head + '<div style="color:var(--muted);padding:8px 0;">' + (qAt ? 'No files match your search.' : 'This folder is empty.') + '</div>'; var cl0 = document.getElementById('drv_clear'); if (cl0) cl0.onclick = function (e) { e.preventDefault(); _driveSearch = ''; renderDriveBrowser(); }; return; }
         list.innerHTML = head + '<table><tbody>' + items.map(function (it) {
           if (it.folder) return '<tr><td><button type="button" class="fs-folder" data-folder="' + esc(it.id) + '" data-fname="' + esc(it.name) + '">📁 ' + esc(it.name) + '</button></td><td></td></tr>';
           var kb = it.size ? (Math.max(1, Math.round(it.size / 1024)) + ' KB') : '';
-          return '<tr><td><a class="fs-file" href="/api/integrations/drive/' + encodeURIComponent(currentRealm) + '/download/' + encodeURIComponent(it.id) + '?name=' + encodeURIComponent(it.name) + '" data-pvname="' + esc(it.name) + '" data-pvmime="' + esc(drivePreviewMime(it)) + '">📄 ' + esc(it.name) + '</a></td><td style="text-align:right;color:var(--muted);font-size:12px;">' + esc(kb) + '</td></tr>';
+          return '<tr><td><a class="fs-file" href="/api/integrations/drive/' + encodeURIComponent(realmAt) + '/download/' + encodeURIComponent(it.id) + '?name=' + encodeURIComponent(it.name) + '" data-pvname="' + esc(it.name) + '" data-pvmime="' + esc(drivePreviewMime(it)) + '">📄 ' + esc(it.name) + '</a></td><td style="text-align:right;color:var(--muted);font-size:12px;">' + esc(kb) + '</td></tr>';
         }).join('') + '</tbody></table>';
         var cl = document.getElementById('drv_clear'); if (cl) cl.onclick = function (e) { e.preventDefault(); _driveSearch = ''; renderDriveBrowser(); };
         list.querySelectorAll('[data-folder]').forEach(function (b) { b.onclick = function () { _driveSearch = ''; _driveStack.push({ id: b.getAttribute('data-folder'), name: b.getAttribute('data-fname') }); _driveFolder = b.getAttribute('data-folder'); renderDriveBrowser(); }; });
         wirePreviews(list, '&');
       })
-      .catch(function () { list.innerHTML = '<div style="color:var(--burgundy);font-size:13px;">Could not load drive.</div>'; });
+      .catch(function () { if (!mine()) return; list.innerHTML = '<div style="color:var(--burgundy);font-size:13px;">Could not load drive.</div>'; });
   }
   function showSetRootForm(list, resp) {
     if (!list) return;
@@ -6321,13 +6366,30 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function uploadFile() {
     var fi = document.getElementById('fl_file'); var f = fi.files[0]; if (!f) { (window.bccNotify || alert)('Pick a file first.', 'warn'); return; }
     if (f.size > 25 * 1024 * 1024) { (window.bccNotify || alert)('Max 25 MB.', 'warn'); return; }
-    var fd = new FormData(); fd.append('file', f); fd.append('folder', clientFolder()); fd.append('tags', document.getElementById('fl_tags').value || '');
-    var st = document.getElementById('fl_status'); st.textContent = 'Uploading…';
+    /* PINNED at click time. Everything below used to re-read currentRealm after the round
+       trip: switch client mid-upload and "Uploaded." appeared under the new client, the audit
+       row recorded the file against the new client's realmId — a false entry in the log the
+       firm uses to answer "who put this here" — and the wrong file list was repainted. */
+    var realmAt = currentRealm;
+    var folderAt = clientFolder();
+    var fd = new FormData(); fd.append('file', f); fd.append('folder', folderAt); fd.append('tags', document.getElementById('fl_tags').value || '');
+    var say = function (txt) { var el = document.getElementById('fl_status'); if (el && currentRealm === realmAt) el.textContent = txt; };
+    say('Uploading…');
     fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd }).then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); }).then(function () {
-      st.textContent = 'Uploaded.'; fi.value = ''; document.getElementById('fl_tags').value = '';
-      if (window.bccAudit) window.bccAudit('client-file-upload', { path: '/bookkeeping.html', meta: { realmId: currentRealm, name: f.name } });
+      // The realm the file actually went to, always — this row is the audit trail.
+      if (window.bccAudit) window.bccAudit('client-file-upload', { path: '/bookkeeping.html', meta: { realmId: realmAt, name: f.name } });
+      if (currentRealm !== realmAt) {
+        (window.bccNotify || alert)('“' + f.name + '” was uploaded to ' + companyName(realmAt) + '.', 'success', 7000);
+        return;
+      }
+      say('Uploaded.');
+      var fiNow = document.getElementById('fl_file'); if (fiNow) fiNow.value = '';
+      var tg = document.getElementById('fl_tags'); if (tg) tg.value = '';
       loadFiles();
-    }).catch(function (e) { st.textContent = 'Upload failed: ' + e.message; });
+    }).catch(function (e) {
+      if (currentRealm !== realmAt) { (window.bccNotify || alert)('“' + f.name + '” could not be uploaded to ' + companyName(realmAt) + ': ' + e.message, 'error', 9000); return; }
+      say('Upload failed: ' + e.message);
+    });
   }
   function delFile(id) {
     if (!confirm('Delete this file?')) return;
@@ -6526,7 +6588,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       return res;
     });
   }
+  var _notaryCreating = false;
   function notaryCreate() {
+    /* BEFORE the upload, not after it. The write gate lived in saveNotaryReq, which runs once
+       the document has already been filed — so a view-only user was told nothing was saved
+       while their file sat in /notary attached to no request. */
+    if (bkRefuseIfReadOnly()) return;
+    if (_notaryCreating) return;   // a second click during a slow upload filed a second copy of both
     var docName = (document.getElementById('nt_docname').value || '').trim();
     if (!docName) { (window.bccNotify || alert)('Give the document a name.', 'warn'); return; }
     var id = notaryPrefix() + uid2();
@@ -6547,13 +6615,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     };
     if (file) {
       var cs = document.getElementById('nt_cstatus'); if (cs) cs.textContent = 'Uploading document…';
+      var cb = document.getElementById('nt_create'), cbTxt = cb ? cb.textContent : '';
+      _notaryCreating = true;
+      if (cb) { cb.disabled = true; cb.textContent = 'Creating…'; }
+      // Released on EVERY exit. The success path re-renders the form away, but a failure that
+      // left the button disabled would strand the person with a filled-in form and no way to
+      // submit it — the control whose retry lives behind it.
+      var release = function () { _notaryCreating = false; if (cb) { cb.disabled = false; cb.textContent = cbTxt; } };
       var fd = new FormData(); fd.append('file', file, file.name);
       fd.append('folder', notaryFolder());
       fd.append('tags', 'To notarize, notary');
       fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
         .then(function (rr) { return rr.json().then(function (j) { return rr.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + rr.status))); }); })
-        .then(function (j) { if (j && j.id) r.fileId = j.id; if (currentRealm && typeof loadFiles === 'function') loadFiles(); finish(); })
-        .catch(function (e) { if (cs) cs.textContent = ''; (window.bccNotify || alert)('Document upload failed: ' + e.message + ' — request not created.', 'error', 7000); });
+        .then(function (j) { if (j && j.id) r.fileId = j.id; if (currentRealm && typeof loadFiles === 'function') loadFiles(); release(); finish(); })
+        .catch(function (e) { release(); if (cs) cs.textContent = ''; (window.bccNotify || alert)('Document upload failed: ' + e.message + ' — request not created.', 'error', 7000); });
     } else finish();
   }
   function notaryUploadFinal(id, file) {
@@ -7064,6 +7139,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // missing entirely. Say so when the cap was hit.
     if (cnt) cnt.textContent = rows.length + (rows.length === 1 ? ' message' : ' messages')
       + (_emMsgs.length >= 50 ? ' (of the 50 most recent — older mail isn’t loaded, so search only covers these)' : '');
+    /* Computed ABOVE the branch, and appended to BOTH renders. This is the one-of-two-branches
+       shape again: the warning only existed on the empty one. */
+    var metaWarn = _emMetaErr
+      ? '<div style="color:var(--burgundy);padding:6px 0 0;font-size:12.5px;">Couldn’t load the read/archive state for this client — messages may look unread, untagged or un-archived when they are not.</div>'
+      : '';
     if (!rows.length) {
       // "No messages yet" is a claim about the mailbox. Only make it when we actually read it.
       // ...and only for the client and folder it actually happened on. A global flag followed
@@ -7077,9 +7157,6 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
          overwrote that explanation with a claim about a mailbox nobody had opened. Leaving
          the panel as it is keeps whatever the last real render put there. */
       if (_emListReadFor !== (currentRealm + '|' + _emFolder)) return;
-      var metaWarn = _emMetaErr
-        ? '<div style="color:var(--burgundy);padding:6px 0 0;font-size:12.5px;">Couldn’t load the read/archive state for this client, so this view may be incomplete.</div>'
-        : '';
       list.innerHTML = '<div style="color:var(--muted);padding:10px 0;">No messages' + (q || _emFilter !== 'all' ? ' match this view' : ' yet') + '.</div>' + metaWarn; return;
     }
     list.innerHTML = rows.map(function (m) {
@@ -7099,7 +7176,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           '<div class="em-prev">' + esc((m.preview || '').slice(0, 160)) + '</div>' +
           (tags || assignee || replied ? '<div class="em-meta-row">' + tags + ' ' + assignee + ' ' + replied + '</div>' : '') +
         '</div>' + readBy + '</div>';
-    }).join('');
+    }).join('') + metaWarn;
     list.querySelectorAll('[data-emid]').forEach(function (r) { r.onclick = function () { openEmail(r.getAttribute('data-emid')); }; });
   }
 
@@ -7763,7 +7840,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         '<button class="btn btn-ghost" data-cpr-del="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;">Delete</button></td></tr>';
     }).join('') + '</tbody></table>') : (q
       ? '<div style="color:var(--muted);padding:10px 0;">No payroll reports match &ldquo;' + esc(_cprSearch) + '&rdquo;.</div>'
-      : (cprLoadOk()
+      : (bootDataOk()
         ? '<div style="color:var(--muted);padding:10px 0;">No payroll reports yet. Click <strong>+ New payroll report</strong> to create one.</div>'
         /* NOT "none yet". This device has not been told what the firm holds, so an empty list
            is a statement about the request, not about the client — and the numbering below
@@ -7937,14 +8014,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     if (st) st.textContent = '';
   }
-  /* Has this device actually been told what certified payrolls exist? Require the POSITIVE
+  /* Has this device actually been told what the SERVER holds? Require the POSITIVE
      fact, exactly as the Sessions import does — _bccBootPullFailed is undefined while the
      pull is still in flight, and this button is live from parse time. Everything downstream
      (the empty state, cprNextNo's max(), the number frozen onto a filed form) is only as
      true as this. */
-  function cprLoadOk() { return !window._bccBootPullFailed && window._bccBootPullOk === true; }
+  function bootDataOk() { return !window._bccBootPullFailed && window._bccBootPullOk === true; }
   function cprNew() {
-    if (!cprLoadOk()) {
+    if (!bootDataOk()) {
       (window.bccNotify || alert)('This device hasn’t finished loading ' + companyName(currentRealm) + '’s existing payroll reports yet. '
         + 'Starting one now would number it #1 and duplicate a payroll number already filed for this job. Reload the page and try again.', 'warn', 12000);
       return;
@@ -7975,7 +8052,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // dates, daily hours, gross, deductions) for the new pay period. (Jenna's ask.)
   function cprDuplicate(id) {
     if (bkRefuseIfReadOnly()) return;
-    if (!cprLoadOk()) {
+    if (!bootDataOk()) {
       (window.bccNotify || alert)('This device hasn’t finished loading ' + companyName(currentRealm) + '’s existing payroll reports yet, so the copy would take a payroll number already in use. Reload the page and try again.', 'warn', 12000);
       return;
     }
@@ -8800,6 +8877,21 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      silently changing the number on a form already sent to a public agency. The set-up flow
      is unaffected: cprNew and cprDuplicate both hand the draft to the editor and the project
      name is entered (and renumbered) before anyone presses Save. */
+  /* Retire the copy this filing replaces. Both filing paths did the same fire-and-forget
+     DELETE, so a refusal (view-only, or a server error) left the SUPERSEDED figures in the
+     client's Files looking current, beside the new ones, under a clean "Saved". Anyone
+     forwarding "the payroll report" then has two to choose from and no way to tell. */
+  function retirePreviousFiling(prevId, label) {
+    if (!prevId) return;
+    fetch('/api/documents/' + encodeURIComponent(prevId), { method: 'DELETE', credentials: 'include' })
+      .then(function (dr) {
+        if (dr.ok || dr.status === 404) return;
+        (window.bccNotify || alert)('The new copy of “' + label + '” was filed, but the previous version could not be removed from Files (HTTP ' + dr.status + '). Delete it by hand so the old figures are not handed out.', 'warn', 13000);
+      })
+      .catch(function () {
+        (window.bccNotify || alert)('The new copy of “' + label + '” was filed, but the previous version could not be removed from Files. Delete it by hand so the old figures are not handed out.', 'warn', 13000);
+      });
+  }
   function cprSave(silent, ratesConfirmed) {
     if (bkRefuseIfReadOnly()) return;
     if (!cprDraft) return;
@@ -8942,7 +9034,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             }
             r.docId = j.id;
           }
-          if (prev && j && j.id && prev !== j.id) fetch('/api/documents/' + encodeURIComponent(prev), { method: 'DELETE', credentials: 'include' }).catch(function () {});
+          if (prev && j && j.id && prev !== j.id) retirePreviousFiling(prev, fname);
           if (window.bccAudit) window.bccAudit('client-file-upload', { key: j && j.id, path: '/bookkeeping.html', meta: { realmId: realm, name: fname, source: 'certified-payroll' } });
           if (!silent && window.bccNotifySaved) window.bccNotifySaved('Payroll report saved & filed to the client (tag: Certified Payroll).');
           if (typeof loadFiles === 'function') loadFiles();
@@ -9509,7 +9601,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var inp = document.querySelector('[data-pf="appNo"]'); if (inp) inp.value = no;
   }
   function payappNew(carryFromId) {
-    if (!cprLoadOk()) {
+    if (!bootDataOk()) {
       (window.bccNotify || alert)('This device hasn’t finished loading ' + companyName(currentRealm) + '’s existing pay applications yet. '
         + 'Starting one now would number it #1 and repeat an application number already sent to the owner. Reload the page and try again.', 'warn', 12000);
       return;
@@ -9571,8 +9663,22 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // Persist before dropping, same reasoning as renderPayroll above — the in-progress
     // pay application must survive a client switch, not vanish.
     if (payappEditingId !== null && payappDraft && payappDraft.realmId !== currentRealm) {
-      try { payappDraft.updatedAt = nowIso(); payappDraft.updatedBy = myUpn(); localStorage.setItem(payappDraft.id, JSON.stringify(payappDraft)); } catch (e) {}
-      payappEditingId = null; payappDraft = null;
+      /* Only DISCARD it if it was actually PERSISTED — the same reasoning, and the same shape,
+         as the certified-payroll editor one tab away. Nulling the draft on the failure path
+         destroyed a whole schedule of values with nothing said, and the bookkeeper came back
+         to a list with no new entry and no way to know it was storage rather than a mis-click. */
+      var paKept = false;
+      var paWhose = payappDraft.realmId;
+      try {
+        payappDraft.updatedAt = nowIso(); payappDraft.updatedBy = myUpn();
+        localStorage.setItem(payappDraft.id, JSON.stringify(payappDraft));
+        paKept = true;
+      } catch (e) {}
+      if (paKept) { payappEditingId = null; payappDraft = null; }
+      else {
+        (window.bccNotify || alert)('This browser’s storage is full, so the pay application you had open could not be saved when you switched client. It is still open — go back to '
+          + companyName(paWhose) + ' and free up some space before leaving it again.', 'error', 15000);
+      }
     }
     if (payappEditingId !== null) { renderPayappEditor(body); return; }
     var reports = allPayapp().sort(function (a, b) { return (cnum(b.appNo) - cnum(a.appNo)) || (b.updatedAt || '').localeCompare(a.updatedAt || ''); });
@@ -9589,7 +9695,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         '<button class="btn btn-ghost" data-pa-next="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;" title="Start the next application, carrying this schedule of values forward">Next app →</button> ' +
         '<button class="btn btn-ghost" data-pa-print="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;">Print</button> ' +
         '<button class="btn btn-ghost" data-pa-del="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:28px;">Delete</button></td></tr>';
-    }).join('') + '</tbody></table>') : (cprLoadOk()
+    }).join('') + '</tbody></table>') : (bootDataOk()
       ? '<div style="color:var(--muted);padding:10px 0;">No pay applications yet. Click <strong>+ New pay application</strong> to create one.</div>'
       : '<div style="background:#f7ecec;border:1px solid #e3b4b4;border-radius:8px;padding:10px 12px;color:#6a1c1c;font-size:12.5px;">'
         + '<strong>This client’s pay applications could not be loaded.</strong> Nothing is missing — this device has not finished getting them '
@@ -9816,7 +9922,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             }
             r.docId = j.id;
           }
-          if (prev && j && j.id && prev !== j.id) fetch('/api/documents/' + encodeURIComponent(prev), { method: 'DELETE', credentials: 'include' }).catch(function () {});
+          if (prev && j && j.id && prev !== j.id) retirePreviousFiling(prev, fname);
           if (window.bccAudit) window.bccAudit('client-file-upload', { key: j && j.id, path: '/bookkeeping.html', meta: { realmId: realm, name: fname, source: 'pay-application' } });
           if (!silent && window.bccNotifySaved) window.bccNotifySaved('Pay application saved & filed to the client (tag: Pay Application).');
           if (typeof loadFiles === 'function') loadFiles();
