@@ -2060,7 +2060,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         var _trendNote = String(resp.method || '').toLowerCase() === 'cash'
           ? 'trend = last 12 synced months (accrual basis — the tiles above are cash)'
           : 'trend = last 12 synced months';
-        document.getElementById('qboKpiNote').textContent = 'As of ' + resp.asOf + ' · ' + resp.method + ' basis · ' + _trendNote + ' · monthly overhead ' + money2(k.monthlyBurn) + ' (avg of ' + resp.burnMonths + ' mo, COGS excluded).';
+        /* balanceSheetStale is set by the nightly sync on any month whose Balance Sheet call
+           failed and whose cash / current-asset / current-liability figures were CARRIED
+           FORWARD from the prior month rather than read. That flag was written and never read
+           by anything — so the Cash-on-hand and Months-of-cash lines plotted a repeated
+           reading as if it were this month's, with nothing to say otherwise. */
+        var _staleMonths = kpiSeries(function (p) { return p.balanceSheetStale ? p.period : null; }).filter(Boolean);
+        var _staleNote = _staleMonths.length
+          ? ' · ' + _staleMonths.length + ' month' + (_staleMonths.length === 1 ? '' : 's') + ' in the cash trend (' + _staleMonths.slice(0, 3).join(', ') + (_staleMonths.length > 3 ? '…' : '') + ') carried the prior month’s balance sheet forward — QuickBooks did not answer for them'
+          : '';
+        document.getElementById('qboKpiNote').textContent = 'As of ' + resp.asOf + ' · ' + resp.method + ' basis · ' + _trendNote + ' · monthly overhead ' + money2(k.monthlyBurn) + ' (avg of ' + resp.burnMonths + ' mo, COGS excluded).' + _staleNote;
       })
       .catch(function (e) { if (myGen !== _qboKpiGen || currentRealm !== realmAt) return; tiles.innerHTML = ''; document.getElementById('qboKpiNote').innerHTML = '<span style="color:var(--burgundy);">' + esc(qboFriendly(e && e.message)) + '</span>'; });
   }
@@ -5238,6 +5247,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           // This block is rebuilt on every folder step, so a run in flight has to be re-shown
           // on the NEW button — otherwise it reads "Download" and cancels on click.
           dlRefreshControls();
+          dlRestoreReport('sharepoint');   // ...and the list of what did NOT download survives the step too
         }
         wirePreviews(area, '&');
       })
@@ -5516,6 +5526,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       syncDriveDlBtn();
       drvDl.onclick = function () { dlClick('drive', driveDownloadAll); };
       dlRefreshControls();   // same as SharePoint: this browser re-renders on every folder step
+      dlRestoreReport('drive');
     }
     loadDriveFiles();
   }
@@ -5806,11 +5817,33 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      just those. Cleared when a fresh run starts. */
   function dlReport(source, html) {
     var cfg = DL_SOURCES[source]; if (!cfg) return;
+    _dlLastReport[dlFailKey(source, currentRealm)] = html || '';
     var el = document.getElementById(cfg.report); if (!el) return;
     el.innerHTML = html || '';
     el.style.cssText = html
       ? 'background:#f7ecec;border:1px solid #e3b4b4;border-radius:8px;padding:9px 12px;margin:0 0 10px;font-size:12.5px;color:#6a1c1c;'
       : 'display:none;';
+  }
+  /* Re-paint the last failure report into a freshly-rendered panel, and re-bind its retry
+     button — the same thing dlRefreshControls does for the controls, for the same reason. */
+  function dlRestoreReport(source) {
+    var key = dlFailKey(source, currentRealm);
+    var html = _dlLastReport[key];
+    if (!html) return;
+    var cfg = DL_SOURCES[source]; if (!cfg) return;
+    var el = document.getElementById(cfg.report); if (!el) return;
+    el.innerHTML = html;
+    el.style.cssText = 'background:#f7ecec;border:1px solid #e3b4b4;border-radius:8px;padding:9px 12px;margin:0 0 10px;font-size:12.5px;color:#6a1c1c;';
+    var rb = el.querySelector('[data-dlretry]');
+    if (rb) rb.onclick = function () {
+      var again = (_dlLastFailed[key] || []).slice();
+      if (!again.length) return;
+      dlClick(source, function () {
+        _dlRun = { cancel: false, ctrls: [], realm: currentRealm, source: source };
+        dlRefreshControls();
+        zipAndSave({ source: source, realm: currentRealm, items: again, zipLabel: '(retry)', notes: [] });
+      });
+    };
   }
   /* The resting label lives on the button as data-idle, so each block owns its own wording and
      this only has to know how to swap it for Cancel and back. */
@@ -5878,7 +5911,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      finishes after the bookkeeper has switched client used to hand its failures to whichever
      client was on screen — and the retry button then built an archive of client A's files
      named for client B, with the audit row agreeing. */
-  var _dlLastFailed = {};
+  /* _dlLastReport is kept per source+client because the panel these live in is rebuilt on
+     every folder step, and the report is the ONLY place the failed files are named — losing it
+     meant re-running the whole archive to find out what was missing. Declared beside
+     _dlLastFailed, which it is always read with. Re-painted by dlRestoreReport. */
+  var _dlLastFailed = {}, _dlLastReport = {};
   function dlFailKey(source, realm) { return source + '|' + (realm || ''); }
   function zipAndSave(cfg) {
     var realmAt = cfg.realm, source = cfg.source, items = cfg.items || [];
@@ -9060,7 +9097,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function cprDocHtml(r, forPrint) {
     var wd = weekDates(r.weekStart);
     var totals = { hrs:0, job:0, gp:0, ded:0, net:0 };
-    var empRows = (r.employees || []).map(function (e) {
+    /* The SAME filter cprDliBuild and the MnDOT builder both apply. Without it the printed
+       DLI form carried the untouched blank row that "+ Add employee" leaves behind — a
+       nameless employee certified as paid $0.00 for the week — while the PDF emailed and filed
+       for the very same payroll number had one row fewer. An agency or GC comparing the two
+       copies of payroll #N sees two different employee counts on a form filed under oath.
+       cprConfirmRates cannot catch it either: cprZeroHourRows returns early on a blank row. */
+    var emps = (r.employees || []).filter(function (e) { return e && ((e.name || '').trim() || !cprEmpIsBlank(e)); });
+    var empRows = emps.map(function (e) {
       var c = computeEmp(e); totals.hrs += c.totalHrs; totals.job += c.grossJob; totals.gp += c.grossPeriod; totals.ded += c.ded; totals.net += c.net;
       function dr(arr) { return DOW.map(function (d, di) { return '<td class="d">' + esc(arr[di] || '') + '</td>'; }).join(''); }
       var nameCell = '<strong>' + esc(e.name || '') + '</strong>' + (e.address ? '<br>' + esc(e.address) : '') + (e.idNumber ? '<br>' + esc(e.idNumber) : '');
@@ -9104,8 +9148,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         '<th rowspan="2">FICA</th><th rowspan="2">Fed<br>tax</th><th rowspan="2">State<br>tax</th>' +
         // The editor collects a description for each of these; print it, or the amount is
         // filed with the state with nothing saying what it was.
-        '<th rowspan="2">Other' + (cprOtherLabel(r.employees, 1) ? '<br>' + esc(cprOtherLabel(r.employees, 1)) : '') + '</th>' +
-        '<th rowspan="2">Other' + (cprOtherLabel(r.employees, 2) ? '<br>' + esc(cprOtherLabel(r.employees, 2)) : '') + '</th>' +
+        // `emps`, not r.employees: the column header must describe the rows printed below it.
+        '<th rowspan="2">Other' + (cprOtherLabel(emps, 1) ? '<br>' + esc(cprOtherLabel(emps, 1)) : '') + '</th>' +
+        '<th rowspan="2">Other' + (cprOtherLabel(emps, 2) ? '<br>' + esc(cprOtherLabel(emps, 2)) : '') + '</th>' +
         '<th rowspan="2">Total<br>deduct.</th><th rowspan="2">Net<br>wages</th>' +
       '</tr><tr></tr></thead><tbody>' + empRows +
         '<tr class="tot"><td colspan="4" class="l">TOTALS</td><td colspan="7"></td><td class="n">' + totals.hrs.toFixed(2) + '</td><td></td><td class="n">' + money(totals.job) + '</td><td class="n">' + money(totals.gp) + '</td><td colspan="5"></td><td class="n">' + money(totals.ded) + '</td><td class="n">' + money(totals.net) + '</td></tr>' +
@@ -9525,13 +9570,43 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     ]).then(function (got) {
       return cprMndotBuild(r, got[1], got[2], got[0]);
     }).then(function (files) {
-      files.forEach(function (f, i) {
-        var url = URL.createObjectURL(new Blob([f.bytes], { type: 'application/pdf' }));
-        var a = document.createElement('a'); a.href = url; a.download = f.name; document.body.appendChild(a);
-        setTimeout(function () { a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(url); }, 30000); }, i * 400);
-      });
+      if (!files || !files.length) throw new Error('no forms were produced');
+      /* ONE artifact, not N racing anchor clicks. Two programmatic clicks 400ms apart is the
+         pattern browsers treat as a multiple-download attempt: the person gets a single
+         "allow multiple downloads?" prompt and, if they miss or dismiss it, the SECOND file
+         never arrives — while the toast counted the anchors it had created and said both did.
+         The one that goes missing is the Statement of Compliance, on a form filed with the
+         State. A zip hands over exactly what is reported, and it is the same writer and saver
+         the Files download engine already uses. */
+      if (files.length === 1) {
+        window.bccSaveBlob
+          ? window.bccSaveBlob(new Blob([files[0].bytes], { type: 'application/pdf' }), files[0].name)
+          : (function () {
+              var url = URL.createObjectURL(new Blob([files[0].bytes], { type: 'application/pdf' }));
+              var a = document.createElement('a'); a.href = url; a.download = files[0].name; document.body.appendChild(a);
+              a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(url); }, 30000);
+            })();
+      } else if (window.bccZip && window.bccSaveBlob) {
+        var z = window.bccZip();
+        files.forEach(function (f) { z.add(f.name, f.bytes, Date.now()); });
+        window.bccSaveBlob(z.finish(), window.bccSafeFileName('MnDOT Certified Payroll #' + (r.payrollNo || '') + ' — ' + companyName(r.realmId || currentRealm), 'MnDOT forms') + '.zip');
+      } else {
+        /* An older cached copy of bcc-api.js has no zip writer. Fall back to the separate
+           downloads, but SAY that the browser may only deliver the first — never report a
+           count this path cannot vouch for. */
+        files.forEach(function (f, i) {
+          var url = URL.createObjectURL(new Blob([f.bytes], { type: 'application/pdf' }));
+          var a = document.createElement('a'); a.href = url; a.download = f.name; document.body.appendChild(a);
+          setTimeout(function () { a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(url); }, 30000); }, i * 400);
+        });
+        if (window.bccAudit) window.bccAudit('cpr-print', { key: r.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, payrollNo: r.payrollNo, format: 'mndot' } });
+        (window.bccNotify || alert)('Sending ' + files.length + ' MnDOT PDFs as separate downloads — your browser may ask to allow multiple files, and will only deliver the rest if you say yes. Check you have all ' + files.length + '. (Reload the page to get them as one zip instead.)', 'warn', 14000);
+        return;
+      }
       if (window.bccAudit) window.bccAudit('cpr-print', { key: r.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, payrollNo: r.payrollNo, format: 'mndot' } });
-      if (window.bccNotifySaved) window.bccNotifySaved(files.length + ' MnDOT PDFs downloaded — both stay fillable for any final touches.');
+      if (window.bccNotifySaved) window.bccNotifySaved(files.length === 1
+        ? 'MnDOT form downloaded — it stays fillable for any final touches.'
+        : 'Both MnDOT forms downloaded as one zip — they stay fillable for any final touches.');
     }).catch(function (e) { (window.bccNotify || alert)('Could not build the MnDOT forms: ' + e.message, 'error', 8000); });
   }
 

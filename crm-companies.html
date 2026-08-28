@@ -453,9 +453,24 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         var qcos = (d && d.companies) || [];
         if (!qcos.length) { if (btn) btn.disabled = false; setSyncMeta(''); if (opts.full) (window.bccNotify || function () {})('No bookkeeping companies you can access.', 'warn'); return; }
         var existing = allCompanies(); var created = 0, linked = 0; var toFill = [];
+        var ambiguous = [];
         qcos.forEach(function (q) {
-          var match = existing.filter(function (c) { return c.realmId && String(c.realmId) === String(q.realmId); })[0]
-                   || existing.filter(function (c) { return !c.realmId && normName(c.name) === normName(q.companyName); })[0];
+          /* Three tiers, the same ones importOwnCustomers uses. The realm is definitive. An
+             EXACT name is safe. The fuzzy key — which deliberately drops LLC / Inc / Corp and
+             all punctuation — is only safe when exactly ONE unlinked company collapses to it;
+             when two do, they are different legal entities and binding either one to this
+             realm silently attaches the wrong business's books to it. */
+          var byRealm = existing.filter(function (c) { return c.realmId && String(c.realmId) === String(q.realmId); })[0];
+          var byExact = byRealm || existing.filter(function (c) { return !c.realmId && rawKey(c.name) === rawKey(q.companyName); })[0];
+          var match = byExact;
+          if (!match) {
+            var fuzzy = existing.filter(function (c) { return !c.realmId && normName(c.name) === normName(q.companyName); });
+            if (fuzzy.length === 1) match = fuzzy[0];
+            else if (fuzzy.length > 1) {
+              // Do NOT guess. Create a separate record and name the collision in the summary.
+              ambiguous.push(q.companyName || ('Company ' + q.realmId));
+            }
+          }
           if (!match) {
             var nc = saveCompany({ name: q.companyName || ('Company ' + q.realmId), realmId: String(q.realmId), source: 'bookkeeping' });
             if (!nc) return;   // refused — nc.id would throw, and the count would be a lie
@@ -473,6 +488,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             toFill.push(match.id);
           }
         });
+        if (ambiguous.length) {
+          // Said out loud: a silent "we picked one" is how a client's financials end up under
+          // their sister company's name.
+          (window.bccNotify || alert)('Added ' + (ambiguous.length === 1 ? 'a separate record' : 'separate records') + ' for '
+            + ambiguous.slice(0, 4).join(', ') + (ambiguous.length > 4 ? ' and ' + (ambiguous.length - 4) + ' more' : '')
+            + ' — more than one CRM company matched that name once suffixes like LLC/Inc are ignored, so nothing was linked automatically. Link the right one by hand.', 'warn', 15000);
+        }
         renderList();
         return fillCompanyDetails(toFill).then(function (res) {
           if (btn) btn.disabled = false; setSyncMeta('');
