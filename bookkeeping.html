@@ -5198,7 +5198,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         }
         wirePreviews(area, '&');
       })
-      .catch(function () { if (currentRealm === realmAt) area.innerHTML = ''; });
+      .catch(function (e) {
+        if (currentRealm !== realmAt) return;
+        area.innerHTML = '<div class="fs-block"><div class="fs-head"><div><div class="fs-title">📁 SharePoint — Bookkeeping Operations</div>' +
+          '<div class="fs-sub" style="color:var(--burgundy);">This client’s SharePoint folder could not be loaded (' + esc((e && e.message) || 'connection lost') + ').</div></div></div>' +
+          '<div class="fs-body"><button class="btn btn-ghost" id="sp_retry" type="button" style="font-size:12px;">↻ Try again</button></div></div>';
+        var rt = document.getElementById('sp_retry');
+        if (rt) rt.onclick = function () { loadSharePoint(); };
+      });
   }
   /* Full migration: walk this client's whole SharePoint tree into Internal files.
      The server does bounded batches and reports what's left, so we loop until it
@@ -5233,7 +5240,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       })
         .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
         .then(function (resp) {
-          if (currentRealm !== realmAt) return null;              // user navigated away
+          if (currentRealm !== realmAt) { total += resp && resp.ok ? (resp.imported || 0) : 0; return null; }   // user navigated away — reported below, by name
           if (!resp || !resp.ok) throw new Error((resp && resp.error) || 'import failed');
           lastResp = resp;
           rounds++;
@@ -5265,7 +5272,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     step().then(function (resp) {
       _spMigrateRun = null;
-      if (!resp || currentRealm !== realmAt) return;
+      if (!resp || currentRealm !== realmAt) {
+        /* Named for the client it belonged to — the toast lands in whatever workspace they
+           moved to, where "the import stopped" with no name reads as being about THIS one. */
+        (window.bccNotify || alert)('The SharePoint import for ' + companyName(realmAt) + ' stopped when you switched clients'
+          + (total ? ' — ' + total + ' file' + (total === 1 ? '' : 's') + ' had been brought over by then' : '')
+          + '. Open that client again and run it to finish the rest.', 'warn', 14000);
+        return;
+      }
       var liveBtn = document.getElementById('sp_migrate') || btn;
       if (liveBtn) { liveBtn.disabled = false; liveBtn.textContent = '⬇ Import ALL files for this client'; }
       var oversized = resp.oversized || [];
@@ -5315,7 +5329,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (!list || !list.length) return;
     var realmAt = currentRealm, pathAt = _spPath;
     var queue = list.slice(), total = list.length;
-    var importedAll = 0, failedAll = [], rounds = 0;
+    var importedAll = 0, failedAll = [], rounds = 0, stoppedEarly = 0;
     var st = document.getElementById('sp_status');
     var say = function (t) { var el = document.getElementById('sp_status'); if (el && currentRealm === realmAt) el.textContent = t; };
     say('Importing ' + total + ' file' + (total === 1 ? '' : 's') + '…');
@@ -5336,15 +5350,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           var accepted = (typeof resp.accepted === 'number' && resp.accepted > 0) ? resp.accepted : chunk.length;
           queue = queue.slice(accepted);
           say('Imported ' + importedAll + ' of ' + total + '…');
-          if (rounds > 200) { queue = []; return; }   // backstop; 200 rounds is 10,000 files
+          if (rounds > 200) { stoppedEarly = queue.length; queue = []; return; }   // backstop; 200 rounds is 10,000 files
           return step();
         });
     }
     step().then(function () {
       if (currentRealm !== realmAt) return;   // they moved on — the toast below would be about nothing they can see
+      var stopNote = stoppedEarly ? ' It stopped before the end — ' + stoppedEarly + ' file' + (stoppedEarly === 1 ? ' was' : 's were') + ' never attempted. Run the import again to pick up the rest.' : '';
       say('Imported ' + importedAll + ' of ' + total + ' file' + (total === 1 ? '' : 's') + ' into Internal files.'
-        + (failedAll.length ? ' ' + failedAll.length + ' skipped: ' + failedAll.slice(0, 6).map(function (f) { return f.name + ' (' + f.error + ')'; }).join(', ') + (failedAll.length > 6 ? ', …' : '') : ''));
-      if (failedAll.length) (window.bccNotify || alert)('Imported ' + importedAll + ' of ' + total + ' — ' + failedAll.length + ' could not be imported.', 'warn', 10000);
+        + (failedAll.length ? ' ' + failedAll.length + ' skipped: ' + failedAll.slice(0, 6).map(function (f) { return f.name + ' (' + f.error + ')'; }).join(', ') + (failedAll.length > 6 ? ', …' : '') : '')
+        + stopNote);
+      if (stoppedEarly) (window.bccNotify || alert)('Imported ' + importedAll + ' of ' + total + ', then stopped — ' + stoppedEarly + ' file' + (stoppedEarly === 1 ? '' : 's') + ' left to import. Run it again to finish.' + (failedAll.length ? ' ' + failedAll.length + ' also could not be imported.' : ''), 'warn', 14000);
+      else if (failedAll.length) (window.bccNotify || alert)('Imported ' + importedAll + ' of ' + total + ' — ' + failedAll.length + ' could not be imported.', 'warn', 10000);
       else if (window.bccNotifySaved && importedAll) window.bccNotifySaved(importedAll + ' file' + (importedAll === 1 ? '' : 's') + ' imported from SharePoint.');
       loadFiles();
     })
@@ -5695,7 +5712,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   // Writes to every message span the source owns — the internal block has two (the toolbar's,
   // and the one beside the empty-state button), and only one of them is on screen at a time.
-  function dlMsg(source, txt) {
+  /* realmAt is the client the RUN belongs to. A folder crawl of a big client takes minutes,
+     and the panel it writes into is reused by whichever client is on screen — so switching
+     clients mid-crawl put "Listing 'Payroll 2024'... (412 files so far)" under a different
+     client's name, naming one client's folders in another client's workspace. Callers that
+     have a run pass it; the clearing calls do not, and still always paint. */
+  function dlMsg(source, txt, realmAt) {
+    if (realmAt && realmAt !== currentRealm) return;
     var cfg = DL_SOURCES[source]; if (!cfg) return;
     cfg.msgs.forEach(function (id) { var el = document.getElementById(id); if (el) el.textContent = txt || ''; });
   }
@@ -5818,6 +5841,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     dlReport(source, '');   // the previous run's verdict is not this run's
     var zip = window.bccZip();
     var used = {}, failed = [], done = 0, saved = 0, overflow = '';
+    /* Prototype-free, for the same reason `taken()` below uses hasOwnProperty: a key that
+       happens to name an Object.prototype member reads truthy for an item nothing has
+       recorded, and here that means silently dropping it from both the zip and the note. */
+    var okIds = Object.create(null);
     var next = 0;
 
     /* OWN properties only. The key is a FILE NAME, which a person chose — and a file called
@@ -5894,7 +5921,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           if (_dlRun.cancel) return;
           try {
             zip.add(zipPathFor(it), new Uint8Array(buf), it.when || Date.now());
-            saved++;
+            saved++; okIds[it.id] = 1;
           } catch (e) {
             /* The archive itself refused this entry (4 GB / entry-count ceiling). Stop
                fetching: everything after it would be refused too, and the files already in
@@ -5943,11 +5970,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
 
     function finish() {
       var cancelled = !!(_dlRun && _dlRun.cancel) && !overflow;
+      var failedIds = Object.create(null);
+      failed.forEach(function (f) { failedIds[f.id] = 1; });
+      if (overflow) {
+        items.forEach(function (it) {
+          if (okIds[it.id] || failedIds[it.id]) return;
+          failedIds[it.id] = 1;
+          failed.push({ id: it.id, name: it.name || it.id, why: 'not attempted - ' + overflow });
+        });
+      }
       _dlRun = null;
       dlFinishState(source);
-      _dlLastFailed[dlFailKey(source, realmAt)] = items.filter(function (it) {
-        return failed.some(function (f) { return f.id === it.id; });
-      });
+      _dlLastFailed[dlFailKey(source, realmAt)] = items.filter(function (it) { return !!failedIds[it.id]; });
       /* Computed HERE, not beside the success toast, because the cancelled and
          nothing-arrived messages are just as capable of appearing over a different client's
          file list — and unattributed they read as being about the client on screen. */
@@ -5985,8 +6019,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       }
       var d = new Date();
       var stamp = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-      var fname = window.bccSafeFileName(companyName(realmAt), 'client') + ' — ' + DL_SOURCES[source].zipPart
-        + (cfg.zipLabel ? ' ' + cfg.zipLabel : '') + ' ' + stamp + '.zip';
+      var fname = window.bccSafeFileName(
+        window.bccSafeFileName(companyName(realmAt), 'client') + ' — ' + DL_SOURCES[source].zipPart
+        + (cfg.zipLabel ? ' ' + cfg.zipLabel : '') + ' ' + stamp + '.zip', 'download.zip');
       window.bccSaveBlob(blob, fname);
       var zipSize = blob.size || zip.bytes();   // blob.size includes the central directory
       if (window.bccAudit) window.bccAudit('client-file-download', {
@@ -6098,7 +6133,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       if (_dlRun && _dlRun.cancel) return Promise.resolve();
       var cur = queue.shift();
       folders++;
-      dlMsg(opts.source, 'Listing ' + (cur.rel ? '“' + cur.rel + '”' : 'the folder') + '… (' + out.length + ' files so far)');
+      dlMsg(opts.source, 'Listing ' + (cur.rel ? '“' + cur.rel + '”' : 'the folder') + '… (' + out.length + ' files so far)', opts.realm);
       return opts.list(cur.ref).then(function (res) {
         if (res.truncated) notes.push('“' + (cur.rel || 'the top folder') + '” holds more items than can be listed at once, so some are missing from this archive.');
         (res.items || []).forEach(function (it) {
@@ -6126,6 +6161,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     dlReport('sharepoint', '');
     return dlWalk({
       source: 'sharepoint',
+      realm: realmAt,
       start: startPath,
       list: function (path) {
         return fetch('/api/integrations/sharepoint/' + encodeURIComponent(realmAt) + '?path=' + encodeURIComponent(path), { credentials: 'include' })
@@ -6159,14 +6195,70 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
 
   /* ================= the client's shared drive ================= */
+  /* One mapper for both the folder walk and the search results — a second copy is how the
+     two paths drift, and the .pdf rename below is the kind of detail that only gets fixed in
+     the copy somebody happened to be looking at. */
+  function driveDlItem(it, rel, realmAt) {
+    /* A Google Docs/Sheets/Slides file has no real bytes — the download proxy exports it as a
+       PDF, and names it .pdf when it does. Mirror that here or the archive holds a .gdoc that
+       is actually a PDF and Windows cannot open it. */
+    var nm = String(it.name || 'file');
+    if (/^application\/vnd\.google-apps\./.test(it.mimeType || '') && !/\.pdf$/i.test(nm)) nm += '.pdf';
+    return {
+      id: it.id, name: nm, rel: rel || '', size: it.size || 0,
+      when: it.modified ? new Date(it.modified).getTime() : Date.now(),
+      url: '/api/integrations/drive/' + encodeURIComponent(realmAt) + '/download/' + encodeURIComponent(it.id) + '?name=' + encodeURIComponent(it.name)
+    };
+  }
+  /* Download all of WHAT IS ON SCREEN. With a search active the panel shows a handful of hits
+     and this button sat directly beneath them — while walking the entire folder tree instead.
+     Someone searching "2024 1099" and clicking it got thousands of unrelated files in a zip
+     named after the client, and no indication that was not what they asked for. */
+  function driveDownloadAllSearch(realmAt, q) {
+    _dlRun = { cancel: false, ctrls: [], realm: realmAt, source: 'drive' };
+    dlRefreshControls();
+    dlReport('drive', '');
+    dlMsg('drive', 'Finding files matching “' + q + '”…', realmAt);
+    return fetch('/api/integrations/drive/' + encodeURIComponent(realmAt) + '/files?folderId=' + encodeURIComponent(_driveFolder || '') + '&q=' + encodeURIComponent(q), { credentials: 'include' })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (resp) {
+        if (resp && resp.needsReconnect) throw new Error('the drive needs reconnecting');
+        if (resp && resp.needsRoot) throw new Error('no shared folder is set for this client yet');
+        if (!resp || !resp.ok) throw new Error((resp && resp.error) || 'drive search failed');
+        if (_dlRun && _dlRun.cancel) { _dlRun = null; dlFinishState('drive'); (window.bccNotify || alert)('Download cancelled — nothing was saved.', 'warn', 6000); return; }
+        var all = resp.items || [];
+        var files = all.filter(function (it) { return !it.folder; });
+        var notes = [];
+        /* Every way the set can be short says so, and travels into the zip. */
+        if (resp.truncated) notes.push('The search returned more matches than can be listed at once, so some are missing from this archive.');
+        var folders = all.length - files.length;
+        if (folders) notes.push(folders + ' folder' + (folders === 1 ? '' : 's') + ' matched the search; folders are not opened by a search download, so nothing inside them is here.');
+        if (resp.filteredOut) notes.push(resp.filteredOut + ' match' + (resp.filteredOut === 1 ? '' : 'es') + ' elsewhere on the connected account ' + (resp.filteredOut === 1 ? 'was' : 'were') + ' outside this client’s folder and left out.');
+        return zipAndSave({
+          source: 'drive', realm: realmAt,
+          items: files.map(function (it) { return driveDlItem(it, '', realmAt); }),
+          notes: notes,
+          zipLabel: '(search ' + q + ')',
+          emptyMsg: 'Nothing in this drive matches “' + q + '”, so there is nothing to download.'
+        });
+      })
+      .catch(function (e) {
+        _dlRun = null;
+        dlFinishState('drive');
+        (window.bccNotify || alert)('Could not search this client’s shared drive (' + ((e && e.message) || 'unknown error') + '), so nothing was downloaded.', 'error', 12000);
+      });
+  }
   function driveDownloadAll() {
     var realmAt = currentRealm; if (!realmAt) return;
+    var q = String(_driveSearch || '').trim();
+    if (q) return driveDownloadAllSearch(realmAt, q);
     var startId = _driveFolder || '';
     _dlRun = { cancel: false, ctrls: [], realm: realmAt, source: 'drive' };
     dlRefreshControls();
     dlReport('drive', '');
     return dlWalk({
       source: 'drive',
+      realm: realmAt,
       start: startId,
       list: function (folderId) {
         return fetch('/api/integrations/drive/' + encodeURIComponent(realmAt) + '/files?folderId=' + encodeURIComponent(folderId), { credentials: 'include' })
@@ -6179,18 +6271,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           });
       },
       into: function (_id, it) { return it.id; },
-      file: function (it, rel) {
-        /* A Google Docs/Sheets/Slides file has no real bytes — the download proxy exports it as
-           a PDF, and names it .pdf when it does. Mirror that here or the archive holds a .gdoc
-           that is actually a PDF and Windows cannot open it. */
-        var nm = String(it.name || 'file');
-        if (/^application\/vnd\.google-apps\./.test(it.mimeType || '') && !/\.pdf$/i.test(nm)) nm += '.pdf';
-        return {
-          id: it.id, name: nm, rel: rel, size: it.size || 0,
-          when: it.modified ? new Date(it.modified).getTime() : Date.now(),
-          url: '/api/integrations/drive/' + encodeURIComponent(realmAt) + '/download/' + encodeURIComponent(it.id) + '?name=' + encodeURIComponent(it.name)
-        };
-      }
+      file: function (it, rel) { return driveDlItem(it, rel, realmAt); }
     }).then(function (res) {
       if (_dlRun && _dlRun.cancel) { _dlRun = null; dlFinishState('drive'); (window.bccNotify || alert)('Download cancelled — nothing was saved.', 'warn', 6000); return; }
       return zipAndSave({
@@ -6257,7 +6338,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      docType the request writer actually stamps rather than on the prefix alone. */
   function allNotary() { var pre = currentRealm ? notaryPrefix() : 'bcc-notary-'; var out = []; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (!k || k.indexOf(pre) !== 0) continue; if (k === NOTARY_CONTACT_KEY) continue; try { var r = JSON.parse(localStorage.getItem(k)); if (r && r.id && r.docType === 'notary-request') out.push(r); } catch (e) {} } return out; }
   function loadNotaryReq(id) { try { return JSON.parse(localStorage.getItem(id)); } catch (e) { return null; } }
-  function saveNotaryReq(r) { r.updatedAt = nowIso(); r.updatedBy = myUpn(); localStorage.setItem(r.id, JSON.stringify(r)); if (window.bccAudit) window.bccAudit('client-file-upload', { key: r.id, path: '/bookkeeping.html', meta: { realmId: currentRealm || 'firm', source: 'notary' } }); }
+  /* The gate lives HERE, on the one write, rather than on each button that reaches it — and
+     it reports whether the write happened, because three callers went on to say "saved" and
+     repaint the row from an object they had already mutated in memory. */
+  function saveNotaryReq(r) {
+    if (bkRefuseIfReadOnly()) return false;
+    r.updatedAt = nowIso(); r.updatedBy = myUpn();
+    localStorage.setItem(r.id, JSON.stringify(r));
+    if (window.bccAudit) window.bccAudit('client-file-upload', { key: r.id, path: '/bookkeeping.html', meta: { realmId: currentRealm || 'firm', source: 'notary' } });
+    return true;
+  }
   var NOTARY_STATUS = { requested: ['🟡 Requested', '#8a6f3c'], scheduled: ['🔵 Scheduled', '#1d5fb0'], completed: ['🟢 Completed', '#1f8a4c'] };
   function notaryForm() {
     return '<div class="card" style="background:var(--gold-fade);border:1px solid var(--chrome-mute);margin-bottom:14px;">' +
@@ -6329,15 +6419,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       // copied from a platform that displays it bare) renders as <a href="platform.com/...">,
       // which the browser treats as a path on THIS app's own domain — a silently broken link
       // in the email the signer receives.
-      r.sessionUrl = normAppUrl(inp && inp.value); saveNotaryReq(r); renderNotary(); notaryMsg(id, 'Link saved.');
+      r.sessionUrl = normAppUrl(inp && inp.value);
+      if (!saveNotaryReq(r)) { renderNotary(); return; }
+      renderNotary(); notaryMsg(id, 'Link saved.');
     }; });
     body.querySelectorAll('[data-nt-email]').forEach(function (b) { b.onclick = function () { notaryEmailSigner(b.getAttribute('data-nt-email')); }; });
     body.querySelectorAll('[data-nt-status]').forEach(function (b) { b.onclick = function () {
       var id = b.getAttribute('data-id'), s = b.getAttribute('data-nt-status'); var r = loadNotaryReq(id); if (!r) return;
-      r.status = s; if (s === 'completed') r.completedAt = nowIso(); saveNotaryReq(r); renderNotary(); updateWsNav();
+      r.status = s; if (s === 'completed') r.completedAt = nowIso();
+      if (!saveNotaryReq(r)) { renderNotary(); return; }
+      renderNotary(); updateWsNav();
     }; });
     body.querySelectorAll('[data-nt-final]').forEach(function (inp) { inp.onchange = function () { notaryUploadFinal(inp.getAttribute('data-nt-final'), inp.files && inp.files[0]); }; });
     body.querySelectorAll('[data-nt-del]').forEach(function (b) { b.onclick = function () {
+      if (bkRefuseIfReadOnly()) return;
       if (!confirm('Delete this notarization request? (Files already uploaded stay in Files.)')) return;
       localStorage.removeItem(b.getAttribute('data-nt-del')); renderNotary();
     }; });
@@ -6412,7 +6507,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       status: 'requested', requestedBy: myUpn(), requestedAt: nowIso()
     };
     var fileInput = document.getElementById('nt_file'), file = fileInput && fileInput.files && fileInput.files[0];
-    var finish = function () { saveNotaryReq(r); notaryAssignNotify(r); _notaryNew = false; renderNotary(); if (window.bccNotifySaved) window.bccNotifySaved('Notarization request created.'); };
+    var finish = function () {
+      // Nothing was created, so nobody is notified and nothing is announced.
+      if (!saveNotaryReq(r)) { renderNotary(); return; }
+      notaryAssignNotify(r); _notaryNew = false; renderNotary(); if (window.bccNotifySaved) window.bccNotifySaved('Notarization request created.');
+    };
     if (file) {
       var cs = document.getElementById('nt_cstatus'); if (cs) cs.textContent = 'Uploading document…';
       var fd = new FormData(); fd.append('file', file, file.name);
@@ -6436,7 +6535,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     fd.append('tags', 'Notarized, notary');
     fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
       .then(function (rr) { return rr.json().then(function (j) { return rr.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + rr.status))); }); })
-      .then(function (j) { if (j && j.id) r.notarizedDocId = j.id; r.status = 'completed'; r.completedAt = nowIso(); saveNotaryReq(r); if (currentRealm && typeof loadFiles === 'function') loadFiles(); renderNotary(); updateWsNav(); if (window.bccNotifySaved) window.bccNotifySaved('Notarized document filed' + (r.realmId ? ' to the client.' : '.')); })
+      .then(function (j) {
+        if (j && j.id) r.notarizedDocId = j.id;
+        r.status = 'completed'; r.completedAt = nowIso();
+        var kept = saveNotaryReq(r);
+        if (currentRealm && typeof loadFiles === 'function') loadFiles();
+        renderNotary(); updateWsNav();
+        if (!kept) { (window.bccNotify || alert)('The notarized document was filed, but this request could not be marked completed — it will still show as pending.', 'warn', 12000); return; }
+        if (window.bccNotifySaved) window.bccNotifySaved('Notarized document filed' + (r.realmId ? ' to the client.' : '.'));
+      })
       .catch(function (e) { notaryMsg(id, ''); (window.bccNotify || alert)('Upload failed: ' + e.message, 'error', 6000); });
   }
   function notaryEmailSigner(id) {
@@ -7644,7 +7751,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     body.querySelectorAll('[data-cpr-open]').forEach(function (b) { b.onclick = function () { cprEditingId = b.getAttribute('data-cpr-open'); try { cprDraft = JSON.parse(localStorage.getItem(cprEditingId)); } catch (e) { cprDraft = null; } if (!cprDraft) { cprEditingId = null; return; } if (!cprDraft.employees) cprDraft.employees = []; renderPayroll(); }; });
     body.querySelectorAll('[data-cpr-dup]').forEach(function (b) { b.onclick = function () { cprDuplicate(b.getAttribute('data-cpr-dup')); }; });
     body.querySelectorAll('[data-cpr-print]').forEach(function (b) { b.onclick = function () { var r; try { r = JSON.parse(localStorage.getItem(b.getAttribute('data-cpr-print'))); } catch (e) {} if (r) printCpr(r); }; });
-    body.querySelectorAll('[data-cpr-del]').forEach(function (b) { b.onclick = function () { if (!confirm('Delete this payroll report?')) return; localStorage.removeItem(b.getAttribute('data-cpr-del')); if (window.bccAudit) window.bccAudit('cpr-delete', { key: b.getAttribute('data-cpr-del'), path:'/bookkeeping.html', meta: { realmId: currentRealm } }); renderPayroll(); }; });
+    body.querySelectorAll('[data-cpr-del]').forEach(function (b) { b.onclick = function () { if (bkRefuseIfReadOnly()) return; if (!confirm('Delete this payroll report?')) return; localStorage.removeItem(b.getAttribute('data-cpr-del')); if (window.bccAudit) window.bccAudit('cpr-delete', { key: b.getAttribute('data-cpr-del'), path:'/bookkeeping.html', meta: { realmId: currentRealm } }); renderPayroll(); }; });
   }
 
   /* Certified payrolls are numbered PER PROJECT: an agency reading one contract's file
@@ -7816,6 +7923,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // / labor code / rates) forward; clears the per-period bits (payroll #, week,
   // dates, daily hours, gross, deductions) for the new pay period. (Jenna's ask.)
   function cprDuplicate(id) {
+    if (bkRefuseIfReadOnly()) return;
     var src; try { src = JSON.parse(localStorage.getItem(id)); } catch (e) {} if (!src) return;
     var d = JSON.parse(JSON.stringify(src));
     // Continues the SOURCE report's job, so it takes that job's next number.
@@ -9427,7 +9535,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     body.querySelectorAll('[data-pa-open]').forEach(function (b) { b.onclick = function () { payappEditingId = b.getAttribute('data-pa-open'); try { payappDraft = JSON.parse(localStorage.getItem(payappEditingId)); } catch (e) { payappDraft = null; } if (!payappDraft) { payappEditingId = null; return; } if (!payappDraft.lines) payappDraft.lines = [blankPayLine()]; if (!payappDraft.changeOrderRows) payappDraft.changeOrderRows = []; renderPayApp(); }; });
     body.querySelectorAll('[data-pa-next]').forEach(function (b) { b.onclick = function () { payappNew(b.getAttribute('data-pa-next')); }; });
     body.querySelectorAll('[data-pa-print]').forEach(function (b) { b.onclick = function () { var r; try { r = JSON.parse(localStorage.getItem(b.getAttribute('data-pa-print'))); } catch (e) {} if (r) printPayapp(r); }; });
-    body.querySelectorAll('[data-pa-del]').forEach(function (b) { b.onclick = function () { if (!confirm('Delete this pay application?')) return; localStorage.removeItem(b.getAttribute('data-pa-del')); if (window.bccAudit) window.bccAudit('payapp-delete', { key: b.getAttribute('data-pa-del'), path: '/bookkeeping.html', meta: { realmId: currentRealm } }); renderPayApp(); }; });
+    body.querySelectorAll('[data-pa-del]').forEach(function (b) { b.onclick = function () { if (bkRefuseIfReadOnly()) return; if (!confirm('Delete this pay application?')) return; localStorage.removeItem(b.getAttribute('data-pa-del')); if (window.bccAudit) window.bccAudit('payapp-delete', { key: b.getAttribute('data-pa-del'), path: '/bookkeeping.html', meta: { realmId: currentRealm } }); renderPayApp(); }; });
   }
   function ptxt(label, field, ph, wide, type) { return '<label' + (wide ? ' class="full"' : '') + '>' + esc(label) + '<input data-pf="' + field + '"' + (type ? ' type="' + type + '"' : '') + ' value="' + esc(payappDraft[field] || '') + '"' + (ph ? ' placeholder="' + esc(ph) + '"' : '') + ' /></label>'; }
   function renderPayappEditor(body) {

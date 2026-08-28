@@ -179,8 +179,35 @@ const EXT_CT = {
    ancient, and `filename*=UTF-8''<percent-encoded>` — which every browser prefers, so the
    saved file keeps its real name, dash and all. The extra escaping is because RFC 5987's
    attr-char excludes ! ' ( ) * , which encodeURIComponent leaves alone. */
+/* A scan, not a regex. The obvious pair of replaces looks right and is not: `^` matches only
+   at index 0 and the alternative must consume the character before, so a low surrogate
+   directly after another low surrogate is never examined and survives — which is precisely
+   the input that makes encodeURIComponent throw. Walking the code units has no such blind
+   spot, and it is the same rule TextEncoder applies, so the zip built in the browser and the
+   header built here agree about what the file is called. */
+function stripLoneSurrogates(s) {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 0xD800 && c <= 0xDBFF) {
+      const nx = s.charCodeAt(i + 1);
+      if (nx >= 0xDC00 && nx <= 0xDFFF) { out += s[i] + s[i + 1]; i++; }   // a real pair, kept whole
+      // else: a high surrogate with nothing after it — dropped
+    } else if (c >= 0xDC00 && c <= 0xDFFF) {
+      // a low surrogate with no high before it — dropped
+    } else {
+      out += s[i];
+    }
+  }
+  return out;
+}
 function contentDispositionValue(disposition, name) {
-  const raw = String(name == null ? '' : name).replace(/[\r\n"\\]/g, '').trim() || 'file';
+  /* Unpaired surrogates go FIRST. encodeURIComponent throws URIError on one, and callers cut
+     names with .slice(), which counts UTF-16 units — so a long name containing an emoji can be
+     cut through the middle of a pair and hand this half a character. That throw would take
+     down the very download this helper exists to protect. */
+  const raw = stripLoneSurrogates(String(name == null ? '' : name))
+    .replace(/[\r\n"\\]/g, '').trim() || 'file';
   const ascii = raw.replace(/[^\x20-\x7E]/g, '_').replace(/\s+/g, ' ').trim() || 'file';
   const enc = encodeURIComponent(raw).replace(/['()!*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
   return disposition + '; filename="' + ascii + '"; filename*=UTF-8\'\'' + enc;
@@ -1075,7 +1102,7 @@ app.http('data', {
         // endpoints read getIntegrationFields() immediately on the next
         // request, and we don't want that to return cached empty fields
         // after a UI Save → Connect flow.
-        if (touchesIntegration) { _intCache.until = 0; _intCache.byChannel.clear(); }
+        if (touchesIntegration) { _intCache.byChannel.clear(); }
         return { status: 204 };
       }
 
@@ -3272,7 +3299,19 @@ async function driveAccessToken(doc, creds) {
     throw e;
   }
   const j = await r.json();
-  if (j.refresh_token && j.refresh_token !== doc.refreshToken) { doc.refreshToken = j.refresh_token; try { await container().items.upsert(doc); } catch (_) {} }
+  if (j.refresh_token && j.refresh_token !== doc.refreshToken) {
+    /* Entra issues a NEW refresh token on every refresh grant and invalidates the old one, so
+       this runs on essentially every cache miss — and if the write fails, the token we just
+       stopped being able to use is the only one we have. The client's shared drive then goes
+       dead at the next refresh with nothing recorded anywhere and a "reconnect" prompt that
+       nobody can explain. Swallowing it is the one thing that must not happen here. */
+    doc.refreshToken = j.refresh_token;
+    try { await container().items.upsert(doc); }
+    catch (e) {
+      console.error('drive refresh-token persist FAILED for ' + doc.id + ':', (e && e.message) || e);
+      await logError('driveAccessToken refresh-token persist [' + doc.id + ' / ' + (doc.provider || '?') + ']', e, { source: 'server' });
+    }
+  }
   return j.access_token;
 }
 function driveConnectHandler(provider) {
@@ -3492,7 +3531,12 @@ async function spFolderNames() {
 async function spFolderFor(realmId) {
   const c = container();
   let map = {};
-  try { const d = await c.item(SP_MAP_ID, BCC_TENANT_ID).read().then(r => r.resource); if (d && d.map) map = d.map; } catch (_) {}
+  /* 404-ONLY, no outer swallow: this map is the single source of truth for which
+     SharePoint folder a client owns. A read that fails must fail, or an admin's
+     explicit mapping silently disappears and the name matcher answers instead. */
+  const d = await c.item(SP_MAP_ID, BCC_TENANT_ID).read().then(r => r.resource)
+    .catch(e => { if (e && e.code === 404) return null; throw e; });
+  if (d && d.map) map = d.map;
   if (map[realmId]) return map[realmId];
   const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
   const name = comp && comp.companyName;
@@ -3742,7 +3786,12 @@ async function spWalk(driveId, access, path, depth, out, limits) {
   if (out.length >= SP_MAX_FILES) { limits.count = true; return; }
   // Follow @odata.nextLink VERBATIM — it already carries $top/$select/$skiptoken, and
   // encodeURI is only correct for the initial colon-addressed path below.
-  let next = 'https://graph.microsoft.com/v1.0/drives/' + driveId + '/root:' + encodeURI(path) + ':/children?$top=200&$select=id,name,folder,file,size';
+  /* PER SEGMENT. encodeURI preserves '#', '?' and '&', so a real SharePoint folder called
+     "Job #4412 Receipts" produced a URL fetch() truncates at the '#': no closing ':', no
+     $select, and that folder plus everything beneath it silently absent from every crawl.
+     The leading '/' survives the split/join, and Graph decodes %23 correctly. */
+  const encPath = String(path).split('/').map(encodeURIComponent).join('/');
+  let next = 'https://graph.microsoft.com/v1.0/drives/' + driveId + '/root:' + encPath + ':/children?$top=200&$select=id,name,folder,file,size';
   const folders = [];
   while (next) {
     let r = await fetch(next, { headers: { Authorization: 'Bearer ' + access } });
@@ -3945,7 +3994,12 @@ app.http('sharepoint-map', {
         return { jsonBody: { ok: true, map } };
       }
       let map = {};
-      try { const d = await c.item(SP_MAP_ID, BCC_TENANT_ID).read().then(r => r.resource); if (d && d.map) map = d.map; } catch (_) {}
+      /* 404-ONLY, no outer swallow: this map is the single source of truth for which
+         SharePoint folder a client owns. A read that fails must fail, or an admin's
+         explicit mapping silently disappears and the name matcher answers instead. */
+      const d = await c.item(SP_MAP_ID, BCC_TENANT_ID).read().then(r => r.resource)
+        .catch(e => { if (e && e.code === 404) return null; throw e; });
+      if (d && d.map) map = d.map;
       const folders = await spFolderNames();
       const { resources: comps } = await c.items.query({
         // privateToUpn comes back so the owner-only client can be filtered below — every
@@ -4258,7 +4312,11 @@ app.http('drive-download', {
       const ct = forceCt || r.headers.get('content-type') || 'application/octet-stream';
       const wantInline = wantInlineReq && inlineOk(ct);
       // When we converted to PDF, give the inline file a .pdf name so the browser renders it.
-      const dispName = (forceCt === 'application/pdf' && !/\.pdf$/i.test(name)) ? (name.replace(/\.[^.]+$/, '') + '.pdf') : name;
+      /* Only strip a REAL extension. Google Docs/Sheets/Slides carry none, and "the last dot
+         starts the extension" turned "Acme Corp. 2024 Recon" into "Acme Corp.pdf" and
+         "P&L 2024.Q3 draft" into "P&L 2024.pdf" — the client's own filing name, cut in half. */
+      const _stem = name.replace(/\.(docx?|xlsx?|pptx?|odt|ods|odp|rtf|txt|csv|gdoc|gsheet|gslides)$/i, '');
+      const dispName = (forceCt === 'application/pdf' && !/\.pdf$/i.test(name)) ? (_stem + '.pdf') : name;
       return { status: 200, headers: { 'Content-Type': ct, 'Content-Disposition': contentDispositionValue(wantInline ? 'inline' : 'attachment', dispName), 'X-Content-Type-Options': 'nosniff' }, body: buf };
     } catch (e) { context.error('drive-download', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
@@ -4491,11 +4549,16 @@ app.http('audit-qbo', {
  * minute; rapid integration calls don't hammer Cosmos.
  */
 
-const _intCache = { until: 0, byChannel: new Map() };
+/* Expiry lives WITH each entry. A single global `until` was advanced by a successful read of
+   ANY channel — and qbo is read on essentially every bookkeeping request — so every other
+   channel's entry had its lease renewed forever: a credential rotated in Admin could keep
+   being served from a stale cache for as long as the app stayed warm. */
+const _intCache = { byChannel: new Map() };
 
 async function getIntegrationFields(channel) {
-  if (Date.now() < _intCache.until && _intCache.byChannel.has(channel)) {
-    return _intCache.byChannel.get(channel);
+  const _hit = _intCache.byChannel.get(channel);
+  if (_hit && Date.now() < _hit.exp) {
+    return _hit.fields;
   }
   try {
     const c = container();
@@ -4518,8 +4581,7 @@ async function getIntegrationFields(channel) {
     // real server-held token; top wins a genuine conflict, being the live OAuth value.
     const prune = o => Object.fromEntries(Object.entries(o || {}).filter(([, v]) => v !== '' && v != null));
     const fields = Object.assign({}, prune(nested), prune(top));
-    _intCache.byChannel.set(channel, fields);
-    _intCache.until = Date.now() + 60 * 1000;
+    _intCache.byChannel.set(channel, { fields: fields, exp: Date.now() + 60 * 1000 });
     return fields;
   } catch (err) {
     // Returning {} here is deliberate — ~20 call sites dereference the result unguarded,
@@ -4697,7 +4759,7 @@ app.http('integrations-test', {
           resource.lastTest = { ...result, at: new Date().toISOString() };
           resource.updatedAt = new Date().toISOString();
           await c.items.upsert(resource);
-          _intCache.until = 0; // bust cache
+          _intCache.byChannel.delete(channel); // bust THIS channel's entry
         }
       } catch (_) { /* best-effort */ }
 
@@ -6009,7 +6071,10 @@ app.http('msgraph-attachment-download', {
       const msgId = encodeURIComponent(request.params.id);
       const attId = encodeURIComponent(request.params.attId);
       const wantInlineReq = u.searchParams.get('inline') === '1';
-      const name = (u.searchParams.get('name') || 'attachment').replace(/[^a-zA-Z0-9._ -]+/g, '_').slice(0, 150);
+      // The fifth Content-Disposition site, missed by the migration that added
+      // contentDispositionValue — and it is the client-mail intake, so it is the one where a
+      // name like "Patriot – Bank Statement.pdf" matters most.
+      const name = String(u.searchParams.get('name') || 'attachment').slice(0, 160);
       /* ?inner=<id> — a file nested inside a FORWARDED email. Same gate, same mailbox, same
          inline rules; only the source of the bytes differs (base64 on the expanded item,
          because Graph exposes no $value one level down). */
@@ -6030,7 +6095,7 @@ app.http('msgraph-attachment-download', {
         const ibuf = Buffer.from(hit.bytes, 'base64');
         const ict = effectiveContentType(hit.contentType, name);
         const iInline = wantInlineReq && inlineOk(ict);
-        return { status: 200, headers: { 'Content-Type': ict, 'Content-Disposition': (iInline ? 'inline' : 'attachment') + '; filename="' + name + '"', 'X-Content-Type-Options': 'nosniff' }, body: ibuf };
+        return { status: 200, headers: { 'Content-Type': ict, 'Content-Disposition': contentDispositionValue(iInline ? 'inline' : 'attachment', name), 'X-Content-Type-Options': 'nosniff' }, body: ibuf };
       }
       const r = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + msgId + '/attachments/' + attId + '/$value', { headers: { Authorization: 'Bearer ' + access } });
       if (!r.ok) {
@@ -6052,7 +6117,7 @@ app.http('msgraph-attachment-download', {
       // type from the filename before deciding whether it can be shown inline.
       const ct = effectiveContentType(r.headers.get('content-type'), name);
       const wantInline = wantInlineReq && inlineOk(ct);
-      return { status: 200, headers: { 'Content-Type': ct, 'Content-Disposition': (wantInline ? 'inline' : 'attachment') + '; filename="' + name + '"', 'X-Content-Type-Options': 'nosniff' }, body: buf };
+      return { status: 200, headers: { 'Content-Type': ct, 'Content-Disposition': contentDispositionValue(wantInline ? 'inline' : 'attachment', name), 'X-Content-Type-Options': 'nosniff' }, body: buf };
     } catch (e) { context.error('msgraph-attachment-download', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
@@ -6475,7 +6540,7 @@ app.http('qbo-callback', {
       rec.lastTest = { ok: true, at: new Date().toISOString() };
       rec.updatedAt = new Date().toISOString();
       await c.items.upsert(rec);
-      _intCache.until = 0; _intCache.byChannel.clear();
+      _intCache.byChannel.clear();
 
       // Diagnostic breadcrumb (readable from Cosmos): last connect outcome.
       try { await c.items.upsert({ id: 'bcc-qbo-debug', tenantId: BCC_TENANT_ID, docType: 'qbo-debug', at: new Date().toISOString(), step: 'stored', ok: true, realmId, companyName: comp.companyName, redirectUri }); } catch (_) {}
@@ -8164,11 +8229,17 @@ const REPORT_LOC_APR = 0.12; // line-of-credit interest estimate (annualized), a
 // (annualized)" estimate is worth showing — below it, it's just monthly float a
 // client pays off in full, and the estimate is noise rather than a real cost signal.
 const REPORT_GOAL_DEFAULTS = { monthsCash: 3, monthsCashMin: 1, currentRatio: 1.5, currentRatioMin: 1, grossMargin: 0.30, grossMarginMin: 0.15, netMargin: 0.05, netMarginMin: 0, ccHighBalance: 10000 };
+/* NO outer catch. The inner one is deliberately 404-only — "there is no goals document yet"
+   is a real answer and the defaults are right for it — but wrapping that in a catch-all made
+   the rethrow dead code and turned any Cosmos blip into the same answer. These numbers colour
+   the KPI tiles on the report a client reads, and they are what the Admin form loads before
+   saving: substituting hard-coded defaults for an unreadable document means a firm-tuned set
+   of targets can be overwritten by the stock ones, from a form that looked like it had loaded
+   fine. A read that fails now propagates, and each caller decides what to say. */
 async function getReportGoals() {
-  try {
-    const d = await container().item('bcc-report-goals', BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
-    return Object.assign({}, REPORT_GOAL_DEFAULTS, (d && d.goals) || {});
-  } catch (e) { return Object.assign({}, REPORT_GOAL_DEFAULTS); }
+  const d = await container().item('bcc-report-goals', BCC_TENANT_ID).read().then(r => r.resource)
+    .catch(e => { if (e && e.code === 404) return null; throw e; });
+  return Object.assign({}, REPORT_GOAL_DEFAULTS, (d && d.goals) || {});
 }
 // GET: current goals (any signed-in user, for report coloring). POST: admin saves goals.
 app.http('report-goals', {
@@ -9351,7 +9422,7 @@ async function saveOAuthTokens(channel, patch) {
   rec.lastTest = { ok: true, at: new Date().toISOString() };
   rec.updatedAt = new Date().toISOString();
   await c.items.upsert(rec);
-  _intCache.until = 0; _intCache.byChannel.clear();
+  _intCache.byChannel.clear();
 }
 
 // Generic builder: if fields are missing, return a friendly 400 instead of

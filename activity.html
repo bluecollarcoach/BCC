@@ -356,9 +356,33 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      audit review would have missed a generated pay application entirely. */
   ACTIONS['payapp-pdf']  = ACTIONS['payapp-pdf']  || { label: 'Generated a pay application PDF', cat: 'bookkeeping', ic: '&#128196;' };
   ACTIONS['job-create']  = ACTIONS['job-create']  || { label: 'Created a job', cat: 'crm', ic: '&#43;' };
+  /* An action nobody remembered to add to ACTIONS above used to land in 'system' — the
+     category the ACCESS-LOG rows live in — so the whole of a new feature's activity was
+     invisible under every filter except "System / access", and looked in an investigation like
+     the work had never happened. The comment inside ACTIONS records that happening once
+     already; this stops the next one. The slug is the app's own, so its prefix is a reliable
+     guide: file it by that, and only fall back to 'system' when nothing matches.
+     Own-property lookup, and String(): a row from a bad write can carry a number, and both
+     `action = "constructor"` and `action = 7` used to throw inside the render loop, which
+     takes the ENTIRE feed down — on the one page you open when something has gone wrong. */
+  var ACTION_CATS = [
+    [/^(contact|convo|need|lead|campaign|engagement|company|crm)[-_]/, 'crm'],
+    [/^(session|course|event|attend)[-_]/, 'session'],
+    [/^(document|doc|file|kb|receipt|client-file|folder)[-_]/, 'doc'],
+    [/^(rate|quote|proposal|invoice-rate)[-_]/, 'rate'],
+    [/^(clock|time|daily-log|myday)[-_]/, 'time'],
+    [/^(qbo|bookkeeping|report|month|period|reconcil|notary|wip)[-_]/, 'bookkeeping'],
+    [/^(chat|message|thread|feedback)[-_]/, 'chat'],
+    [/^(integration|sharepoint|drive|onedrive|google|mail|graph)[-_]/, 'integration'],
+    [/^(admin|customer-types|user|role|access|audit|config)[-_]/, 'admin']
+  ];
   function classifyAction(action) {
-    if (ACTIONS[action]) return ACTIONS[action];
-    return { label: action.replace(/-/g, ' '), cat: 'system', ic: '&#8226;' };
+    var a = String(action == null ? '' : action);
+    if (Object.prototype.hasOwnProperty.call(ACTIONS, a)) return ACTIONS[a];
+    var cat = 'system';
+    for (var i = 0; i < ACTION_CATS.length; i++) { if (ACTION_CATS[i][0].test(a)) { cat = ACTION_CATS[i][1]; break; } }
+    var words = a.replace(/[-_]/g, ' ').trim() || '(unknown)';
+    return { label: words.charAt(0).toUpperCase() + words.slice(1), cat: cat, ic: '&#8226;' };
   }
 
   /* ===== Gate ===== */
