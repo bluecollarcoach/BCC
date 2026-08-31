@@ -417,7 +417,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (writingBlind(log.id)) log.blindWrite = true; else delete log.blindWrite;
     log.updatedAt = nowIso();
     if (!log.createdAt) log.createdAt = log.updatedAt;
-    localStorage.setItem(log.id, JSON.stringify(log));
+    /* localStorage is a hard ~5 MB per origin, shared with every other bcc- key — chat's
+       message blob alone can fill it. An unwrapped write THREW out of here, so the clock-in
+       or clock-out was never recorded and the caller's `if (!saveLogDoc(...))` guards never
+       fired: the punch simply did not happen, in silence, and the person's hours for the day
+       are wrong. Say it, and name the fix. */
+    try {
+      localStorage.setItem(log.id, JSON.stringify(log));
+    } catch (e) {
+      (window.bccNotify || alert)('That was NOT recorded — this browser has run out of local storage space. Your earlier entries are safe. Close some tabs or ask an admin to clear an old chat channel, then try again.', 'error', 15000);
+      return false;
+    }
     return true;
   }
   function saveTodayLog(log) { log.day = ymd(new Date()); return saveLogDoc(log); }

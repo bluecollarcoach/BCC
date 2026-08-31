@@ -1567,7 +1567,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .then(function (resp) {
         var cos = resp.companies || [];
         var n = 0;
-        cos.forEach(function (co) { (co.periods || []).forEach(function (p) { savePeriod(p); n++; }); });
+        /* Count what LANDED, and keep a local storage failure apart from a sync failure. An
+        unwrapped write threw out of this loop and the catch below reported "Sync failed" — but
+        QuickBooks had answered and the server holds every month; only this browser could not
+        store them. Re-running the sync cannot help, and being told the sync failed is being
+        told the figures are not there when they are. */
+    var nFailed = 0;
+    cos.forEach(function (co) { (co.periods || []).forEach(function (p) { try { savePeriod(p); n++; } catch (e) { nFailed++; } }); });
         // The endpoint answers ok:true with per-company results, and a company can carry
         // an `error` (token refresh failed, needs re-auth) or `partial` (some months
         // didn't build). Counting those as successes meant a client's KPIs and period
@@ -1575,7 +1581,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         var bad = cos.filter(function (c) { return c.error; });
         var partial = cos.filter(function (c) { return !c.error && c.partial; });
         var msg = 'Synced ' + (cos.length - bad.length) + ' of ' + cos.length + ' company(ies), ' + n + ' period(s).';
-        if (bad.length || partial.length) {
+        /* A local storage failure is not a sync failure. QuickBooks answered and the server
+           holds every month; this browser simply could not store some of them, which the
+           next load will pull again. Say exactly that instead of letting it fall into the
+           catch below as "Sync failed". */
+        if (nFailed) {
+          (window.bccNotify || alert)(msg + ' ' + nFailed + ' month(s) could not be stored on THIS browser (it is out of space) — they are safely synced and will appear once you free some room.', 'warn', 14000);
+        } else if (bad.length || partial.length) {
           var notes = bad.map(function (c) { return (c.companyName || c.realmId) + ': ' + c.error + (c.needsReauth ? ' (needs reconnecting)' : ''); })
             .concat(partial.map(function (c) { return (c.companyName || c.realmId) + ': some months could not be built'; }));
           (window.bccNotify || alert)(msg + ' — ' + notes.join('; '), 'warn', 12000);
@@ -2491,11 +2503,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   function aiDraftObservations() {
     var d = _mr.data; if (!d) return;
+    /* PINNED. This was the one QuickBooks loader in the file without a client/period guard:
+       press Fill, change the month picker while it runs, and the previous month's drafted
+       observations landed on the new month's report — and closing the overlay then SAVED them
+       there, over what the coach had written. */
+    var realmAt = currentRealm, periodAt = _mr.period;
     var btn = document.getElementById('mrAiBtn'), ot = btn.textContent; btn.disabled = true; btn.textContent = 'Filling…';
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/monthly-report/ai-draft', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kpis: d.kpis, companyName: d.company.legalName || d.company.name, periodLabel: d.periodLabel }) })
       .then(function (r) { return r.json(); })
       .then(function (j) {
+        // Restore the control first, whatever we then decide to do with the answer.
         btn.disabled = false; btn.textContent = ot;
+        if (currentRealm !== realmAt || _mr.period !== periodAt) return;   // superseded — it belongs to a report nobody is looking at
         if (!j || !j.ok || !(j.observations || []).length) { (window.bccNotify || alert)((j && j.error) || 'Could not fill observations.', 'error'); return; }
         var drafted = j.observations.map(mrCoerceObs);
         /* WRITTEN observations are never overwritten without being asked. Only rows carrying
@@ -8259,7 +8278,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        job at #1 - the exact defect the per-job numbering exists to prevent, in a new disguise.
        Only while the number is still the one we assigned (autoNo); once the bookkeeper types
        their own, it is theirs. */
-    if (cprDraft.autoNo) {
+    /* NOT ON AN UNPROVEN FAMILY. cprNextNo is max()+1 over whatever this browser holds, and
+       renumbering is how an auto-numbered report picks up its job's sequence — so on a device
+       that never finished loading it re-stamps the open report as #1 for a job already at #12,
+       and the next save freezes that onto a form filed with a public agency. Silent by design:
+       the number simply stays as it is, and bootDataOk's own banner explains the device state. */
+    if (cprDraft.autoNo && bootDataOk()) {
       var jobNo = String(cprNextNo(cprDraft, cprDraft.id));
       if (jobNo !== String(cprDraft.payrollNo || '')) {
         cprDraft.payrollNo = jobNo;
@@ -8376,6 +8400,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var cn = body.querySelector('[data-cf="contractNumber"]');
     if (cn) cn.addEventListener('change', function () {
       if (!cprDraft || !cprDraft.autoNo) return;
+      // Same gate as the job-name renumber above: a number minted from a family this device
+      // was never shown lands on a form filed with a public agency.
+      if (!bootDataOk()) return;
       var jobNo = String(cprNextNo(cprDraft, cprDraft.id));
       if (jobNo === String(cprDraft.payrollNo || '')) return;
       cprDraft.payrollNo = jobNo;
@@ -9769,6 +9796,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      bookkeeper types their own, it is theirs. */
   function payappRenumber() {
     if (!payappDraft || !payappDraft.autoNo) return;
+    // The twin of the certified-payroll renumber gate: an application number goes onto a G702
+    // sent to the owner and the architect.
+    if (!bootDataOk()) return;
     var no = String(payappNextNo(payappDraft, payappDraft.id));
     if (no === String(payappDraft.appNo || '')) return;
     payappDraft.appNo = no;
@@ -10374,13 +10404,26 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        so the repeat costs nothing, and it is the only hook the initial open has. */
     primeClose(_close.id, function () { adoptClose(_close && _close.id); });
     var period = _close.period;
+    /* Is this the client's checklist, or an empty one we invented because the read failed?
+       'busy' is still in flight and will repaint on its own; anything else is a real answer we
+       do not have. */
+    var closeKnown = _closePrimed[_close.id] === true;
+    var closeBusy = _closePrimed[_close.id] === 'busy';
     var done = CLOSE_STEPS.filter(function (s) { return _close.steps[s.key] && _close.steps[s.key].done; }).length;
     var pct = Math.round(done / CLOSE_STEPS.length * 100);
     var head = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;">' +
       '<h3 style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;margin:0;">Month-end close <span style="color:var(--muted);font-weight:400;font-size:12px;">· ' + esc(companyName(currentRealm)) + '</span></h3>' +
       '<label style="font-size:12px;font-weight:700;color:var(--muted);display:flex;flex-direction:column;gap:4px;">Month<select id="close_period" style="min-height:40px;border:1px solid var(--chrome-mute);border-radius:8px;padding:8px;font:inherit;">' + mrPeriodOptions(period) + '</select></label></div>';
-    var bar = '<div style="margin-bottom:14px;"><div style="height:8px;background:var(--chrome-mute);border-radius:99px;overflow:hidden;"><div style="height:100%;width:' + pct + '%;background:' + (pct === 100 ? '#1f8a4c' : '#c5a55a') + ';transition:width .2s;"></div></div>' +
-      '<div style="font-size:12px;color:var(--muted);margin-top:4px;">' + done + ' of ' + CLOSE_STEPS.length + ' done' + (pct === 100 ? ' — 🎉 closed!' : '') + '</div></div>';
+    /* NOT a progress bar over a checklist nobody read. "0 of 8 done" on a month that was
+       already worked through is the app telling a bookkeeper their work is gone, and the
+       honest response to it is to do the month again. */
+    var bar = closeKnown
+      ? '<div style="margin-bottom:14px;"><div style="height:8px;background:var(--chrome-mute);border-radius:99px;overflow:hidden;"><div style="height:100%;width:' + pct + '%;background:' + (pct === 100 ? '#1f8a4c' : '#c5a55a') + ';transition:width .2s;"></div></div>' +
+        '<div style="font-size:12px;color:var(--muted);margin-top:4px;">' + done + ' of ' + CLOSE_STEPS.length + ' done' + (pct === 100 ? ' — 🎉 closed!' : '') + '</div></div>'
+      : (closeBusy
+        ? '<div style="margin-bottom:14px;color:var(--muted);font-size:12.5px;">Loading this month’s checklist…</div>'
+        : '<div style="margin-bottom:14px;background:#f7ecec;border:1px solid #e3b4b4;border-radius:8px;padding:10px 12px;color:#6a1c1c;font-size:12.5px;">'
+          + '<strong>This month’s close checklist could not be loaded.</strong> Nothing has been lost — the boxes below are blank because this device has not been told what is ticked, not because the work was undone. Reload before ticking anything.</div>');
     var steps = CLOSE_STEPS.map(function (s) {
       var st = _close.steps[s.key] || {};
       return '<div style="border:1px solid var(--chrome-mute);border-radius:10px;padding:10px 12px;margin-bottom:8px;">' +
@@ -10709,7 +10752,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   var _wipPrimed = {};   // realm -> true | 'busy' | 'fail', exactly as _infoPrimed above
   var _wipWarned = {};   // one refusal message per realm, not one per keystroke
   function primeWip(realm, done) {
-    if (!realm || _wipPrimed[realm]) { if (done) done(); return; }
+    /* 'fail' must not latch. This test was truthy for a failed prime, so the ONE transient
+       blip that lost the contract figures also made it permanent for the session — and
+       renderWip's retry above would have been a non-fix without this. */
+    if (!realm || _wipPrimed[realm] === true || _wipPrimed[realm] === 'busy') { if (done) done(); return; }
     _wipPrimed[realm] = 'busy';
     fetch('/api/data/' + encodeURIComponent('bcc-wip-' + realm), { credentials: 'include' })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
@@ -10776,7 +10822,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function renderWip() {
     var body = document.getElementById('wip-body'); if (!body) return;
     var realmForPrime = currentRealm;
-    if (realmForPrime && !_wipPrimed[realmForPrime]) {
+    /* 'fail' LATCHED the re-prime off: this test is truthy for a failed prime, so a transient
+       blip stopped the page ever asking again and the contract figures stayed missing for the
+       life of the session. Re-ask on anything that is not a confirmed answer or a request
+       already in flight. */
+    if (realmForPrime && _wipPrimed[realmForPrime] !== true && _wipPrimed[realmForPrime] !== 'busy') {
       // Re-render once the server answers: the priming fetch may have just replaced the
       // local copy, and the table below is built from it.
       // Same rule as renderInfo: never rebuild the table under someone's cursor.
@@ -10792,6 +10842,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     body.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px;">' +
       '<h3 style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;margin:0;">Job costing / WIP <span style="color:var(--muted);font-weight:400;font-size:12px;">· ' + esc(companyName(currentRealm)) + '</span></h3></div>' +
       '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Cost &amp; billed-to-date come from QuickBooks (by customer/job, <strong>life of job</strong>). Enter each job’s <strong>contract</strong> and <strong>estimated cost</strong> to get percent complete, earned revenue, and over/under billing.</div>' +
+      /* The contract and estimate figures live in a document of their own. When it could not
+         be read, every one of those cells rendered BLANK — which reads as "we never recorded a
+         contract value for this job", not as a failed request, and the over/(under) billing
+         column silently computes from nothing. Say which it is. */
+      ((realmForPrime && _wipPrimed[realmForPrime] !== true && _wipPrimed[realmForPrime] !== 'busy')
+        ? '<div style="background:#f7ecec;border:1px solid #e3b4b4;border-radius:8px;padding:10px 12px;margin-bottom:10px;color:#6a1c1c;font-size:12.5px;"><strong>This client’s contract and estimate figures could not be loaded.</strong> The Contract, Est. cost and over/(under) billing columns below are blank for that reason — nothing has been lost. Reload before entering anything.</div>'
+        : '') +
       '<div id="wip_out" style="color:var(--muted);padding:10px 0;">Loading jobs from QuickBooks…</div>';
     /* Send an explicit LIFE-OF-JOB window. The endpoint defaults to Jan 1 of the current
        year, so cost-to-date was year-to-date while the estimated cost the bookkeeper enters

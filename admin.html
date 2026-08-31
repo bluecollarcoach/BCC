@@ -546,6 +546,24 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     return true;
   }
 
+  /* Named, because "Reset" has to build this list WITHOUT clearing storage — clearing it is a
+     hooked removeItem, i.e. a DELETE of the firm's document, and that was going out before the
+     replacement had permission to be written. One definition, used by the fallback below and
+     by the reset button, so the two can never disagree about what the defaults are. */
+  function defaultTypesDoc() {
+    return {
+      id: TYPES_KEY, tenantId: 'blue-collar-coach', docType: 'customer-types',
+      types: [
+        { id: 'coaching',    label: 'Coaching',    color: '#a8884a' },
+        { id: 'bookkeeping', label: 'Bookkeeping', color: '#1d4ed8' },
+        { id: 'consulting',  label: 'Consulting',  color: '#059669' },
+        { id: 'marketing',   label: 'Marketing',   color: '#7c3aed' },
+        { id: 'training',    label: 'Training',    color: '#d97706' },
+        { id: 'technology',  label: 'Technology',  color: '#0891b2' },
+        { id: 'other',       label: 'Other',       color: '#8a877e' }
+      ]
+    };
+  }
   function loadTypesDoc() {
     try { var raw = localStorage.getItem(TYPES_KEY); if (raw) return JSON.parse(raw); } catch (e) {}
     return {
@@ -577,8 +595,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       if (done) done(_typesFresh);
     });
   }
-  function saveTypesDoc(doc) {
+  /* `always` = this was a BUTTON, not the blur-driven autosave. The latch below exists so a
+     per-keystroke save does not toast on every character; a deliberate press that fails has
+     to say so every single time, or the admin is left watching their work vanish in silence. */
+  function saveTypesDoc(doc, always) {
     if (!_typesFresh) {
+      if (always) _typesWarned = false;
       /* Refuse rather than publish the built-in defaults over the firm's list. Nothing is
          disabled — the retry is this same handler — and the message is latched because the
          editor saves on every change. */
@@ -757,7 +779,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           // Reseat from the SERVER's own copy, and only on success — a rejected save must not
           // leave its entry in the snapshot for the next save to commit silently.
           if (_spmap) _spmap.map = (j && j.map) || next;
-          loadSpMap();
+          /* REPAINT, do not re-fetch. loadSpMap() was fired and not returned, so it sat
+             OUTSIDE this chain — a second save could start from the pre-reload snapshot and
+             post a map missing the client just mapped, and the route replaces the whole
+             document. An unmapped client's Files tab shows no SharePoint files at all, which
+             reads as every document for that client having vanished. The line above has
+             already reseated the map from the server's own response, so a re-read adds
+             nothing but the race. The Refresh button remains for a deliberate re-read. */
+          renderSpMap();
+          if (st) st.textContent = 'Saved.';
         })
         .catch(function (e) { if (st) st.textContent = 'Could not save: ' + e.message; });
     });
@@ -1142,10 +1172,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       });
     });
     tbody.querySelectorAll('select[data-act=landing]').forEach(function (sel) {
+      // The value it was showing before this change — the only thing that can put it back.
+      sel.dataset.prev = sel.value;
       sel.addEventListener('change', function () {
         var tr = sel.closest('tr'); if (!tr) return;
         var value = sel.value;
-        if (!persistAction(tr, function (rec) { rec.landingPage = value; })) return;
+        if (!persistAction(tr, function (rec) { rec.landingPage = value; })) {
+          /* PUT IT BACK. The select is the only record of this change, and leaving it showing
+             the refused value made the table agree with the admin while the stored config did
+             not — so the refusal toast read as noise and the user went on landing on the
+             wrong page. The select's own focus then blocks the repaint that would fix it. */
+          sel.value = sel.dataset.prev || sel.value;
+          return;
+        }
+        sel.dataset.prev = value;
         if (window.bccNotifySaved) window.bccNotifySaved('Landing page updated.');
         else if (window.bccNotify) window.bccNotify('Saved.', 'success');
       });
@@ -1428,7 +1468,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         var tr = btn.closest('tr'); var tid = tr.dataset.id;
         var d = loadTypesDoc();
         d.types = (d.types || []).filter(function (t) { return t.id !== tid; });
-        saveTypesDoc(d);
+        // Refused: the row stays exactly where it is rather than disappearing from a repaint
+        // built off a document that was never changed.
+        if (!saveTypesDoc(d, true)) return;
         renderTypes();
       });
     });
@@ -1452,20 +1494,34 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var id = label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g,'') || ('t' + uid());
     var i = 1; var base = id; while ((d.types || []).some(function (x) { return x.id === id; })) { i++; id = base + '-' + i; }
     d.types = (d.types || []).concat([{ id: id, label: label, color: color }]);
-    saveTypesDoc(d);
+    // The typed name is only cleared once it is actually stored — otherwise the admin watched
+    // it vanish and had to remember what they had written.
+    if (!saveTypesDoc(d, true)) return;
     document.getElementById('newTypeLabel').value = '';
     renderTypes();
   });
   document.getElementById('resetTypesBtn').addEventListener('click', function () {
     if (!confirm('Reset customer types to the default list? Your custom types are removed.')) return;
-    // Deleting the key alone only reset THIS browser: loadTypesDoc falls back to the
-    // defaults in memory, so nothing was ever persisted and every other browser kept
-    // the removed types indefinitely (this family is not prunable, so a pull could not
-    // clear them either). Clear first, then re-read — loadTypesDoc now returns the
-    // defaults — and save so the reset actually syncs.
-    localStorage.removeItem(TYPES_KEY);
-    saveTypesDoc(loadTypesDoc());
+    /* GATE BEFORE DESTROYING. This used to removeItem() first — a hooked call, so the DELETE
+       for the firm-wide document went out immediately — and only then ask saveTypesDoc, which
+       refuses until the real list has been loaded. The destructive half landed, the
+       restorative half did not, and the admin was told "not saved". The list was simply gone.
+       And there is no reason to delete at all: publishing the defaults is one write, and a
+       write cannot leave the document missing. */
+    if (!_typesFresh) {
+      primeTypes(function (ok) { if (ok) { _typesWarned = false; renderTypes(); } });
+      (window.bccNotify || alert)('Not reset — the firm’s customer types haven’t finished loading, so this device can’t safely replace them. Nothing was changed. Try again in a moment.', 'warn', 10000);
+      return;
+    }
+    /* Built in memory from the defaults, never by clearing storage: loadTypesDoc falls back
+       to the built-ins only when the key is ABSENT, and making it absent is the thing that
+       was doing the damage. */
+    var d = defaultTypesDoc();
+    // `true` = a discrete button press: its refusal must speak every time, not be latched
+    // behind the per-keystroke autosave's one-message rule.
+    if (!saveTypesDoc(d, true)) return;   // refused — the list is untouched
     renderTypes();
+    if (window.bccNotifySaved) window.bccNotifySaved('Customer types reset to the default list.');
   });
 
   /* ===== COMPANY ===== */

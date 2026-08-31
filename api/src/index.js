@@ -9642,11 +9642,20 @@ app.http('qbo-cashflow', {
         return !allow.length || allow.indexOf(who) >= 0;
       });
       const fields = await getIntegrationFields('qbo');
-      const today = new Date(); today.setHours(0, 0, 0, 0);
+      /* BCC's own operating day, not the server's. Azure runs UTC, so from about 7pm Central
+         "today" was already tomorrow — every invoice due exactly 30 / 60 / 90 days out slid a
+         bucket, and one due today read as overdue. These figures are shown to the client as
+         their next quarter's cash and are printed into the monthly report, so the same books
+         produced different forecasts depending on the hour the report was generated.
+         BOTH sides are parsed as UTC midnight so the subtraction is a clean day count with no
+         timezone left in it. */
+      const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });   // YYYY-MM-DD
+      const today = new Date(todayStr + 'T00:00:00Z');
       const dayMs = 86400000;
       const bucketOf = (dateStr) => {
         if (!dateStr) return 0; // no due date → treat as due now
-        const d = new Date(String(dateStr) + 'T00:00:00');
+        const d = new Date(String(dateStr).slice(0, 10) + 'T00:00:00Z');
+        if (isNaN(d)) return 0;
         const days = Math.round((d - today) / dayMs);
         if (days <= 30) return 0; if (days <= 60) return 1; if (days <= 90) return 2; return 3;
       };

@@ -645,12 +645,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         cur.msGraphId = resp.graphEventId;
         if (newOwner) cur.msGraphOwner = newOwner;
         cur.source = 'msgraph';
-        saveSession(cur);
+        // saveSession is gated now; a refusal here means the Outlook id was not recorded, so
+        // repainting from `cur` would show a link that does not exist in the stored record.
+        if (!saveSession(cur)) return;
         renderWeek();
       } else if (!resp.ok) {
         if (window.bccNotify) window.bccNotify('Outlook mirror failed: ' + (resp.error || 'unknown'), 'warn');
       }
-    }).catch(function () { /* silent — local save already happened */ });
+    }).catch(function (e) {
+      /* NOT silent. The branch three lines up already tells the coach when Graph REFUSES the
+         mirror; a dropped connection is the same outcome — the session exists here and not in
+         Outlook — and saying nothing meant they went on believing the client had an invite.
+         Named for what to do about it. */
+      if (window.bccNotify) window.bccNotify('Saved here, but the Outlook calendar copy could not be created (' + ((e && e.message) || 'connection lost') + '). Open the session and save it again to retry.', 'warn', 10000);
+    });
 
     closeModal();
     renderWeek();
