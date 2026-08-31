@@ -400,6 +400,13 @@ function mutateMsgs(fn) {
   /* THE chokepoint for every message write — send, delete-a-message and Clear-channel all
      come through here, and gating only send() left the other two able to publish a blank
      history. Returns null on refusal; the callers below check it. */
+  /* The TIER gate belongs here too, for exactly the reason above. Putting it on send() alone
+     left delete-a-message and Clear-channel writing the whole blob: the server refuses, the
+     poll restores everything 8s later, and the person watches a deletion happen and then
+     un-happen. A refused write is now KEPT in the outbox with a retry button, and
+     mergeChatMessages never resurrects a tombstone — so replaying a refused Clear-channel
+     after an access grant would permanently delete every message that existed at the time. */
+  if (window.bccRefuseIfNoEdit && window.bccRefuseIfNoEdit('chat', 'change')) return null;
   if (!chatReady()) {
     primeChat(function () { chatPrimeUi(); });
     (window.bccNotify || alert)('Still loading this channel’s history — nothing was changed. Try again in a moment.', 'warn', 6000);
@@ -419,6 +426,7 @@ function mutateChans(fn) {
   /* Same rule as messages, and the same blast radius: the channel list is one document, so
      writing a not-yet-synced copy publishes defaultChans() over every channel the firm has
      created. Refuse rather than guess. */
+  if (window.bccRefuseIfNoEdit && window.bccRefuseIfNoEdit('chat', 'change')) return null;
   if (!chatReady()) {
     primeChat(function () { chatPrimeUi(); });
     (window.bccNotify || alert)('Still loading the channel list — nothing was changed. Try again in a moment.', 'warn', 6000);
@@ -763,12 +771,13 @@ function send() {
     (window.bccNotify || alert)('Still loading this channel’s history — your message was not sent yet. Try again in a moment.', 'warn', 6000);
     return;
   }
-  /* The TIER gate, which this page never had. localStorage.setItem is hooked into a Cosmos
-     publish, so a view-tier user's message was painted into the thread, audit-logged as sent,
-     refused 403 by the server — and then erased from their own screen by the next poll,
-     because it exists nowhere on the server. They watched their message vanish, and nobody
-     ever received it. Refuse before anything is written, and leave their text in the box. */
-  if (window.bccRefuseIfNoEdit && window.bccRefuseIfNoEdit('chat', 'message')) return;
+  /* A cheap early-out so the composer is not cleared and no audit row is written; the real
+     gate is inside mutateMsgs, where delete-a-message and Clear-channel also pass. Checked
+     WITHOUT the message, so this does not toast twice — mutateMsgs speaks if it gets there. */
+  if (window.bccUser && window.bccUser.userDetails && window.bccCanEdit && !window.bccCanEdit('chat')) {
+    (window.bccNotify || alert)('Your Team Chat access is view-only, so that message was not sent. Ask an admin for edit access — your text is still here.', 'warn', 9000);
+    return;
+  }
   const at = Date.now();
   const newMsg = {
     id: 'm' + at + '-' + Math.random().toString(36).slice(2, 6),

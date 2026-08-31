@@ -1145,6 +1145,11 @@
        certainly did, `pending` is empty and this flushed nothing at all while reporting
        success. The outbox is where a refused write now lives (see the settle sweep). */
     var reseeded = 0;
+    /* Declared OUT HERE, not inside the try. `var` hoists, so the reads below compiled either
+       way — but if outboxRead() itself threw, `want` was still `undefined` when
+       Object.keys(want) ran after the catch, and bccRetrySync died on the one control a
+       person reaches when their work has already failed to save once. */
+    var want = {};
     try {
       var _obAll = outboxRead();
       var ob = _obAll.items || {};
@@ -1152,7 +1157,6 @@
          session. permanentlyFailed alone was empty after a reload — which is exactly when
          somebody clicks this — so the recovery path recovered nothing and reported success.
          The outbox is durable and survives the reload; it is the real list. */
-      var want = {};
       Object.keys(ob).forEach(function (k) { if (ob[k] && ob[k].rf) want[k] = 1; });
       permanentlyFailed.forEach(function (k) { want[k] = 1; });
       Object.keys(want).forEach(function (k) {
@@ -1172,19 +1176,34 @@
          cached object either way, so skipping the write left localStorage disagreeing with
          memory — and the flag would come back at the next reload. */
       outboxWrite(_obAll);
-    } catch (e) {}
+    } catch (e) {
+      /* The durable half is unreadable. The in-memory half still is: seed whatever this
+         session knows was refused rather than giving up entirely. */
+      try { permanentlyFailed.forEach(function (k) { want[k] = 1; }); } catch (e2) {}
+    }
     permanentlyFailed.clear();
     if (reseeded) console.info('[bcc-api] re-queued ' + reseeded + ' previously refused change(s)');
+    // Watched until the outbox actually lets go of them, so the bar cannot vanish in the gap
+    // where a re-queued key carries no `rf` flag and has not yet been written.
+    _retryWatch = Object.keys(want);
     /* Report what was SAVED, not what was queued. Counting the re-queue meant the banner
        could say "5 changes saved" over five that were refused a second time — which is the
        kind of message that costs more trust than the original failure. */
+    var attempted = Object.keys(want);
     return flush().then(finishRetry, finishRetry);
     function finishRetry() {
-      var still = bccRefusedCount();
-      var saved = Math.max(0, reseeded - still);
+      /* An entry LEAVES the outbox only when its write has actually settled. Counting
+         "no longer flagged rf" instead was wrong in the one case that matters: this function
+         strips that flag off every key as it re-queues it, so a transient failure — a mid-day
+         401, a 5xx, a dropped connection — left them unflagged AND unsent, and the count read
+         as "all saved". The bar then hid itself. */
+      var left = {};
+      try { left = outboxRead().items || {}; } catch (e) { left = {}; }
+      var stillHeld = attempted.filter(function (k) { return left[k] !== undefined; });
+      var saved = Math.max(0, attempted.length - stillHeld.length);
       window._bccLastRetryCount = saved;
       refreshRefusedBar();
-      return { requeued: reseeded, saved: saved, stillRefused: still };
+      return { requeued: reseeded, saved: saved, stillQueued: stillHeld.length, stillRefused: bccRefusedCount() };
     }
   };
   /* How many of the user's changes the server has refused and we are still holding. Read from
@@ -1195,6 +1214,18 @@
       return Object.keys(it).filter(function (k) { return it[k] && it[k].rf; }).length;
     } catch (e) { return 0; }
   }
+  /* How many keys a retry attempt is still holding, flagged or not. A key re-queued by
+     bccRetrySync has had its `rf` cleared, so between the retry and the next refusal it is
+     invisible to bccRefusedCount — and that is exactly the window in which the bar must not
+     disappear. Set by the retry, cleared when the outbox lets go of them. */
+  var _retryWatch = [];
+  function retryStillHeld() {
+    if (!_retryWatch.length) return 0;
+    var left = {};
+    try { left = outboxRead().items || {}; } catch (e) { return 0; }
+    _retryWatch = _retryWatch.filter(function (k) { return left[k] !== undefined; });
+    return _retryWatch.length;
+  }
   window.bccRefusedCount = bccRefusedCount;
   /* THE CALLER. A pinned bar, because this has to survive the reload the person almost
      certainly does and be there when an admin finally grants the access that was missing —
@@ -1203,7 +1234,9 @@
   var _refusedBusy = false;
   function refreshRefusedBar() {
     if (!document.body) return;
-    var n = bccRefusedCount();
+    var refused = bccRefusedCount();
+    var queued = retryStillHeld();
+    var n = refused || queued;
     var bar = document.getElementById('bcc-refused-bar');
     if (!n) { if (bar) bar.classList.remove('show'); return; }
     if (!bar) {
@@ -1220,10 +1253,17 @@
         window.bccRetrySync().then(function (r) {
           _refusedBusy = false;
           btn.disabled = false; btn.textContent = 'Try saving them again';
+          if (!window.bccNotify) return;
           if (r && r.saved) {
-            if (window.bccNotify) window.bccNotify(r.saved + ' change' + (r.saved === 1 ? '' : 's') + ' saved.', 'success', 6000);
-          } else if (window.bccNotify) {
+            window.bccNotify(r.saved + ' change' + (r.saved === 1 ? '' : 's') + ' saved.'
+              + (r.stillQueued ? ' ' + r.stillQueued + ' still waiting.' : ''), r.stillQueued ? 'warn' : 'success', r.stillQueued ? 9000 : 6000);
+          } else if (r && r.stillRefused) {
             window.bccNotify('Still not saved — the server is still refusing those changes. Ask an admin to check your access, then try again. Nothing has been lost.', 'warn', 12000);
+          } else {
+            /* Nothing landed and nothing was refused: the attempt itself did not get through.
+               Telling them it was refused would send them to an admin over a dropped
+               connection. */
+            window.bccNotify('Couldn’t reach the server just now, so those changes are still waiting. They are safe on this device and will keep retrying.', 'warn', 10000);
           }
         }, function () {
           _refusedBusy = false;
@@ -1231,8 +1271,13 @@
         });
       };
     }
-    bar.querySelector('.bcc-refused-msg').textContent =
-      '⚠ ' + n + ' change' + (n === 1 ? '' : 's') + ' could not be saved — ' + (n === 1 ? 'it is' : 'they are') + ' still here on this device, nothing has been lost.';
+    /* Two different truths. "Refused" is the server saying no; "still queued" is a retry that
+       has not landed yet — usually a transient failure that will clear on its own. Saying the
+       second one is refused would send somebody to an admin for no reason; saying nothing at
+       all was the bug. */
+    bar.querySelector('.bcc-refused-msg').textContent = refused
+      ? ('⚠ ' + refused + ' change' + (refused === 1 ? '' : 's') + ' could not be saved — ' + (refused === 1 ? 'it is' : 'they are') + ' still here on this device, nothing has been lost.')
+      : ('⚠ ' + queued + ' change' + (queued === 1 ? '' : 's') + ' still waiting to save — ' + (queued === 1 ? 'it is' : 'they are') + ' held on this device and will keep retrying. Nothing has been lost.');
     bar.classList.add('show');
     placeOfflineBar(bar);
   }
