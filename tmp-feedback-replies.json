@@ -1,0 +1,12 @@
+{
+  "items": [
+    {
+      "id": "bcc-feedback-mrdwj3h4-cunxxe",
+      "note": "This is in — sorry it went quiet on you, it was built and you were never told. There's a search box at the top of Internal files that matches on the file name AND on the tags, so typing \"1099\" or \"bank\" narrows the list as you go. There's a tag filter and a sort next to it too. The SharePoint and shared-drive blocks have their own search as well; on the shared drive it searches the whole connected folder, not just the one you're standing in."
+    },
+    {
+      "id": "bcc-feedback-mrdwn7ru-ux7o20",
+      "note": "Also in, and also never reported back to you — apologies. Clicking a file name in Internal files now opens it in a preview window instead of downloading it: PDFs, images, and plain text/CSV open straight in the app, with Download and Open-in-new-tab buttons in the preview if you want the file itself. It works the same way in the SharePoint and shared-drive lists and on mail attachments. Office files (.docx/.xlsx) still download, because the browser can't render those — but for Levanen's PDFs and scans you should not be downloading one at a time any more. If you hit a file that still won't preview, send it through feedback with a screenshot (you can paste one straight into the box now) and I'll look at that file type specifically."
+    }
+  ]
+}

@@ -873,6 +873,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           if (note && act !== 'resolved') {
             if (!confirm('You typed a reply, but “' + act + '” doesn’t send one. Use “Reply” to send it, or “Resolve” to save it with the resolution. Continue and discard the reply?')) return;
           }
+          /* A resolve with NO reply still notifies — and with no note the server falls back
+             to echoing the submitter's own message back at them. They get "✅ Your feedback
+             was addressed" carrying the sentence they wrote and nothing else, which reads as
+             the ticket being closed without an answer. The reply IS the point of this queue,
+             so ask before sending one of those. */
+          if (act === 'resolved' && !note) {
+            if (!confirm('Resolve this with no reply?\n\n' + (it.userName || it.userUpn || 'The submitter')
+              + ' will be notified either way, and with nothing typed the notification just repeats their own words back to them — it reads as closing the ticket without answering.\n\n'
+              + 'OK  — resolve silently anyway.\nCancel — go back and type a reply.')) return;
+          }
           payload = { status: act, note: (act === 'resolved' ? note : '') };
         }
         b.disabled = true;

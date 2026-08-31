@@ -1,0 +1,22 @@
+name: TEMP feedback reply
+# Temporary, manual-only. Posts the prepared replies to the CRON_SECRET-gated endpoint.
+# Deleted in the same session as the endpoint it calls.
+on:
+  workflow_dispatch:
+
+jobs:
+  reply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Send replies
+        run: |
+          code=$(curl -s -o out.json -w "%{http_code}" -X POST \
+            -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json" \
+            --data-binary @tmp-feedback-replies.json \
+            "https://connect.bluecollarcoach.us/api/tmp/feedback-reply")
+          echo "HTTP $code"
+          cat out.json
+          if [ "$code" != "200" ]; then exit 1; fi
+          node -e "const j=require('./out.json'); const bad=j.results.filter(r=>!r.ok); console.log('sent', j.results.length - bad.length, 'of', j.results.length); if (bad.length) { console.log(JSON.stringify(bad)); process.exit(1); }"
