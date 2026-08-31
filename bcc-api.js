@@ -2369,6 +2369,13 @@
       '<div class="bcc-fb-types">' + types.map(function (t, i) { return '<button type="button" class="bcc-fb-chip' + (i === 0 ? ' sel' : '') + '" data-type="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</div>' +
       '<label>Your feedback <span class="bcc-req">*</span></label>' +
       '<textarea id="bcc-fb-msg" rows="5" placeholder="What happened, or what would help?"></textarea>' +
+      '<label>Screenshots or files (optional)</label>' +
+      '<div id="bcc-fb-drop" class="bcc-fb-drop">' +
+        '<span class="bcc-fb-drop-txt">Paste a screenshot (<strong>Ctrl</strong>+<strong>V</strong>), drag files here, or ' +
+        '<button type="button" id="bcc-fb-pick" class="bcc-fb-pick">choose files</button></span>' +
+        '<input type="file" id="bcc-fb-file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,application/pdf" multiple hidden />' +
+      '</div>' +
+      '<div id="bcc-fb-atts" class="bcc-fb-atts"></div>' +
       '<label>How’s your experience? (optional)</label>' +
       '<div class="bcc-fb-stars" id="bcc-fb-stars">' + [1, 2, 3, 4, 5].map(function (n) { return '<span class="bcc-fb-star" data-n="' + n + '" role="button" aria-label="' + n + ' star">★</span>'; }).join('') + '</div>' +
       '<div class="bcc-modal-actions">' +
@@ -2383,9 +2390,128 @@
       '</div></div>';
     document.body.appendChild(ov);
     var chosenType = 'idea', rating = 0;
+    /* ---------- attachments ---------- */
+    var FB_MAX_FILES = 5, FB_MAX_BYTES = 10 * 1024 * 1024, FB_SHOT_PX = 1600;
+    var atts = [];   // { name, type, blob, url }
+    var attsEl = document.getElementById('bcc-fb-atts');
+    var dropEl = document.getElementById('bcc-fb-drop');
+    function fbBytes(n) { return n < 1024 ? n + ' B' : (n < 1048576 ? Math.round(n / 1024) + ' KB' : (n / 1048576).toFixed(1) + ' MB'); }
+    function renderAtts() {
+      if (!attsEl) return;
+      if (!atts.length) { attsEl.innerHTML = ''; return; }
+      attsEl.innerHTML = atts.map(function (a, i) {
+        var thumb = /^image\//.test(a.type)
+          ? '<img src="' + a.url + '" alt="" />'
+          : '<span class="bcc-fb-doc">PDF</span>';
+        return '<div class="bcc-fb-att">' + thumb +
+          '<span class="bcc-fb-att-n" title="' + escapeHtml(a.name) + '">' + escapeHtml(a.name) + '</span>' +
+          '<span class="bcc-fb-att-s">' + fbBytes(a.blob.size) + '</span>' +
+          '<button type="button" class="bcc-fb-att-x" data-x="' + i + '" aria-label="Remove ' + escapeHtml(a.name) + '">&times;</button></div>';
+      }).join('');
+      attsEl.querySelectorAll('[data-x]').forEach(function (b) {
+        b.onclick = function () {
+          var i = +b.getAttribute('data-x');
+          try { URL.revokeObjectURL(atts[i].url); } catch (e) {}
+          atts.splice(i, 1);
+          renderAtts();
+        };
+      });
+    }
+    /* Re-encode a screenshot to something a report can actually carry. A Windows Win+Shift+S
+       of a 4K monitor is a 6-8 MB PNG; nobody needs that to read a error message, and on a
+       bookkeeper's connection it is the difference between "sent" and "still spinning".
+       Steps the quality down rather than refusing a busy screenshot that compresses badly. */
+    function fbShrink(file, done) {
+      if (!/^image\//.test(file.type) || file.type === 'image/gif') { done(file); return; }
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onerror = function () { try { URL.revokeObjectURL(url); } catch (e) {} done(file); };   // keep the original rather than lose it
+      img.onload = function () {
+        try {
+          var scale = Math.min(1, FB_SHOT_PX / Math.max(img.width, img.height, 1));
+          if (scale === 1 && file.size <= 1.5 * 1024 * 1024) { URL.revokeObjectURL(url); done(file); return; }
+          var cv = document.createElement('canvas');
+          cv.width = Math.max(1, Math.round(img.width * scale));
+          cv.height = Math.max(1, Math.round(img.height * scale));
+          cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+          URL.revokeObjectURL(url);
+          var tries = [0.85, 0.7, 0.55, 0.4], i = 0;
+          var next = function () {
+            cv.toBlob(function (b) {
+              if (!b) { done(file); return; }
+              if (b.size <= FB_MAX_BYTES || i >= tries.length - 1) {
+                // Name it for what it now is, so the stored type and the extension agree.
+                done(new File([b], String(file.name || 'screenshot').replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' }));
+                return;
+              }
+              i++; next();
+            }, 'image/jpeg', tries[i]);
+          };
+          next();
+        } catch (e) { try { URL.revokeObjectURL(url); } catch (e2) {} done(file); }
+      };
+      img.src = url;
+    }
+    var FB_OK_TYPES = /^(image\/(png|jpeg|gif|webp|bmp)|application\/pdf)$/;
+    function addFiles(list) {
+      var arr = Array.prototype.slice.call(list || []);
+      if (!arr.length) return;
+      var room = FB_MAX_FILES - atts.length;
+      if (room <= 0) { (window.bccNotify || alert)('You can attach up to ' + FB_MAX_FILES + ' files.', 'warn', 6000); return; }
+      if (arr.length > room) {
+        (window.bccNotify || alert)('Only the first ' + room + ' were added — up to ' + FB_MAX_FILES + ' files per report.', 'warn', 7000);
+        arr = arr.slice(0, room);
+      }
+      arr.forEach(function (f) {
+        var base = String(f.type || '').split(';')[0].trim().toLowerCase();
+        if (!FB_OK_TYPES.test(base)) {
+          (window.bccNotify || alert)('“' + (f.name || 'That file') + '” was not added — screenshots (PNG/JPG/GIF/WEBP) and PDFs only.', 'warn', 8000);
+          return;
+        }
+        fbShrink(f, function (out) {
+          if (out.size > FB_MAX_BYTES) {
+            (window.bccNotify || alert)('“' + (f.name || 'That file') + '” is still ' + fbBytes(out.size) + ' after resizing — the limit is ' + fbBytes(FB_MAX_BYTES) + '.', 'warn', 9000);
+            return;
+          }
+          atts.push({ name: out.name || 'attachment', type: out.type, blob: out, url: URL.createObjectURL(out) });
+          renderAtts();
+        });
+      });
+    }
+    var pick = document.getElementById('bcc-fb-pick'), fileInp = document.getElementById('bcc-fb-file');
+    if (pick && fileInp) pick.onclick = function () { fileInp.click(); };
+    if (fileInp) fileInp.onchange = function () { addFiles(fileInp.files); fileInp.value = ''; };
+    if (dropEl) {
+      ['dragenter', 'dragover'].forEach(function (ev) { dropEl.addEventListener(ev, function (e) { e.preventDefault(); dropEl.classList.add('over'); }); });
+      ['dragleave', 'drop'].forEach(function (ev) { dropEl.addEventListener(ev, function (e) { e.preventDefault(); dropEl.classList.remove('over'); }); });
+      dropEl.addEventListener('drop', function (e) { if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files); });
+    }
+    /* PASTE, on the whole dialog. Win+Shift+S puts the screenshot on the clipboard and never
+       on disk, so this is the way these files actually arrive — requiring the caret to be in
+       a particular box would have made the feature unusable for exactly the person it is for. */
+    var onPaste = function (e) {
+      if (!document.getElementById('bcc-fb-modal')) return;
+      var items = (e.clipboardData && e.clipboardData.items) || [];
+      var picked = [];
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].kind !== 'file') continue;
+        var f = items[i].getAsFile();
+        if (f) picked.push(f);
+      }
+      if (!picked.length) return;   // plain text paste — leave it to the textarea
+      e.preventDefault();
+      addFiles(picked);
+    };
+    document.addEventListener('paste', onPaste);
     ov.querySelectorAll('.bcc-fb-chip').forEach(function (b) { b.onclick = function () { ov.querySelectorAll('.bcc-fb-chip').forEach(function (x) { x.classList.remove('sel'); }); b.classList.add('sel'); chosenType = b.getAttribute('data-type'); }; });
     ov.querySelectorAll('.bcc-fb-star').forEach(function (s) { s.onclick = function () { rating = +s.getAttribute('data-n'); ov.querySelectorAll('.bcc-fb-star').forEach(function (x) { x.classList.toggle('on', +x.getAttribute('data-n') <= rating); }); }; });
-    function close() { var m = document.getElementById('bcc-fb-modal'); if (m) m.remove(); document.removeEventListener('keydown', onKey); }
+    function close() {
+      var m = document.getElementById('bcc-fb-modal'); if (m) m.remove();
+      document.removeEventListener('keydown', onKey);
+      // Release the previews and stop listening for pastes into a dialog that is gone.
+      document.removeEventListener('paste', onPaste);
+      atts.forEach(function (a) { try { URL.revokeObjectURL(a.url); } catch (e) {} });
+    }
     function onKey(e) { if (e.key === 'Escape') close(); }
     document.addEventListener('keydown', onKey);
     ov.addEventListener('click', function (e) { if (e.target === ov) close(); });
@@ -2415,7 +2541,40 @@
           });
       }
       attempt(1)
-        .then(function () { close(); if (window.bccNotifySaved) window.bccNotifySaved('Thanks! Your feedback was sent.'); else (window.bccNotify || alert)('Thanks! Feedback sent.', 'success'); })
+        .then(function (j) {
+          var id = j && j.id;
+          if (!atts.length || !id) {
+            close();
+            if (window.bccNotifySaved) window.bccNotifySaved('Thanks! Your feedback was sent.');
+            else (window.bccNotify || alert)('Thanks! Feedback sent.', 'success');
+            return;
+          }
+          btn.textContent = 'Sending ' + atts.length + ' file' + (atts.length === 1 ? '' : 's') + '…';
+          var fd = new FormData();
+          atts.forEach(function (a) { fd.append('file', a.blob, a.name); });
+          return fetch('/api/feedback/' + encodeURIComponent(id) + '/attach', { method: 'POST', credentials: 'include', body: fd })
+            .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
+            .then(function (aj) {
+              close();
+              var refused = (aj && aj.refused) || [];
+              /* The report is SAVED either way — say precisely which half happened rather
+                 than a blanket success or a blanket failure over words that are already in. */
+              if (!aj || aj.ok === false) {
+                (window.bccNotify || alert)('Your feedback was sent, but the ' + (atts.length === 1 ? 'file' : 'files') + ' could not be attached. Reply to the confirmation, or send them again from the feedback box.', 'warn', 12000);
+                return;
+              }
+              if (refused.length) {
+                (window.bccNotify || alert)('Feedback sent with ' + (aj.attached || 0) + ' of ' + atts.length + ' file' + (atts.length === 1 ? '' : 's') + '. ' + refused.map(function (x) { return (x.name || 'a file') + ' — ' + x.why; }).join('; ') + '.', 'warn', 13000);
+                return;
+              }
+              if (window.bccNotifySaved) window.bccNotifySaved('Thanks! Your feedback was sent with ' + (aj.attached || 0) + ' file' + ((aj.attached || 0) === 1 ? '' : 's') + '.');
+              else (window.bccNotify || alert)('Thanks! Feedback sent.', 'success');
+            })
+            .catch(function () {
+              close();
+              (window.bccNotify || alert)('Your feedback was sent, but the ' + (atts.length === 1 ? 'file' : 'files') + ' could not be uploaded — check your connection and send them in a follow-up.', 'warn', 12000);
+            });
+        })
         .catch(function (err) {
           btn.disabled = false; btn.textContent = 'Send feedback';
           // Keep the user's text in place so they never retype; give a real reason.
@@ -2448,6 +2607,17 @@
             return '<div style="border:1px solid #eee;border-radius:8px;padding:9px 11px;margin-bottom:8px;">' +
               '<div style="font-size:11px;color:#6b7077;display:flex;gap:8px;align-items:center;">' + (LBL[f.type] || '💬') + ' · ' + escapeHtml(when) + ' · ' + st + '</div>' +
               '<div style="font-size:13px;color:#1a1a1a;margin-top:4px;white-space:pre-wrap;word-break:break-word;">' + escapeHtml(f.message || '') + '</div>' +
+              /* What they attached, readable back. Without this the pictures went into a
+                 black box: the sender had no way to confirm the screenshot actually made it,
+                 which is precisely the doubt this whole feature exists to remove. */
+              (((f.attachments || []).length)
+                ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:7px;">' + f.attachments.map(function (a) {
+                    var href = '/api/feedback/' + encodeURIComponent(f.id) + '/attachment/' + encodeURIComponent(a.id) + '?inline=1';
+                    return /^image\//.test(a.mimeType || '')
+                      ? '<a href="' + escapeHtml(href) + '" target="_blank" rel="noopener" title="' + escapeHtml(a.name || '') + '"><img src="' + escapeHtml(href) + '" alt="' + escapeHtml(a.name || 'attachment') + '" style="width:56px;height:56px;object-fit:cover;border:1px solid #e6e5e1;border-radius:6px;display:block;" /></a>'
+                      : '<a href="' + escapeHtml(href) + '" target="_blank" rel="noopener" style="font-size:12px;color:#a8884a;font-weight:700;border:1px solid #e6e5e1;border-radius:6px;padding:6px 8px;text-decoration:none;">📄 ' + escapeHtml(a.name || 'file') + '</a>';
+                  }).join('') + '</div>'
+                : '') +
               (f.resolutionNote
                 ? '<div style="background:#e9f5ec;border:1px solid #cfe7d6;border-radius:7px;padding:8px 10px;margin-top:8px;">' +
                   '<div style="font-size:11px;font-weight:800;color:#1f8a4c;text-transform:uppercase;letter-spacing:.6px;">Reply</div>' +
@@ -2557,6 +2727,16 @@
       /* The refused-changes bar sits just under the offline one when both are up, and carries
          its own action button — the one control the person needs and the only way back to
          work the server would not take. */
+      '.bcc-fb-drop{border:1.5px dashed var(--chrome-mute,#d9d7d1);border-radius:9px;padding:12px;text-align:center;font-size:12.5px;color:#6b7077;background:#fbfaf7;}' +
+      '.bcc-fb-drop.over{border-color:#a8884a;background:#f7f1e4;color:#5a4a24;}' +
+      '.bcc-fb-pick{background:none;border:0;padding:0;color:#a8884a;font:inherit;font-weight:700;cursor:pointer;text-decoration:underline;}' +
+      '.bcc-fb-atts{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;}' +
+      '.bcc-fb-att{display:flex;align-items:center;gap:6px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;padding:5px 7px;background:#fff;max-width:100%;}' +
+      '.bcc-fb-att img{width:38px;height:38px;object-fit:cover;border-radius:5px;display:block;}' +
+      '.bcc-fb-doc{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:5px;background:#f1efe9;font-size:10px;font-weight:800;color:#6b7077;}' +
+      '.bcc-fb-att-n{font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+      '.bcc-fb-att-s{font-size:11px;color:#6b7077;}' +
+      '.bcc-fb-att-x{background:none;border:0;font-size:17px;line-height:1;color:#6b7077;cursor:pointer;padding:0 2px;min-height:24px;}' +
       '.bcc-refused{background:#7f1d1d;z-index:59;}' +
       '.bcc-incomplete{background:#92400e;z-index:58;}' +
       '.bcc-incomplete .bcc-incomplete-go{margin-left:10px;background:#fff;color:#92400e;border:0;border-radius:6px;padding:4px 10px;font:inherit;font-size:12.5px;font-weight:700;cursor:pointer;min-height:28px;}' +

@@ -1070,7 +1070,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         if (co && co.name) u.company = co.name;
       }
       saveContact(u);
-      renderDetail(u.id);
+      renderDetailKeepTyped(u.id);   // keeps unsaved Profile text, like every sibling handler
     };
 
     document.getElementById('needAdd').onclick = function () {
@@ -1082,7 +1082,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       saveContact(u);
       if (window.bccAudit) window.bccAudit('need-add', { key: u.id, path: '/crm.html', meta: { label: label } });
       inp.value = '';
-      renderDetail(u.id);
+      renderDetailKeepTyped(u.id);   // keeps unsaved Profile text, like every sibling handler
     };
     document.getElementById('needInput').onkeydown = function (e) { if (e.key === 'Enter') document.getElementById('needAdd').click(); };
 
@@ -1101,7 +1101,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         var nid = btn.getAttribute('data-need-del');
         u.needs = (u.needs || []).filter(function (n) { return n.id !== nid; });
         saveContact(u);
-        renderDetail(u.id);
+        renderDetailKeepTyped(u.id);   // keeps unsaved Profile text, like every sibling handler
       };
     });
 
@@ -1157,7 +1157,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         if (!crmCanEdit()) return;
         if (!confirm('Delete this weekly note?')) return;
         deleteWeeklyNote(btn.getAttribute('data-weekly-del'));
-        renderDetail(c.id);
+        renderDetailKeepTyped(c.id);   // keeps unsaved Profile text, like every sibling handler
       };
     });
     var upBtn = document.getElementById('upDocBtn');

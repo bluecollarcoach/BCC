@@ -1958,6 +1958,153 @@ app.http('feedback', {
   })
 });
 
+const FB_MAX_ATTACH = 5;                         // per submission
+const FB_MAX_ATTACH_BYTES = 10 * 1024 * 1024;    // per file — a screenshot, not a video
+/* Only what a screenshot or a scanned page actually is. An allow-list, not a block-list: this
+   is served back to a browser, and the download route decides `inline` from the stored type,
+   so anything that can carry script must never get in. No SVG (it is a document), no HTML. */
+const FB_ATTACH_TYPES = {
+  'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif',
+  'image/webp': '.webp', 'image/bmp': '.bmp', 'application/pdf': '.pdf'
+};
+/* Who may see a feedback attachment: the person who sent it, or an app admin. Deliberately
+   NOT "any signed-in colleague" — a screenshot of a bug is very often a screenshot of a
+   client's books. */
+async function feedbackDocFor(p, id) {
+  if (!/^bcc-feedback-[A-Za-z0-9-]{1,64}$/.test(String(id || ''))) return { err: badRequest('bad id') };
+  const doc = await container().item(String(id), BCC_TENANT_ID).read().then(r => r.resource)
+    .catch(e => { if (e && (e.code === 404 || e.statusCode === 404)) return null; throw e; });
+  if (!doc || doc.docType !== 'feedback') return { err: { status: 404, jsonBody: { ok: false, error: 'not found' } } };
+  const who = String((p && (p.userDetails || p.userId)) || '').toLowerCase();
+  if (String(doc.userUpn || '').toLowerCase() === who) return { doc };
+  if (await isAppAdmin(p)) return { doc };
+  return { err: forbidden('not your feedback') };
+}
+
+/**
+ * POST /api/feedback/{id}/attach — add screenshots or a PDF to feedback already sent.
+ * Multipart. The submission itself is saved first and separately, so an upload that fails
+ * never costs the person their words.
+ */
+app.http('feedback-attach', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'feedback/{id}/attach',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    try {
+      const got = await feedbackDocFor(p, request.params.id);
+      if (got.err) return got.err;
+      const doc = got.doc;
+      /* Only the SUBMITTER may attach. An admin can read the pictures; adding one to somebody
+         else's report would put words in their mouth in a record they are shown back. */
+      const who = String((p.userDetails || p.userId) || '').toLowerCase();
+      if (String(doc.userUpn || '').toLowerCase() !== who) return forbidden('only the person who sent this can add to it');
+
+      const form = await request.formData();
+      const files = form.getAll('file').filter(f => f && typeof f.arrayBuffer === 'function');
+      if (!files.length) return badRequest('no file');
+      const already = (doc.attachments || []).length;
+      if (already + files.length > FB_MAX_ATTACH) {
+        return badRequest('at most ' + FB_MAX_ATTACH + ' attachments per report (this one already has ' + already + ')');
+      }
+      const cont = getBlobContainer();
+      try { await cont.createIfNotExists(); } catch (_) {}
+
+      const added = [], refused = [];
+      for (const f of files) {
+        const rawType = String(f.type || '').split(';')[0].trim().toLowerCase();
+        const ext = FB_ATTACH_TYPES[rawType];
+        if (!ext) { refused.push({ name: String(f.name || 'file'), why: 'only images and PDFs can be attached' }); continue; }
+        const buf = Buffer.from(await f.arrayBuffer());
+        if (!buf.length) { refused.push({ name: String(f.name || 'file'), why: 'the file was empty' }); continue; }
+        if (buf.length > FB_MAX_ATTACH_BYTES) {
+          refused.push({ name: String(f.name || 'file'), why: 'larger than ' + Math.round(FB_MAX_ATTACH_BYTES / 1048576) + ' MB' });
+          continue;
+        }
+        const aid = crypto.randomBytes(8).toString('hex');
+        // Under the feedback's own prefix — never in a client's Files, where it would be
+        // visible to anyone with access to that client.
+        const storageKey = (BCC_TENANT_ID + '/feedback/' + doc.id + '/' + aid + ext).replace(/\/+/g, '/');
+        await cont.getBlockBlobClient(storageKey).uploadData(buf, { blobHTTPHeaders: { blobContentType: rawType } });
+        added.push({
+          id: aid, name: safeFilename(f.name || ('screenshot' + ext)).slice(0, 120),
+          mimeType: rawType, sizeBytes: buf.length, storageKey, at: new Date().toISOString()
+        });
+      }
+
+      if (added.length) {
+        /* Re-read before writing. The admin may have replied to this report in the seconds
+           since it was created, and this is a whole-document upsert — building it from the
+           copy we read at the top would erase their reply. */
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const fresh = await container().item(doc.id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+          if (!fresh) break;
+          fresh.attachments = (fresh.attachments || []).concat(added);
+          fresh.updatedAt = new Date().toISOString();
+          try {
+            const opts = fresh._etag ? { accessCondition: { type: 'IfMatch', condition: fresh._etag } } : undefined;
+            await container().items.upsert(fresh, opts);
+            break;
+          } catch (e) { if (!(e && (e.code === 412 || e.statusCode === 412))) throw e; }
+        }
+      }
+      /* Says exactly what was stored and what was not — never a bare ok over a file that
+         was refused. */
+      return { jsonBody: { ok: true, attached: added.length, refused,
+        attachments: added.map(a => ({ id: a.id, name: a.name, mimeType: a.mimeType, sizeBytes: a.sizeBytes })) } };
+    } catch (e) {
+      context.error('feedback-attach', e);
+      return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } };
+    }
+  })
+});
+
+/**
+ * GET /api/feedback/{id}/attachment/{attId} — read one back.
+ * The submitter or an app admin only: a screenshot of a bug is usually a screenshot of a
+ * client's books.
+ */
+app.http('feedback-attachment-get', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'feedback/{id}/attachment/{attId}',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    try {
+      const got = await feedbackDocFor(p, request.params.id);
+      if (got.err) return got.err;
+      const att = (got.doc.attachments || []).find(a => a && a.id === String(request.params.attId));
+      if (!att) return { status: 404, jsonBody: { ok: false, error: 'no such attachment' } };
+      const cont = getBlobContainer();
+      const dl = await cont.getBlockBlobClient(att.storageKey).download();
+      const chunks = [];
+      for await (const ch of dl.readableStreamBody) chunks.push(ch);
+      const buf = Buffer.concat(chunks);
+      const ct = att.mimeType || 'application/octet-stream';
+      // Same inline rule as every other download in this file: nothing that can run.
+      const wantInline = new URL(request.url).searchParams.get('inline') === '1' && inlineOk(ct);
+      return {
+        status: 200,
+        headers: {
+          'Content-Type': ct,
+          'Content-Disposition': contentDispositionValue(wantInline ? 'inline' : 'attachment', att.name || 'attachment'),
+          'X-Content-Type-Options': 'nosniff',
+          'Cache-Control': 'private, max-age=300'
+        },
+        body: buf
+      };
+    } catch (e) {
+      context.error('feedback-attachment-get', e);
+      return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } };
+    }
+  })
+});
+
 /**
  * GET /api/feedback-mine — the caller's OWN feedback, with the full reply.
  * The bell only carries a short preview and admin.html is admin-only, so without
@@ -1976,7 +2123,7 @@ app.http('feedback-mine', {
     if (!who) return { jsonBody: { ok: true, items: [] } };
     try {
       const { resources } = await container().items.query({
-        query: 'SELECT c.id, c.type, c.message, c.status, c.createdAt, c.rating, c.resolutionNote, c.resolutionAt FROM c WHERE c.tenantId=@t AND c.docType="feedback" AND LOWER(c.userUpn)=@u ORDER BY c.createdAt DESC',
+        query: 'SELECT c.id, c.type, c.message, c.status, c.createdAt, c.rating, c.resolutionNote, c.resolutionAt, c.attachments FROM c WHERE c.tenantId=@t AND c.docType="feedback" AND LOWER(c.userUpn)=@u ORDER BY c.createdAt DESC',
         parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@u', value: who }]
       }).fetchAll();
       return { jsonBody: { ok: true, items: resources || [] } };

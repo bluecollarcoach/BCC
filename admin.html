@@ -804,6 +804,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         '</div>' +
         '<div style="white-space:pre-wrap;font-size:14px;color:var(--ink);margin-bottom:8px;">' + fbEsc(f.message) + '</div>' +
         '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">' + fbEsc(f.userName || f.userUpn || '') + ' · ' + fbEsc(fbWhen(f.createdAt)) + (f.page ? (' · ' + fbEsc(f.page)) : '') + '</div>' +
+        /* The screenshots. A bug report is a description of a screen nobody else can see;
+           this is the whole point of letting people attach one. Images render inline at
+           thumbnail size and open full-size in a new tab; a PDF is a link. The endpoint is
+           gated to the submitter or an app admin, so these are only visible here. */
+        (((f.attachments || []).length)
+          ? '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:9px;">' + f.attachments.map(function (a) {
+              var href = '/api/feedback/' + encodeURIComponent(f.id) + '/attachment/' + encodeURIComponent(a.id) + '?inline=1';
+              return /^image\//.test(a.mimeType || '')
+                ? '<a href="' + fbEsc(href) + '" target="_blank" rel="noopener" title="' + fbEsc(a.name || '') + '"><img src="' + fbEsc(href) + '" alt="' + fbEsc(a.name || 'attachment') + '" style="width:104px;height:104px;object-fit:cover;border:1px solid var(--chrome-mute);border-radius:8px;display:block;" /></a>'
+                : '<a href="' + fbEsc(href) + '" target="_blank" rel="noopener" style="font-size:12.5px;color:var(--gold-deep);font-weight:700;border:1px solid var(--chrome-mute);border-radius:8px;padding:9px 11px;text-decoration:none;">📄 ' + fbEsc(a.name || 'file') + '</a>';
+            }).join('') + '</div>'
+          : '') +
         replyShown +
         '<textarea data-fbreply="' + fbEsc(f.id) + '" rows="2" placeholder="Reply to the submitter (sent when you resolve, or click Send reply)…" style="width:100%;box-sizing:border-box;border:1px solid var(--chrome-mute);border-radius:8px;padding:7px 9px;font:inherit;font-size:13px;margin-bottom:8px;">' + fbEsc(f.resolutionNote || '') + '</textarea>' +
         '<div style="display:flex;gap:6px;flex-wrap:wrap;">' +

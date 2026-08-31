@@ -2497,9 +2497,29 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .then(function (j) {
         btn.disabled = false; btn.textContent = ot;
         if (!j || !j.ok || !(j.observations || []).length) { (window.bccNotify || alert)((j && j.error) || 'Could not fill observations.', 'error'); return; }
-        _mr.obs = j.observations.map(mrCoerceObs);
+        var drafted = j.observations.map(mrCoerceObs);
+        /* WRITTEN observations are never overwritten without being asked. Only rows carrying
+           real text count — the blank row "+ Add observation" leaves behind is not work. */
+        var written = (_mr.obs || []).filter(function (o) { return String((o && o.text) || '').trim(); });
+        if (!written.length) {
+          _mr.obs = drafted;
+          renderObsList();
+          if (window.bccNotify) window.bccNotify('Filled from the numbers — edit any before saving.', 'success');
+          return;
+        }
+        var n = written.length;
+        var replace = confirm('You have already written ' + n + ' observation' + (n === 1 ? '' : 's') + ' for this report.\n\n'
+          + 'OK  — replace ' + (n === 1 ? 'it' : 'them') + ' with the ' + drafted.length + ' drafted from the figures.\n'
+          + 'Cancel — keep what you wrote and add the drafted ones below it.');
+        if (replace) {
+          _mr.obs = drafted;
+          renderObsList();
+          if (window.bccNotify) window.bccNotify('Replaced with the drafted observations — edit any before saving.', 'success');
+          return;
+        }
+        _mr.obs = written.concat(drafted);
         renderObsList();
-        if (window.bccNotify) window.bccNotify('Filled from the numbers — edit any before saving.', 'success');
+        if (window.bccNotify) window.bccNotify('Added ' + drafted.length + ' drafted observation' + (drafted.length === 1 ? '' : 's') + ' below the ones you wrote.', 'success');
       })
       .catch(function (e) { btn.disabled = false; btn.textContent = ot; (window.bccNotify || alert)('Could not fill observations: ' + e.message, 'error'); });
   }
@@ -8110,6 +8130,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // No job is chosen yet, so this is the client-wide next number; it is re-scoped to the
     // job the moment one is entered (see cprJobAutofill).
     var nextNo = cprNextNo(null, null);
+    /* Written to storage as soon as it is opened (see the end of this function) — cprDuplicate
+       already does this, and without it a brand-new report existed only in memory: a reload,
+       a crash or a closed tab wiped it with nothing to recover. */
     cprDraft = {
       id: cprPrefix() + uid2(), tenantId: 'blue-collar-coach', docType: 'cpr', realmId: currentRealm,
       contractorName: info.legalName || companyName(currentRealm) || '', contractorAddress: info.address || '', contractorPhone: info.phone || '',
@@ -8123,6 +8146,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       socCommence: '', socEnd: '', fringe: '', fringeExceptions: '', fringePrograms: '',
       employees: [ blankEmp() ], createdAt: nowIso(), updatedAt: nowIso()
     };
+    // On disk from the moment it is opened, exactly as Duplicate already does. Without this a
+    // brand-new report lived only in memory until the first explicit Save — a reload, a crash
+    // or a closed tab erased it with nothing to recover.
+    cprKeepDraft();
     cprEditingId = cprDraft.id; renderPayroll();
   }
 
@@ -8357,7 +8384,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     });
     body.querySelectorAll('[data-emp][data-f="name"]').forEach(function (el) { el.addEventListener('change', function () { cprEmpAutofill(+el.getAttribute('data-emp')); }); });
     var addb = document.getElementById('cpr_addemp'); if (addb) addb.onclick = function () { cprDraft.employees.push(blankEmp()); renderPayroll(); };
-    document.getElementById('cpr_back').onclick = document.getElementById('cpr_back2').onclick = function () { cprEditingId = null; cprDraft = null; renderPayroll(); };
+    document.getElementById('cpr_back').onclick = document.getElementById('cpr_back2').onclick = function () {
+      /* KEEP IT. This used to null the draft outright — a week of certified payroll for a
+         prevailing-wage job gone on one click, with no prompt and nothing to undo, and for a
+         report started with "+ New" there was no stored copy to go back to either. */
+      if (!cprKeepDraft()) {
+        if (!confirm('This report could not be saved on this device' + (bkCanEditFinancialsRefused() ? ' (your access is view-only)' : ' (storage may be full)') + '.\n\nGo back anyway and lose what you have entered?')) return;
+      }
+      cprEditingId = null; cprDraft = null; renderPayroll();
+    };
     // Wrapped, never bound bare: as a raw handler the browser hands the MouseEvent in
     // as `silent`, which is truthy — so Save shows no "saved & filed" confirmation and
     // a report that fails to build is dropped with no warning and no file filed.
@@ -8979,6 +9014,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .catch(function () {
         (window.bccNotify || alert)('The new copy of “' + label + '” was filed, but the previous version could not be removed from Files. Delete it by hand so the old figures are not handed out.', 'warn', 13000);
       });
+  }
+  /* Persist the draft WITHOUT filing it: no PDF, no document, no audit row, no toast. This is
+     what "← Back" needs — the report is not finished and is not being published, it simply
+     must not evaporate. Returns whether the work is safe. */
+  function cprKeepDraft() {
+    if (!cprDraft) return true;
+    if (bkCanEditFinancialsRefused()) return false;   // cannot save; the caller must ask first
+    try {
+      cprDraft.updatedAt = nowIso(); cprDraft.updatedBy = myUpn();
+      if (String(cprDraft.projectName || '').trim()) cprDraft.autoNo = false;
+      localStorage.setItem(cprDraft.id, JSON.stringify(cprDraft));
+      return true;
+    } catch (e) { return false; }
   }
   function cprSave(silent, ratesConfirmed) {
     if (bkRefuseIfReadOnly()) return;
@@ -9780,7 +9828,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       });
       d.lessPrevious = Math.round(pc.line6 * 100) / 100; // this app's "previous certificates" = prior total earned less retainage
     }
-    payappDraft = d; payappEditingId = d.id; renderPayApp();
+    // On disk from the moment it opens, same reasoning as cprNew: a schedule of values living
+    // only in memory is one reload away from being re-keyed from scratch.
+    payappDraft = d; payappKeepDraft(); payappEditingId = d.id; renderPayApp();
   }
   function renderPayApp() {
     var body = document.getElementById('payapp-body'); if (!body) return;
@@ -9913,7 +9963,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     body.querySelectorAll('[data-ldel]').forEach(function (b) { b.onclick = function () { if ((r.lines || []).length <= 1) { (window.bccNotify || alert)('At least one line item is required.', 'warn'); return; } r.lines.splice(+b.getAttribute('data-ldel'), 1); renderPayApp(); }; });
     document.getElementById('pa_addco').onclick = function () { r.changeOrderRows.push({ desc: '', additions: '', deductions: '' }); renderPayApp(); };
     document.getElementById('pa_addline').onclick = function () { r.lines.push(blankPayLine()); renderPayApp(); };
-    document.getElementById('pa_back').onclick = document.getElementById('pa_back2').onclick = function () { payappEditingId = null; payappDraft = null; renderPayApp(); };
+    document.getElementById('pa_back').onclick = document.getElementById('pa_back2').onclick = function () {
+      // Same as certified payroll: a schedule of values with a dozen line items is not
+      // something to discard on an un-prompted click.
+      if (!payappKeepDraft()) {
+        if (!confirm('This pay application could not be saved on this device' + (bkCanEditFinancialsRefused() ? ' (your access is view-only)' : ' (storage may be full)') + '.\n\nGo back anyway and lose what you have entered?')) return;
+      }
+      payappEditingId = null; payappDraft = null; renderPayApp();
+    };
     // Wrapped, never bound bare — same reason as cpr_save: a bare handler receives the
     // MouseEvent as `silent`, suppressing both the save confirmation and the warning
     // when the pay application can't be built.
@@ -9960,6 +10017,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         '<div style="display:flex;justify-content:space-between;gap:12px;padding:5px 0;font-weight:700;border-top:2px solid #c5a55a;color:#1f6f43;"><span>8. CURRENT PAYMENT DUE</span><span style="font-variant-numeric:tabular-nums;">$' + money(pc.line8) + '</span></div>' +
         row('9. Balance to finish, incl. retainage', pc.line9);
     }
+  }
+  /* The pay-application twin of cprKeepDraft: persist, do not file. */
+  function payappKeepDraft() {
+    if (!payappDraft) return true;
+    if (bkCanEditFinancialsRefused()) return false;
+    try {
+      payappDraft.updatedAt = nowIso(); payappDraft.updatedBy = myUpn();
+      if (String(payappDraft.projectName || '').trim()) payappDraft.autoNo = false;
+      localStorage.setItem(payappDraft.id, JSON.stringify(payappDraft));
+      return true;
+    } catch (e) { return false; }
   }
   function payappSave(silent) {
     if (bkRefuseIfReadOnly()) return;
@@ -10182,12 +10250,38 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     try { before = JSON.stringify(_close); } catch (e) { before = ''; }
     try { after = JSON.stringify(fresh); } catch (e) { after = ''; }
     if (before === after) return;
+    /* CARRY TYPED WORK BACK, the way adoptWip does. Anything entered while the document was
+       still unprimed was REFUSED by saveClose and therefore never stored — so it sat on screen
+       looking saved, and adopting `fresh` over it dropped it for good while leaving it
+       visible. A reconciliation figure checked against a bank statement is not something to
+       lose silently. The DOM is the newer copy for those boxes; merge it onto the primed doc
+       and save the merge. */
     var ae = document.activeElement;
     var pane = document.getElementById('close-body');
+    var mergedBack = false;
+    if (pane) {
+      pane.querySelectorAll('[data-cnote]').forEach(function (inp) {
+        var k = inp.getAttribute('data-cnote');
+        var typed = String(inp.value == null ? '' : inp.value);
+        if (!typed.trim()) return;
+        fresh.steps = fresh.steps || {};
+        fresh.steps[k] = fresh.steps[k] || {};
+        if (String(fresh.steps[k].note == null ? '' : fresh.steps[k].note) !== typed) { fresh.steps[k].note = typed; mergedBack = true; }
+      });
+      pane.querySelectorAll('[data-stmt]').forEach(function (inp) {
+        var id = inp.getAttribute('data-stmt');
+        var typed = String(inp.value == null ? '' : inp.value);
+        if (!typed.trim()) return;
+        fresh.recon = fresh.recon || {};
+        fresh.recon[id] = fresh.recon[id] || {};
+        if (String(fresh.recon[id].statementBalance == null ? '' : fresh.recon[id].statementBalance) !== typed) { fresh.recon[id].statementBalance = typed; mergedBack = true; }
+      });
+    }
     // Never rebuild the table under someone's cursor — a statement balance being typed lives
     // only in that input until it blurs.
-    if (pane && ae && pane.contains(ae)) { _close = fresh; return; }
+    if (pane && ae && pane.contains(ae)) { _close = fresh; if (mergedBack) saveClose(); return; }
     _close = fresh;
+    if (mergedBack) saveClose();
     renderClose();
   }
   function saveClose() {
@@ -10992,6 +11086,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       if (!_taskEdit && !hasDraft && !typing) renderTasks();
     } else if (currentTab === 'overview' && !typing) {
       renderOverview();
+    } else if (currentTab === 'info') {
+      /* The one tab whose autosave republishes EVERY field from the boxes on screen. Without
+         this it never saw a colleague's change, so the next keystroke in any box reverted all
+         eleven fields to what this tab was painted with — firm-wide, under a "Saved." — and
+         the legal name and EIN here print as the contractor on filed forms.
+         adoptInfo is the right tool and already existed: it fills only boxes the person has
+         not typed in and never touches the one under the cursor. Skipped while a save is
+         actually queued, so an adopt cannot race the debounce and re-send a mixed record. */
+      if (!_infoTimer) adoptInfo(currentRealm);
     }
   });
   /* init() must run EXACTLY once. The auth-ready handler set didInit but never checked it,
