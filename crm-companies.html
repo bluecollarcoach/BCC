@@ -435,11 +435,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        SECOND copy of the whole company list, each one a real synced document that then has
        to be deleted by hand. Gated here rather than at the caller so the manual "Sync from
        Bookkeeping" button is covered by the same rule. */
-    if (window._bccBootPullFailed) {
-      setSyncMeta('Not synced - could not load the company list from the server. Reload once you are back online.');
+    /* THE POSITIVE FACT, not the absence of the negative one. _bccBootPullFailed is undefined
+       while the pull is still IN FLIGHT — and this button is live from parse time — so a click
+       in the first seconds passed a gate whose whole purpose is to stop this sync creating a
+       second copy of every company the firm has. sessions.html's twin spells this out. */
+    if (window._bccBootPullFailed || window._bccBootPullOk !== true) {
+      var stillLoading = !window._bccBootPullFailed;
+      setSyncMeta(stillLoading
+        ? 'Not synced yet - still loading the existing companies. Try again in a moment.'
+        : 'Not synced - could not load the company list from the server. Reload once you are back online.');
       // Only the person who CLICKED gets a toast; the automatic pass on page load leaves just
       // the line above, since a failed pull already shows its own banner.
-      if (!opts.auto) (window.bccNotify || function () {})('Can’t sync right now: this device could not load the existing companies, and syncing would duplicate every one of them. Reload once you are back online.', 'warn', 9000);
+      if (!opts.auto) (window.bccNotify || function () {})(stillLoading
+        ? 'Not yet — this device is still loading the existing companies, and syncing now would duplicate every one of them. Try again in a moment.'
+        : 'Can’t sync right now: this device could not load the existing companies, and syncing would duplicate every one of them. Reload once you are back online.', 'warn', 9000);
       return Promise.resolve();
     }
     var btn = document.getElementById('bkSyncBtn'); if (btn) btn.disabled = true;

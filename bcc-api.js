@@ -251,7 +251,7 @@
       outboxWrite(o);
     }
     if (who) o.upn = who;
-    if (!o.items[key] && Object.keys(o.items).length >= OUTBOX_MAX) return; // bounded
+    if (!o.items[key] && Object.keys(o.items).length >= OUTBOX_MAX) return; // bounded — NOT recorded below, so it is still sent
     /* qt = when this was queued. The PARKED store has always been age-checked; the LIVE
        queue was not, so a whole-document key (bcc-chat-messages-v1, bcc-schedule-v1) queued
        on a laptop that then stayed shut for a week was replayed verbatim at the next
@@ -263,6 +263,11 @@
     // No `rf` carried over: this is a NEW write of that key, not the one the server refused,
     // and it deserves its own attempt.
     o.items[key] = { v: value, t: !!trusted, qt: (typeof prevQt === 'number' && prevQt > 0) ? prevQt : Date.now() };
+    /* This key IS in the shared outbox now. If a later flush finds it gone, another tab
+       settled it — which is the one case where re-sending this tab's older copy would undo a
+       newer value. Distinguished here from the bounded return above, where the entry never
+       made it in and therefore must still be sent. */
+    _inOutbox.add(key);
     outboxWrite(o);
   }
   /* `sentValues` is OPT-IN: pass a { key: value } map and a key is dropped only while the
@@ -295,6 +300,10 @@
         if (cur.v !== sentValues[k]) return;
       }
       delete o.items[k]; changed = true;
+      /* This tab is retiring the entry itself, so its later absence is NOT another tab
+         settling it — clear the marker or the reconcile would drop a re-queue of the same key
+         as though somebody else had already written it. */
+      try { _inOutbox.delete(k); } catch (e) {}
     });
     if (changed) outboxWrite(o);
   }
@@ -406,6 +415,10 @@
      stand in for an authoritative read. Counting it here froze the document on that device
      until the entry aged out — colleagues' edits never landed, and the stale copy then
      reported as "primed" with no server read behind it (house rule 3). */
+  /* Keys this tab successfully placed in the SHARED outbox. Not the same as `_rehydrated`
+     (keys taken FROM it), and not the same as `pending` (which includes keys outboxPut
+     refused). See the reconcile in _flushOnce. */
+  var _inOutbox = new Set();
   function outboxPendingAnyTab(k) {
     var e = outboxRead().items[k];
     return e !== undefined && !e.rf;
@@ -879,6 +892,19 @@
   };
   Storage.prototype.removeItem = function (key) {
     _origRemoveItem.call(this, key);
+    /* PRE-VERDICT DELETES ARE QUEUED TOO. The setItem hook above already keeps a write made
+       before /.auth/me answers; this did not keep the matching DELETE, so a record removed in
+       that first second disappeared from the screen — which reads as a confirmed deletion —
+       and came straight back on the next pull, because nothing ever told the server. Doing it
+       again inside the same window did the same thing again. `_authUnknown` covers the
+       in-flight case; this adds the window before even that flag is meaningful. */
+    if (this === window.localStorage && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0
+        && !signedIn && !_authUnknown && DEVICE_LOCAL_KEYS.indexOf(key) < 0) {
+      /* Queued UNTRUSTED, exactly as the pre-auth setItem branch does: it is replayed only for
+         the owner-only families the replay is allowed to attribute, and dropped otherwise
+         rather than guessed at. */
+      try { pending.set(key, null); outboxPut(key, null, false); } catch (e) {}
+    }
     if (this === window.localStorage && (signedIn || _authUnknown) && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0) {
       if (DEVICE_LOCAL_KEYS.indexOf(key) >= 0) return; // device preference (see setItem)
       if (key.indexOf('bcc-financial-period-') === 0) return; // server-owned (see setItem)
@@ -924,11 +950,25 @@
     /* Reconcile the snapshot against the shared outbox before anything goes over the wire.
        Gone from the outbox = another tab pushed it successfully; sending our older copy
        would undo that. Different value = another tab queued a newer one; send theirs. */
-    if (_rehydrated.size) {
+    /* Two different questions, and the old code only asked one of them.
+       For a key this tab REHYDRATED from the shared outbox, that outbox is authoritative:
+       gone = another tab pushed it, different = another tab queued something newer.
+       For a key this tab QUEUED ITSELF, this tab's value stays authoritative — another tab's
+       queued copy must never overwrite what the person in front of this one just typed.
+       What was missing is the third case: a key this tab queued itself, successfully wrote to
+       the outbox, and that has since VANISHED from it. Vanishing means settled — so re-sending
+       this tab's older snapshot (re-queued by a transient push failure) would undo the newer
+       value another tab has already saved. `_inOutbox` records which keys actually made it in,
+       so that is distinguishable from a key outboxPut refused on quota, which must still go. */
+    if (_rehydrated.size || _inOutbox.size) {
       var shared = outboxRead().items || {};
       entries = entries.filter(function (e) {
-        if (!_rehydrated.has(e[0])) return true;
         var cur = shared[e[0]];
+        if (!_rehydrated.has(e[0])) {
+          // Ours. Only the vanished-after-being-accepted case changes anything.
+          if (cur === undefined && _inOutbox.has(e[0])) { _inOutbox.delete(e[0]); return false; }
+          return true;
+        }
         if (cur === undefined) { _rehydrated.delete(e[0]); return false; }
         if (cur.v !== e[1]) e[1] = cur.v;
         return true;
@@ -4407,10 +4447,18 @@
       // Skip tombstones (chat.html marks a deleted message rather than removing it, so the
       // server-side merge cannot resurrect it) — the bell must not announce a deleted
       // message, nor take one as the baseline for "everything before this is read".
-      var arr = (msgs[ch.id] || []).filter(function (m) { return m && !m.deleted; });
+      /* OWN PROPERTY. A channel id colliding with an Object.prototype member — 'constructor',
+          'toString', 'valueOf' — resolved to a FUNCTION here, .filter threw, and the sweep
+          died: one badly-named channel silently killed every chat notification for the whole
+          firm. chat.html fixed this with chanMsgs(); this was its twin. The same applies to
+          seen[] and read[] below, which are indexed by the same id. */
+      var _raw = Object.prototype.hasOwnProperty.call(msgs, ch.id) ? msgs[ch.id] : null;
+      var arr = (Array.isArray(_raw) ? _raw : []).filter(function (m) { return m && !m.deleted; });
       if (!arr.length) return;
-      if (seen[ch.id] == null) { seen[ch.id] = arr[arr.length - 1].at; changed = true; return; } // baseline
-      var floor = Math.max(seen[ch.id] || 0, read[ch.id] || 0);
+      if (!Object.prototype.hasOwnProperty.call(seen, ch.id) || seen[ch.id] == null) { seen[ch.id] = arr[arr.length - 1].at; changed = true; return; } // baseline
+      var _seenAt = Object.prototype.hasOwnProperty.call(seen, ch.id) ? seen[ch.id] : 0;
+      var _readAt = Object.prototype.hasOwnProperty.call(read, ch.id) ? read[ch.id] : 0;
+      var floor = Math.max((typeof _seenAt === 'number' ? _seenAt : 0), (typeof _readAt === 'number' ? _readAt : 0));
       var fresh = arr.filter(function (m) {
         if (!m || m.at <= floor) return false;
         var a = String(m.author || '').toLowerCase();

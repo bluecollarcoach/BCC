@@ -303,13 +303,24 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var todayStart = t.getTime();
     var todayEnd = todayStart + 24*60*60*1000;
     var tomorrowEnd = todayEnd + 24*60*60*1000;
-    var todayCount = sessionsBetween(todayStart, todayEnd).length;
-    var tomorrowCount = sessionsBetween(todayEnd, tomorrowEnd).length;
+    /* CANCELLED SESSIONS ARE NOT COUNTED — the card directly below this strip already
+       excludes them and says so, and having the two disagree by one on the same screen is the
+       kind of detail this audience notices immediately and does not forget. */
+    var todayCount = sessionsBetween(todayStart, todayEnd).filter(function (s) { return !isCanceledSession(s); }).length;
+    var tomorrowCount = sessionsBetween(todayEnd, tomorrowEnd).filter(function (s) { return !isCanceledSession(s); }).length;
     var contactCount = 0;
     for (var i = 0; i < localStorage.length; i++) {
       var k = localStorage.key(i); if (k && k.indexOf(CONTACT_PREFIX) === 0) contactCount++;
     }
     var kpi = document.getElementById('kpi');
+    /* And a COUNT is a claim. On a device that never finished loading, this strip told the
+       coach they had no sessions today and no contacts at all — a statement about their day
+       and about the firm's CRM, made from an enumeration of an empty store. */
+    if (window.bccDataComplete && !window.bccDataComplete()) {
+      kpi.innerHTML = '<span title="This device hasn’t finished loading your calendar and contacts — these are not counts of zero.">— sessions today</span>' +
+        '<span>— tomorrow</span><span>— contacts</span>';
+      return;
+    }
     kpi.innerHTML =
       '<span>' + todayCount + ' session' + (todayCount === 1 ? '' : 's') + ' today</span>' +
       '<span>' + tomorrowCount + ' tomorrow</span>' +
