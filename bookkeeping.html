@@ -9377,6 +9377,36 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var payrollName = function (part, parts) {
       return 'MnDOT Payroll' + (r.payrollNo ? ' #' + r.payrollNo : '') + (parts > 1 ? ' (part ' + part + ' of ' + parts + ')' : '') + (r.weekStart ? ' week of ' + r.weekStart : '') + '.pdf';
     };
+    /* ---- SIZE THE TEXT TO THE BOX (Karla: the MnDOT forms came out "font too large and
+     * unreadable", while the DLI form was fine) --------------------------------------------------
+     * Every field in MnDOT's official PDFs carries "/Helv 0 Tf" — 0 means AUTO-SIZE: the viewer is
+     * meant to shrink the text to fit the box. pdf-lib does not implement that. It falls back to a
+     * flat 10pt for every field, which is why the header fields and the payroll grid — cells as
+     * small as 30x39 points — came out overflowing and clipped. The DLI form never had the problem
+     * because it is drawn from scratch with an explicit size on every string.
+     * So we do the auto-sizing pdf-lib does not: measure the real widget rectangle and shrink until
+     * the text fits. Capped so a short value in a wide box cannot balloon, and floored so it stays
+     * legible — on a document that goes to the State, text that is slightly small is recoverable and
+     * text that is cut off is not. */
+    var fitFont = null;   // set per-document, once the Helvetica is embedded
+    var TF_MAX = 9, TF_MIN = 5;
+    function fitSize(text, rect, multiline) {
+      if (!fitFont || !rect || !(rect.width > 0) || !(rect.height > 0)) return TF_MAX;
+      var lines = multiline ? String(text).split('\n') : [String(text)];
+      var size = TF_MAX;
+      while (size > TF_MIN) {
+        var widest = 0;
+        for (var i = 0; i < lines.length; i++) {
+          var w = 0;
+          try { w = fitFont.widthOfTextAtSize(lines[i], size); } catch (e) { w = 0; }
+          if (w > widest) widest = w;
+        }
+        // 2pt of side padding, 1.18 line spacing — the same breathing room the form's own boxes use.
+        if (widest <= rect.width - 2 && lines.length * size * 1.18 <= rect.height) break;
+        size -= 0.25;
+      }
+      return Math.round(size * 4) / 4;
+    }
     function setTf(form, name, val) {
       if (val == null || String(val) === '') return;
       try {
@@ -9388,8 +9418,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         var v = cprWinAnsiLines(val);
         var ml = null; try { ml = tf.getMaxLength(); } catch (e) {}
         if (ml && v.length > ml) v = v.slice(0, ml);
-        if (v.indexOf('\n') >= 0) { try { tf.enableMultiline(); } catch (e) {} }
+        var multi = v.indexOf('\n') >= 0;
+        if (multi) { try { tf.enableMultiline(); } catch (e) {} }
         tf.setText(v);
+        // Must come AFTER setText: the value is what decides the size.
+        try { tf.setFontSize(fitSize(v, rectOf(form, name), multi)); } catch (e) {}
       } catch (e) { /* unknown/typed-differently field — leave blank rather than fail */ }
     }
     function rectOf(form, name) {
@@ -9401,6 +9434,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var doc = await PDFLib.PDFDocument.load(payrollBytes, { ignoreEncryption: true });
       var form = doc.getForm(), pg = doc.getPage(0);
       var helv = await doc.embedFont(PDFLib.StandardFonts.Helvetica);
+      fitFont = helv;   // what fitSize measures against — see setTf
       var ink = PDFLib.rgb(0.05, 0.09, 0.25);
       var draw = function (rect, slots, idx, text, fs) {
         if (!rect || !text) return;
@@ -9476,6 +9510,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // ---- Statement of Compliance ----
     var soc = await PDFLib.PDFDocument.load(socBytes, { ignoreEncryption: true });
     var sform = soc.getForm();
+    // The Statement of Compliance is the same fillable-PDF story as the payroll grid above: its
+    // fields ask for auto-size and pdf-lib would put 10pt in all of them.
+    fitFont = await soc.embedFont(PDFLib.StandardFonts.Helvetica);
     setTf(sform, 'REPORT NUMBER', r.payrollNo);
     setTf(sform, 'STATE PROJECT NUMBERS', r.mndotSp);
     setTf(sform, 'DATE', fmtD(r.socDate));
