@@ -4421,6 +4421,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   var _taskEdit = null; // id of the task currently being edited inline
   var _taskEditRendered = null; // the id the te_* fields ON SCREEN were built from (see renderTasks)
+  /* Whether the "Completed" section is open, PER CLIENT and for this session only. Remembering
+     it globally would carry one client's choice onto every other one; persisting it would be a
+     firm-wide publish for a display preference, which is not what the sync layer is for. */
+  var _taskDoneOpen = {};
   var _taskDraftRealm = null;   // ...and the CLIENT those boxes belong to
   var _taskOpen = null; // id of the task whose details/notes panel is expanded (shared by Tasks tab + Overview)
   // Expanded details/notes panel for a task — used by BOTH the Tasks tab and the
@@ -4529,6 +4533,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // A recurring task with a future due date is "upcoming" — scheduled, not yet active.
     var isUpcoming = function (t) { return taskIsUpcoming(t, today); };
     var active = todoMineFilter(all.filter(function (t) { return !isUpcoming(t); })).sort(function (a, b) { return ((a.status === 'done') - (b.status === 'done')) || (a.dueDate || '9999').localeCompare(b.dueDate || '9999') || (b.createdAt || '').localeCompare(a.createdAt || ''); });
+    /* Karla's ask: on a client the firm has been running for months, everything below the
+       fold is finished work, and reaching anything useful means scrolling past all of it.
+       Split rather than sort — the completed ones go into their own collapsed section.
+       The one being EDITED stays with the open list wherever it lives, or pressing Edit on a
+       completed task would fold the form away underneath a closed heading. */
+    var openTasks = active.filter(function (t) { return t.status !== 'done' || t.id === _taskEdit; });
+    var doneTasks = active.filter(function (t) { return t.status === 'done' && t.id !== _taskEdit; });
     var upcoming = todoMineFilter(all.filter(isUpcoming)).sort(function (a, b) { return (a.dueDate || '').localeCompare(b.dueDate || ''); });
     var add = '<div class="ws-form" style="margin-bottom:14px;">' +
       '<label class="full">New task<input id="tk_title" placeholder="What needs doing for this client?" /></label>' +
@@ -4579,12 +4590,31 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         '<button class="btn btn-ghost" data-tdel="' + esc(t.id) + '" type="button" style="font-size:11px;min-height:30px;">Delete</button></div>';
     };
     var filterBar = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">' +
-      '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;">Tasks' + (active.length ? ' (' + active.length + ')' : '') + '</div>' +
+      '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;">Tasks' + (openTasks.length ? ' (' + openTasks.length + ')' : '') + '</div>' +
       todoMineToggleHtml('tk_mine') + '</div>';
-    var list = active.length ? active.map(function (t) { return taskRow(t, false); }).join('') : (bootDataOk()
-      ? '<div style="color:var(--muted);padding:10px 0;">' + (_todoMine ? 'No tasks assigned to you for ' + esc(companyName(currentRealm)) + '.' : 'No active tasks for ' + esc(companyName(currentRealm)) + '.') + '</div>'
+    /* The empty state now describes the OPEN list. Saying "no active tasks" while a hundred
+       completed ones sit in the section below would be its own small lie. */
+    var list = openTasks.length ? openTasks.map(function (t) { return taskRow(t, false); }).join('') : (bootDataOk()
+      ? '<div style="color:var(--muted);padding:10px 0;">' + (_todoMine
+          ? 'No open tasks assigned to you for ' + esc(companyName(currentRealm)) + '.'
+          : 'No open tasks for ' + esc(companyName(currentRealm)) + '.')
+        + (doneTasks.length ? ' ' + doneTasks.length + ' completed ' + (doneTasks.length === 1 ? 'task is' : 'tasks are') + ' below.' : '') + '</div>'
       : '<div style="color:var(--burgundy);padding:10px 0;font-size:12.5px;">This device hasn’t finished loading ' + esc(companyName(currentRealm)) + '’s tasks — that is not "none". Reload to try again.</div>');
     if (upcoming.length) list += '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 6px;">Upcoming (recurring)</div>' + upcoming.map(function (t) { return taskRow(t, true); }).join('');
+    /* Completed, collapsed. NOT hidden and not paged away: a task ticked by mistake has to be
+       reachable and untickable, so the heading always states the count and one click opens the
+       full list. Closed by default because that is the ask; the choice is remembered per
+       client for the session, so stepping out to another client and back does not slam it
+       shut on somebody who deliberately opened it. */
+    if (doneTasks.length) {
+      var doneOpen = _taskDoneOpen[currentRealm] === true;
+      list += '<button type="button" id="tk_donetoggle" aria-expanded="' + (doneOpen ? 'true' : 'false') + '" style="display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:none;border:0;border-top:1px solid var(--chrome-mute);margin:16px 0 0;padding:12px 2px 8px;font:inherit;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;cursor:pointer;">' +
+        '<span style="display:inline-block;transition:transform .15s;transform:rotate(' + (doneOpen ? '90' : '0') + 'deg);">▶</span>' +
+        '<span>Completed (' + doneTasks.length + ')</span>' +
+        '<span style="flex:1;"></span>' +
+        '<span style="font-weight:600;text-transform:none;letter-spacing:0;font-size:11.5px;color:var(--gold-deep);">' + (doneOpen ? 'Hide' : 'Show') + '</span></button>' +
+        '<div id="tk_donelist"' + (doneOpen ? '' : ' hidden') + '>' + doneTasks.map(function (t) { return taskRow(t, false); }).join('') + '</div>';
+    }
     body.innerHTML = add + filterBar + list;
     _taskEditRendered = _taskEdit;
     var sameClient = (prevRealm === currentRealm);
@@ -4600,6 +4630,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     document.getElementById('tk_add').onclick = addTask;
     var tkMine = document.getElementById('tk_mine'); if (tkMine) tkMine.onclick = function () { _todoMine = !_todoMine; renderTasks(); };
+    /* Toggled WITHOUT a re-render: the whole tab rebuilds on every renderTasks, and doing
+       that here would blow away a half-typed new task and move the page under the finger
+       that just tapped. Show/hide the block and update the heading in place. */
+    var tkDone = document.getElementById('tk_donetoggle');
+    if (tkDone) tkDone.onclick = function () {
+      var box = document.getElementById('tk_donelist'); if (!box) return;
+      var nowOpen = box.hidden;
+      box.hidden = !nowOpen;
+      _taskDoneOpen[currentRealm] = nowOpen;
+      tkDone.setAttribute('aria-expanded', nowOpen ? 'true' : 'false');
+      var caret = tkDone.querySelector('span'); if (caret) caret.style.transform = 'rotate(' + (nowOpen ? '90' : '0') + 'deg)';
+      var lbl = tkDone.querySelector('span:last-child'); if (lbl) lbl.textContent = nowOpen ? 'Hide' : 'Show';
+    };
     body.querySelectorAll('[data-tdone]').forEach(function (cb) { cb.onchange = function () { toggleTask(cb.getAttribute('data-tdone'), cb.checked); }; });
     body.querySelectorAll('[data-tdel]').forEach(function (b) { b.onclick = function () { delTask(b.getAttribute('data-tdel')); }; });
     body.querySelectorAll('[data-tedit]').forEach(function (b) { b.onclick = function () { _taskEdit = b.getAttribute('data-tedit'); renderTasks(); var ti = document.getElementById('te_title'); if (ti) ti.focus(); }; });
