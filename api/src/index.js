@@ -2745,6 +2745,363 @@ app.http('bookkeeping-time', {
   })
 });
 
+/* The firm's OWN QuickBooks company — the one flagged isOwnBooks, the same one the CRM
+   customer import reads. Our people's hours belong there, never in a client's books. */
+async function ownBooksCompany() {
+  const { resources } = await container().items.query({
+    query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="qbo-company" AND c.isOwnBooks=true',
+    parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+  }).fetchAll();
+  return (resources || [])[0] || null;
+}
+/* One marker per person+client+day, carrying the QuickBooks id it created. This is the whole
+   of the idempotency: pressing the button twice, two admins pressing it at once, or a run
+   that timed out half way through must never put the same hours in the books twice. */
+function timePostId(upn, realmId, day) { return 'bcc-timeposted-' + sanitizeUpn(upn) + '-' + String(realmId) + '-' + String(day); }
+const TIME_EMPMAP_ID = 'bcc-time-empmap';   // { map: { <upn>: <QBO Employee Id> } }
+
+/* Which QuickBooks employee is this person? An explicit mapping wins; otherwise match on the
+   employee's email, then their display name. Guessing wrong would file one person's hours
+   under another's name, so anything short of an exact match is reported as unmatched and the
+   admin picks from a list — never silently attached to the closest-looking employee. */
+function matchEmployee(row, emps, map) {
+  const upn = String(row.userUpn || '').toLowerCase();
+  const explicit = map && map[upn];
+  if (explicit) {
+    const hit = emps.filter(e => String(e.Id) === String(explicit))[0];
+    if (hit) return hit;
+    // A mapping pointing at an employee that no longer exists must not fall through to a
+    // name guess — the admin chose that person deliberately and needs to know it broke.
+    return { _gone: true };
+  }
+  const byMail = emps.filter(e => String(((e.PrimaryEmailAddr || {}).Address) || '').toLowerCase() === upn)[0];
+  if (byMail) return byMail;
+  const nm = String(row.userName || '').trim().toLowerCase();
+  if (nm) {
+    const byName = emps.filter(e => {
+      const dn = String(e.DisplayName || '').trim().toLowerCase();
+      const full = (String(e.GivenName || '') + ' ' + String(e.FamilyName || '')).trim().toLowerCase();
+      return dn === nm || (full && full === nm);
+    });
+    if (byName.length === 1) return byName[0];   // two employees with the same name: ask, don't pick
+  }
+  return null;
+}
+
+/**
+ * /api/bookkeeping/time/post — push LOGGED bookkeeping time into the firm's own QuickBooks
+ * as TimeActivity records, so nobody has to enter their hours in two places.
+ *   GET  ?from&to[&userUpn]  — preview: every row in range, what is already posted, the
+ *                              QuickBooks employee list and the current name mapping.
+ *   POST { from, to, userUpn?, map? }  — save any mapping changes, then post.
+ * App-admin only, and only for whoever owns the firm's own books.
+ */
+app.http('bookkeeping-time-post', {
+  methods: ['GET', 'POST'],
+  authLevel: 'anonymous',
+  route: 'bookkeeping/time/post',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    if (!(await isAppAdmin(p))) return forbidden('admin only');
+    try {
+      const c = container();
+      const isPost = request.method === 'POST';
+      const b = isPost ? await request.json().catch(() => ({})) : {};
+      const q = new URL(request.url).searchParams;
+      const asDay = v => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : '');
+      const from = asDay(isPost ? b.from : q.get('from'));
+      const to = asDay(isPost ? b.to : q.get('to'));
+      if (!from || !to) return badRequest('from and to are required (YYYY-MM-DD)');
+      if (from > to) return badRequest('the start date is after the end date');
+      const onlyUpn = String((isPost ? b.userUpn : q.get('userUpn')) || '').toLowerCase();
+
+      const comp = await ownBooksCompany();
+      if (!comp) {
+        return { jsonBody: { ok: true, available: false, why: 'No QuickBooks company is marked as the firm\u2019s own books yet, so there is nowhere to send time to. Mark it on the company under Integrations \u2192 QuickBooks, then come back.' } };
+      }
+      /* The firm's own books are owner-only everywhere else in this file (companyPrivateBlocked
+         is deliberately NOT bypassed by the admin check), so a route that WRITES into them must
+         honour the same line — otherwise this one endpoint hands every admin a write into the
+         company every read path withholds from them. */
+      if (companyPrivateBlocked(comp, p)) {
+        return { jsonBody: { ok: true, available: false, why: 'The firm\u2019s own QuickBooks is locked to its owner, so only they can send time into it.' } };
+      }
+      if (comp.enabled === false) {
+        return { jsonBody: { ok: true, available: false, why: 'The firm\u2019s QuickBooks connection is switched off. Turn it back on under Integrations \u2192 QuickBooks first.' } };
+      }
+      const ownRealm = String(comp.realmId);
+
+      /* THE SOURCE IS THE CLOCK. My Day's clock in / clock out writes bcc-daily-log-<upn>-<day>
+         through /api/data, so the payload sits under c.data — these are not server-written flat
+         docs. Per-client time (bk-entry) is a different measure and is read only as a
+         cross-check; the auto-tracker (bk-time) is passive focus time and is not payroll at all. */
+      const [logRes, entryRes, postedRes] = await Promise.all([
+        c.items.query({
+          query: 'SELECT c.id, c.data FROM c WHERE c.tenantId=@t AND STARTSWITH(c.id, "bcc-daily-log-") AND c.data.day>=@f AND c.data.day<=@to',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@f', value: from }, { name: '@to', value: to }]
+        }).fetchAll(),
+        c.items.query({
+          query: 'SELECT c.userUpn, c.day, c.minutes FROM c WHERE c.tenantId=@t AND c.docType="bk-entry" AND c.day>=@f AND c.day<=@to',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@f', value: from }, { name: '@to', value: to }]
+        }).fetchAll(),
+        c.items.query({
+          query: 'SELECT c.userUpn, c.realmId, c.day, c.qboId, c.postedAt, c.minutes FROM c WHERE c.tenantId=@t AND c.docType="bk-time-posted" AND c.day>=@f AND c.day<=@to',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@f', value: from }, { name: '@to', value: to }]
+        }).fetchAll()
+      ]);
+
+      /* Deliberately the same arithmetic as loggedMs() in myday.html — parked segments plus a
+         closed pair still sitting in the fields. If these two ever disagree, the hours on
+         somebody's own screen stop matching the hours in the books, and no amount of
+         explaining makes that feel like anything other than time going missing. */
+      const clockedMinutes = d => {
+        const pairs = (Array.isArray(d.segments) ? d.segments : [])
+          .concat((d.clockedInAt && d.clockedOutAt) ? [{ inAt: d.clockedInAt, outAt: d.clockedOutAt }] : []);
+        let ms = 0;
+        for (const seg of pairs) {
+          const t0 = Date.parse(seg && seg.inAt), t1 = Date.parse(seg && seg.outAt);
+          if (isFinite(t0) && isFinite(t1) && t1 > t0) ms += t1 - t0;
+        }
+        return Math.round(ms / 60000);
+      };
+
+      const rows = {};
+      for (const doc of logRes.resources) {
+        const d = doc && doc.data; if (!d) continue;
+        const upn = String(d.userUpn || '').toLowerCase();
+        const dday = asDay(d.day);
+        if (!upn || !dday) continue;
+        if (onlyUpn && upn !== onlyUpn) continue;
+        const mins = clockedMinutes(d);
+        // An open punch is time that has not finished happening. It is not skipped and
+        // forgotten: whatever is already closed goes now, the rest tops up after clock-out.
+        const open = !!(d.clockedInAt && !d.clockedOutAt);
+        if (!mins && !open) continue;
+        const k = upn + '|' + dday;
+        const row = rows[k] || (rows[k] = { userUpn: upn, userName: upn, day: dday, minutes: 0, open: false });
+        row.minutes += mins;
+        row.open = row.open || open;
+      }
+      const list = Object.keys(rows).map(k => rows[k])
+        .sort((a, b2) => a.day.localeCompare(b2.day) || a.userUpn.localeCompare(b2.userUpn));
+
+      const postedBy = {};
+      for (const r of postedRes.resources) {
+        if (String(r.realmId) !== ownRealm) continue;
+        postedBy[String(r.userUpn).toLowerCase() + '|' + r.day] = r;
+      }
+      // Cross-check only, never a source: per-client time somebody logged in the same range.
+      const clientMins = {};
+      for (const r of entryRes.resources) {
+        const u = String(r.userUpn || '').toLowerCase(); if (!u) continue;
+        if (onlyUpn && u !== onlyUpn) continue;
+        clientMins[u] = (clientMins[u] || 0) + Math.max(0, Math.round(Number(r.minutes) || 0));
+      }
+
+      const mapDoc = await c.item(TIME_EMPMAP_ID, BCC_TENANT_ID).read().then(r => r.resource)
+        .catch(e => { if (e && (e.code === 404 || e.statusCode === 404)) return null; throw e; });
+      let map = Object.assign({}, (mapDoc && mapDoc.map) || {});
+      if (isPost && b.map && typeof b.map === 'object') {
+        for (const k of Object.keys(b.map)) {
+          const v = String(b.map[k] || '').replace(/[^0-9]/g, '').slice(0, 20);
+          const kk = String(k).toLowerCase().slice(0, 160);
+          if (v) map[kk] = v; else delete map[kk];
+        }
+        await c.items.upsert({ id: TIME_EMPMAP_ID, tenantId: BCC_TENANT_ID, docType: 'bk-time-empmap', map, updatedAt: new Date().toISOString(), updatedBy: auditUser(request) });
+      }
+      /* Picking who somebody is in QuickBooks must be savable on its own. Folding it into the
+         send would mean the choice only sticks if you also press Send — and a setting that
+         silently forgets itself is how people stop trusting the screen in front of them. */
+      if (isPost && b.mapOnly) return { jsonBody: { ok: true, saved: true, map } };
+
+      const fields = await getIntegrationFields('qbo');
+      /* A transient read returning {} is indistinguishable from "never configured" unless this
+         flag is checked — and "not configured" would send an admin off to re-enter credentials
+         that are already there. */
+      if (fields._readFailed) return { status: 503, jsonBody: { ok: false, error: 'Could not read the QuickBooks credentials just now \u2014 nothing was sent. Try again in a moment.' } };
+      if (!fields.clientId || !fields.clientSecret) return { jsonBody: { ok: true, available: false, why: 'The QuickBooks app credentials are not set up yet (Integrations \u2192 QuickBooks).' } };
+
+      let access = null, employees = [], empError = '';
+      try {
+        access = await qboAccessForCompany(comp, fields);
+        const er = await fetch(access.base + '/v3/company/' + ownRealm + '/query?minorversion=65&query='
+          + encodeURIComponent('select * from Employee maxresults 500'), {
+          headers: { Authorization: 'Bearer ' + access.accessToken, Accept: 'application/json' }
+        });
+        if (!er.ok) throw new Error('QuickBooks returned ' + er.status + ' reading the employee list');
+        const ej = await er.json();
+        employees = (((ej || {}).QueryResponse || {}).Employee || []).map(e => ({
+          id: String(e.Id), name: e.DisplayName || ((e.GivenName || '') + ' ' + (e.FamilyName || '')).trim() || String(e.Id),
+          email: String(((e.PrimaryEmailAddr || {}).Address) || ''), active: e.Active !== false,
+          PrimaryEmailAddr: e.PrimaryEmailAddr, DisplayName: e.DisplayName, GivenName: e.GivenName, FamilyName: e.FamilyName, Id: String(e.Id)
+        }));
+      } catch (e) {
+        empError = String((e && e.message) || e).slice(0, 200);
+      }
+
+      const decorate = row => {
+        const done = postedBy[row.userUpn + '|' + row.day];
+        const sent = done && done.qboId ? (Number(done.minutes) || 0) : 0;
+        const emp = empError ? null : matchEmployee(row, employees, map);
+        return Object.assign({}, row, {
+          posted: !!(done && done.qboId), qboId: done ? done.qboId : '', postedAt: done ? done.postedAt : '',
+          postedMinutes: sent,
+          // What this day still owes QuickBooks: everything, or just what has been clocked since.
+          owed: Math.max(0, row.minutes - sent),
+          reduced: !!(done && done.qboId && sent > row.minutes),
+          employeeId: emp && !emp._gone ? emp.Id : '', employeeName: emp && !emp._gone ? emp.name : '',
+          mappingBroken: !!(emp && emp._gone)
+        });
+      };
+
+      if (!isPost) {
+        const preview = list.map(decorate);
+        const people = {};
+        for (const r of preview) {
+          const u = people[r.userUpn] || (people[r.userUpn] = { userUpn: r.userUpn, userName: r.userName, minutes: 0, unposted: 0, reduced: 0, open: false, clientMinutes: clientMins[r.userUpn] || 0, employeeId: r.employeeId, employeeName: r.employeeName, mappingBroken: r.mappingBroken });
+          u.minutes += r.minutes;
+          u.unposted += r.owed;           // a day sent earlier still owes anything clocked since
+          if (r.reduced) u.reduced++;
+          if (r.open) u.open = true;
+        }
+        /* Somebody who logged time against clients but never clocked in would otherwise be
+           absent from this panel entirely, and their payroll hours would silently be zero.
+           Show them, at zero, so the gap is visible while it can still be fixed. */
+        for (const u of Object.keys(clientMins)) {
+          if (!people[u] && clientMins[u] > 0) people[u] = { userUpn: u, userName: u, minutes: 0, unposted: 0, reduced: 0, open: false, clientMinutes: clientMins[u], employeeId: '', employeeName: '', mappingBroken: false };
+        }
+        return {
+          jsonBody: {
+            ok: true, available: true, from, to,
+            company: { realmId: ownRealm, companyName: comp.companyName || ownRealm, environment: comp.environment === 'production' ? 'production' : 'sandbox' },
+            rows: preview, people: Object.keys(people).map(k => people[k]),
+            employees: employees.map(e => ({ id: e.id, name: e.name, email: e.email, active: e.active })),
+            employeesError: empError, map
+          }
+        };
+      }
+
+      if (empError) return { status: 502, jsonBody: { ok: false, error: 'Could not read the QuickBooks employee list, so nothing was sent: ' + empError } };
+      // Not just "never sent" — also a day whose clocked total has GROWN since it was sent.
+      const todo = list.map(decorate).filter(r => r.owed > 0);
+      if (!todo.length) return { jsonBody: { ok: true, posted: 0, failed: 0, remaining: 0, results: [], note: 'Everything clocked in this range is already in QuickBooks.' } };
+
+      /* Managed Functions cut a request off around 45s and a month of days is more QuickBooks
+         round-trips than that. Stop cleanly with a count of what is left rather than being
+         killed mid-send: the marker means the next pass resumes exactly here and never repeats
+         a day. */
+      const deadline = Date.now() + 32000;
+      const results = [];
+      let posted = 0, failed = 0, stoppedEarly = false;
+
+      for (let i = 0; i < todo.length; i++) {
+        const row = todo[i];
+        if (Date.now() > deadline) { stoppedEarly = true; break; }
+        if (!row.employeeId) {
+          failed++;
+          results.push(Object.assign({}, row, { ok: false, why: row.mappingBroken
+            ? 'the QuickBooks employee this person was matched to no longer exists \u2014 pick them again below'
+            : 'no QuickBooks employee matches ' + row.userName + ' \u2014 pick the right one below, or add them in QuickBooks' }));
+          continue;
+        }
+        /* More than 24h clocked in one day is a missed clock-out or a bad edit, not a shift.
+           QuickBooks would refuse it with something unreadable; say what it actually is and
+           leave the day for a human to correct. */
+        if (row.minutes > 24 * 60) {
+          failed++;
+          results.push(Object.assign({}, row, { ok: false, why: 'more than 24 hours clocked on this one day (' + (Math.round(row.minutes / 6) / 10) + 'h) \u2014 fix the punch in My Day first' }));
+          continue;
+        }
+        const markerId = timePostId(row.userUpn, ownRealm, row.day);
+        /* Re-read immediately before sending, not just from the batch query above: another
+           admin's run, or an earlier pass of this one, may have sent this day in between. A 404
+           means "not sent"; anything else means we could not tell — and "could not tell" must
+           never become "send it again". */
+        let marker = null, unknown = false;
+        try {
+          marker = await c.item(markerId, BCC_TENANT_ID).read().then(r => r.resource)
+            .catch(e => { if (e && (e.code === 404 || e.statusCode === 404)) return null; throw e; });
+        } catch (e) { unknown = true; }
+        if (unknown) {
+          failed++;
+          results.push(Object.assign({}, row, { ok: false, why: 'could not check whether this day was already sent \u2014 skipped rather than risk sending it twice' }));
+          continue;
+        }
+        /* The marker's running total is the authority, not the batch query. Send the shortfall
+           only, so a day that grew tops up instead of going in a second time. */
+        const sentAlready = marker && marker.qboId ? (Number(marker.minutes) || 0) : 0;
+        const send = row.minutes - sentAlready;
+        if (send <= 0) {
+          results.push(Object.assign({}, row, {
+            ok: true, already: true, qboId: marker ? marker.qboId : '',
+            warn: send < 0
+              ? 'QuickBooks has ' + (Math.round(sentAlready / 6) / 10) + 'h for this day but only ' + (Math.round(row.minutes / 6) / 10) + 'h is clocked now \u2014 time cannot be taken back from here, so correct it in QuickBooks'
+              : ''
+          }));
+          continue;
+        }
+        const topUp = sentAlready > 0;
+        const payload = {
+          NameOf: 'Employee',
+          EmployeeRef: { value: String(row.employeeId) },
+          TxnDate: row.day,
+          Hours: Math.floor(send / 60),
+          Minutes: send % 60,
+          BillableStatus: 'NotBillable',
+          Description: 'BCC Connect \u2014 clocked time' + (topUp ? ' (added later)' : '')
+        };
+        try {
+          const r = await fetch(access.base + '/v3/company/' + ownRealm + '/timeactivity?minorversion=65', {
+            method: 'POST',
+            headers: { Authorization: 'Bearer ' + access.accessToken, 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          const txt = await r.text();
+          if (!r.ok) {
+            failed++;
+            results.push(Object.assign({}, row, { ok: false, why: 'QuickBooks refused it (' + r.status + '): ' + txt.slice(0, 200) }));
+            continue;
+          }
+          let qboId = '';
+          try { qboId = String((((JSON.parse(txt) || {}).TimeActivity) || {}).Id || ''); } catch (_) { qboId = ''; }
+          /* Written only after QuickBooks confirms — and if writing it fails, SAY SO. An
+             unwritten marker is precisely what lets the next run send these hours again, so it
+             is reported on the row instead of being swallowed. */
+          try {
+            await c.items.upsert({
+              id: markerId, tenantId: BCC_TENANT_ID, docType: 'bk-time-posted',
+              userUpn: row.userUpn, userName: row.userName, realmId: ownRealm,
+              // The RUNNING TOTAL now in QuickBooks for this day. Every later run measures
+              // against this, which is what keeps a top-up a top-up and not a second copy.
+              day: row.day, minutes: row.minutes,
+              qboId: qboId || (marker && marker.qboId) || 'unknown',
+              qboIds: ((marker && marker.qboIds) || (marker && marker.qboId ? [marker.qboId] : [])).concat(qboId ? [qboId] : []),
+              employeeId: String(row.employeeId),
+              postedBy: auditUser(request), postedAt: new Date().toISOString()
+            });
+            posted++;
+            results.push(Object.assign({}, row, { ok: true, qboId, sentMinutes: send, topUp }));
+          } catch (me) {
+            posted++;
+            results.push(Object.assign({}, row, { ok: true, qboId, sentMinutes: send, topUp, warn: 'sent to QuickBooks, but the \u201calready sent\u201d record could not be saved \u2014 check this day in QuickBooks before sending again' }));
+          }
+        } catch (e) {
+          failed++;
+          results.push(Object.assign({}, row, { ok: false, why: String((e && e.message) || e).slice(0, 200) }));
+        }
+      }
+      const remaining = todo.length - results.length;
+      logAudit('bk-time-post', { user: auditUser(request), meta: { from, to, userUpn: onlyUpn || 'all', posted, failed, remaining } });
+      return { jsonBody: { ok: true, posted, failed, remaining, stoppedEarly, results } };
+    } catch (err) {
+      context.error('bookkeeping-time-post', err);
+      return { status: 500, jsonBody: { ok: false, error: String((err && err.message) || err) } };
+    }
+  })
+});
+
 app.http('bookkeeping-time-report', {
   methods: ['GET'],
   authLevel: 'anonymous',

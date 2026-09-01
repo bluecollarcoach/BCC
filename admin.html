@@ -364,6 +364,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         <span id="bkStatus" style="font-size:12px;color:var(--muted);"></span>
       </div>
       <div id="bkTimeOut"></div>
+      <!-- Jenna, 7/24: "Pertaining to clocking in and out — I would rather not be doing it 2
+           places." My Day's clock in / clock out goes straight into our own QuickBooks from
+           here, so nobody re-types their hours anywhere else. The per-client figures above are
+           a different measure and are never sent. -->
+      <div id="bkPushOut" style="margin-top:20px;padding-top:16px;border-top:1px solid var(--chrome-mute);"></div>
     </div>
   </section>
 
@@ -998,6 +1003,212 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         if (st) st.textContent = from + ' → ' + to;
       })
       .catch(function (e) { if (myGen === _bkGen) out.innerHTML = '<div style="color:#6a1c1c;padding:10px;">Could not load: ' + esc(e.message) + '</div>'; });
+    /* Outside the report's own promise chain: the QuickBooks panel is useful even on a day
+       the report itself fails to load, and it must not disappear because that request did. */
+    loadBkPush();
+  }
+
+  /* ===== SEND CLOCKED TIME TO OUR OWN QUICKBOOKS =====
+     The source is My Day's clock in / clock out — the thing people were otherwise re-typing
+     somewhere else. Per-client time and the passive auto-tracker are different measures and
+     are NOT sent; they only appear here as a cross-check. Every day is sent at most once: the
+     server keeps a running total per person per day and only ever sends the shortfall. */
+  var _bkPush = null, _bkPushGen = 0, _bkPushBusy = false;
+  function bkPushRange() {
+    return { from: (document.getElementById('bkFrom') || {}).value || '', to: (document.getElementById('bkTo') || {}).value || '' };
+  }
+  function bkMins(m) { return bkFmtDur(Math.round(m || 0) * 60); }
+  function bkWho(u) { return (window.bccDisplayName && window.bccDisplayName(u.userUpn)) || u.userName || u.userUpn; }
+  function loadBkPush(keepHtml) {
+    var gen = ++_bkPushGen;
+    var out = document.getElementById('bkPushOut'); if (!out) return;
+    var r = bkPushRange(); if (!r.from || !r.to) { out.innerHTML = ''; return; }
+    out.innerHTML = '<div style="color:var(--muted);font-size:12.5px;">Checking QuickBooks…</div>';
+    fetch('/api/bookkeeping/time/post?from=' + encodeURIComponent(r.from) + '&to=' + encodeURIComponent(r.to), { credentials: 'include' })
+      .then(function (res) { return res.ok ? res.json() : Promise.reject(new Error('HTTP ' + res.status)); })
+      .then(function (d) { if (gen !== _bkPushGen) return; _bkPush = d; renderBkPush(keepHtml); })
+      .catch(function (e) {
+        if (gen !== _bkPushGen) return;
+        /* An empty panel where a button belongs reads as "this isn't available to me". Say the
+           check failed, and leave a way to try again. */
+        out.innerHTML = '<div style="font-size:12.5px;color:#6a1c1c;">Couldn’t check QuickBooks: ' + esc(e.message) +
+          ' <button class="btn" type="button" id="bkPushRetry" style="margin-left:6px;">Retry</button></div>';
+        var rb = document.getElementById('bkPushRetry'); if (rb) rb.addEventListener('click', function () { loadBkPush(); });
+      });
+  }
+  function renderBkPush(extraHtml) {
+    var out = document.getElementById('bkPushOut'), d = _bkPush; if (!out || !d) return;
+    var head = '<h4 style="margin:0 0 6px;font-family:\'Source Serif 4\',Georgia,serif;font-size:14px;">Send clocked time to QuickBooks</h4>';
+    if (!d.available) {
+      out.innerHTML = head + '<div style="font-size:12.5px;color:var(--muted);">' + esc(d.why || 'Not available.') + '</div>';
+      return;
+    }
+    var people = (d.people || []).slice().sort(function (a, b) { return bkWho(a).localeCompare(bkWho(b)); });
+    var rows = d.rows || [];
+    var toSend = people.reduce(function (s, u) { return s + (u.unposted || 0); }, 0);
+    var already = people.reduce(function (s, u) { return s + ((u.minutes || 0) - (u.unposted || 0)); }, 0);
+    var emps = d.employees || [];
+    var opts = function (sel) {
+      return '<option value="">— not set —</option>' + emps.map(function (e) {
+        return '<option value="' + esc(e.id) + '"' + (String(sel) === String(e.id) ? ' selected' : '') + '>' + esc(e.name) + (e.active === false ? ' (inactive)' : '') + '</option>';
+      }).join('');
+    };
+    var body;
+    if (!people.length) {
+      body = '<div style="font-size:12.5px;color:var(--muted);">Nobody clocked in during this range, so there is nothing to send.</div>';
+    } else {
+      body = '<table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr>' +
+        '<th style="text-align:left;">Bookkeeper</th><th style="text-align:left;">In QuickBooks as</th>' +
+        '<th style="text-align:right;">Already sent</th><th style="text-align:right;">To send</th></tr></thead><tbody>' +
+        people.map(function (u) {
+          var sent = (u.minutes || 0) - (u.unposted || 0);
+          var warn = u.mappingBroken ? '<div style="font-size:11.5px;color:#6a1c1c;">The employee this was set to no longer exists — pick again.</div>' : '';
+          var miss = (!u.employeeId && !u.mappingBroken && emps.length && u.unposted)
+            ? '<div style="font-size:11.5px;color:#6a1c1c;">Pick who this is in QuickBooks before sending.</div>' : '';
+          return '<tr><td style="padding:4px 0;">' + esc(bkWho(u)) + (u.open ? ' <span style="font-size:11px;color:var(--muted);">(still on the clock)</span>' : '') + '</td>' +
+            '<td><select data-upn="' + esc(u.userUpn) + '" class="bkEmpSel" style="min-height:32px;padding:4px 6px;border:1px solid var(--chrome-mute);border-radius:6px;font:inherit;max-width:240px;">' + opts(u.employeeId) + '</select>' + warn + miss + '</td>' +
+            '<td style="text-align:right;color:var(--muted);">' + (sent > 0 ? esc(bkMins(sent)) : '—') + '</td>' +
+            '<td style="text-align:right;"><strong>' + (u.unposted > 0 ? esc(bkMins(u.unposted)) : '—') + '</strong></td></tr>';
+        }).join('') + '</tbody></table>' +
+        '<details style="margin-top:8px;"><summary style="font-size:12px;color:var(--muted);cursor:pointer;">Day by day (' + rows.length + ')</summary>' +
+        '<table style="width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px;"><tbody>' +
+        rows.map(function (r) {
+          var who = (window.bccDisplayName && window.bccDisplayName(r.userUpn)) || r.userName || r.userUpn;
+          var state = r.reduced
+            ? '<span style="color:#6a1c1c;">' + esc(bkMins(r.postedMinutes)) + ' in QuickBooks — more than is clocked now</span>'
+            : (r.posted && r.owed > 0) ? esc(bkMins(r.postedMinutes)) + ' sent · ' + esc(bkMins(r.owed)) + ' clocked since'
+            : r.posted ? 'in QuickBooks' : 'not sent yet';
+          return '<tr><td style="color:var(--muted);">' + esc(r.day) + '</td><td>' + esc(who) + '</td>' +
+            '<td style="text-align:right;">' + esc(bkMins(r.minutes)) + (r.open ? ' <span style="color:var(--muted);">+ open punch</span>' : '') + '</td>' +
+            '<td style="text-align:right;color:var(--muted);">' + state + '</td></tr>';
+        }).join('') + '</tbody></table></details>';
+
+      /* Time can be clocked on a day that was already sent — that tops up on the next send.
+         Time REMOVED after sending cannot be taken back from here, so it is called out rather
+         than left as a silent mismatch between somebody's sheet and the books. */
+      var reducedPeople = people.filter(function (u) { return u.reduced > 0; });
+      if (reducedPeople.length) {
+        body += '<div style="background:var(--gold-fade);border-radius:8px;padding:9px 11px;margin-top:10px;font-size:12.5px;">' +
+          'Some days already in QuickBooks now show <strong>less</strong> clocked time than was sent (' +
+          esc(reducedPeople.map(bkWho).join(', ')) +
+          '). Time can’t be taken back from here — correct those in QuickBooks. See “Day by day” above.</div>';
+      }
+      /* Somebody who logged client time but never clocked in would go through payroll at zero
+         hours. Say it while it can still be fixed, rather than after the run. */
+      var noClock = people.filter(function (u) { return !u.minutes && u.clientMinutes > 0; });
+      if (noClock.length) {
+        body += '<div style="background:var(--gold-fade);border-radius:8px;padding:9px 11px;margin-top:10px;font-size:12.5px;">' +
+          esc(noClock.map(bkWho).join(', ')) + (noClock.length === 1 ? ' logged' : ' logged') +
+          ' time against clients in this range but never clocked in, so there are no hours to send for ' +
+          (noClock.length === 1 ? 'them' : 'them') + '. Worth checking before payroll.</div>';
+      }
+      var openPeople = people.filter(function (u) { return u.open; });
+      if (openPeople.length) {
+        body += '<div style="font-size:12px;color:var(--muted);margin-top:8px;">' +
+          esc(openPeople.map(bkWho).join(', ')) + (openPeople.length === 1 ? ' is' : ' are') +
+          ' still on the clock. Whatever is already clocked out sends now; the rest is picked up next time.</div>';
+      }
+    }
+    var empErr = d.employeesError
+      ? '<div style="background:var(--gold-fade);border-radius:8px;padding:9px 11px;margin:8px 0;font-size:12.5px;">Couldn’t read the employee list from QuickBooks (' + esc(d.employeesError) + '), so nothing can be sent until that works.</div>'
+      : '';
+    out.innerHTML = head +
+      '<p class="blurb" style="margin:0 0 10px;">Sends the hours people <strong>clocked in and out</strong> in My Day into <strong>' + esc((d.company || {}).companyName || 'our QuickBooks') + '</strong> as time activities, so nobody has to enter their hours in two places. This is not the per-client time above — that is a separate measure and is not sent. A day is only ever sent once; anything clocked afterwards tops the same day up.' +
+      ((d.company || {}).environment === 'sandbox' ? ' <strong>This connection is a QuickBooks sandbox, not the live company.</strong>' : '') + '</p>' +
+      empErr + body +
+      '<div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap;">' +
+        '<button class="btn btn-primary" type="button" id="bkPushBtn"' + ((toSend > 0 && !d.employeesError) ? '' : ' disabled') + '>' +
+          (toSend > 0 ? 'Send ' + esc(bkMins(toSend)) + ' to QuickBooks' : 'Nothing new to send') + '</button>' +
+        '<span id="bkPushStatus" style="font-size:12.5px;color:var(--muted);">' + (already > 0 ? esc(bkMins(already)) + ' already in QuickBooks' : '') + '</span>' +
+      '</div>' + (extraHtml || '');
+    var btn = document.getElementById('bkPushBtn'); if (btn) btn.addEventListener('click', bkDoPush);
+    Array.prototype.forEach.call(out.querySelectorAll('.bkEmpSel'), function (sel) {
+      sel.addEventListener('change', function () { bkSaveEmpMap(sel.getAttribute('data-upn'), sel.value); });
+    });
+  }
+  /* Saved on its own, the moment it is picked — a setting that only sticks if you also press
+     Send is a setting people stop trusting. */
+  function bkSaveEmpMap(upn, empId) {
+    var r = bkPushRange(); var m = {}; m[upn] = empId;
+    var st = document.getElementById('bkPushStatus'); if (st) st.textContent = 'Saving…';
+    fetch('/api/bookkeeping/time/post', {
+      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: r.from, to: r.to, mapOnly: true, map: m })
+    })
+      .then(function (res) { return res.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
+      .then(function (d) {
+        if (!d.ok) throw new Error(d.error || 'could not save');
+        loadBkPush();   // re-match every row against the new choice
+      })
+      .catch(function (e) {
+        // Never leave a picked name looking saved when it isn't.
+        if (st) st.textContent = '';
+        (window.bccNotify || alert)('Couldn’t save that — it is not set. ' + e.message, 'warn', 8000);
+      });
+  }
+  function bkDoPush() {
+    if (_bkPushBusy) return;
+    var d = _bkPush; if (!d || !d.available) return;
+    var r = bkPushRange();
+    var toSend = (d.people || []).reduce(function (s, u) { return s + (u.unposted || 0); }, 0);
+    if (!toSend) return;
+    var unmapped = (d.people || []).filter(function (u) { return u.unposted > 0 && !u.employeeId; });
+    if (unmapped.length) {
+      if (!confirm(unmapped.map(bkWho).join(', ') + (unmapped.length === 1 ? ' has' : ' have') +
+        ' no QuickBooks employee set, so their hours will be left out.\n\nSend the rest anyway?')) return;
+    }
+    if (!confirm('Send ' + bkMins(toSend) + ' of clocked time into ' + ((d.company || {}).companyName || 'QuickBooks') + ' for ' + r.from + ' → ' + r.to + '?\n\nThis writes time activities into the books. Each day is only ever sent once.')) return;
+    _bkPushBusy = true;
+    var btn = document.getElementById('bkPushBtn'), st = document.getElementById('bkPushStatus');
+    if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+    var all = [], passes = 0, sent = 0, failed = 0;
+    function pass() {
+      passes++;
+      return fetch('/api/bookkeeping/time/post', {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: r.from, to: r.to })
+      })
+        .then(function (res) { return res.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
+        .then(function (resp) {
+          if (!resp.ok) throw new Error(resp.error || 'failed');
+          all = all.concat(resp.results || []);
+          sent += resp.posted || 0; failed += resp.failed || 0;
+          if (st) st.textContent = 'Sent ' + sent + '…';
+          /* A long range is more QuickBooks round-trips than one request may finish, so the
+             server stops cleanly and says what is left. Carry on where it stopped — the
+             per-day running total means nothing is ever sent twice. Bounded, so a server that
+             kept reporting work left could never spin here forever. */
+          if (resp.remaining > 0 && passes < 25) return pass();
+          if (resp.remaining > 0) throw new Error(resp.remaining + ' days were left unsent — press Send again to finish them.');
+        });
+    }
+    pass()
+      .then(function () {
+        var bad = all.filter(function (x) { return !x.ok; });
+        var warned = all.filter(function (x) { return x.ok && x.warn; });
+        var who = function (x) { return (window.bccDisplayName && window.bccDisplayName(x.userUpn)) || x.userName || x.userUpn; };
+        var msg = '<div style="margin-top:12px;font-size:12.5px;">' +
+          '<strong>' + sent + '</strong> ' + (sent === 1 ? 'day' : 'days') + ' sent to QuickBooks' +
+          (bad.length ? ', <strong style="color:#6a1c1c;">' + bad.length + ' could not be sent</strong>' : '') + '.' +
+          (bad.length ? '<ul style="margin:6px 0 0 18px;padding:0;">' + bad.map(function (x) {
+            return '<li>' + esc(x.day) + ' · ' + esc(who(x)) + ' — ' + esc(x.why || 'refused') + '</li>';
+          }).join('') + '</ul>' : '') +
+          (warned.length ? '<ul style="margin:6px 0 0 18px;padding:0;color:#6a1c1c;">' + warned.map(function (x) {
+            return '<li>' + esc(x.day) + ' · ' + esc(who(x)) + ' — ' + esc(x.warn) + '</li>';
+          }).join('') + '</ul>' : '') + '</div>';
+        _bkPushBusy = false;
+        /* Carried THROUGH the reload, not raced against it — the list of what was written, and
+           what wasn't, is the whole point and must not be swept away by the refresh. */
+        loadBkPush(msg);
+        if (window.bccNotify) window.bccNotify(sent + ' sent to QuickBooks' + (bad.length ? ', ' + bad.length + ' could not be' : ''), bad.length ? 'warn' : 'success', 7000);
+      })
+      .catch(function (e) {
+        _bkPushBusy = false;
+        /* Some days may already be in QuickBooks even though this stopped part way. Say so
+           rather than implying nothing happened, and reload so the panel shows the truth. */
+        (window.bccNotify || alert)('Sending stopped: ' + e.message + (sent ? ' — ' + sent + ' had already gone through and will not be sent again.' : ' Nothing further was sent.'), 'warn', 10000);
+        loadBkPush();
+      });
   }
 
   /* ===== USERS ===== */
