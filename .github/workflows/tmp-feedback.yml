@@ -1,0 +1,23 @@
+name: TEMP feedback dump
+# Temporary, manual-only. Reads the feedback queue via the CRON_SECRET-gated endpoint and
+# uploads it as an artifact. Deleted in the same session as the endpoint it calls.
+on:
+  workflow_dispatch:
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch feedback
+        run: |
+          code=$(curl -s -o feedback.json -w "%{http_code}" \
+            -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            "https://connect.bluecollarcoach.us/api/tmp/feedback-dump")
+          echo "HTTP $code"
+          if [ "$code" != "200" ]; then head -c 400 feedback.json; exit 1; fi
+          node -e "const j=require('./feedback.json');console.log('items:',j.count);"
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: feedback
+          path: feedback.json
