@@ -470,7 +470,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     </div>
   </div>
 
-  <!-- Personal "My tasks" panel (bookkeeper home only; private per user) -->
+  <!-- Personal "My tasks" now lives on My Day (myday.html), not here. -->
 
   <!-- Period list -->
   <div class="list">
@@ -1147,10 +1147,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     return map;
   }
-  /* ---- Personal "My tasks" — a private, cross-client to-do list on the home.
-     Add / complete / delete, an optional due date, and ▲▼ to reorder &
-     prioritize. Stored as one synced doc per user (bcc-mytasks-<upn>); only
-     the owner's screen ever renders it. Requested by Jessica. ---- */
+  /* Personal "My tasks" (Jessica's ask) MOVED to My Day and is no longer rendered here — see
+     myday.html's renderMyTasks. This comment described a panel that is not in this file, and
+     the placeholder markup below is empty; leaving both was enough to send somebody looking
+     for it on this page, which is exactly what happened to the reply Jessica was given. */
   // The working bookkeeper's landing: their client queue, to-dos first.
   function renderWorkList() {
     // FIRST, before any DOM work: rowsEl/emptyEl are assigned by init(). A repaint that
