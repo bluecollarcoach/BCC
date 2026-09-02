@@ -24,13 +24,28 @@ jobs:
           # is POST-only now, so this cannot recur even if someone re-points this line.
           curl -sS --max-time 60 -o /dev/null \
             'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/profile' || true
-          for attempt in 1 2 3; do
-            code=$(curl -sS -o /tmp/out.json -w '%{http_code}' --max-time 600 \
-              -X POST 'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/cron/qbo-sync' \
-              -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}")
-            echo "attempt $attempt -> HTTP $code"
-            cat /tmp/out.json 2>/dev/null || true; echo
-            if [ "$code" = "200" ]; then exit 0; fi
-            sleep 20
+          # The sync is bounded by a wall-clock budget (the platform kills a Managed Function
+          # at ~45s), so one call may not reach every client. It reports the ones it did not
+          # get to as `remaining`; keep calling until that list is empty. Idempotent, so an
+          # overlapping or repeated pass is harmless.
+          ok=0
+          for pass_no in 1 2 3 4 5 6 7 8; do
+            code=""
+            for attempt in 1 2 3; do
+              code=$(curl -sS -o /tmp/out.json -w '%{http_code}' --max-time 600 \
+                -X POST 'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/cron/qbo-sync' \
+                -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}")
+              echo "pass $pass_no attempt $attempt -> HTTP $code"
+              cat /tmp/out.json 2>/dev/null || true; echo
+              if [ "$code" = "200" ]; then break; fi
+              sleep 20
+            done
+            if [ "$code" != "200" ]; then echo "all attempts failed on pass $pass_no"; exit 1; fi
+            ok=1
+            left=$(node -e "try{const j=require('/tmp/out.json');console.log((j.remaining||[]).length)}catch(e){console.log(0)}")
+            echo "companies still to sync: $left"
+            if [ "$left" = "0" ]; then exit 0; fi
+            sleep 5
           done
-          echo "all attempts failed"; exit 1
+          # Still not finished after eight passes: that is a real problem, not a slow night.
+          echo "still incomplete after 8 passes"; exit 1

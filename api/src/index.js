@@ -4374,6 +4374,14 @@ const SP_BATCH = 20, SP_MAX_DEPTH = 8, SP_MAX_FILES = 3000;
 async function spWalk(driveId, access, path, depth, out, limits) {
   if (depth > SP_MAX_DEPTH) { limits.depth = true; return; }
   if (out.length >= SP_MAX_FILES) { limits.count = true; return; }
+  /* The file cap cannot bound this crawl: an already-imported file is skipped before it
+     consumes an `out` slot, so on a mostly-migrated folder out.length stays near zero while
+     the walk visits every folder in the tree, every round. These two DO bound it — a request
+     budget and a wall clock — so the round always has time left to download the files it
+     found. Reported through limits.count, which the caller already turns into "only part of
+     the folder could be listed". */
+  if ((limits.reqBudget | 0) <= 0) { limits.count = true; limits.crawl = true; return; }
+  if (limits.deadline && Date.now() > limits.deadline) { limits.count = true; limits.crawl = true; return; }
   // Follow @odata.nextLink VERBATIM — it already carries $top/$select/$skiptoken, and
   // encodeURI is only correct for the initial colon-addressed path below.
   /* PER SEGMENT. encodeURI preserves '#', '?' and '&', so a real SharePoint folder called
@@ -4384,6 +4392,8 @@ async function spWalk(driveId, access, path, depth, out, limits) {
   let next = 'https://graph.microsoft.com/v1.0/drives/' + driveId + '/root:' + encPath + ':/children?$top=200&$select=id,name,folder,file,size';
   const folders = [];
   while (next) {
+    if ((limits.reqBudget | 0) <= 0 || (limits.deadline && Date.now() > limits.deadline)) { limits.count = true; limits.crawl = true; break; }
+    limits.reqBudget = (limits.reqBudget | 0) - 1;
     let r = await fetch(next, { headers: { Authorization: 'Bearer ' + access } });
     /* One retry on a throttle or a server-side blip. Graph answers 429 routinely once a crawl
        gets going, and a single unlucky listing here silently dropped an entire subtree —
@@ -4454,7 +4464,11 @@ app.http('sharepoint-import-all', {
       }).fetchAll();
       const done = new Set(have.map(h => String(h.sharepointItemId)));
       const all = [];
-      const spLimits = { retryBudget: 3, skip: done, skipAlso: skipIds, seen: 0 };
+      /* 120 Graph listings and 18 seconds for the CRAWL, leaving the rest of the ~45s ceiling
+         for the 20 downloads and 20 blob uploads this round still has to do. Without these the
+         crawl could consume the whole request and the round would import nothing at all —
+         forever, on a folder big enough. */
+      const spLimits = { retryBudget: 3, skip: done, skipAlso: skipIds, seen: 0, reqBudget: 120, deadline: Date.now() + 18000 };
       await spWalk(driveId, access, clientRoot, 0, all, spLimits);
 
       const notYet = all.filter(f => !done.has(String(f.id)) && !skipIds.has(String(f.id)));
@@ -4530,7 +4544,8 @@ app.http('sharepoint-import-all', {
       const enumTruncated = !!(spLimits.count || spLimits.depth || spLimits.error);
       const enumNote = enumTruncated
         ? ('Only part of the SharePoint folder could be listed ('
-            + [spLimits.count ? 'over ' + SP_MAX_FILES + ' files' : null,
+            + [spLimits.crawl ? 'the folder is too large to list in one pass — keep importing and it will work through it' : null,
+               (spLimits.count && !spLimits.crawl) ? 'over ' + SP_MAX_FILES + ' files' : null,
                spLimits.depth ? 'nested deeper than ' + SP_MAX_DEPTH + ' levels' : null,
                spLimits.error ? ('SharePoint refused to list: ' + (spLimits.errorPaths || []).slice(0, 4).join(', ')
                  + ((spLimits.errorPaths || []).length > 4 ? ' and ' + ((spLimits.errorPaths || []).length - 4) + ' more' : '')) : null].filter(Boolean).join('; ')
@@ -5509,7 +5524,9 @@ app.http('integrations-qbo-sync', {
 
       const out = await syncQboCompanies(c, fields, companyDocs, new Date());
       out.forEach(o => logAudit('qbo-sync', { user: auditUser(request), meta: { realmId: o.realmId, companyName: o.companyName, periodsBuilt: o.periodsBuilt || 0, partial: !!o.partial, error: o.error, trigger: 'manual' } }));
-      return { jsonBody: { ok: true, companies: out } };
+      // `remaining` is the companies the budget did not reach. The caller sends the request
+      // again for those rather than being told the whole sync failed.
+      return { jsonBody: { ok: true, companies: out, remaining: out.remaining || [] } };
     } catch (err) {
       context.error('qbo-sync error', err);
       return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } };
@@ -5529,18 +5546,31 @@ async function qboFetch(url, opts, ms) {
 // each company. Shared by the manual endpoint and the nightly cron. COMPANIES run
 // in parallel (different realms = independent QBO limits) for speed; MONTHS within
 // a company run serially (a 24-request burst to ONE realm gets throttled).
+/* SYNC_BUDGET_MS is measured from the moment this function is entered, and both the company
+   queue and the month loop inside a company respect it. Managed Functions cut the request at
+   ~45s; a single month can take a 20s abort, so the budget has to leave room for one to
+   finish after the last check. Companies never attempted come back on `out.remaining` —
+   attached as a property so neither caller's forEach/map has to change, and a caller that
+   ignores it still gets exactly what it got before. */
+const SYNC_BUDGET_MS = 22000;
 async function syncQboCompanies(c, fields, companyDocs, now) {
   const basic = Buffer.from(fields.clientId + ':' + fields.clientSecret).toString('base64');
+  const syncDeadline = Date.now() + SYNC_BUDGET_MS;
   const queue = companyDocs.slice();
   const out = [];
+  const notAttempted = [];
   async function worker() {
     while (queue.length) {
+      // Do not START a company there is no budget left to finish: being killed mid-company is
+      // how a client's months half-land and the run reports nothing at all.
+      if (Date.now() > syncDeadline) { notAttempted.push.apply(notAttempted, queue.splice(0)); return; }
       const comp = queue.shift();
       try { out.push(await syncOneCompany(comp)); }
       catch (e) { out.push({ realmId: comp && comp.realmId, companyName: comp && comp.companyName, error: String(e && e.message || e) }); }
     }
   }
   await Promise.all(Array.from({ length: Math.min(4, queue.length) || 1 }, worker));
+  out.remaining = notAttempted.map(x => ({ realmId: x && x.realmId, companyName: x && x.companyName }));
   return out;
 
   async function syncOneCompany(comp) {
@@ -5701,8 +5731,17 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
         // Months serial: 2 concurrent requests per realm max — never throttled, so no
         // retry pass is needed. One light retry catches a rare transient month.
         const monthResults = [];
-        for (let i = 0; i < 12; i++) monthResults.push(await fetchMonth(i));
-        for (let k = 0; k < 12; k++) {
+        /* The same budget the company queue uses. Twelve serial month pairs plus a retry pass
+           is more than the platform will allow on a slow night, and the months that never ran
+           must be reported as UNATTEMPTED rather than blended into "failed" — one means try
+           again, the other means something is wrong with the client's books. */
+        let monthsSkipped = 0;
+        for (let i = 0; i < 12; i++) {
+          if (Date.now() > syncDeadline) { monthsSkipped = 12 - i; break; }
+          monthResults.push(await fetchMonth(i));
+        }
+        for (let k = 0; k < monthResults.length; k++) {
+          if (Date.now() > syncDeadline) break;
           if (!monthResults[k].per) monthResults[k] = await fetchMonth(monthResults[k].i);
         }
         const m0 = monthResults.find(x => x.i === 0) || {};
@@ -5741,7 +5780,7 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
           } catch (e) { if (e && e.code !== 412) break; }   // 412 = someone else wrote; re-read and retry
         }
         try { await c.items.upsert({ id: 'bcc-qbo-debug-sync-' + comp.realmId, tenantId: BCC_TENANT_ID, docType: 'qbo-debug', at: new Date().toISOString(), realmId: comp.realmId, env, base, periodsBuilt: periods.length, failedMonths, firstStatus: diag.firstStatus, firstBody: diag.firstBody }); } catch (_) {}
-        return { realmId: comp.realmId, companyName: comp.companyName,
+        return { realmId: comp.realmId, companyName: comp.companyName, monthsSkipped,
           periodsBuilt: built, failedWrites,
           partial: failedMonths > 0 || failedWrites > 0,
           /* Report the failure this function already computed. Without `error`, a night where
@@ -5799,6 +5838,18 @@ app.http('cron-qbo-sync', {
       out.forEach(o => logAudit('qbo-sync', { user: 'cron', meta: { realmId: o.realmId, companyName: o.companyName, periodsBuilt: o.periodsBuilt || 0, partial: !!o.partial, error: o.error, trigger: 'nightly' } }));
       const summary = out.map(o => ({ realmId: o.realmId, companyName: o.companyName, periodsBuilt: o.periodsBuilt, partial: o.partial, error: o.error }));
       context.log('cron-qbo-sync: synced ' + out.length + ' companies', JSON.stringify(summary));
+      /* Clients the run never reached. This used to be invisible in the worst possible way:
+         the request was killed at the platform ceiling, so nothing was logged, nothing was
+         returned, and the workflow went green while those clients' figures stopped updating.
+         The workflow calls this route again while `remaining` is non-empty. */
+      const remaining = out.remaining || [];
+      if (remaining.length) {
+        try {
+          await logError('cron/qbo-sync incomplete',
+            { message: remaining.length + ' compan' + (remaining.length === 1 ? 'y was' : 'ies were') + ' not reached before the time budget ran out and will be picked up on the next pass: ' + remaining.map(r => r.companyName || r.realmId).join(', ') },
+            { user: 'cron' });
+        } catch (_) {}
+      }
       /* A per-company failure used to be invisible: the run returned 200 with ok:true and
          the workflow went green while a client's books quietly stopped updating. Log each
          one, and fail the whole run when nothing succeeded. */
@@ -5815,7 +5866,9 @@ app.http('cron-qbo-sync', {
       if (out.length && !anyOk) {
         return { status: 500, jsonBody: { ok: false, error: 'every company failed to sync', synced: 0, companies: summary } };
       }
-      return { jsonBody: { ok: true, synced: out.length, companies: summary } };
+      // `remaining` tells the workflow to come straight back for the clients this pass did
+      // not reach, instead of leaving them until tomorrow night.
+      return { jsonBody: { ok: true, synced: out.length, companies: summary, remaining: remaining } };
     } catch (err) {
       context.error('cron-qbo-sync error', err);
       try { await logError('POST /api/cron/qbo-sync', err, { user: 'cron' }); } catch (_) {}
@@ -10049,12 +10102,32 @@ app.http('qbo-cashflow', {
         const days = Math.round((d - today) / dayMs);
         if (days <= 30) return 0; if (days <= 60) return 1; if (days <= 90) return 2; return 3;
       };
-      const companies = await Promise.all(visible.map(async (comp) => {
+      /* Bounded, timed, and deadlined. Unbounded Promise.all over every client meant one
+         slow company took the whole response down — the modal rendered nothing instead of the
+         forecasts that had completed — and nothing here could finish inside the platform's
+         ~45s ceiling once the firm had more than a handful of clients. */
+      const CF_DEADLINE = Date.now() + 30000;
+      const CF_CALL_MS = 12000;
+      const cfQueue = visible.slice();
+      const companies = [];
+      const cfWorker = async () => {
+        while (cfQueue.length) {
+          const comp = cfQueue.shift();
+          if (Date.now() > CF_DEADLINE) {
+            // Named, not dropped: a client silently missing from a cash-flow forecast reads
+            // as a client with no cash flow.
+            companies.push({ realmId: comp.realmId, companyName: comp.companyName, error: 'took too long to read — open this client on its own to get its forecast' });
+            continue;
+          }
+          companies.push(await oneCompany(comp));
+        }
+      };
+      const oneCompany = async (comp) => {
         try {
           const { accessToken, base } = await qboAccessForCompany(comp, fields);
           const apiGet = async (path) => {
             const u = base + '/v3/company/' + encodeURIComponent(comp.realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70';
-            const r = await fetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
+            const r = await qboFetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } }, CF_CALL_MS);
             if (!r.ok) throw new Error('QBO ' + r.status);
             return r.json();
           };
@@ -10177,7 +10250,11 @@ app.http('qbo-cashflow', {
             arBalance, apBalance, DSO, DPO, avgRevenue, avgCOGS, avgOverhead, cogsRatio, monthlyBurn, opNet, historyMonths
           };
         } catch (e) { return { realmId: comp.realmId, companyName: comp.companyName, error: String(e && e.message || e).slice(0, 140) }; }
-      }));
+      };
+      // Three at a time. Every client still gets read; one slow one no longer decides whether
+      // anybody sees a forecast.
+      await Promise.all(Array.from({ length: Math.min(3, cfQueue.length) || 1 }, cfWorker));
+      companies.sort((a, b) => String(a.companyName || '').localeCompare(String(b.companyName || '')));
       const ok = companies.filter(x => !x.error);
       const totals = ok.reduce((t, r) => ({ cash: t.cash + r.cash, in90: t.in90 + r.in90, out90: t.out90 + r.out90, projected90: t.projected90 + r.projected90, opNet: t.opNet + (r.opNet || 0) }), { cash: 0, in90: 0, out90: 0, projected90: 0, opNet: 0 });
       Object.keys(totals).forEach(k => totals[k] = Math.round(totals[k] * 100) / 100);

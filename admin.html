@@ -2348,8 +2348,25 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         }
         if (act === 'sync') {
           b.disabled = true; b.textContent = 'Syncing…';
-          fetch('/api/integrations/' + encodeURIComponent(channel) + '/sync', { method: 'POST', credentials: 'include' })
-            .then(function (r) { return r.json().catch(function () { return { ok:false, error:'bad response' }; }); })
+          /* The firm-wide QuickBooks sync is bounded by a wall-clock budget — the platform
+             kills the request at ~45s — and names the clients it did not reach. Keep going
+             until that list is empty, exactly as the bookkeeping page's Sync button does;
+             stopping at the first pass reported a partial sync as a complete one. Bounded so
+             a server that kept reporting work left could not spin here forever. */
+          var _asPasses = 0, _asAll = [];
+          var runAdminSync = function () {
+            _asPasses++;
+            return fetch('/api/integrations/' + encodeURIComponent(channel) + '/sync', { method: 'POST', credentials: 'include' })
+              .then(function (r) { return r.json().catch(function () { return { ok:false, error:'bad response' }; }); })
+              .then(function (j) {
+                if (!j.ok) return j;
+                _asAll = _asAll.concat(j.companies || []);
+                var left = (j.remaining || []).length;
+                if (left && _asPasses < 12) { b.textContent = 'Syncing… (' + left + ' left)'; return runAdminSync(); }
+                return { ok: true, companies: _asAll, remaining: j.remaining || [] };
+              });
+          };
+          runAdminSync()
             .then(function (resp) {
               if (resp.ok) {
                 // The endpoint returns { ok, companies }, and the periods live at
@@ -2357,13 +2374,23 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
                 // mirrored nothing and always reported "Synced 0 period(s)" as a success,
                 // including when every company had failed (ok is true regardless).
                 var cos = resp.companies || [];
-                var n = 0;
-                cos.forEach(function (co) { (co.periods || []).forEach(function (per) { localStorage.setItem(per.id, JSON.stringify(per)); n++; }); });
+                var n = 0, nFailed = 0;
+                /* A full localStorage threw straight out of this loop and the catch below
+                   called it "Sync endpoint failed" — but QuickBooks answered and the server
+                   holds every month; only this browser could not store them. Re-running
+                   cannot help, and being told the sync failed is being told the figures are
+                   not there when they are. The bookkeeping page's twin loop already says so. */
+                cos.forEach(function (co) { (co.periods || []).forEach(function (per) { try { localStorage.setItem(per.id, JSON.stringify(per)); n++; } catch (e) { nFailed++; } }); });
                 var bad = cos.filter(function (co) { return co.error; });
                 var msg = 'Synced ' + (cos.length - bad.length) + ' of ' + cos.length + ' company(ies), ' + n + ' period(s).';
-                if (bad.length) {
+                if (nFailed) {
+                  if (window.bccNotify) window.bccNotify(msg + ' ' + nFailed + ' month(s) could not be stored on THIS browser (it is out of space) — they are safely synced and will appear once you free some room.', 'warn', 14000);
+                } else if (bad.length) {
                   var notes = bad.map(function (co) { return (co.companyName || co.realmId) + ': ' + co.error + (co.needsReauth ? ' (needs reconnecting)' : ''); });
                   if (window.bccNotify) window.bccNotify(msg + ' — ' + notes.join('; '), 'warn', 12000);
+                } else if ((resp.remaining || []).length) {
+                  if (window.bccNotify) window.bccNotify(msg + ' These were not reached and are still on their old figures — press Sync again: '
+                    + resp.remaining.map(function (r) { return r.companyName || r.realmId; }).join(', '), 'warn', 14000);
                 } else if (window.bccNotify) {
                   window.bccNotify(msg, 'success');
                 }

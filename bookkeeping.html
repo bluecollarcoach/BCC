@@ -691,6 +691,33 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   var currentRealm = '';
   var isAdmin = false;        // admins can toggle companies on/off + assign users
   var usersDir = [];          // [{upn, displayName}] for the per-user access picker
+  /* Who may be TICKED on a client's access list. The admin-config roster alone was wrong: it
+     only carries people an admin has edited, while the assignee dropdowns beside it are built
+     from the whole Entra directory — so an active colleague could be assigned a client's task
+     and simultaneously be impossible to grant that client to. Entra first, config merged over
+     it for display names and status, and anyone already ON the list added regardless so a
+     short directory can never silently prune somebody. */
+  function accessDirectory(allow) {
+    allow = (allow || []).map(function (u) { return String(u || '').toLowerCase(); });
+    var byUpn = {}, order = [];
+    var add = function (upn, name) {
+      upn = String(upn || '').toLowerCase(); if (!upn) return;
+      if (!byUpn[upn]) { byUpn[upn] = { upn: upn, displayName: name || upn }; order.push(upn); }
+      else if (name) byUpn[upn].displayName = name;
+    };
+    var people = (window.bccPeopleFull || []);
+    var active = (window.bccFilterActive ? window.bccFilterActive(people) : people) || [];
+    active.forEach(function (u) { add(u.upn || u.mail, u.displayName); });
+    // Config wins on the name, and covers anyone the directory pull did not return.
+    var cfgActive = (window.bccFilterActive ? window.bccFilterActive(usersDir) : usersDir) || [];
+    cfgActive.forEach(function (u) { add(u.upn, u.displayName); });
+    // Never drop somebody who is already on this client: no checkbox means no tick means
+    // pruned on the next save, which reads as their access being taken away deliberately.
+    (usersDir || []).forEach(function (u) { if (allow.indexOf(String(u.upn || '').toLowerCase()) >= 0) add(u.upn, u.displayName); });
+    allow.forEach(function (upn) { add(upn, null); });
+    return order.map(function (k) { return byUpn[k]; })
+      .sort(function (a, b) { return String(a.displayName || '').localeCompare(String(b.displayName || '')); });
+  }
   var accessEditRealm = null; // realm whose access editor is open (admin)
   var managementMode = false; // root view: false = bookkeeper work queue, true = firm-wide management dashboard (access-controlled)
   var taskOnly = false;       // SERVER-decided (appPermissions.bookkeeping === 'tasks'): tasks & notifications only, no financials
@@ -1276,10 +1303,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           // Hide inactive users — but NOT anyone already on this client's allow list, or
           // saving from here would silently prune them (they have no checkbox, so they'd
           // vanish from the list and not come back when reactivated).
-          var accessDir = (window.bccFilterActive ? window.bccFilterActive(usersDir) : usersDir);
-          usersDir.forEach(function (u) {
-            if (allow.indexOf((u.upn || '').toLowerCase()) >= 0 && !accessDir.some(function (x) { return x.upn === u.upn; })) accessDir = accessDir.concat([u]);
-          });
+          var accessDir = accessDirectory(allow);
           var checks = accessDir.length
             ? accessDir.map(function (u) {
                 return '<label style="display:inline-flex;align-items:center;gap:6px;margin:0 14px 8px 0;font-size:13px;"><input type="checkbox" data-upn="' + esc(u.upn) + '" ' + (allow.indexOf(u.upn) >= 0 ? 'checked' : '') + ' /> ' + esc(u.displayName || u.upn) + '</label>';
@@ -1565,8 +1589,24 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   document.getElementById('syncBtn').addEventListener('click', function () {
     var btn = this; btn.disabled = true; btn.textContent = 'Syncing…';
     var body = currentRealm ? JSON.stringify({ realmId: currentRealm }) : '{}';
-    fetch('/api/integrations/qbo/sync', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: body })
-      .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
+    /* The firm-wide sync is bounded by a wall-clock budget — the platform kills the request
+       at ~45s — so one call may not reach every client, and it names the ones it did not get
+       to. Keep going until that list is empty: stopping at the first pass showed "Synced 3 of
+       11" and left eight clients' figures stale with nothing saying so. Bounded, so a server
+       that kept reporting work left could never spin here forever. */
+    var _syncPasses = 0, _syncAll = [];
+    var runSync = function () {
+      _syncPasses++;
+      return fetch('/api/integrations/qbo/sync', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: body })
+        .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
+        .then(function (j) {
+          _syncAll = _syncAll.concat(j.companies || []);
+          var left = (j.remaining || []).length;
+          if (left && _syncPasses < 12) { btn.textContent = 'Syncing… (' + left + ' left)'; return runSync(); }
+          return { companies: _syncAll, remaining: j.remaining || [] };
+        });
+    };
+    runSync()
       .then(function (resp) {
         var cos = resp.companies || [];
         var n = 0;
@@ -1594,6 +1634,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           var notes = bad.map(function (c) { return (c.companyName || c.realmId) + ': ' + c.error + (c.needsReauth ? ' (needs reconnecting)' : ''); })
             .concat(partial.map(function (c) { return (c.companyName || c.realmId) + ': some months could not be built'; }));
           (window.bccNotify || alert)(msg + ' — ' + notes.join('; '), 'warn', 12000);
+        } else if ((resp.remaining || []).length) {
+          // Ran out of passes with clients still unsynced. Name them: "Synced 8 of 11" with
+          // no explanation is the shape of figures quietly going stale.
+          (window.bccNotify || alert)(msg + ' These were not reached and are still on their old figures — press Sync again: '
+            + resp.remaining.map(function (r) { return r.companyName || r.realmId; }).join(', '), 'warn', 14000);
         } else if (window.bccNotifySaved) {
           window.bccNotifySaved(msg);
         }
@@ -6942,7 +6987,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     var allow = (co.allowedUserUpns || []).map(function (u) { return (u || '').toLowerCase(); });
     var mode = isAdminOnly(allow) ? 'admin' : (allow.length ? 'specific' : 'all');
-    var checks = usersDir.length ? usersDir.map(function (u) { return '<label style="display:inline-flex;align-items:center;gap:6px;margin:0 16px 10px 0;font-size:13.5px;"><input type="checkbox" data-acc="' + esc(u.upn) + '" ' + (allow.indexOf((u.upn || '').toLowerCase()) >= 0 ? 'checked' : '') + ' /> ' + esc(u.displayName || u.upn) + '</label>'; }).join('') : '<span style="color:var(--muted);">No users in the directory yet (add team members in Admin → Users).</span>';
+    var accDir = accessDirectory(allow);
+    var checks = accDir.length ? accDir.map(function (u) { return '<label style="display:inline-flex;align-items:center;gap:6px;margin:0 16px 10px 0;font-size:13.5px;"><input type="checkbox" data-acc="' + esc(u.upn) + '" ' + (allow.indexOf((u.upn || '').toLowerCase()) >= 0 ? 'checked' : '') + ' /> ' + esc(u.displayName || u.upn) + '</label>'; }).join('') : '<span style="color:var(--muted);">No users in the directory yet (add team members in Admin → Users).</span>';
     var radio = function (v, lbl) { return '<label style="display:inline-flex;align-items:center;gap:6px;margin-right:18px;font-weight:600;cursor:pointer;"><input type="radio" name="accmode2" value="' + v + '" ' + (mode === v ? 'checked' : '') + ' /> ' + lbl + '</label>'; };
     body.innerHTML = '<div style="margin-bottom:12px;"><label style="display:inline-flex;align-items:center;gap:8px;font-weight:700;cursor:pointer;"><input type="checkbox" id="acc_enabled" ' + (co.enabled !== false ? 'checked' : '') + ' /> Company enabled (visible in Bookkeeping)</label></div>' +
       '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Who can see this client?</div>' +
