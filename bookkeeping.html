@@ -4278,12 +4278,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      chat's message blob alone can fill it. An unguarded write THROWS, out of whatever change
      handler called it, so the tick stays ticked and the figure stays in the cell while
      nothing at all was stored. Returns whether it really landed; every caller acts on that. */
+  var _bkStoreWarnAt = 0;
   function bkStore(id, obj, whatFailed) {
     try {
       localStorage.setItem(id, JSON.stringify(obj));
       return true;
     } catch (e) {
-      (window.bccNotify || alert)(whatFailed + ' was NOT saved — this browser has run out of local storage space. Nothing else has been lost. Close some tabs or ask an admin to clear an old chat channel, then try again.', 'error', 15000);
+      /* Once per burst. saveWip is wired to oninput — one call per KEYSTROKE — so an unlatched
+         15-second toast here meant a wall of them per word. A full store is a state, not an
+         event; saying it once is saying it. */
+      var now = Date.now();
+      if (now - _bkStoreWarnAt > 20000) {
+        _bkStoreWarnAt = now;
+        (window.bccNotify || alert)(whatFailed + ' was NOT saved — this browser has run out of local storage space. Nothing else has been lost. Close some tabs or ask an admin to clear an old chat channel, then try again.', 'error', 15000);
+      }
       return false;
     }
   }
@@ -4363,7 +4371,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     });
     /* Now primed, so this actually writes — and it writes the MERGE: the client's stored
        record with the fields somebody typed before it arrived. Straight to storage rather
-       than through saveInfo, which would re-harvest the form and re-enter this same path. */
+       than through saveInfo, which would re-harvest the form and re-enter this same path.
+       The TIER is checked here too: this is a firm-wide publish, the boxes are not disabled
+       for a view-only bookkeeper, and saveInfo's own gate is three lines below and does not
+       cover this path. Checked silently — this runs on the live-sync poll, and saveInfo says
+       it out loud the moment they actually try to save. */
+    if (typedBack && !bkCanEditFinancials()) return;
     if (typedBack) {
       d.id = 'bcc-client-info-' + realm; d.tenantId = 'blue-collar-coach'; d.docType = 'client-info';
       d.realmId = realm; d.updatedAt = nowIso(); d.updatedBy = myUpn();
@@ -10731,9 +10744,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       return;
     }
     _close.updatedAt = nowIso(); _close.updatedBy = myUpn();
-    // A refused write must un-tick the box: a checklist that shows work as done when nothing
-    // recorded it is worse than one that shows it undone.
-    if (!bkStore(_close.id, _close, 'That step')) { try { renderClose(); } catch (e) {} return false; }
+    /* A refused write must not leave the tick showing. Put the in-memory document BACK to
+       what storage actually holds — the caller repaints from it, so the box un-ticks itself.
+       Deliberately NOT renderClose() from here: renderClose calls primeClose, primeClose runs
+       adoptClose, adoptClose merges the still-typed values back and calls saveClose again,
+       which fails again — unbounded recursion on precisely the full-storage path this branch
+       exists to handle. */
+    if (!bkStore(_close.id, _close, 'That step')) {
+      var _reload = null; try { _reload = loadCloseDoc(_close.period); } catch (e) {}
+      if (_reload) _close = _reload;
+      return false;
+    }
     return true;
   }
   /* Read-modify-write for every Close mutation. _close is a module global captured when the
