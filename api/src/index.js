@@ -2040,21 +2040,34 @@ app.http('feedback-attach', {
         });
       }
 
+      let recorded = false;   // did the ATTACHMENT LIST actually reach the report?
       if (added.length) {
         /* Re-read before writing. The admin may have replied to this report in the seconds
            since it was created, and this is a whole-document upsert — building it from the
            copy we read at the top would erase their reply. */
+        /* 404 ONLY on the re-read. A catch-all turned any Cosmos error into "the report is
+           gone", broke the loop, and left the bytes in blob storage with nothing pointing at
+           them — reported as attached. */
         for (let attempt = 0; attempt < 3; attempt++) {
-          const fresh = await container().item(doc.id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
+          const fresh = await container().item(doc.id, BCC_TENANT_ID).read().then(r => r.resource)
+            .catch(e => { if (e && (e.code === 404 || e.statusCode === 404)) return null; throw e; });
           if (!fresh) break;
           fresh.attachments = (fresh.attachments || []).concat(added);
           fresh.updatedAt = new Date().toISOString();
           try {
             const opts = fresh._etag ? { accessCondition: { type: 'IfMatch', condition: fresh._etag } } : undefined;
             await container().items.upsert(fresh, opts);
+            recorded = true;
             break;
           } catch (e) { if (!(e && (e.code === 412 || e.statusCode === 412))) throw e; }
         }
+      }
+      /* The files exist, but nothing on the report points at them, so the admin will open a
+         bug report with no evidence on it. Say so — and say it as a failure, because the one
+         thing the person can still do is send it again. */
+      if (added.length && !recorded) {
+        return { status: 409, jsonBody: { ok: false, attached: 0, refused,
+          error: 'Your file' + (added.length === 1 ? ' was' : 's were') + ' uploaded but could not be attached to the report — somebody else was editing it at the same moment. Send the report again with the file' + (added.length === 1 ? '' : 's') + ' attached.' } };
       }
       /* Says exactly what was stored and what was not — never a bare ok over a file that
          was refused. */
@@ -2731,6 +2744,11 @@ app.http('bookkeeping-time-post', {
   authLevel: 'anonymous',
   route: 'bookkeeping/time/post',
   handler: withAccessLog(async (request, context) => {
+    /* Anchored at ENTRY, not after the preamble. Managed Functions cut the request at ~45s,
+       and everything before the send loop — three Cosmos queries, an Intuit token refresh and
+       the employee list — spends part of that. Measuring from the loop meant the budget could
+       promise 32s the platform was never going to give. */
+    const T0 = Date.now();
     const p = principal(request);
     if (!p) return unauthorized();
     if (!domainAllowed(p)) return domainBlocked();
@@ -2856,10 +2874,10 @@ app.http('bookkeeping-time-post', {
       let access = null, employees = [], empError = '';
       try {
         access = await qboAccessForCompany(comp, fields);
-        const er = await fetch(access.base + '/v3/company/' + ownRealm + '/query?minorversion=65&query='
+        const er = await qboFetch(access.base + '/v3/company/' + ownRealm + '/query?minorversion=65&query='
           + encodeURIComponent('select * from Employee maxresults 500'), {
           headers: { Authorization: 'Bearer ' + access.accessToken, Accept: 'application/json' }
-        });
+        }, 12000);
         if (!er.ok) throw new Error('QuickBooks returned ' + er.status + ' reading the employee list');
         const ej = await er.json();
         employees = (((ej || {}).QueryResponse || {}).Employee || []).map(e => ({
@@ -2921,14 +2939,19 @@ app.http('bookkeeping-time-post', {
       /* Managed Functions cut a request off around 45s and a month of days is more QuickBooks
          round-trips than that. Stop cleanly with a count of what is left rather than being
          killed mid-send: the marker means the next pass resumes exactly here and never repeats
-         a day. */
-      const deadline = Date.now() + 32000;
+         a day. Measured from the START of the request, so the preamble comes out of the same
+         budget the platform is actually counting. */
+      const deadline = T0 + 32000;
+      const QBO_MS = 12000;   // abort timeout on the one call that writes to the books
       const results = [];
       let posted = 0, failed = 0, stoppedEarly = false;
 
       for (let i = 0; i < todo.length; i++) {
         const row = todo[i];
-        if (Date.now() > deadline) { stoppedEarly = true; break; }
+        /* Leave room for a WHOLE round trip. Starting a day with less budget than one POST
+           can take is how a request gets killed with a time activity created in QuickBooks
+           and no record of it here — and the next run would then send that day again. */
+        if (Date.now() > deadline - QBO_MS) { stoppedEarly = true; break; }
         if (!row.employeeId) {
           failed++;
           results.push(Object.assign({}, row, { ok: false, why: row.mappingBroken
@@ -2983,11 +3006,11 @@ app.http('bookkeeping-time-post', {
           Description: 'BCC Connect \u2014 clocked time' + (topUp ? ' (added later)' : '')
         };
         try {
-          const r = await fetch(access.base + '/v3/company/' + ownRealm + '/timeactivity?minorversion=65', {
+          const r = await qboFetch(access.base + '/v3/company/' + ownRealm + '/timeactivity?minorversion=65', {
             method: 'POST',
             headers: { Authorization: 'Bearer ' + access.accessToken, 'Content-Type': 'application/json', Accept: 'application/json' },
             body: JSON.stringify(payload)
-          });
+          }, QBO_MS);
           const txt = await r.text();
           if (!r.ok) {
             failed++;
@@ -5888,7 +5911,11 @@ app.http('qbo-periods', {
       });
       if (!canSee.size) return { jsonBody: { ok: true, periods: [] } };
       const { resources: pers } = await c.items.query({
-        query: 'SELECT c.id, c.realmId, c.companyName, c.period, c.revenueCents, c.cogsCents, c.expensesCents, c.netCents, c.cashCents, c.currentAssetsCents, c.currentLiabilitiesCents, c.source, c.syncedAt FROM c WHERE c.tenantId=@t AND c.docType="financial-period"',
+        // balanceSheetStale is NOT optional here: the nightly sync sets it on any month whose
+        // Balance Sheet failed and whose cash was carried forward from the month before, and
+        // bookkeeping.html's chart warning reads it. Dropping it from the projection made that
+        // warning dead code and plotted a carried-forward figure as the month's real cash.
+        query: 'SELECT c.id, c.realmId, c.companyName, c.period, c.revenueCents, c.cogsCents, c.expensesCents, c.netCents, c.cashCents, c.currentAssetsCents, c.currentLiabilitiesCents, c.balanceSheetStale, c.source, c.syncedAt FROM c WHERE c.tenantId=@t AND c.docType="financial-period"',
         parameters: [{ name: '@t', value: BCC_TENANT_ID }]
       }).fetchAll();
       return { jsonBody: { ok: true, periods: pers.filter(x => canSee.has(String(x.realmId))) } };
@@ -7291,7 +7318,8 @@ app.http('qbo-companies', {
         parameters: [{ name: '@t', value: BCC_TENANT_ID }]
       }).fetchAll();
       const { resources: periods } = await c.items.query({
-        query: 'SELECT c.realmId, c.period, c.revenueCents, c.cogsCents, c.expensesCents, c.netCents, c.cashCents, c.currentAssetsCents, c.currentLiabilitiesCents FROM c WHERE c.tenantId=@t AND c.docType="financial-period"',
+        // Kept in step with the qbo-periods projection above — same reason.
+        query: 'SELECT c.realmId, c.period, c.revenueCents, c.cogsCents, c.expensesCents, c.netCents, c.cashCents, c.currentAssetsCents, c.currentLiabilitiesCents, c.balanceSheetStale FROM c WHERE c.tenantId=@t AND c.docType="financial-period"',
         parameters: [{ name: '@t', value: BCC_TENANT_ID }]
       }).fetchAll();
       const latestByRealm = {};

@@ -218,6 +218,8 @@
     _outboxRaw = raw;
     return _outboxCache;
   }
+  // Returns whether the outbox actually reached storage. Callers that record a key as
+  // durably queued MUST honour that answer — see outboxPut.
   function outboxWrite(o) {
     _outboxCache = o;   // every caller must share one instance, or drop() and rehydrate() disagree
     var str = null;
@@ -225,10 +227,12 @@
     try {
       _origSetItem.call(localStorage, OUTBOX_KEY, str);
       _outboxRaw = str;                 // only once the write actually landed
+      return true;
     } catch (e) {
       // Quota. The in-memory queue still carries it for this page's life, but storage and
       // memory now disagree — forget the raw marker so the next read re-syncs from storage.
       _outboxRaw = null;
+      return false;
     }
   }
   // Another TAB owns the same outbox. Without this the cache would go stale the moment a
@@ -263,12 +267,14 @@
     // No `rf` carried over: this is a NEW write of that key, not the one the server refused,
     // and it deserves its own attempt.
     o.items[key] = { v: value, t: !!trusted, qt: (typeof prevQt === 'number' && prevQt > 0) ? prevQt : Date.now() };
-    /* This key IS in the shared outbox now. If a later flush finds it gone, another tab
-       settled it — which is the one case where re-sending this tab's older copy would undo a
-       newer value. Distinguished here from the bounded return above, where the entry never
-       made it in and therefore must still be sent. */
-    _inOutbox.add(key);
-    outboxWrite(o);
+    /* Recorded ONLY once the outbox write really landed. _inOutbox means "if a later flush
+       finds this key gone, another tab settled it, so do not re-send this tab's older copy" —
+       and on a full store outboxWrite keeps the entry in memory alone, so claiming it here
+       made a flush discard the write as superseded when nothing had superseded it. Same
+       reasoning as the bounded OUTBOX_MAX return above: an entry that never made it in must
+       still be sent. */
+    if (outboxWrite(o)) _inOutbox.add(key);
+    else _inOutbox.delete(key);
   }
   /* `sentValues` is OPT-IN: pass a { key: value } map and a key is dropped only while the
      outbox still holds the value this flush actually transmitted. Without it every listed key
@@ -1482,6 +1488,12 @@
              before they speak. The cursor is clamped below the first failure, so this repeats
              every cycle while storage is full: it is a state, not a blip. */
           window._bccBootPullFailed = true;
+          /* And SHOW it. The recovery arm above refreshes the bar when the flag clears, but
+             the arm that SETS it never did — so a session that started healthy and then lost
+             the ability to store what it pulls carried the flag with no bar and no word. The
+             bar's own comment says the live poll can raise this at any point in the session;
+             it was simply never told to look. */
+          try { if (window.bccRefreshIncompleteBar) window.bccRefreshIncompleteBar(); } catch (e) {}
         }
       })
       .catch(function (e) {
@@ -3218,6 +3230,12 @@
       // failure was completely silent. Debounced so a batch of refused writes
       // (e.g. a CSV import) shows one toast, not one per row.
       var now = Date.now();
+      /* The bar FIRST, and outside the debounce. A 403 is the one refusal that will never
+         resolve on its own, yet it was the only branch that left nothing behind — one
+         seven-second toast, debounced away for the rest of a batch, and then silence. The
+         toast can be missed; the bar is what is still there tomorrow, and it is where the
+         retry lives. */
+      try { refreshRefusedBar(); } catch (e) {}
       if (now - _lastPermissionToastAt < 4000) return;
       _lastPermissionToastAt = now;
       if (window.bccNotify) window.bccNotify('That change wasn’t saved — you don’t have permission to edit this.', 'warn', 7000);
