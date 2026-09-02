@@ -4325,7 +4325,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var name = row.getAttribute('data-job');
       row.querySelectorAll('[data-wf]').forEach(function (inp) {
         var f = inp.getAttribute('data-wf');
-        var stored = (jobs[name] || {})[f];
+        // Own property only: a Customer:Job named "constructor" otherwise reads back a
+        // function, and every contract and estimated-cost figure on that row is discarded.
+        var stored = (Object.prototype.hasOwnProperty.call(jobs, name) && jobs[name] && typeof jobs[name] === 'object') ? jobs[name][f] : undefined;
         var typed = String(inp.value == null ? '' : inp.value);
         if (typed.trim()) {
           /* A cell with something in it was TYPED — including anything entered while the
@@ -4334,7 +4336,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
              that was never saved anywhere, and only a later keystroke in that same cell would
              have rescued it. The DOM is the newer copy here; merge it onto the primed doc. */
           if (String(stored == null ? '' : stored) !== typed) {
-            jobs[name] = jobs[name] || {};
+            if (!Object.prototype.hasOwnProperty.call(jobs, name) || !jobs[name] || typeof jobs[name] !== 'object') jobs[name] = {};
             jobs[name][f] = typed;
             typedBack = true;
             last = inp;
@@ -4534,7 +4536,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     (window.bccNotify || alert)('You have view-only access to Bookkeeping, so tasks can’t be changed here.', 'warn', 7000);
     return false;
   }
-  function allTasks() { var out = []; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (!k || k.indexOf(taskPrefix()) !== 0) continue; try { var t = JSON.parse(localStorage.getItem(k)); if (t && t.id) out.push(t); } catch (e) {} } return out; }
+  /* The KEY is the identity, not the `id` field inside the document. Trusting the field let a
+     record whose stored id disagreed with its key send every subsequent write — tick, edit,
+     delete — at whatever key that field named, which need not even be a task. Repair it to the
+     key it was actually found under. */
+  function allTasks() { var out = []; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (!k || k.indexOf(taskPrefix()) !== 0) continue; try { var t = JSON.parse(localStorage.getItem(k)); if (t) { t.id = k; out.push(t); } } catch (e) {} } return out; }
+  function isTaskKey(id) { return typeof id === 'string' && id.indexOf('bcc-task-') === 0; }
   var RECUR_LABEL = { weekly: '🔁 Weekly', monthly: '🔁 Monthly', quarterly: '🔁 Quarterly', yearly: '🔁 Yearly' };
   /* A rolled-forward recurring task whose next occurrence is in the FUTURE is not "ready"
      yet. The nav badge and the Tasks tab both excluded those; the Overview "Open to-dos"
@@ -4795,6 +4802,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var teTitle = document.getElementById('te_title'); if (teTitle) teTitle.addEventListener('keydown', function (e) { if (e.key === 'Enter') saveTaskEdit(editingId); if (e.key === 'Escape') { _taskEdit = null; renderTasks(); } });
   }
   function saveTaskEdit(id) {
+    if (!isTaskKey(id)) return;            // never write outside the task namespace
     if (!canWriteTasks()) return refuseTaskWrite();
     var t; try { t = JSON.parse(localStorage.getItem(id)); } catch (e) {}
     if (!t) {
@@ -4871,6 +4879,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     renderTasks();
   }
   function toggleTask(id, done) {
+    if (!isTaskKey(id)) { renderTasks(); return; }
     if (!canWriteTasks()) { refuseTaskWrite(); renderTasks(); return; }
     var t; try { t = JSON.parse(localStorage.getItem(id)); } catch (e) {}
     // Same shape as the saveTaskEdit bug: bailing here skipped BOTH the write and the
@@ -4901,7 +4910,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     renderTasks(); if (typeof updateDrawer === 'function') updateDrawer();
   }
-  function delTask(id) { if (!canWriteTasks()) return refuseTaskWrite(); if (!confirm('Delete this task?')) return; localStorage.removeItem(id); if (window.bccAudit) window.bccAudit('client-task-delete', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } }); renderTasks(); }
+  // removeItem is a firm-wide publish of a DELETION, so this guard is the one that matters most.
+  function delTask(id) { if (!isTaskKey(id)) return; if (!canWriteTasks()) return refuseTaskWrite(); if (!confirm('Delete this task?')) return; localStorage.removeItem(id); if (window.bccAudit) window.bccAudit('client-task-delete', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } }); renderTasks(); }
 
   /* ---- Time tracking is now fully AUTOMATIC (no manual tab / punch clock).
      Active time on the open client is accrued and flushed to /api/bookkeeping/time
@@ -11202,7 +11212,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var tot = { contract: 0, est: 0, cost: 0, earned: 0, billed: 0, over: 0, setupBilled: 0, setupJobs: 0, openJobs: 0 };
       out.querySelectorAll('[data-wrow]').forEach(function (row) {
         var name = row.getAttribute('data-job');
-        var c = wipCalc(jobs[+row.getAttribute('data-wrow')], _wip.jobs[name] || {});
+        var _ov = (_wip.jobs && Object.prototype.hasOwnProperty.call(_wip.jobs, name) && _wip.jobs[name] && typeof _wip.jobs[name] === 'object') ? _wip.jobs[name] : {};
+        var c = wipCalc(jobs[+row.getAttribute('data-wrow')], _ov);
         // Show the true cost ratio (which can exceed 100% and is the useful overrun
         // signal), but flag it — earned revenue is still capped at the contract.
         row.querySelector('.wc-pct').textContent = (c.ratio == null) ? '—'
@@ -11240,7 +11251,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           var name = row.getAttribute('data-job');
           var d = loadWipDoc();
           if (d.realmId !== currentRealm) return;   // client switched under us
-          d.jobs[name] = d.jobs[name] || {};
+          if (!Object.prototype.hasOwnProperty.call(d.jobs, name) || !d.jobs[name] || typeof d.jobs[name] !== 'object') d.jobs[name] = {};
           d.jobs[name][inp.getAttribute('data-wf')] = inp.value;
           _wip = d; saveWip(); recalcAll();
         };

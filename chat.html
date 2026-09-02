@@ -554,7 +554,11 @@ function renderLive() {
 }
 
 function unreadCount(chId) {
-  const last = read[chId] || 0;
+  // Own property AND a number: `read['constructor']` is a function, `|| 0` does not catch it,
+  // and `m.at > last` is then false for every message — so that channel silently never shows
+  // an unread badge. The messages are read through chanMsgs on the next line for this reason.
+  const _r = Object.prototype.hasOwnProperty.call(read, chId) ? read[chId] : 0;
+  const last = (typeof _r === 'number' && _r > 0) ? _r : 0;
   const list = chanMsgs(msgs, chId);
   return list.filter(m => m && !m.deleted && m.at > last && m.author !== who).length;
 }
@@ -786,7 +790,9 @@ function send() {
   // Append to a FRESHLY re-read map so a teammate's message that arrived since our
   // last poll isn't wiped out by this write (the whole map is saved as one blob).
   try {
-    mutateMsgs(m => { m[active] = m[active] || []; m[active].push(newMsg); });
+    // chanMsgs is this file's own guard for exactly this: it answers [] for anything that
+    // is not an own array, and the explicit assignment re-establishes a real own property.
+    mutateMsgs(m => { const arr = chanMsgs(m, active); arr.push(newMsg); m[active] = arr; });
   } catch (err) {
     // localStorage is a hard ~5 MB per origin shared with every other bcc- key. When
     // the write busts it the throw used to escape send() untouched: nothing stored,

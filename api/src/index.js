@@ -391,7 +391,19 @@ async function realmVisibleTo(upn, realmId) {
   if (await isAppAdminUpn(who)) return true;
   if (co.enabled === false) return false;
   const allow = (co.allowedUserUpns || []).map(u => String(u).toLowerCase());
-  return !(allow.length && allow.indexOf(who) < 0);
+  if (allow.length && allow.indexOf(who) < 0) return false;
+  /* The BOOKKEEPING TIER half of the rule. /api/data drops every client-scoped record for
+     somebody set to Bookkeeping = None, so naming that client in a push notification tells
+     them precisely what the sync is withholding. Fails CLOSED on an unreadable config, the
+     same way isAppAdminUpn documents; no tier recorded is the permissive default and stays
+     permissive. */
+  try {
+    const cfg = await getAdminCfg();
+    if (!cfg) return false;
+    const row = ((cfg.users || []).filter(u => String((u && u.upn) || '').toLowerCase() === who))[0];
+    if (row && row.appPermissions && row.appPermissions.bookkeeping === 'none') return false;
+  } catch (_) { return false; }
+  return true;
 }
 
 /* Normalise a caller-supplied notification target to a SAME-ORIGIN path.
@@ -1462,7 +1474,19 @@ app.http('audit', {
         parameters: params
       };
       const { resources } = await c.items.query(q).fetchAll();
-      return { jsonBody: { items: resources } };
+      /* The same filter audit-qbo applies, for the same reason and with the same rule: a row
+         that names a realm the caller may not see is withheld; a row with no realm is
+         untouched. companyAccessMap layers the owner-only lock, the admin bypass, enabled=false
+         and allowedUserUpns — none of which the WHERE clause above can express. */
+      const auditAcc = await companyAccessMap(p);
+      const realmOf = (r) => {
+        if (r && r.meta && r.meta.realmId) return String(r.meta.realmId);
+        // 'access' rows carry the realm in the path instead of in meta.
+        const m = /\/(?:companies|qbo)\/(\d{6,})/.exec(String((r && r.path) || ''));
+        return m ? m[1] : '';
+      };
+      const items = resources.filter(r => { const rid = realmOf(r); return !rid || auditAcc.allowed(rid); });
+      return { jsonBody: { items } };
     } catch (err) {
       context.error('audit handler error', err);
       return { status: 500, jsonBody: { error: 'server error', detail: String(err && err.message || err) } };
