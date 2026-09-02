@@ -9405,7 +9405,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         var line = '';
         for (var i = 0; i < words.length; i++) {
           var w = words[i];
-          if (!line && tfWidth(w, size) > width) {
+          /* A word wider than the box has nowhere to break on a space, so break the word.
+             Checked for EVERY word — guarding this on "first on the line" left a long word
+             that happened to follow a short one running out past the edge. */
+          if (tfWidth(w, size) > width) {
+            if (line) { out.push(line); line = ''; }
             var cur = '';
             for (var c = 0; c < w.length; c++) {
               if (cur && tfWidth(cur + w.charAt(c), size) > width) { out.push(cur); cur = w.charAt(c); }
@@ -9427,14 +9431,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        empty — every one of these boxes is at least twice as tall as one line of text, so the
        room to stay readable was there all along. `clipped` is set only when even the floor,
        wrapped, still will not fit; nothing downstream is allowed to ignore that. */
-    function fitBox(text, rect, forceMulti) {
+    function fitBox(text, rect, forceMulti, noWrap) {
       var flat = String(text);
       if (!fitFont || !rect || !(rect.width > 0) || !(rect.height > 0)) {
         return { size: TF_MAX, lines: forceMulti ? flat.split('\n') : [flat], clipped: false };
       }
       var width = rect.width - 2;   // 2pt of side padding, as the form's own boxes use
       for (var size = TF_MAX; size >= TF_MIN; size -= 0.25) {
-        var lines = wrapAt(flat, size, width);
+        // noWrap sizes the text EXACTLY as it will be drawn — see the MaxLen fallback in setTf.
+        var lines = noWrap ? flat.split('\n') : wrapAt(flat, size, width);
         var widest = 0;
         for (var i = 0; i < lines.length; i++) { var w = tfWidth(lines[i], size); if (w > widest) widest = w; }
         /* Vertical breathing room to match the 2pt at the sides: without it a two-line value
@@ -9446,7 +9451,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           return { size: Math.round(size * 4) / 4, lines: lines, clipped: false };
         }
       }
-      var last = wrapAt(flat, TF_MIN, width);
+      var last = noWrap ? flat.split('\n') : wrapAt(flat, TF_MIN, width);
       return { size: TF_MIN, lines: last, clipped: true };
     }
     /* Values that could not be made to fit their box even wrapped at the floor. A certified
@@ -9464,11 +9469,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         var v = cprWinAnsiLines(val);
         var ml = null; try { ml = tf.getMaxLength(); } catch (e) {}
         if (ml && v.length > ml) v = v.slice(0, ml);
-        var fit = fitBox(v, rectOf(form, name), v.indexOf('\n') >= 0);
+        var rect = rectOf(form, name);
+        var fit = fitBox(v, rect, v.indexOf('\n') >= 0);
         var out = fit.lines.join('\n');
-        /* A hard-broken word adds characters, so re-check the field's own limit: better the
-           unwrapped value at the floor than a value the PDF truncates on its way in. */
-        if (ml && out.length > ml) { out = v; fit.clipped = true; }
+        /* A hard-broken word adds characters, so re-check the field's own limit — and if the
+           wrapped form busts it, re-size for the UNWRAPPED text rather than keeping a size
+           chosen for lines we are no longer drawing. */
+        if (ml && out.length > ml) {
+          fit = fitBox(v, rect, v.indexOf('\n') >= 0, true);
+          out = fit.lines.join('\n');
+        }
         if (out.indexOf('\n') >= 0) { try { tf.enableMultiline(); } catch (e) {} }
         tf.setText(out);
         // Must come AFTER setText: the value is what decides the size.
