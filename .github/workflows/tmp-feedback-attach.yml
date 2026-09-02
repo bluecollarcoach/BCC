@@ -1,0 +1,30 @@
+name: TEMP feedback attachment
+# Temporary, manual-only. Pulls one feedback attachment through the CRON_SECRET-gated
+# endpoint so a reported file can be looked at. Deleted in the same session.
+on:
+  workflow_dispatch:
+    inputs:
+      id:
+        description: feedback doc id
+        required: true
+      attId:
+        description: attachment id
+        required: true
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download
+        run: |
+          code=$(curl -s -o att.bin -w "%{http_code}" \
+            -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            "https://connect.bluecollarcoach.us/api/tmp/feedback-attach/${{ inputs.id }}/${{ inputs.attId }}")
+          echo "HTTP $code"
+          if [ "$code" != "200" ]; then head -c 400 att.bin; exit 1; fi
+          ls -l att.bin
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: attachment
+          path: att.bin
