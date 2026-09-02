@@ -804,24 +804,39 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function fbWhen(iso) { try { return new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }); } catch (_) { return ''; } }
   function setFbBadge(n) { var b = document.getElementById('fbTabBadge'); if (!b) return; if (n > 0) { b.textContent = n > 99 ? '99+' : String(n); b.style.display = ''; } else b.style.display = 'none'; }
   function newCount() { return (window._fbItems || []).filter(function (f) { return (f.status || 'new') === 'new'; }).length; }
+  /* Whether the queue was ever READ. Without it an empty list and an unreadable one are the
+     same picture, and the filter dropdown quietly replaced the error with "No feedback here."
+     — on the screen whose whole job is making sure nobody's report goes unanswered. */
+  var _fbLoadError = '';
   function renderFeedback() {
     var out = document.getElementById('fbOut'); var status = document.getElementById('fbStatus');
     if (!out) return; status.textContent = 'Loading…';
     fetch('/api/feedback', { credentials: 'include' })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
-      .then(function (j) { window._fbItems = (j && j.feedback) || []; status.textContent = window._fbItems.length + ' total'; setFbBadge(newCount()); renderFbList(); })
-      .catch(function (e) { status.textContent = ''; out.innerHTML = '<div style="color:var(--burgundy);">Could not load feedback: ' + fbEsc(e.message) + '</div>'; });
+      .then(function (j) { _fbLoadError = ''; window._fbItems = (j && j.feedback) || []; status.textContent = window._fbItems.length + ' total'; setFbBadge(newCount()); renderFbList(); })
+      .catch(function (e) { _fbLoadError = e.message || 'connection lost'; status.textContent = ''; renderFbList(); });
   }
   // Badge the Feedback tab with the count of new (unreviewed) items on load.
   (function () {
     fetch('/api/feedback', { credentials: 'include' })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (j) { if (j && j.feedback) { window._fbItems = j.feedback; setFbBadge(newCount()); } })
-      .catch(function () {});
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+      .then(function (j) { if (j && j.feedback) { _fbLoadError = ''; window._fbItems = j.feedback; setFbBadge(newCount()); } })
+      /* A swallowed failure here read as "no new feedback" — the badge simply did not appear,
+         which is the one state that makes an admin not open the tab at all. Record it so the
+         panel can say so, and leave the badge alone rather than asserting zero. */
+      .catch(function (e) { _fbLoadError = (e && e.message) || 'connection lost'; });
   })();
   function renderFbList() {
     var out = document.getElementById('fbOut'); if (!out) return;
     var filter = (document.getElementById('fbFilter') || {}).value || 'open';
+    // The error wins over the list. Re-filtering a queue that never loaded must not answer
+    // "No feedback here." — the difference between nobody asking and not knowing matters here.
+    if (_fbLoadError) {
+      out.innerHTML = '<div style="color:var(--burgundy);padding:16px 0;">Could not load feedback: ' + fbEsc(_fbLoadError)
+        + '. <button class="btn" type="button" id="fbRetry" style="margin-left:6px;">Retry</button></div>';
+      var rb = document.getElementById('fbRetry'); if (rb) rb.onclick = renderFeedback;
+      return;
+    }
     var items = (window._fbItems || []).filter(function (f) { if (filter === 'all') return true; if (filter === 'open') return f.status !== 'resolved'; return (f.status || 'new') === filter; });
     if (!items.length) { out.innerHTML = '<div style="color:var(--muted);padding:16px 0;">No feedback here.</div>'; return; }
     var icon = { idea: '💡', bug: '🐞', question: '❓', praise: '🎉', other: '💬' };

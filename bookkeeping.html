@@ -766,7 +766,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           if (!p || !p.realmId || !p.period) return;
           if (!p.id) p.id = PER_PREFIX + p.realmId + '-' + p.period;
           p.docType = 'financial-period';
-          try { localStorage.setItem(p.id, JSON.stringify(p)); } catch (_) {}
+          /* A month that could not be STORED is a month this device does not have, and the
+             flag above is what stops that reading as "no closed month yet". Swallowing the
+             quota failure here left the flag false and the month simply absent. */
+          try { localStorage.setItem(p.id, JSON.stringify(p)); } catch (_) { periodsLoadFailed = true; }
         });
       })
       .catch(function () { periodsLoadFailed = true; });
@@ -4164,6 +4167,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .catch(function () { if (currentRealm === realmAt) list.innerHTML = '<div style="color:var(--muted);padding:10px;">Could not load the QuickBooks log.</div>'; });
   }
 
+  /* localStorage is a hard ~5MB per origin, shared with every other bcc- key on this app —
+     chat's message blob alone can fill it. An unguarded write THROWS, out of whatever change
+     handler called it, so the tick stays ticked and the figure stays in the cell while
+     nothing at all was stored. Returns whether it really landed; every caller acts on that. */
+  function bkStore(id, obj, whatFailed) {
+    try {
+      localStorage.setItem(id, JSON.stringify(obj));
+      return true;
+    } catch (e) {
+      (window.bccNotify || alert)(whatFailed + ' was NOT saved — this browser has run out of local storage space. Nothing else has been lost. Close some tabs or ask an admin to clear an old chat channel, then try again.', 'error', 15000);
+      return false;
+    }
+  }
+
   /* ---- Client info ---- */
   var _infoTimer = null;
   function infoId() { return 'bcc-client-info-' + currentRealm; }
@@ -4178,7 +4195,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      was re-fetched in a tight loop for as long as the tab stayed open. */
   var _infoPrimed = {};
   function primeInfo(realm, done) {
-    if (!realm || _infoPrimed[realm]) { if (done) done(); return; }
+    // 'fail' is truthy: a bare check treated a failed prime as a completed one and swallowed
+    // every retry. Only a real answer, or a request already in flight, stops another attempt.
+    if (!realm || _infoPrimed[realm] === true || _infoPrimed[realm] === 'busy') { if (done) done(); return; }
     _infoPrimed[realm] = 'busy';
     fetch('/api/data/' + encodeURIComponent('bcc-client-info-' + realm), { credentials: 'include' })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
@@ -4212,20 +4231,43 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function adoptInfo(realm) {
     var d = {};
     try { d = JSON.parse(localStorage.getItem('bcc-client-info-' + realm)) || {}; } catch (e) { d = {}; }
-    var ae = document.activeElement;
+    var ae = document.activeElement, typedBack = false;
     ['legalName','dba','contactName','email','phone','website','ein','fiscalYearEnd','payrollSchedule','address','notes'].forEach(function (k) {
       var el = document.getElementById('ci_' + k);
-      if (!el || el === ae) return;
+      if (!el) return;
       /* "Typed" means TYPED. A value the app put there itself (the QuickBooks prefill) carries
          data-prefill, and the stored document must win over it — otherwise the client's real
          legal name, email and address were never restored, and the guess was saved over them
          by the next autosave. The listener below clears the mark on the first real keystroke;
          a programmatic .value assignment fires no 'input' event, so nothing else can. */
-      if (String(el.value || '').trim() && el.dataset.prefill !== '1') return;
+      var typed = String(el.value == null ? '' : el.value);
+      if (typed.trim() && el.dataset.prefill !== '1') {
+        /* Typed while the prime was still in flight, which saveInfo REFUSED to store — so
+           this text exists in the DOM and nowhere else. adoptWip and adoptClose both carry
+           theirs back onto the primed document; this one silently kept the stored value and
+           let the keystrokes die at the next repaint. Merge, then save once below. */
+        if (String(d[k] == null ? '' : d[k]) !== typed) { d[k] = typed; typedBack = true; }
+        return;
+      }
+      if (el === ae) return;                       // do not yank the box someone is standing in
       if (d[k] == null || d[k] === '') return;     // nothing stored — leave the prefill alone
       el.value = d[k];
       delete el.dataset.prefill;
     });
+    /* Now primed, so this actually writes — and it writes the MERGE: the client's stored
+       record with the fields somebody typed before it arrived. Straight to storage rather
+       than through saveInfo, which would re-harvest the form and re-enter this same path. */
+    if (typedBack) {
+      d.id = 'bcc-client-info-' + realm; d.tenantId = 'blue-collar-coach'; d.docType = 'client-info';
+      d.realmId = realm; d.updatedAt = nowIso(); d.updatedBy = myUpn();
+      try {
+        localStorage.setItem(d.id, JSON.stringify(d));
+        var sA = document.getElementById('ci_status'); if (sA) sA.textContent = 'Saved';
+      } catch (e) {
+        (window.bccNotify || alert)('This client’s details were NOT saved — this browser has run out of local storage space. Copy anything you have just typed, free some space, then save again.', 'error', 15000);
+        var sB = document.getElementById('ci_status'); if (sB) sB.textContent = 'NOT saved — this browser is out of storage space';
+      }
+    }
   }
   // Same for the job schedule: its inputs are per-job cells, so fill the empty ones from the
   // document that just arrived rather than leaving the bookkeeper typing over figures the
@@ -4281,7 +4323,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function renderInfo() {
     var body = document.getElementById('info-body'); if (!body) return;
     var realmForPrime = currentRealm;
-    if (realmForPrime && !_infoPrimed[realmForPrime]) {
+    // Same three states as the WIP tab: re-prime on anything that is not a real answer.
+    if (realmForPrime && _infoPrimed[realmForPrime] !== true && _infoPrimed[realmForPrime] !== 'busy') {
       /* Re-render only if nobody is typing in the form. renderInfo rebuilds body.innerHTML,
          so an unconditional repaint when the prime lands (a few hundred ms in) threw away
          whatever had been typed by then — and the pending 500ms autosave would have gone on
@@ -4297,7 +4340,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     var d = {}; try { d = JSON.parse(localStorage.getItem(infoId())) || {}; } catch (e) { d = {}; }
     var F = [['legalName','Legal name'],['dba','DBA / display name'],['contactName','Primary contact'],['email','Email'],['phone','Phone'],['website','Website'],['ein','EIN / Tax ID'],['fiscalYearEnd','Fiscal year end'],['payrollSchedule','Payroll schedule']];
-    body.innerHTML = '<div class="ws-form">' +
+    /* A blank form is indistinguishable from a client whose details nobody has filled in yet,
+       and this one holds the legal name and EIN that print as the contractor on forms filed
+       with public agencies. Say which it is — the close checklist, certified payroll and pay
+       application tabs all say it, and this is the tab where a wrong answer is copied onto a
+       State filing. */
+    var _infoNotLoaded = realmForPrime && _infoPrimed[realmForPrime] !== true;
+    body.innerHTML =
+      (_infoNotLoaded
+        ? '<div style="background:var(--gold-fade);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12.5px;color:var(--burgundy);">'
+          + '<strong>This client’s details could not be loaded.</strong> Nothing is missing — the boxes below are blank because this device has not been told what is in them, not because the record is empty. It is being fetched again; don’t retype anything until it appears.</div>'
+        : '') +
+      '<div class="ws-form">' +
       F.map(function (f) { return '<label>' + esc(f[1]) + '<input id="ci_' + f[0] + '" value="' + esc(d[f[0]] || '') + '" /></label>'; }).join('') +
       '<label class="full">Address<textarea id="ci_address" rows="2">' + esc(d.address || '') + '</textarea></label>' +
       '<label class="full">Notes<textarea id="ci_notes" rows="4">' + esc(d.notes || '') + '</textarea></label>' +
@@ -4382,7 +4436,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     var d = { id: 'bcc-client-info-' + realm, tenantId: 'blue-collar-coach', docType: 'client-info', realmId: realm, updatedAt: nowIso(), updatedBy: myUpn() };
     ['legalName','dba','contactName','email','phone','website','ein','fiscalYearEnd','payrollSchedule','address','notes'].forEach(function (k) { var el = document.getElementById('ci_' + k); if (el) d[k] = el.value; });
-    localStorage.setItem(d.id, JSON.stringify(d));
+    // A throw here left the status line on "Saving…" for the rest of the session.
+    if (!bkStore(d.id, d, 'This client’s details')) {
+      var sq = document.getElementById('ci_status'); if (sq) sq.textContent = 'NOT saved — this browser is out of storage space';
+      return false;
+    }
     var s = document.getElementById('ci_status'); if (s) s.textContent = 'Saved';
     if (window.bccAudit) window.bccAudit('client-info-update', { key: d.id, path: '/bookkeeping.html', meta: { realmId: realm } });
     return true;   // callers that print their own status must not print it over a refusal
@@ -8272,7 +8330,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       e.st = ['', '', '', '', '', '', '']; e.ot = ['', '', '', '', '', '', '']; // clear this period's hours
       e.grossThisPeriod = ''; e.dedFica = ''; e.dedFed = ''; e.dedState = ''; e.dedOther1 = ''; e.dedOther2 = '';
     });
-    localStorage.setItem(d.id, JSON.stringify(d));
+    // Do not hand somebody a blank week to fill in against a report that was never created.
+    if (!bkStore(d.id, d, 'The new payroll report')) return;
     cprDraft = d; cprEditingId = d.id; renderPayroll();
     if (window.bccNotify) window.bccNotify('New report started from #' + (src.payrollNo || '?') + ' — enter this period’s hours and dates.', 'info', 4500);
   }
@@ -10533,7 +10592,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       }
       return;
     }
-    _close.updatedAt = nowIso(); _close.updatedBy = myUpn(); localStorage.setItem(_close.id, JSON.stringify(_close));
+    _close.updatedAt = nowIso(); _close.updatedBy = myUpn();
+    // A refused write must un-tick the box: a checklist that shows work as done when nothing
+    // recorded it is worse than one that shows it undone.
+    if (!bkStore(_close.id, _close, 'That step')) { try { renderClose(); } catch (e) {} return false; }
+    return true;
   }
   /* Read-modify-write for every Close mutation. _close is a module global captured when the
      tab was opened, so writing straight through it replaced the WHOLE checklist document —
@@ -10992,7 +11055,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       }
       return;
     }
-    _wip.updatedAt = nowIso(); _wip.updatedBy = myUpn(); localStorage.setItem(_wip.id, JSON.stringify(_wip));
+    _wip.updatedAt = nowIso(); _wip.updatedBy = myUpn();
+    return bkStore(_wip.id, _wip, 'That job figure');
   }
   function wipCalc(job, ov) {
     var num = function (v) { return parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')) || 0; };
