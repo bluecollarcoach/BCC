@@ -380,6 +380,19 @@ async function isAppAdminUpn(upn) {
 /* Would this client be visible to that person? Same rule as driveClientAccess and
    companyAccessMap, evaluated for someone who is not the caller. An unknown client answers
    false: there is nothing to tell them about it. */
+/* upn -> display name from the admin-config roster. Used where a real name matters and the
+   document only carries a UPN (the daily log stamps no name of its own). */
+async function cfgDisplayNames() {
+  try {
+    const cfg = await getAdminCfg();
+    const out = {};
+    for (const u of ((cfg && cfg.users) || [])) {
+      const k = String((u && u.upn) || '').toLowerCase();
+      if (k && u.displayName) out[k] = u.displayName;
+    }
+    return out;
+  } catch (_) { return {}; }
+}
 async function realmVisibleTo(upn, realmId) {
   const who = String(upn || '').toLowerCase();
   if (!who || !realmId) return false;
@@ -1414,8 +1427,14 @@ app.http('audit', {
            enforcement would reject real rows. */
         if (body.meta && body.meta.realmId != null) {
           const rid = String(body.meta.realmId);
-          if (/^[0-9]{4,}$/.test(rid) && (await driveClientAccess(p, rid)).err) {
-            return forbidden('no access to this client');
+          if (/^[0-9]{4,}$/.test(rid)) {
+            if ((await driveClientAccess(p, rid)).err) return forbidden('no access to this client');
+            /* And the TIER, which both read siblings require: refusing somebody a read of a
+               client's activity while accepting their writes into it leaves the log carrying
+               rows its own reader is not allowed to see. */
+            if (bookkeepingNoFinancials(await bookkeepingTierFor(p))) {
+              return forbidden('your Bookkeeping access does not include this client’s activity');
+            }
           }
         }
         const ts = new Date().toISOString();
@@ -2666,8 +2685,14 @@ app.http('bookkeeping-time', {
       try { day = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' }); } catch (e) { day = new Date().toISOString().slice(0, 10); }
       const DAILY_CAP = 16 * 3600; // realistic per-client/day ceiling (anti-inflation)
       let recorded = 0, capped = 0;
+      /* Which realms did NOT get written. Throwing out of this loop answered 500 for the whole
+         batch, and the client then restored every realm's seconds — including the ones already
+         banked — so the next flush sent them a second time and the client's tracked time grew
+         on its own. Per-entry, so a restore is exactly the entries that failed. */
+      const failed = [];
       for (const e of entries) {
         const realmId = String(e.realmId || ''); if (!realmId) continue;
+        try {
         let secs = Math.round(Number(e.seconds) || 0);
         if (!(secs > 0)) continue;
         if (secs > 3600) { capped += secs - 3600; secs = 3600; } // per-beat cap (clock jumps)
@@ -2704,10 +2729,17 @@ app.http('bookkeeping-time', {
         }
         recorded += _added;
         capped += secs - _added;
+        } catch (entryErr) {
+          /* This realm's seconds are NOT stored. Named, so the client restores this one and
+             leaves the rest alone — restoring everything is what re-sent time that had
+             already been written. */
+          context.error('bookkeeping-time entry ' + realmId, entryErr);
+          failed.push(realmId);
+        }
       }
       // `recorded` is what was STORED. Counting the requested seconds instead reported time
       // as banked that the daily ceiling had just swallowed.
-      return { jsonBody: { ok: true, recorded, capped } };
+      return { jsonBody: { ok: true, recorded, capped, failed } };
     } catch (err) { context.error('bookkeeping-time', err); return { status: 500, jsonBody: { ok: false, error: String(err && err.message || err) } }; }
   })
 });
@@ -2839,6 +2871,9 @@ app.http('bookkeeping-time-post', {
         return Math.round(ms / 60000);
       };
 
+      // Real names for the rows below: the daily log stamps only a UPN, and matchEmployee's
+      // display-name fallback needs something that can actually match an employee name.
+      const cfgNames = await cfgDisplayNames();
       const rows = {};
       for (const doc of logRes.resources) {
         const d = doc && doc.data; if (!d) continue;
@@ -2852,7 +2887,10 @@ app.http('bookkeeping-time-post', {
         const open = !!(d.clockedInAt && !d.clockedOutAt);
         if (!mins && !open) continue;
         const k = upn + '|' + dday;
-        const row = rows[k] || (rows[k] = { userUpn: upn, userName: upn, day: dday, minutes: 0, open: false });
+        // A real name, so matchEmployee's display-name fallback has something to compare —
+        // it was handed the UPN, so it could only ever match an email against an employee
+        // name, and the refusal text printed a raw address at the admin.
+        const row = rows[k] || (rows[k] = { userUpn: upn, userName: (cfgNames[upn] || upn), day: dday, minutes: 0, open: false });
         row.minutes += mins;
         row.open = row.open || open;
       }
@@ -3190,7 +3228,19 @@ app.http('bookkeeping-entry', {
         const existing = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
         if (!existing || existing.docType !== 'bk-entry') return { jsonBody: { ok: true, deleted: 0 } };
         if (!admin && String(existing.userUpn || '').toLowerCase() !== who) return { status: 403, jsonBody: { ok: false, error: 'not your entry' } };
-        await c.item(id, BCC_TENANT_ID).delete().catch(() => {});
+        /* The same two gates the GET and POST arms of this very route apply, keyed off the
+           STORED row's realm — owning the entry is not the same as having access to the
+           client whose billable-time ledger it sits on. */
+        const delAcc = await driveClientAccess(p, String(existing.realmId || ''), { files: true });
+        if (delAcc.err) return delAcc.err;
+        if (bookkeepingNoFinancials(await bookkeepingTierFor(p))) {
+          return forbidden('your Bookkeeping access does not include this client’s time records');
+        }
+        /* 404 ONLY. A swallowed failure answered deleted:1 while the entry was still on the
+           ledger — the screen said it was gone, the client's billable time said otherwise, and
+           nothing anywhere recorded the disagreement. */
+        try { await c.item(id, BCC_TENANT_ID).delete(); }
+        catch (e) { if (!(e && (e.code === 404 || e.statusCode === 404))) throw e; }
         return { jsonBody: { ok: true, deleted: 1 } };
       }
 
@@ -4842,6 +4892,13 @@ app.http('drive-files', {
       const DRIVE_MAX = 1000, DRIVE_PAGES = 5;
       let truncated = false;
       let gDropped = 0;   // search hits that live outside this client's folder (reported, not hidden)
+      /* Ancestry verification is one Drive round trip per result (often several), so it needs
+         its own budget: without one a wide search spent the whole request checking and the
+         function was killed before it answered. gUnverified counts results we could not
+         CHECK, kept apart from gDropped, which counts results that genuinely are not this
+         client's - only the first is a reason to search again. */
+      let gUnverified = 0, gBudget = 240;
+      const gDeadline = Date.now() + 20000;
       const root = dt.doc.root || null;
       /* The BROWSE path takes its folder id straight from the query string, so ?folderId=
          listed any folder on the account — the same hole the search, download and upload
@@ -4883,12 +4940,27 @@ app.http('drive-files', {
              download endpoint then accepted. */
           if (search && gRootId) {
             const keep = [];
-            for (const f of batch) {
-              let ok = false;
-              // A blip on ONE result must not fail the whole search; it is counted as filtered
-              // out (reported as filteredOut) rather than shown unverified.
-              try { ok = await gUnderFolder(dt.at, f.id, gRootId, gMemo, f.parents); } catch (_) { ok = false; }
-              if (ok) keep.push(f); else gDropped++;
+            /* Bounded: a hard call budget and a wall clock, six at a time. Verifying every
+               result one after another was over a thousand serial Drive round trips on a big
+               account, and the request simply died. When the budget is spent the search stops
+               paging and says so, rather than presenting a half-verified list as the whole
+               answer. */
+            const CHK = 6;
+            for (let i = 0; i < batch.length; i += CHK) {
+              if (gBudget <= 0 || Date.now() > gDeadline) { truncated = true; break; }
+              const slice = batch.slice(i, i + CHK);
+              gBudget -= slice.length;
+              const verdicts = await Promise.all(slice.map(async (f) => {
+                /* A blip on ONE result is counted separately from a genuine "not under this
+                   client": presenting a throttled search as a filtered one is how a document
+                   that IS there reads as missing. */
+                try { return { f, ok: await gUnderFolder(dt.at, f.id, gRootId, gMemo, f.parents), failed: false }; }
+                catch (_) { return { f, ok: false, failed: true }; }
+              }));
+              for (const v of verdicts) {
+                if (v.ok) keep.push(v.f);
+                else { gDropped++; if (v.failed) gUnverified++; }
+              }
             }
             batch = keep;
           }
@@ -4926,7 +4998,9 @@ app.http('drive-files', {
         }
       }
       items.sort((a, b) => ((b.folder ? 1 : 0) - (a.folder ? 1 : 0)) || String(a.name).localeCompare(b.name));
-      return { jsonBody: { ok: true, provider: dt.doc.provider, account: dt.doc.account, folderId, items, truncated, filteredOut: gDropped } };
+      // unverified is reported apart from filteredOut: one means "not this client's", the
+      // other means "we could not tell", and only the second is a reason to search again.
+      return { jsonBody: { ok: true, provider: dt.doc.provider, account: dt.doc.account, folderId, items, truncated, filteredOut: gDropped, unverified: gUnverified } };
     } catch (e) { context.error('drive-files', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
@@ -8047,9 +8121,15 @@ app.http('qbo-report', {
              labelled active — including the ones this fix exists to surface). */
           let vendors = []; { let vs = 1; for (let vp = 0; vp < 8; vp++) { const jv = await apiGet('/query?query=' + encodeURIComponent('SELECT Id, DisplayName, Vendor1099, TaxIdentifier, Active FROM Vendor STARTPOSITION ' + vs + ' MAXRESULTS 1000')); const va = (jv.QueryResponse && jv.QueryResponse.Vendor) || []; vendors = vendors.concat(va); if (va.length < 1000) break; vs += 1000; } }
           const paid = {}; let vCapped = false;
+          /* A wall clock as well as a page cap. Being killed at the platform ceiling leaves
+             this screen with no list and no message, on the worklist that decides who gets a
+             1099-NEC — whereas stopping early and saying "capped" is a partial answer somebody
+             can act on. */
+          const v1099Deadline = Date.now() + 22000;
           const pageScan = async (name, sumFn) => {
             let start = 1;
             for (let p = 0; p < 8; p++) {
+              if (Date.now() > v1099Deadline) { vCapped = true; return; }
               const j = await apiGet('/query?query=' + encodeURIComponent("SELECT * FROM " + name + " WHERE TxnDate >= '" + from + "' AND TxnDate <= '" + to + "' STARTPOSITION " + start + ' MAXRESULTS 1000'));
               const arr = (j.QueryResponse && j.QueryResponse[name]) || [];
               arr.forEach(sumFn);
@@ -8058,8 +8138,12 @@ app.http('qbo-report', {
             }
             vCapped = true;
           };
-          await pageScan('Purchase', r => { if (String(r.PaymentType) === 'CreditCard') return; const e = r.EntityRef; if (e && e.type === 'Vendor' && e.value) paid[e.value] = (paid[e.value] || 0) + (Number(r.TotalAmt) || 0); });
-          await pageScan('BillPayment', r => { if (String(r.PayType) === 'CreditCard') return; const v = r.VendorRef && r.VendorRef.value; if (v) paid[v] = (paid[v] || 0) + (Number(r.TotalAmt) || 0); });
+          // The two payment scans are independent of each other; running them one after the
+          // other doubled the wall clock for no reason. Same pacing for-review already uses.
+          await Promise.all([
+            pageScan('Purchase', r => { if (String(r.PaymentType) === 'CreditCard') return; const e = r.EntityRef; if (e && e.type === 'Vendor' && e.value) paid[e.value] = (paid[e.value] || 0) + (Number(r.TotalAmt) || 0); }),
+            pageScan('BillPayment', r => { if (String(r.PayType) === 'CreditCard') return; const v = r.VendorRef && r.VendorRef.value; if (v) paid[v] = (paid[v] || 0) + (Number(r.TotalAmt) || 0); })
+          ]);
           const list = vendors.map(v => ({ id: v.Id, name: v.DisplayName, is1099: !!v.Vendor1099, hasTaxId: !!v.TaxIdentifier, active: v.Active !== false, ytdPaid: Math.round((paid[v.Id] || 0) * 100) / 100 }))
             /* An INACTIVE vendor only earns a row if they were actually paid this year.
                Without that, un-filtering Active would drag every long-dead 1099 vendor with
@@ -8170,13 +8254,25 @@ app.http('qbo-refs', {
     try {
       const ctx = await qboResolveAccess(request, request.params.realmId);
       if (ctx.err) return ctx.err;
-      const customers = (await ctx.queryAll('SELECT Id, DisplayName FROM Customer WHERE Active = true')).map(x => ({ id: x.Id, name: x.DisplayName }));
-      const vendors   = (await ctx.queryAll('SELECT Id, DisplayName FROM Vendor WHERE Active = true')).map(x => ({ id: x.Id, name: x.DisplayName }));
-      const items     = (await ctx.queryAll('SELECT Id, Name, UnitPrice FROM Item WHERE Active = true')).map(x => ({ id: x.Id, name: x.Name, price: x.UnitPrice }));
-      const accounts  = (await ctx.queryAll('SELECT Id, Name, AccountType, Classification FROM Account WHERE Active = true')).map(x => ({ id: x.Id, name: x.Name, type: x.AccountType, classification: x.Classification }));
-      // Payment terms (Net 30 etc.) so a bill can carry its terms like it does in QBO.
-      let terms = [];
-      try { terms = (await ctx.queryAll('SELECT Id, Name FROM Term WHERE Active = true')).map(x => ({ id: x.Id, name: x.Name })); } catch (_) { terms = []; }
+      /* Five INDEPENDENT lists, run strictly one after another — each able to page up to 20
+         times. On a client with a long customer or item list that is minutes of serial round
+         trips inside a function the platform kills at ~45s, and the transaction form then
+         renders with empty dropdowns or not at all. They do not depend on each other; four
+         concurrent requests to one realm is the pacing assembleMonthlyReport already treats
+         as safe. Terms keeps its own catch: it is optional and must not fail the rest. */
+      const [customersR, vendorsR, itemsR, accountsR, termsR] = await Promise.all([
+        ctx.queryAll('SELECT Id, DisplayName FROM Customer WHERE Active = true'),
+        ctx.queryAll('SELECT Id, DisplayName FROM Vendor WHERE Active = true'),
+        ctx.queryAll('SELECT Id, Name, UnitPrice FROM Item WHERE Active = true'),
+        ctx.queryAll('SELECT Id, Name, AccountType, Classification FROM Account WHERE Active = true'),
+        // Payment terms (Net 30 etc.) so a bill can carry its terms like it does in QBO.
+        ctx.queryAll('SELECT Id, Name FROM Term WHERE Active = true').catch(() => [])
+      ]);
+      const customers = customersR.map(x => ({ id: x.Id, name: x.DisplayName }));
+      const vendors   = vendorsR.map(x => ({ id: x.Id, name: x.DisplayName }));
+      const items     = itemsR.map(x => ({ id: x.Id, name: x.Name, price: x.UnitPrice }));
+      const accounts  = accountsR.map(x => ({ id: x.Id, name: x.Name, type: x.AccountType, classification: x.Classification }));
+      const terms     = termsR.map(x => ({ id: x.Id, name: x.Name }));
       return { jsonBody: { ok: true, customers, vendors, items, accounts, terms } };
     } catch (e) { context.error('qbo-refs', e); return { status: 502, jsonBody: { ok: false, error: String(e.message || e) } }; }
   })

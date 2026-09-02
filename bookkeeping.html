@@ -2031,11 +2031,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var w = 116, h = 28, pad = 2;
     var min = Math.min.apply(null, real), max = Math.max.apply(null, real), range = (max - min) || Math.abs(max) || 1;
     var n = v.length, step = (w - 2 * pad) / (n - 1);
-    var pts = [], hits = '', lastY = null, lastX = pad + (n - 1) * step;
+    // lastX moves WITH lastY. Pinned to the far right it put the last month that has a
+    // value on top of the most recent month's slot whenever the series ends in a gap — an
+    // older figure sitting exactly where a reader takes "now" to be.
+    var pts = [], hits = '', lastY = null, lastX = null;
     for (var i = 0; i < n; i++) {
       if (v[i] == null) continue;
       var x = pad + i * step, y = h - pad - ((v[i] - min) / range) * (h - 2 * pad);
-      pts.push(x.toFixed(1) + ',' + y.toFixed(1)); lastY = y;
+      pts.push(x.toFixed(1) + ',' + y.toFixed(1)); lastY = y; lastX = x;
       hits += '<rect class="spark-hit" x="' + (x - step / 2).toFixed(1) + '" y="-3" width="' + step.toFixed(1) + '" height="' + (h + 6) + '" fill="transparent" pointer-events="all" data-l="' + (labels[i] != null ? esc(String(labels[i])) : '') + '" data-v="' + esc(fmt(v[i])) + '"></rect>';
     }
     /* opts.upIsBad flips ONLY the colour, for a series where rising is the bad direction.
@@ -2047,7 +2050,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var col = good ? '#0f7a3d' : 'var(--burgundy)';
     return '<svg class="spark" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" style="display:block;margin:5px 0 2px;overflow:visible;">' +
       '<polyline points="' + pts.join(' ') + '" fill="none" stroke="' + col + '" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>' +
-      (lastY != null ? '<circle cx="' + lastX.toFixed(1) + '" cy="' + lastY.toFixed(1) + '" r="2.1" fill="' + col + '"/>' : '') +
+      (lastY != null && lastX != null ? '<circle cx="' + lastX.toFixed(1) + '" cy="' + lastY.toFixed(1) + '" r="2.1" fill="' + col + '"/>' : '') +
       hits + '</svg>';
   }
   // Delegated tooltip for sparkline hover bands (one listener for every sparkline).
@@ -2546,7 +2549,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       mrBtns(false);
     }).catch(function (e) {
       if (stale()) return;   // an error for the PREVIOUS client must not paint into this modal
-      body.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:12px;">' + esc(qboFriendly(e && e.message)) + '</div>';
+      /* Put Refresh back. It is hidden while the pull runs, and leaving it hidden on a FAILURE
+         removed the only control that retries — a dead modal whose only way out was closing
+         and reopening it. Print / Save to Files stay disabled: there is genuinely nothing to
+         print, and offering them over an empty report is how a blank PDF reaches a client. */
+      if (rb) { rb.style.display = ''; rb.title = 'Try the QuickBooks pull again'; }
+      var mrSave = document.getElementById('mrSaveObs'); if (mrSave) mrSave.disabled = false;   // notes are independent of the pull
+      body.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:12px;">' + esc(qboFriendly(e && e.message))
+        + '<div style="margin-top:8px;font-size:12.5px;">Press <strong>🔄 Refresh from QuickBooks</strong> above to try again.</div></div>';
     });
   }
   function mrHdr(t) { return '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--gold-deep,#a8884a);">' + t + '</div>'; }
@@ -3862,8 +3872,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // Build the grouped nav markup once, reused by BOTH the rail and the drawer.
   function navHtml(openTodos) {
     var unread = _emUnread[currentRealm] || 0;
+    // THREE states, like the Overview banner: a count, a failed check, or a genuine zero. With
+    // only two, a check that never completed looked exactly like an empty inbox.
+    var mailErr = !!_emUnreadErr[currentRealm];
     var badgeFor = function (key) {
       if ((key === 'overview' || key === 'tasks') && openTodos) return '<span class="badge" title="Open to-dos">' + openTodos + '</span>';
+      if (key === 'email' && mailErr) return '<span class="badge unread" title="Couldn’t check this inbox — this is not a count of zero">⚠</span>';
       if (key === 'email' && unread) return '<span class="badge unread" title="Unread email">' + unread + '</span>';
       return '';
     };
@@ -8881,8 +8895,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           var jobs = [];
           if (wantMndot) {
             jobs.push(Promise.all([
-              fetch('/forms/mndot-prevailing-wage-payroll.pdf', { credentials: 'include' }).then(function (x) { return x.arrayBuffer(); }),
-              fetch('/forms/mndot-statement-of-compliance.pdf', { credentials: 'include' }).then(function (x) { return x.arrayBuffer(); })
+              // Same status check the download path has: without it a 404 or a sign-in
+              // redirect becomes an HTML body handed to pdf-lib, failing later and further
+              // from the cause.
+              fetch('/forms/mndot-prevailing-wage-payroll.pdf', { credentials: 'include' }).then(function (x) { if (!x.ok) throw new Error('payroll template HTTP ' + x.status); return x.arrayBuffer(); }),
+              fetch('/forms/mndot-statement-of-compliance.pdf', { credentials: 'include' }).then(function (x) { if (!x.ok) throw new Error('SOC template HTTP ' + x.status); return x.arrayBuffer(); })
             ]).then(function (got) {
               return cprMndotBuild(draftAt, got[0], got[1], PDFLib).then(function (files) {
                 /* Said BEFORE the mail goes, not after: once it is sent to the State, a value
@@ -11393,7 +11410,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       try { if (!navigator.sendBeacon('/api/bookkeeping/time', new Blob([body], { type: 'application/json' }))) restore(); } catch (e) { restore(); }
     }
     else { fetch('/api/bookkeeping/time', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: body, keepalive: true })
-      .then(function (r) { if (!r.ok) restore(); }).catch(restore); }
+      .then(function (r) {
+        // A transport or HTTP failure means nothing can be assumed written — restore it all.
+        if (!r.ok) { restore(); return null; }
+        return r.json().catch(function () { return null; });
+      })
+      .then(function (j) {
+        /* Restore ONLY the realms the server says it could not store. Restoring the whole
+           batch on a partial failure re-sent seconds that were already banked, and the
+           client's tracked time grew by itself — on the figures this firm bills against. */
+        if (!j || !Array.isArray(j.failed) || !j.failed.length) return;
+        j.failed.forEach(function (rid) { if (sentCopy[rid]) _bkAccrued[rid] = (_bkAccrued[rid] || 0) + sentCopy[rid]; });
+      })
+      .catch(restore); }
   }
   function bkStart() {
     if (_bkStarted) return; _bkStarted = true;
