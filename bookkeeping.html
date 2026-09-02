@@ -2363,8 +2363,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
          closing the overlay simply replaced _mr.obs, so a paragraph someone had just typed
          vanished with no prompt and no way back. Flush first. */
       ov.querySelector('#mrPeriod').onchange = function () {
-        var next = this.value;
-        if (mrObsDirty()) { saveReportObservations(false).then(function () { loadMonthlyReport(next); }); return; }
+        var next = this.value, sel = this;
+        if (mrObsDirty()) {
+          /* Only leave the month once the notes are actually banked. Loading another month
+             reassigns _mr.obs, so on a failed save the paragraphs would exist nowhere — while
+             the toast said they were still on screen. Put the dropdown back so the selector
+             agrees with the notes that are still in front of the coach. */
+          saveReportObservations(false).then(function (ok) {
+            if (ok) loadMonthlyReport(next);
+            else sel.value = _mr.period;
+          });
+          return;
+        }
         loadMonthlyReport(next);
       };
       ov.querySelector('#mrRefresh').onclick = function () {
@@ -2372,7 +2382,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         // Flush typed notes first, exactly as the month dropdown does. Capture the period
         // BEFORE the async save — loadMonthlyReport reassigns _mr.period as its first act.
         var rp = _mr.period;
-        if (mrObsDirty()) { saveReportObservations(false).then(function () { loadMonthlyReport(rp, true); }); return; }
+        if (mrObsDirty()) {
+          // Same rule as the month dropdown: a re-pull replaces _mr.obs from the stored report.
+          saveReportObservations(false).then(function (ok) { if (ok) loadMonthlyReport(rp, true); });
+          return;
+        }
         loadMonthlyReport(rp, true);
       };
     }
@@ -2382,8 +2396,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   function mrObsDirty() { return !!(_mr && _mr.data) && JSON.stringify(_mr.obs || []) !== (_mr.obsSaved || '[]'); }
   function closeMonthlyReport() {
-    if (mrObsDirty()) saveReportObservations(false);   // fire-and-forget; failure still toasts
-    var ov = document.getElementById('mrOverlay'); if (ov) ov.style.display = 'none';
+    var ov = document.getElementById('mrOverlay');
+    if (mrObsDirty()) {
+      /* "They are still on screen" has to remain true. Hiding the overlay on a failed save
+         left the coach's paragraphs alive only in a variable behind a closed modal, with the
+         toast telling them to press Save notes on a screen they could no longer see. */
+      saveReportObservations(false).then(function (ok) { if (ok && ov) ov.style.display = 'none'; });
+      return;
+    }
+    if (ov) ov.style.display = 'none';
   }
   function mrBtns(disabled) { ['mrPrint', 'mrSaveFile', 'mrSaveObs'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = disabled; }); }
   function loadMonthlyReport(period, forceRefresh) {
@@ -2678,8 +2699,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       renderMrFcOut();
     }
   }
+  /* Resolves TRUE only when the observations actually reached the server. Callers that are
+     about to replace _mr.obs — the month dropdown, Refresh, closing the overlay — must not move
+     until it does: the failure toast tells the coach their text is still on screen, and loading
+     another month is precisely what makes that untrue. */
   function saveReportObservations(notify) {
-    var d = _mr.data; if (!d) return Promise.resolve();
+    var d = _mr.data; if (!d) return Promise.resolve(false);
     /* Bank the snapshot that is actually SENT, and pin the client + period it is for.
        Stamping the baseline from the live _mr.obs when the reply lands recorded whatever had
        been typed DURING the round trip as saved: mrObsDirty() then read clean, so closing
@@ -2703,11 +2728,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         if (j && j.ok) {
           if (currentRealm === realmAt && _mr.data && _mr.data.period === periodAt) _mr.obsSaved = sentJson;
           if (notify && window.bccNotifySaved) window.bccNotifySaved('Report notes saved.');
-          return;
+          return true;
         }
         (window.bccNotify || alert)('Your observations could not be saved. They are still on screen — press “Save notes” before closing this report or changing month, or they will be lost.', 'warn', 9000);
+        return false;
       })
-      .catch(function () { (window.bccNotify || alert)('Your observations could not be saved. They are still on screen — press “Save notes” before closing this report or changing month, or they will be lost.', 'warn', 9000); });
+      .catch(function () { (window.bccNotify || alert)('Your observations could not be saved. They are still on screen — press “Save notes” before closing this report or changing month, or they will be lost.', 'warn', 9000); return false; });
   }
   function mrStmtTable(stmt) {
     if (!stmt || !(stmt.rows || []).length) return '<div class="mr-empty">No data for this statement.</div>';
@@ -4323,7 +4349,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       })
       .catch(function () {});
   }
-  function scheduleInfoSave(realm) { var s = document.getElementById('ci_status'); if (s) s.textContent = 'Saving…'; if (_infoTimer) clearTimeout(_infoTimer); _infoTimer = setTimeout(function () { saveInfo(realm); }, 500); }
+  function scheduleInfoSave(realm) {
+    var s = document.getElementById('ci_status'); if (s) s.textContent = 'Saving…';
+    if (_infoTimer) clearTimeout(_infoTimer);
+    /* The id has to DIE when it fires. `if (!_infoTimer)` downstream is the gate on the live-sync
+       adopt, and a fired-but-still-set id made it read "a save is pending" for the rest of the
+       page's life — so a colleague's Client Info changes were never adopted onto the screen, and
+       the next keystroke published the stale boxes back over them. Same fix, same reason, as
+       dashboard.html's scheduleSave. */
+    _infoTimer = setTimeout(function () { _infoTimer = null; saveInfo(realm); }, 500);
+  }
   function saveInfo(realm) {
     // No realm, no write. Without this the id fell back to the literal 'bcc-client-info-'
     // whenever no client was selected (the workspace-back path), creating an orphan record

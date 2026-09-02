@@ -422,7 +422,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           ev.endAt = le.toISOString();
           return ev;
         };
-        var created = 0, updated = 0;
+        var created = 0, updated = 0, refused = 0;
         (resp.events || []).map(fixAllDay).forEach(function (ev) {
           if (byGraphId[ev.msGraphId]) {
             // Update existing record's mutable fields (don't wipe local notes)
@@ -434,10 +434,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             existing.allDay   = !!ev.allDay;
             if (ev.msGraphOwner) existing.msGraphOwner = ev.msGraphOwner;
             existing.source   = 'msgraph';
-            saveSession(existing);
+            // saveSession returns NULL when the tier refuses the write. Counting the attempt
+            // reported a calendar as imported that never reached storage.
+            if (!saveSession(existing)) { refused++; return; }
             updated++;
           } else {
-            saveSession({
+            var made = saveSession({
               title: ev.title,
               startAt: ev.startAt,
               endAt: ev.endAt,
@@ -449,13 +451,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
               msGraphOwner: ev.msGraphOwner || null,
               source: 'msgraph'
             });
+            if (!made) { refused++; return; }
             created++;
           }
         });
         var pulled = 'Pulled ' + (resp.events || []).length + ' event(s): ' + created + ' new, ' + updated + ' updated.';
         // Graph paginates and this reads one page — presenting a truncated import as the
         // whole calendar reads as "my events didn't come across".
-        if (resp.truncated) (window.bccNotify || alert)(pulled + ' There were MORE events than could be read in one go — narrow the date range and pull again to get the rest.', 'warn', 12000);
+        /* A refusal is not a quieter kind of success. Say how many did not make it, and say
+           it as a warning — a green "Pulled 40 event(s)" over 40 refused writes is the exact
+           shape of a calendar that looks imported and is not. */
+        if (refused) (window.bccNotify || alert)(pulled + ' ' + refused + ' could NOT be saved — your Sessions access is view-only, so those events were not imported.', 'warn', 12000);
+        else if (resp.truncated) (window.bccNotify || alert)(pulled + ' There were MORE events than could be read in one go — narrow the date range and pull again to get the rest.', 'warn', 12000);
         else if (window.bccNotifySaved) window.bccNotifySaved(pulled);
         if (window.bccAudit) window.bccAudit('session-update', { path: '/sessions.html', meta: { action: 'pull-from-outlook', created: created, updated: updated } });
         renderWeek();

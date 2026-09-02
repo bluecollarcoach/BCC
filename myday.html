@@ -374,7 +374,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function loadLogForDay(day) {
     try { return JSON.parse(localStorage.getItem(logKeyForDay(day)) || 'null'); } catch (e) { return null; }
   }
-  function warnNoIdentity() { (window.bccNotify || alert)('Still signing you in — give it a second and try again.', 'warn'); }
+  /* saveLogDoc/saveMyTasks return false for two different reasons: identity has not landed
+     yet, or the browser's storage is full — and the storage case has ALREADY said so, in
+     precise terms. Announcing "Still signing you in" over the top of that replaces a true
+     message with a false one. Say it only when identity is actually what is missing. */
+  function warnNoIdentity() { if (!meUpn()) (window.bccNotify || alert)('Still signing you in — give it a second and try again.', 'warn'); }
   /* ---- Blind writes ----
      The daily log and the personal task list are each ONE document, and both loaders mint a
      blank one whenever this browser does not hold it — a new laptop, cleared storage, or
@@ -744,7 +748,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // See writingBlind: adding one to-do from a device that never received the list used to
     // publish a one-item document over every task the person had.
     if (writingBlind(d.id)) d.blindWrite = true; else delete d.blindWrite;
-    localStorage.setItem(d.id, JSON.stringify(d));
+    /* Same guard, same words, as saveLogDoc directly above: localStorage is a hard ~5MB per
+       origin shared with every other bcc- key, and an unwrapped write threw straight out of
+       the change handler — leaving the tick, the reorder or the deletion on screen with
+       nothing stored and nothing said. Returns whether it was actually saved. */
+    try {
+      localStorage.setItem(d.id, JSON.stringify(d));
+    } catch (e) {
+      (window.bccNotify || alert)('That was NOT saved — this browser has run out of local storage space. Your other tasks are safe. Close some tabs or ask an admin to clear an old chat channel, then try again.', 'error', 15000);
+      return false;
+    }
+    return true;
   }
   function renderMyTasks() {
     var wrap = document.getElementById('myTasksWrap'); if (!wrap) return;
@@ -808,7 +822,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       }
       var due = (document.getElementById('mt_due') || {}).value || '';
       var dd = loadMyTasks(); dd.items.unshift({ id: uid2(), text: txt.slice(0, 300), due: due, done: false, createdAt: nowIso() });
-      saveMyTasks(dd);
+      /* Only clear what was typed once it is actually STORED. Blanking regardless took the
+         to-do off the screen as well as failing to save it, so on a full store the text
+         existed nowhere at all — the person had typed it, watched it disappear, and had
+         nothing to retype from. */
+      if (!saveMyTasks(dd)) { renderMyTasks(); return; }
       /* Blank the boxes HERE. The repaint now carries a half-typed to-do forward (so an
          unrelated tick cannot bin it), and this is the one path where that text has just
          BECOME a to-do — leaving it would show the task added and still sitting in the box,
@@ -829,8 +847,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var swap = function (id, dir) {
       var dd = loadMyTasks(); var i = mtIndexOf(dd, id); if (i < 0) { renderMyTasks(); return; }
       var j = i + dir; if (j < 0 || j >= dd.items.length) return;
-      var t = dd.items[i]; dd.items[i] = dd.items[j]; dd.items[j] = t; saveMyTasks(dd); renderMyTasks();
+      var t = dd.items[i]; dd.items[i] = dd.items[j]; dd.items[j] = t; saveMyTasks(dd); renderMyTasks();   // repaints from storage on a refusal
     };
+    // renderMyTasks() repaints from the STORED document either way, so a refused write puts
+    // the screen back to what is really saved rather than leaving the change showing.
     wrap.querySelectorAll('[data-mt-done]').forEach(function (b) { b.onchange = function () { var dd = loadMyTasks(); var i = mtIndexOf(dd, b.getAttribute('data-mt-done')); if (i < 0) { renderMyTasks(); return; } dd.items[i].done = b.checked; dd.items[i].doneAt = b.checked ? nowIso() : null; saveMyTasks(dd); renderMyTasks(); }; });
     wrap.querySelectorAll('[data-mt-del]').forEach(function (b) { b.onclick = function () { var dd = loadMyTasks(); var i = mtIndexOf(dd, b.getAttribute('data-mt-del')); if (i < 0) { renderMyTasks(); return; } dd.items.splice(i, 1); saveMyTasks(dd); renderMyTasks(); }; });
     wrap.querySelectorAll('[data-mt-up]').forEach(function (b) { b.onclick = function () { swap(b.getAttribute('data-mt-up'), -1); }; });

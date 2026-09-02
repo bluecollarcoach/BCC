@@ -257,7 +257,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     localStorage.setItem(e.id, JSON.stringify(e));
     return e;
   }
-  function delEng(id) { if (!isEngKey(id)) return; localStorage.removeItem(id); }
+  /* Gated HERE, not on the button — saveEng has refused view-only writes since it was
+     written, and the delete beside it did not. Returns whether it actually deleted, so the
+     caller stops claiming a deletion that was refused. */
+  function delEng(id) {
+    if (!isEngKey(id)) return false;
+    if (!jobsCanEdit()) { jobsRefuseReadOnly(); return false; }
+    localStorage.removeItem(id);
+    return true;
+  }
 
   function allContacts() {
     var out = [];
@@ -501,7 +509,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   document.getElementById('m-delete').addEventListener('click', function () {
     var id = document.getElementById('m-id').value; if (!id) return;
     if (!confirm('Delete this engagement?')) return;
-    delEng(id);
+    // Refused deletes must not close the modal or write an audit line saying it happened.
+    if (!delEng(id)) { renderBoard(); return; }
     if (window.bccAudit) window.bccAudit('engagement-delete', { key: id, path: '/jobs.html' });
     closeModal();
     renderBoard();

@@ -526,7 +526,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     d.updatedBy = (window.bccUser && window.bccUser.userDetails) || '';
     // Derived from the client actually open, never from the document body.
     if (currentId) { d.id = DASH_PREFIX + currentId; d.companyId = currentId; }
-    localStorage.setItem(d.id, JSON.stringify(d));
+    // The chokepoint, not the buttons: every edit on this page funnels through here.
+    if (!dashCanEdit()) return dashRefuseReadOnly();
+    /* localStorage is a hard ~5MB per origin shared with every other bcc- key, and this file
+       had the one unguarded write in it: the throw escaped the timer callback, so `dirty` stayed
+       true, the status line stayed on "Saving…" for the rest of the session, and the plan was
+       never stored — silently. doSave's contract is "true ONLY when the document actually
+       reached storage", so say it failed and return false. */
+    try {
+      localStorage.setItem(d.id, JSON.stringify(d));
+    } catch (e) {
+      setSaveState('NOT saved — this browser is out of storage space', false);
+      (window.bccNotify || alert)('This client’s plan was NOT saved — this browser has run out of local storage space. Copy anything you need, free some space, then save again.', 'error', 15000);
+      return false;
+    }
     // The form now matches stored state again. Without this, `dirty` latched true on
     // the first keystroke and never cleared, so resync() refused to pick up a
     // teammate's synced change for the rest of the session — the stale-doc guard only
@@ -537,6 +550,22 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     return true;
   }
   function setSaveState(txt, ok) { var el = $('saveState'); el.textContent = txt; el.classList.toggle('saved', !!ok); }
+  /* This page had no app-tier check anywhere, so a Dashboard = View user typed a whole
+     strategic plan, watched it say "Saved", and had every write refused by the server. Fails
+     OPEN while identity is still resolving — bcc-api.js is deferred, and refusing writes in
+     that window would lose the first thing anyone types. Same shape as jobs.html/marketing.html. */
+  function dashCanEdit() {
+    if (!window.bccCanEdit || !(window.bccUser && window.bccUser.userDetails)) return true;
+    return !!window.bccCanEdit('dashboard');
+  }
+  var _dashViewWarned = false;
+  function dashRefuseReadOnly() {
+    setSaveState('View-only access — not saved', false);
+    if (_dashViewWarned) return false;
+    _dashViewWarned = true;
+    (window.bccNotify || alert)('Your Dashboard access is view-only, so nothing was saved. Ask an admin if you need to make changes.', 'warn', 8000);
+    return false;
+  }
 
   /* ---- autosize textareas ---- */
   function autosize(t) { t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; }

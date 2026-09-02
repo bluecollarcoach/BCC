@@ -350,7 +350,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // Returns whether it actually deleted. Callers used to assume success, so a
   // campaign whose id wasn't ours (or was already gone) left the row on screen with
   // no explanation after the user had confirmed "Delete this campaign?".
-  function deleteCampaign(id) { if (!isCampaignKey(id)) return false; localStorage.removeItem(id); return true; }
+  function deleteCampaign(id) {
+    if (!isCampaignKey(id)) return false;
+    // Same gate saveCampaign has always had. Without it a Marketing = View user's delete
+    // removed the campaign locally — a firm-wide publish — and was reported as done.
+    if (!mkCanEdit()) { mkRefuseReadOnly(); return false; }
+    localStorage.removeItem(id);
+    return true;
+  }
 
   /* ===== List render ===== */
   var qInput, channelFilter, statusFilter, rowsEl, emptyEl, subline;

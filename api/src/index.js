@@ -69,7 +69,12 @@ const ADMIN_KEYS      = new Set(['bcc-admin-config-v1', 'bcc-customer-types-v1']
 // isPcKey() accepts, so /api/data would let ANY signed-in user DELETE it — which
 // silently re-arms replay of the exact OAuth state that marker exists to burn.
 // The bulk GET already drops it by docType; this closes the write/delete side.
-const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-bkentry-', 'bcc-emailmeta-', 'bcc-financial-period-', 'bcc-usernotif-', 'bcc-feedback-', 'bcc-errorlog-', 'bcc-report-', 'bcc-oauthstate-used-', 'bcc-sharepoint-map-v1',
+// bcc-timeposted-* is the record of what the My Day clock has already sent to QuickBooks, and
+// it is the ONLY thing standing between a second press of Send and the same payroll hours going
+// into the books twice. bcc-time-empmap decides whose hours are filed under which employee.
+// Both are written by the server and were reachable for overwrite AND delete through /api/data
+// by any signed-in account, including one set to Bookkeeping = None.
+const PROTECTED_KEY_PREFIXES = ['bcc-qbo-company-', 'bcc-client-mailbox-', 'bcc-clientdrive-', 'bcc-bktime-', 'bcc-bkentry-', 'bcc-timeposted-', 'bcc-time-empmap', 'bcc-emailmeta-', 'bcc-financial-period-', 'bcc-usernotif-', 'bcc-feedback-', 'bcc-errorlog-', 'bcc-report-', 'bcc-oauthstate-used-', 'bcc-sharepoint-map-v1',
   // Server-owned bookkeeping written by the crons. Both are plain bcc- docs that isPcKey
   // accepts, so /api/data would otherwise let any signed-in user read, overwrite or
   // DELETE them — and wiping the reminder de-dupe map re-sends every reminder in the
