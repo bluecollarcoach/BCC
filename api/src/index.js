@@ -4107,10 +4107,23 @@ function spMatch(name, folders) {
 async function spFolderNames() {
   const access = await getGraphToken();
   const driveId = await spDriveId();
-  const r = await fetch('https://graph.microsoft.com/v1.0/drives/' + driveId + '/root:/' + encodeURIComponent(SP_ROOT_FOLDER) + ':/children?$top=200&$select=name,folder', { headers: { Authorization: 'Bearer ' + access } });
-  if (!r.ok) throw new Error('SharePoint root listing failed (' + r.status + ')');
-  const j = await r.json();
-  return (j.value || []).filter(x => x.folder).map(x => x.name);
+  /* PAGED. One $top=200 page silently answered "that client has no folder" for client 201
+     onwards — an absence taken as fact from a list that was never fully read. Bounded at 10
+     pages (2000 folders); if it is still not exhausted the caller is told, rather than being
+     handed a short list to draw conclusions from. */
+  let next = 'https://graph.microsoft.com/v1.0/drives/' + driveId + '/root:/' + encodeURIComponent(SP_ROOT_FOLDER) + ':/children?$top=200&$select=name,folder';
+  const names = [];
+  let pages = 0, truncated = false;
+  while (next) {
+    if (pages++ >= 10) { truncated = true; break; }
+    const r = await fetch(next, { headers: { Authorization: 'Bearer ' + access } });
+    if (!r.ok) throw new Error('SharePoint root listing failed (' + r.status + ')');
+    const j = await r.json();
+    for (const x of (j.value || [])) if (x.folder) names.push(x.name);
+    next = j['@odata.nextLink'] || null;
+  }
+  names.truncated = truncated;
+  return names;
 }
 // realmId -> SharePoint folder name. Stored overrides win; otherwise auto-match on name.
 async function spFolderFor(realmId) {
@@ -4127,8 +4140,12 @@ async function spFolderFor(realmId) {
   const name = comp && comp.companyName;
   if (!name) return null;
   const folders = await spFolderNames();
-  // EXACT only. Anything less is a suggestion for an admin, never a silent resolution.
-  return spMatch(name, folders).exact;
+  const hit = spMatch(name, folders).exact;
+  /* A NULL from a truncated listing is not an answer, it is an absence of one — and callers
+     turn it into "no SharePoint folder is matched to this client yet". Throw instead, so the
+     caller reports a failed read rather than an authoritative "not there". */
+  if (!hit && folders.truncated) throw new Error('The SharePoint folder list could not be read in full, so no folder could be matched for this client. Try again in a moment.');
+  return hit;
 }
 // Path inside the library for a client (optionally a subpath under their folder).
 // Rejects '..' / '.' segments outright — a bare slash-trim left them intact, and
@@ -4643,6 +4660,9 @@ app.http('sharepoint-map', {
         .catch(e => { if (e && e.code === 404) return null; throw e; });
       if (d && d.map) map = d.map;
       const folders = await spFolderNames();
+      // Surfaced below, so a half-read library cannot be mistaken for the whole one on the
+      // screen an admin uses to decide which folder belongs to which client.
+      const foldersTruncated = !!folders.truncated;
       const { resources: comps } = await c.items.query({
         // privateToUpn comes back so the owner-only client can be filtered below — every
         // other listing of this docType already does it, and this was the one that did not.
@@ -4675,7 +4695,7 @@ app.http('sharepoint-map', {
           suggest: m ? m.suggestions : []
         });
       }
-      return { jsonBody: { ok: true, folders, map: visibleMap, companies: rows } };
+      return { jsonBody: { ok: true, folders, foldersTruncated, map: visibleMap, companies: rows } };
     } catch (e) { context.error('sharepoint-map', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
@@ -5557,6 +5577,25 @@ app.http('integrations-qbo-sync', {
     }
   })
 });
+
+/* Anthropic calls, with the same abort discipline. Every one of these runs inside a Managed
+   Function the platform cuts off at ~45s, and a request killed at the ceiling reaches the
+   person as nothing at all — no message, no spinner ending, no idea whether to try again. */
+const AI_TIMEOUT_MS = 35000;
+async function aiFetch(body, key, ms) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms || AI_TIMEOUT_MS);
+  try {
+    return await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: body,
+      signal: ctrl.signal
+    });
+  } finally { clearTimeout(timer); }
+}
+// Say what an abort actually was. 'The operation was aborted' is not an answer anybody can act on.
+function aiTimedOut(e) { return !!(e && (e.name === 'AbortError' || /abort/i.test(String(e.message || '')))); }
 
 // Fetch with an abort timeout so one hung QBO request can't stall the whole sync.
 async function qboFetch(url, opts, ms) {
@@ -8559,14 +8598,10 @@ app.http('ai-extract-receipt', {
         }
       };
       const model = process.env.AI_MODEL || 'claude-sonnet-4-6';
-      const r = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-        body: JSON.stringify({
+      const r = await aiFetch(JSON.stringify({
           model: model, max_tokens: 4096, tools: [tool], tool_choice: { type: 'tool', name: 'record_document' },
           messages: [{ role: 'user', content: [srcBlock, { type: 'text', text: 'Extract the vendor, date (YYYY-MM-DD), subtotal, tax, total, currency, and individual line items from this document. Call record_document with the data.' + matchHint }] }]
-        })
-      });
+        }), key);
       if (!r.ok) { const t = (await r.text().catch(() => '')).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'AI error ' + r.status, detail: t } }; }
       const j = await r.json();
       // A truncated response yields incomplete/invalid tool JSON — don't treat it as valid.
@@ -8574,7 +8609,13 @@ app.http('ai-extract-receipt', {
       const tu = (j.content || []).find(c => c.type === 'tool_use');
       if (!tu) return { jsonBody: { ok: false, error: 'Couldn’t read a receipt in that image — try a clearer, well-lit photo or crop to just the receipt.' } };
       return { jsonBody: { ok: true, data: tu.input } };
-    } catch (e) { context.error('ai-extract', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+    } catch (e) {
+      context.error('ai-extract', e);
+      /* An abort is not a server error, and 'The operation was aborted' is not something
+         anybody can act on. Say what happened and what to do about it. */
+      if (aiTimedOut(e)) return { status: 504, jsonBody: { ok: false, error: 'That receipt took too long to read. Try a tighter crop, or a smaller file.' } };
+      return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } };
+    }
   })
 });
 
@@ -8684,14 +8725,10 @@ app.http('ai-extract-cpr', {
         + '(5) Set weekStart / payPeriodEnd / projectName only if they actually appear in the document. '
         + 'Call record_cpr with the results.';
       const model = process.env.AI_MODEL || 'claude-sonnet-4-6';
-      const r = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-        body: JSON.stringify({
+      const r = await aiFetch(JSON.stringify({
           model: model, max_tokens: 8000, tools: [tool], tool_choice: { type: 'tool', name: 'record_cpr' },
           messages: [{ role: 'user', content: [srcBlock, { type: 'text', text: instr }] }]
-        })
-      });
+        }), key);
       if (!r.ok) { const t = (await r.text().catch(() => '')).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'AI error ' + r.status, detail: t } }; }
       const j = await r.json();
       if (j.stop_reason === 'max_tokens') return { jsonBody: { ok: false, error: 'That file had too many rows to read in one pass — try splitting it, or upload fewer employees at a time.' } };
@@ -8699,7 +8736,13 @@ app.http('ai-extract-cpr', {
       if (!tu) return { jsonBody: { ok: false, error: 'Couldn’t read payroll data from that file — make sure it lists employees with their hours and pay.' } };
       logAudit('cpr-extract', { user: auditUser(request), meta: { employees: ((tu.input || {}).employees || []).length } });
       return { jsonBody: { ok: true, data: tu.input } };
-    } catch (e) { context.error('ai-extract-cpr', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+    } catch (e) {
+      context.error('ai-extract-cpr', e);
+      /* An abort is not a server error, and 'The operation was aborted' is not something
+         anybody can act on. Say what happened and what to do about it. */
+      if (aiTimedOut(e)) return { status: 504, jsonBody: { ok: false, error: 'That payroll register took too long to read in one pass — split it, or upload fewer employees at a time.' } };
+      return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } };
+    }
   })
 });
 
@@ -8757,21 +8800,23 @@ app.http('ai-scan-card', {
         }
       };
       const model = process.env.AI_MODEL || 'claude-sonnet-4-6';
-      const r = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-        body: JSON.stringify({
+      const r = await aiFetch(JSON.stringify({
           model: model, max_tokens: 4096, tools: [tool], tool_choice: { type: 'tool', name: 'record_contacts' },
           messages: [{ role: 'user', content: imageBlocks.concat([{ type: 'text', text: 'These image(s) contain one or more business cards (there may be several cards in a single photo, and/or multiple photos). Read EVERY distinct card and call record_contacts with one entry per card/person. Split each name into first and last. Use the 2-letter state code. Only include fields clearly visible on a card; omit anything you cannot read. Do not invent or duplicate cards.' }]) }]
-        })
-      });
+        }), key);
       if (!r.ok) { const t = (await r.text().catch(() => '')).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'AI error ' + r.status, detail: t } }; }
       const j = await r.json();
       const tu = (j.content || []).find(c => c.type === 'tool_use');
       const contacts = (tu && tu.input && Array.isArray(tu.input.contacts)) ? tu.input.contacts.filter(c => c && (c.firstName || c.lastName || c.company || c.email)) : [];
       if (!contacts.length) return { jsonBody: { ok: false, error: 'No business card detected — try a clearer, well-lit photo.' } };
       return { jsonBody: { ok: true, contacts: contacts } };
-    } catch (e) { context.error('ai-scan-card', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+    } catch (e) {
+      context.error('ai-scan-card', e);
+      /* An abort is not a server error, and 'The operation was aborted' is not something
+         anybody can act on. Say what happened and what to do about it. */
+      if (aiTimedOut(e)) return { status: 504, jsonBody: { ok: false, error: 'That photo took too long to read. Try one card at a time, or a smaller photo.' } };
+      return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } };
+    }
   })
 });
 
@@ -8906,20 +8951,22 @@ app.http('ai-enrich-company', {
         }
       };
       const model = process.env.AI_MODEL || 'claude-sonnet-4-6';
-      const r = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-        body: JSON.stringify({
+      const r = await aiFetch(JSON.stringify({
           model: model, max_tokens: 1024, tools: [tool], tool_choice: { type: 'tool', name: 'record_company' },
           messages: [{ role: 'user', content: [{ type: 'text', text: 'Below is text scraped from the website of ' + (company || website) + '. Extract factual company details and call record_company. Only include facts clearly supported by the text — OMIT any field you are unsure about; never guess years in business or address. If a founded year is given, compute yearsInBusiness from ' + (new Date().getFullYear()) + '.\n\n=== WEBSITE CONTENT ===\n' + content }] }]
-        })
-      });
+        }), key);
       if (!r.ok) { const t = (await r.text().catch(() => '')).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'AI error ' + r.status, detail: t } }; }
       const j = await r.json();
       const tu = (j.content || []).find(c => c.type === 'tool_use');
       if (!tu) return { jsonBody: { ok: false, error: 'No company details found on the site.' } };
       return { jsonBody: { ok: true, website: site.url, data: tu.input } };
-    } catch (e) { context.error('ai-enrich-company', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+    } catch (e) {
+      context.error('ai-enrich-company', e);
+      /* An abort is not a server error, and 'The operation was aborted' is not something
+         anybody can act on. Say what happened and what to do about it. */
+      if (aiTimedOut(e)) return { status: 504, jsonBody: { ok: false, error: 'Reading that website took too long. Try again, or fill the details in by hand.' } };
+      return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } };
+    }
   })
 });
 
@@ -10166,7 +10213,8 @@ app.http('qbo-cashflow', {
             }
             return all;
           };
-          const bs = flattenQboReport(await apiGet(bsReportQuery(new Date().toISOString().slice(0, 10), 'Accrual')));
+          // todayStr is the business day computed above, for exactly the reason documented there.
+          const bs = flattenQboReport(await apiGet(bsReportQuery(todayStr, 'Accrual')));
           const cash = (findByLabel(bs, /total bank account/i) ?? findByLabel(bs, /bank account/i) ?? findByLabel(bs, /checking|savings|cash on hand|^cash$/i)) || 0;
           const invoices = await queryAll("SELECT Id, DueDate, TxnDate, Balance FROM Invoice WHERE Balance > '0'");
           const bills = await queryAll("SELECT Id, DueDate, TxnDate, Balance FROM Bill WHERE Balance > '0'");

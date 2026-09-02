@@ -2099,7 +2099,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         // Monthly trend series from the synced history (oldest→newest).
         // Burn = operating expenses (overhead) only, matching the KPI calc — COGS excluded.
         var burn = function (p) { return (p.expensesCents || 0) / 100; };
-        var sMonths = kpiSeries(function (p) { var b = burn(p); return (p.cashCents != null && b > 0) ? (p.cashCents / 100) / b : null; });
+        /* The SAME trailing 3-month window the tile above uses (burnMonths=3, fixed — see the
+           comment on the fetch). Dividing by a single month's overhead made the line disagree
+           with the number printed on top of it, and a light month spiked it to a runway the
+           client does not have. Falls back to however many months exist at the start of the
+           series rather than dropping those points. */
+        var _burnAvgAt = function (arr, i) {
+          var t = 0, n = 0;
+          for (var j = Math.max(0, i - 2); j <= i; j++) { var b = burn(arr[j]); if (b > 0) { t += b; n++; } }
+          return n ? t / n : 0;
+        };
+        var sMonths = kpiSeries(function (p, i, arr) {   // .map passes (value, index, array)
+          var b = _burnAvgAt(arr, i);
+          return (p.cashCents != null && b > 0) ? (p.cashCents / 100) / b : null;
+        });
         var sCR = kpiSeries(function (p) { return p.currentLiabilitiesCents ? (p.currentAssetsCents / p.currentLiabilitiesCents) : null; });
         var sCash = kpiSeries(function (p) { return p.cashCents != null ? p.cashCents / 100 : null; });
         var sWC = kpiSeries(function (p) { return (p.currentAssetsCents != null && p.currentLiabilitiesCents != null) ? (p.currentAssetsCents - p.currentLiabilitiesCents) / 100 : null; });
@@ -2301,7 +2314,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // given the KPI's polarity ('up-good', 'up-bad', or 'neutral' when direction alone isn't a verdict).
   function mrTrend(cur, prior, pol) {
     if (cur == null || prior == null || pol === 'none') return { dir: '', tone: 'neutral' };
-    var diff = cur - prior, base = Math.abs(prior) > 1 ? Math.abs(prior) : 1;
+    /* RELATIVE to the prior value, not to a floor of 1. Clamping the denominator is right for
+       money in dollars and wrong for anything already a fraction: a gross margin moving from
+       0.34 to 0.36 is two full percentage points, but against a base of 1 that is 2% of
+       nothing — so it printed "flat" next to an observation calling it a decline, and the
+       report contradicted itself in one line. Guard only against a zero base. */
+    var diff = cur - prior, base = Math.abs(prior) > 1e-9 ? Math.abs(prior) : 1e-9;
     if (Math.abs(diff) / base < 0.02) return { dir: 'flat', tone: 'neutral' };
     var dir = diff > 0 ? 'up' : 'down';
     if (pol === 'neutral') return { dir: dir, tone: 'neutral' };
