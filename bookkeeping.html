@@ -8670,6 +8670,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
               fetch('/forms/mndot-statement-of-compliance.pdf', { credentials: 'include' }).then(function (x) { return x.arrayBuffer(); })
             ]).then(function (got) {
               return cprMndotBuild(draftAt, got[0], got[1], PDFLib).then(function (files) {
+                /* Said BEFORE the mail goes, not after: once it is sent to the State, a value
+                   printed cut off is no longer something anyone can quietly fix. */
+                var clipWarn = cprMndotClipWarning(files);
+                if (clipWarn) (window.bccNotify || alert)(clipWarn, 'warn', 15000);
                 files.forEach(function (f) { atts.push({ name: f.name, contentType: 'application/pdf', contentBytes: b64FromBytes(f.bytes) }); });
               });
             }));
@@ -9390,23 +9394,65 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      * text that is cut off is not. */
     var fitFont = null;   // set per-document, once the Helvetica is embedded
     var TF_MAX = 9, TF_MIN = 5;
-    function fitSize(text, rect, multiline) {
-      if (!fitFont || !rect || !(rect.width > 0) || !(rect.height > 0)) return TF_MAX;
-      var lines = multiline ? String(text).split('\n') : [String(text)];
-      var size = TF_MAX;
-      while (size > TF_MIN) {
-        var widest = 0;
-        for (var i = 0; i < lines.length; i++) {
-          var w = 0;
-          try { w = fitFont.widthOfTextAtSize(lines[i], size); } catch (e) { w = 0; }
-          if (w > widest) widest = w;
+    function tfWidth(text, size) { try { return fitFont.widthOfTextAtSize(String(text), size); } catch (e) { return 0; } }
+    /* Break `text` to fit `width` at `size`: on spaces first, and a single word too wide for a
+       line of its own is broken mid-word rather than allowed to run past the edge of the box. */
+    function wrapAt(text, size, width) {
+      var out = [];
+      String(text).split('\n').forEach(function (para) {
+        var words = para.split(/\s+/).filter(Boolean);
+        if (!words.length) { out.push(''); return; }
+        var line = '';
+        for (var i = 0; i < words.length; i++) {
+          var w = words[i];
+          if (!line && tfWidth(w, size) > width) {
+            var cur = '';
+            for (var c = 0; c < w.length; c++) {
+              if (cur && tfWidth(cur + w.charAt(c), size) > width) { out.push(cur); cur = w.charAt(c); }
+              else cur += w.charAt(c);
+            }
+            line = cur;
+            continue;
+          }
+          var probe = line ? line + ' ' + w : w;
+          if (!line || tfWidth(probe, size) <= width) line = probe;
+          else { out.push(line); line = w; }
         }
-        // 2pt of side padding, 1.18 line spacing — the same breathing room the form's own boxes use.
-        if (widest <= rect.width - 2 && lines.length * size * 1.18 <= rect.height) break;
-        size -= 0.25;
-      }
-      return Math.round(size * 4) / 4;
+        out.push(line);
+      });
+      return out;
     }
+    /* The largest size at or below TF_MAX whose WRAPPED text fits the box, with the lines it
+       produced. Shrinking alone bottomed out at 5pt on a real payroll while the box sat half
+       empty — every one of these boxes is at least twice as tall as one line of text, so the
+       room to stay readable was there all along. `clipped` is set only when even the floor,
+       wrapped, still will not fit; nothing downstream is allowed to ignore that. */
+    function fitBox(text, rect, forceMulti) {
+      var flat = String(text);
+      if (!fitFont || !rect || !(rect.width > 0) || !(rect.height > 0)) {
+        return { size: TF_MAX, lines: forceMulti ? flat.split('\n') : [flat], clipped: false };
+      }
+      var width = rect.width - 2;   // 2pt of side padding, as the form's own boxes use
+      for (var size = TF_MAX; size >= TF_MIN; size -= 0.25) {
+        var lines = wrapAt(flat, size, width);
+        var widest = 0;
+        for (var i = 0; i < lines.length; i++) { var w = tfWidth(lines[i], size); if (w > widest) widest = w; }
+        /* Vertical breathing room to match the 2pt at the sides: without it a two-line value
+           sized to exactly the box height printed with its descenders sitting on the cell
+           border — legible, but it reads as text spilling out of the box, which on this form
+           is the whole complaint. Proportional and capped at 1pt, because a flat point taken
+           out of MnDOT's smallest boxes (28x14) costs more size than it buys clarity. */
+        if (widest <= width && lines.length * size * 1.18 <= rect.height - Math.min(1, rect.height / 20)) {
+          return { size: Math.round(size * 4) / 4, lines: lines, clipped: false };
+        }
+      }
+      var last = wrapAt(flat, TF_MIN, width);
+      return { size: TF_MIN, lines: last, clipped: true };
+    }
+    /* Values that could not be made to fit their box even wrapped at the floor. A certified
+       payroll goes to the State; a word cut off on it is not something to find out about after
+       it is filed, so the callers name these to the person building the form. */
+    var tfClipped = [];
     function setTf(form, name, val) {
       if (val == null || String(val) === '') return;
       try {
@@ -9418,11 +9464,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         var v = cprWinAnsiLines(val);
         var ml = null; try { ml = tf.getMaxLength(); } catch (e) {}
         if (ml && v.length > ml) v = v.slice(0, ml);
-        var multi = v.indexOf('\n') >= 0;
-        if (multi) { try { tf.enableMultiline(); } catch (e) {} }
-        tf.setText(v);
+        var fit = fitBox(v, rectOf(form, name), v.indexOf('\n') >= 0);
+        var out = fit.lines.join('\n');
+        /* A hard-broken word adds characters, so re-check the field's own limit: better the
+           unwrapped value at the floor than a value the PDF truncates on its way in. */
+        if (ml && out.length > ml) { out = v; fit.clipped = true; }
+        if (out.indexOf('\n') >= 0) { try { tf.enableMultiline(); } catch (e) {} }
+        tf.setText(out);
         // Must come AFTER setText: the value is what decides the size.
-        try { tf.setFontSize(fitSize(v, rectOf(form, name), multi)); } catch (e) {}
+        try { tf.setFontSize(fit.size); } catch (e) {}
+        if (fit.clipped) tfClipped.push({ field: name, value: v.replace(/\n/g, ' ') });
       } catch (e) { /* unknown/typed-differently field — leave blank rather than fail */ }
     }
     function rectOf(form, name) {
@@ -9562,7 +9613,21 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       } catch (e) { /* signature is optional — never fail the build */ }
     }
     files.push({ name: 'MnDOT Statement of Compliance' + (r.payrollNo ? ' #' + r.payrollNo : '') + '.pdf', bytes: await soc.save() });
+    /* Anything that could not be made to fit its box, even wrapped at the smallest size the
+       form stays legible at. Hung off the array rather than changing the return shape, so a
+       caller that does not read it still gets its forms. */
+    files.clipped = tfClipped;
     return files;
+  }
+  /* One sentence naming exactly which values are cut short, for whichever path is building.
+     Returns '' when everything fitted. */
+  function cprMndotClipWarning(files) {
+    var c = (files && files.clipped) || [];
+    if (!c.length) return '';
+    var names = c.map(function (x) { return '“' + x.value + '”'; });
+    return 'Heads up: ' + (c.length === 1 ? 'this value is' : 'these values are') + ' too long for the box MnDOT gives '
+      + (c.length === 1 ? 'it' : 'them') + ' and will print cut off — ' + names.join(', ')
+      + '. Shorten ' + (c.length === 1 ? 'it' : 'them') + ' on the payroll and rebuild if the State needs the full text.';
   }
   /* ---- MN DLI certified payroll as a real PDF (Jenna: recipients couldn't open the
      .html attachment — "can we send it as a PDF"). Drawn from scratch with pdf-lib so it
@@ -9777,6 +9842,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       return cprMndotBuild(r, got[1], got[2], got[0]);
     }).then(function (files) {
       if (!files || !files.length) throw new Error('no forms were produced');
+      var clipWarn = cprMndotClipWarning(files);
+      if (clipWarn) (window.bccNotify || alert)(clipWarn, 'warn', 15000);
       /* ONE artifact, not N racing anchor clicks. Two programmatic clicks 400ms apart is the
          pattern browsers treat as a multiple-download attempt: the person gets a single
          "allow multiple downloads?" prompt and, if they miss or dismiss it, the SECOND file
