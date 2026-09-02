@@ -2792,7 +2792,29 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       // the notes were simply gone when the month was reopened.
       .then(function (j) {
         if (j && j.ok) {
-          if (currentRealm === realmAt && _mr.data && _mr.data.period === periodAt) _mr.obsSaved = sentJson;
+          if (currentRealm === realmAt && _mr.data && _mr.data.period === periodAt) {
+            /* Adopt what the SERVER stored, not what we sent — it caps at 40 notes and 600
+               characters each, so banking our own untruncated copy as "saved" made the
+               overflow read as saved and then vanish when the report was reopened.
+               ONLY when nothing was typed during the round trip, though: overwriting _mr.obs
+               with the server's copy would throw those keystrokes away, which is the exact
+               failure the sentJson baseline was introduced to prevent. If somebody kept
+               typing, keep their text and leave the notes dirty so the next Save carries it. */
+            if (Array.isArray(j.observations) && JSON.stringify(_mr.obs || []) === sentJson) {
+              _mr.obs = j.observations.map(mrCoerceObs);
+              _mr.obsSaved = JSON.stringify(_mr.obs);
+              try { renderObsList(); } catch (e) {}
+            } else {
+              _mr.obsSaved = sentJson;
+            }
+            if (j.droppedCount || j.trimmedText) {
+              (window.bccNotify || alert)('Saved, but not all of it fits: '
+                + (j.droppedCount ? j.droppedCount + ' observation' + (j.droppedCount === 1 ? '' : 's') + ' past the 40 this report holds ' + (j.droppedCount === 1 ? 'was' : 'were') + ' not kept' : '')
+                + (j.droppedCount && j.trimmedText ? ', and ' : '')
+                + (j.trimmedText ? 'anything over 600 characters was shortened' : '')
+                + '. What is on screen now is exactly what was stored.', 'warn', 12000);
+            }
+          }
           if (notify && window.bccNotifySaved) window.bccNotifySaved('Report notes saved.');
           return true;
         }
@@ -3619,7 +3641,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .catch(function (e) { if (window.bccNotify) window.bccNotify('Posted, but attaching the file to QuickBooks failed: ' + e.message, 'warn', 7000); });
     // Keep a copy in the client's Files tab (Blob), best-effort, non-blocking.
     var fd2 = new FormData(); fd2.append('file', file); fd2.append('folder', '/clients/' + realm); fd2.append('tags', 'receipt,' + cap.toLowerCase() + '-' + id);
-    fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd2 }).catch(function () {});
+    /* A .catch()-only handler sees a dropped connection and nothing else: every HTTP refusal
+       — 403, 413 too large, 500 — resolves normally and vanishes, so the receipt is on the
+       QuickBooks transaction and silently absent from the client's Files. "Best effort" is a
+       reason not to block the post, not a reason not to say it failed. */
+    fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd2 })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); })
+      .catch(function (e) {
+        if (window.bccNotify) window.bccNotify('The receipt is on the QuickBooks transaction, but the copy for this client’s Files was not saved (' + ((e && e.message) || 'connection lost') + ') — upload it from the Files tab if you need it there.', 'warn', 9000);
+      });
   }
   function scanReceipt(file) {
     // Covers the toolbar picker as well as the mail-attachment menu: this ends in a
@@ -6960,7 +6990,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     } else finish();
   }
   function notaryUploadFinal(id, file) {
-    if (!file) return; var r = loadNotaryReq(id); if (!r) return;
+    if (!file) return;
+    /* BEFORE the upload, for the reason notaryCreate spells out: the gate downstream runs
+       once the file is already filed, so a view-only user was told nothing was saved while
+       their notarized PDF sat in the client's Files attached to no request. */
+    if (bkRefuseIfReadOnly()) return;
+    var r = loadNotaryReq(id); if (!r) return;
     notaryMsg(id, 'Uploading notarized PDF…');
     var fd = new FormData(); fd.append('file', file, file.name);
     // File into THIS request's own client (r.realmId), never notaryFolder() — that reads
@@ -7838,6 +7873,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     document.getElementById('em_r_send').onclick = function () {
       var btn = this, txt = document.getElementById('em_r_body').value, st = document.getElementById('em_r_status');
       if (emAttTotalBytes(replyAtts) > EM_ATT_MAX_TOTAL) { st.textContent = 'Attachments are over the ~3 MB limit — remove something first.'; return; }
+      /* The same refusal the COMPOSE path makes, for the same reason: with the mailbox
+         config unread we cannot tell whether this client has a mailbox, and the fallback is
+         not neutral — it sends from the bookkeeper's own address under the client's
+         signature. Checked before the button is disabled so nothing needs restoring. */
+      if (mailboxUnknown()) {
+        (window.bccNotify || alert)(_mailboxErr
+          ? 'Couldn’t check which mailbox this reply should come from, so nothing was sent — it would have gone out from your own address. Reload the client and try again.'
+          : 'This client’s mailbox settings are still loading, so nothing was sent yet — sending now could go out from your own address. Try again in a moment.', 'error', 11000);
+        return;
+      }
       btn.disabled = true; st.textContent = 'Sending…';
       document.getElementById('em_r_files').disabled = true; if (replyFilesBtn) replyFilesBtn.style.pointerEvents = 'none';
       var realmAt = mailboxActive() ? currentRealm : undefined; // capture at Send-click time — a client switch during the async encode/send below must not misattribute this reply
@@ -8301,11 +8346,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var keyAt = live ? live() : _cprNoteKeyNow;
       _cprNoteKeyNow = keyAt;
       _cprNoteTimer = setTimeout(function () {
-        // Realm-race guard: the debounce outlives a client switch, and this note belongs to
-        // the client that was open when it was typed.
-        if (currentRealm !== realmAt) return;
+        /* WRITE it, to the realm it was typed for. cprNoteSet already takes that realm, so
+           the old `currentRealm !== realmAt` bail was guarding a race that was handled a line
+           later — and it discarded the note outright whenever somebody switched client within
+           half a second of typing, leaving "Saving…" on a box that never saved. Only the
+           status line has to care which client is open now. */
         var ok = cprNoteSet(keyAt, val, realmAt);
-        if (st) st.textContent = ok ? 'Saved' : '';
+        if (st && currentRealm === realmAt) st.textContent = ok ? 'Saved' : '';
       }, 500);
     });
   }

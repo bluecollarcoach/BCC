@@ -600,7 +600,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (!c.tenantId) c.tenantId = 'blue-collar-coach';
     c.docType = 'contact';
     if (!Array.isArray(c.needs)) c.needs = [];
-    localStorage.setItem(c.id, JSON.stringify(c));
+    /* localStorage is a hard ~5MB per origin shared with every other bcc- key. Unwrapped, the
+       throw escaped this function AND the handler above it: nothing stored, nothing said, and
+       the row still on screen. NULL is the refusal contract every caller here already checks. */
+    try {
+      localStorage.setItem(c.id, JSON.stringify(c));
+    } catch (e) {
+      (window.bccNotify || alert)('That was NOT saved — this browser has run out of local storage space. Nothing earlier has been lost. Close some tabs or ask an admin to clear an old chat channel, then try again.', 'error', 15000);
+      return null;
+    }
     return c;
   }
   function deleteContact(id) {
@@ -635,7 +643,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (!isConvoKey(cv.id)) cv.id = CONVO_PREFIX + uid();
     if (!cv.tenantId) cv.tenantId = 'blue-collar-coach';
     cv.docType = 'convo';
-    localStorage.setItem(cv.id, JSON.stringify(cv));
+    /* localStorage is a hard ~5MB per origin shared with every other bcc- key. Unwrapped, the
+       throw escaped this function AND the handler above it: nothing stored, nothing said, and
+       the row still on screen. NULL is the refusal contract every caller here already checks. */
+    try {
+      localStorage.setItem(cv.id, JSON.stringify(cv));
+    } catch (e) {
+      (window.bccNotify || alert)('That was NOT saved — this browser has run out of local storage space. Nothing earlier has been lost. Close some tabs or ask an admin to clear an old chat channel, then try again.', 'error', 15000);
+      return null;
+    }
   }
   function deleteConvo(id) { if (!isConvoKey(id)) return; if (!crmCanEdit()) { crmRefusedToast(); return; } localStorage.removeItem(id); }
 
@@ -657,7 +673,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (!isWeeklyKey(w.id)) w.id = WEEKLY_PREFIX + uid();
     if (!w.tenantId) w.tenantId = 'blue-collar-coach';
     w.docType = 'weekly-note';
-    localStorage.setItem(w.id, JSON.stringify(w));
+    /* localStorage is a hard ~5MB per origin shared with every other bcc- key. Unwrapped, the
+       throw escaped this function AND the handler above it: nothing stored, nothing said, and
+       the row still on screen. NULL is the refusal contract every caller here already checks. */
+    try {
+      localStorage.setItem(w.id, JSON.stringify(w));
+    } catch (e) {
+      (window.bccNotify || alert)('That was NOT saved — this browser has run out of local storage space. Nothing earlier has been lost. Close some tabs or ask an admin to clear an old chat channel, then try again.', 'error', 15000);
+      return null;
+    }
   }
   function deleteWeeklyNote(id) { if (!isWeeklyKey(id)) return; if (!crmCanEdit()) { crmRefusedToast(); return; } localStorage.removeItem(id); }
   // Monday of the current week, YYYY-MM-DD (default "week of" for a new note).

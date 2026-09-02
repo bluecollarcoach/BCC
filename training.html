@@ -354,7 +354,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function renderGrid() {
     var all = allCourses();
     if (all.length === 0) {
-      document.getElementById('grid').innerHTML = '<div class="empty"><div class="big">No courses yet.</div><div>Click "+ New course" to draft your first playbook.</div></div>';
+      /* An empty list and an unloaded one are not the same thing, and "No courses yet" over
+         the second reads as the firm's playbooks having been lost. events.html guards its own
+         empty state exactly this way. */
+      document.getElementById('grid').innerHTML = (window.bccDataComplete && !window.bccDataComplete())
+        ? '<div class="empty"><div class="big">Couldn’t load your courses.</div><div>This device hasn’t finished getting them from the server — nothing is missing. Reload before adding one.</div></div>'
+        : '<div class="empty"><div class="big">No courses yet.</div><div>Click "+ New course" to draft your first playbook.</div></div>';
       return;
     }
     document.getElementById('grid').innerHTML = '<div class="course-grid">' + all.map(function (c) {

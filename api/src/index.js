@@ -9395,7 +9395,17 @@ app.http('qbo-monthly-report', {
         const obsDoc = Object.assign({}, existingObs || {}, { id: docId(period), tenantId: BCC_TENANT_ID, docType: 'monthly-report', realmId, period, observations: flatObs, observationsByMethod: obsByMethod, updatedAt: new Date().toISOString(), updatedBy: who });
         await c.items.upsert(obsDoc);
         logAudit('report-save', { user: who, path: '/api/integrations/qbo/companies/' + realmId + '/monthly-report', meta: { realmId, period } });
-        return { jsonBody: { ok: true, period, observations } };
+        /* What was actually STORED, plus whether anything was trimmed getting there. The
+           client banks the server's answer as its clean baseline, so a silent cap here made
+           the 41st note and the tail of a long paragraph read as saved and then vanish when
+           the report was reopened. */
+        const sentCount = Array.isArray(b.observations) ? b.observations.length : 0;
+        const trimmedText = (Array.isArray(b.observations) ? b.observations : []).some((o, i) => {
+          const src = typeof o === 'string' ? o : String((o && o.text) || '');
+          return i < 40 && src.length > 600;
+        });
+        return { jsonBody: { ok: true, period, observations,
+          droppedCount: Math.max(0, sentCount - observations.length), trimmedText } };
       }
 
       const url = new URL(request.url);
