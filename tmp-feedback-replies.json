@@ -1,8 +1,0 @@
-{
-  "items": [
-    {
-      "id": "bcc-feedback-mtj1d6e4-nnvrql",
-      "note": "Fixed — thank you for sending the actual file, that's what made it findable. Two things were going on. The copy you sent was built the morning of 8/31, a few hours before a sizing fix went in, which is why the names and dates came out oversized and running out of their boxes. Then I rebuilt your payroll #14 from your own file and found the fix didn't go far enough: the project location was shrinking to almost unreadable, and the \"MN FPML SUI EE\" deduction label was printing cut off. The MnDOT boxes now wrap the text and only shrink if wrapping runs out, so everything prints whole and readable — I checked it against your #14 specifically. Rebuild #14 and it'll come out right; if it still looks like the old one, hit Ctrl+Shift+R once to clear the cached page. And from now on, if a value is ever genuinely too long for the box MnDOT gives it, you'll get a warning naming that value before the email goes out, rather than finding it after it's filed."
-    }
-  ]
-}
