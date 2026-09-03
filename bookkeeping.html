@@ -1668,6 +1668,27 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      check were computed from different numbers than the ones actually posted to a
      client's live books. Deliberately separate from cnum(): cnum has ~30 unrelated
      callers that must keep treating "(500)" as 500. */
+  /* The amount that will actually be POSTED: the lines on screen plus the lines the editor
+     preserves but does not render (item lines on a bill, discounts, group bundles). Used by
+     the running total on the form and by the "post this to QuickBooks?" confirmation, so the
+     number being checked and the number being sent are the same number by construction.
+     A SubTotal line repeats the whole document, so it is excluded; a discount subtracts. */
+  var TXN_KEEP_NONMONEY = { SubTotalLineDetail: 1, DescriptionOnly: 1 };
+  function txnPostedTotal(entity, g) {
+    if (entity === 'payment') return qbonum(g && g.amount);
+    var keepSum = ((g && g.keepLines) || []).reduce(function (s, l) {
+      if (!l || TXN_KEEP_NONMONEY[l.DetailType]) return s;
+      // A group line carries no Amount of its own — sum the children it bundles.
+      if (l.DetailType === 'GroupLineDetail') {
+        var gl = (l.GroupLineDetail && l.GroupLineDetail.Line) || [];
+        return s + gl.reduce(function (t2, cl) { return t2 + qbonum(cl && cl.Amount); }, 0);
+      }
+      var a = qbonum(l.Amount);
+      return s + (l.DetailType === 'DiscountLineDetail' ? -a : a);
+    }, 0);
+    return ((g && g.lines) || []).reduce(function (s, l) { return s + qbonum(l && l.amount); }, 0) + keepSum;
+  }
+  function txnMoney(n) { return (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
   function qbonum(v) {
     if (typeof v === 'number') return isFinite(v) ? v : 0;
     var str = String(v == null ? '' : v).trim();
@@ -3147,6 +3168,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         html += '<div class="ws-form" style="margin-bottom:10px;">' + who + dateRow + extraRow + '</div>' +
           '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Line items</div><div id="tx_lines"></div>' +
           '<button class="btn btn-ghost" id="tx_addline" type="button" style="margin-top:6px;font-size:12px;">+ Add line</button>' +
+          /* Lana asked for this: the total was only ever shown in the confirmation, after
+             Create had been pressed. It adds up as you type, off the same function that
+             computes what gets posted. */
+          '<div id="tx_total" style="display:flex;justify-content:flex-end;align-items:baseline;gap:10px;margin-top:10px;padding-top:8px;border-top:1px solid var(--chrome-mute);font-size:14px;"></div>' +
           '<div style="margin-top:14px;"><div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Attachment</div>' +
           '<label class="btn btn-ghost" for="tx_file" style="cursor:pointer;font-size:12px;">📎 Attach receipt / file</label> <span id="tx_fname" style="font-size:12px;color:var(--muted);"></span>' +
           '<input type="file" id="tx_file" accept="image/*,application/pdf" style="display:none;" /></div>';
@@ -3193,10 +3218,33 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         });
         if (!draft.length && seed && seed.lines && seed.lines.length) draft = seed.lines.map(function (l) { return { desc: l.desc || '', amount: l.amount || '', accountId: l.accountId || '', itemId: l.itemId || '' }; });
         if (!draft.length) draft.push({});
+        /* Worked out ONCE, here, and used by both the running total and the save below. The
+           save path derived this list itself, so a second copy of the rule would have been a
+           second chance for the number on screen to disagree with the number that posts. */
+        var keepLinesForForm = edit
+          ? (pre.Line || []).filter(function (l) {
+              var editable = (entity === 'invoice' ? 'SalesItemLineDetail' : 'AccountBasedExpenseLineDetail');
+              return l.DetailType && l.DetailType !== editable;
+            })
+          : [];
+        function paintTxnTotal() {
+          var el = document.getElementById('tx_total'); if (!el) return;
+          var total = txnPostedTotal(entity, { lines: draft, keepLines: keepLinesForForm });
+          /* Say when part of the total comes from lines this form does not show, so a figure
+             larger than the visible lines is explained rather than looking like an error. */
+          var hidden = keepLinesForForm.length
+            ? '<span style="font-size:11.5px;color:var(--muted);">includes ' + keepLinesForForm.length + ' line'
+              + (keepLinesForForm.length === 1 ? '' : 's') + ' this form doesn’t show</span>'
+            : '';
+          el.innerHTML = hidden +
+            '<span style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;">Total</span>' +
+            '<strong style="font-variant-numeric:tabular-nums;">$' + esc(txnMoney(total)) + '</strong>';
+        }
         function paintLines() {
           linesEl.innerHTML = draft.map(function (ln, i) { return txnLineRow(entity, refs, ln, i); }).join('');
           linesEl.querySelectorAll('[data-lremove]').forEach(function (b) { b.onclick = function () { var i = +b.getAttribute('data-lremove'); if (draft.length > 1) { draft.splice(i, 1); paintLines(); } }; });
-          linesEl.querySelectorAll('[data-lrow]').forEach(function (row) { row.querySelectorAll('[data-l]').forEach(function (inp) { inp.addEventListener('input', function () { draft[+row.getAttribute('data-lrow')][inp.getAttribute('data-l')] = inp.value; }); }); });
+          linesEl.querySelectorAll('[data-lrow]').forEach(function (row) { row.querySelectorAll('[data-l]').forEach(function (inp) { inp.addEventListener('input', function () { draft[+row.getAttribute('data-lrow')][inp.getAttribute('data-l')] = inp.value; paintTxnTotal(); }); }); });
+          paintTxnTotal();   // a removed line changes the total too
         }
         paintLines();
         document.getElementById('tx_addline').onclick = function () { draft.push({}); paintLines(); };
@@ -3256,7 +3304,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           if (jobLinesHaveMixedBillable && !confirm('This bill/purchase has DIFFERENT billable statuses on different lines. Saving here applies ONE status to every line, which can bill the client for a cost that was marked not billable. Continue?')) return;
           // On EDIT, a sparse update REPLACES all lines — carry through any line types the editor
           // doesn't render (item-based lines, discounts, etc.) verbatim so they aren't dropped.
-          if (edit) { var editable = (entity === 'invoice' ? 'SalesItemLineDetail' : 'AccountBasedExpenseLineDetail'); g.keepLines = (pre.Line || []).filter(function (l) { return l.DetailType && l.DetailType !== editable; }); }
+          if (edit) g.keepLines = keepLinesForForm;   // the same list the running total used
           submitTxn(entity, g);
         };
       } else {
@@ -3329,24 +3377,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // discounts, tax). Omitting them understated the figure in the "Post this to live
     // QuickBooks?" confirmation — the one number the bookkeeper checks before committing to
     // the client's books.
-    /* keepLines are the lines the editor preserves but does not render. Summing ALL of them
-       double-counted QBO's own computed rows — a SubTotalLine repeats the entire invoice
-       total, so the confirm dialog showed roughly twice the real amount on every invoice
-       edit. Count only real money lines, and subtract a discount rather than adding it. */
-    var KEEP_NONMONEY = { SubTotalLineDetail: 1, DescriptionOnly: 1 };
-    var keepSum = (g.keepLines || []).reduce(function (s, l) {
-      if (!l || KEEP_NONMONEY[l.DetailType]) return s;
-      // A group line carries no Amount of its own — sum the children it bundles.
-      if (l.DetailType === 'GroupLineDetail') {
-        var gl = (l.GroupLineDetail && l.GroupLineDetail.Line) || [];
-        return s + gl.reduce(function (t2, cl) { return t2 + qbonum(cl && cl.Amount); }, 0);
-      }
-      var a = qbonum(l.Amount);
-      return s + (l.DetailType === 'DiscountLineDetail' ? -a : a);
-    }, 0);
-    var total = entity === 'payment' ? qbonum(g.amount)
-      : (g.lines || []).reduce(function (s, l) { return s + qbonum(l.amount); }, 0) + keepSum;
-    if (!confirm('Post this ' + entity + ' to ' + companyName(currentRealm) + '’s live QuickBooks?\n\nTotal: $' + total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }))) return;
+    /* The SAME function the running total on the form uses. It was a second copy of this
+       arithmetic living here, which is how the confirmation and the form would eventually
+       have shown a bookkeeper two different totals for one bill. */
+    var total = txnPostedTotal(entity, g);
+    if (!confirm('Post this ' + entity + ' to ' + companyName(currentRealm) + '’s live QuickBooks?\n\nTotal: $' + txnMoney(total))) return;
     // confirm() is a blocking modal — nothing can switch clients while it's open, so
     // currentRealm read right after it resolves is still the client the user meant.
     // Capture it now: the network round trip below is NOT blocking, and everything
