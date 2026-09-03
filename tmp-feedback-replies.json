@@ -1,0 +1,8 @@
+{
+  "items": [
+    {
+      "id": "bcc-feedback-mtlm2jje-6j9uww",
+      "note": "Done — it's live. When you're entering a bill there's now a Total under the line items that adds up as you type, so you can check it against the supplier's invoice before you press Create instead of waiting for the confirmation box. Adding or deleting a line updates it too. Invoices and expenses use the same form, so they got it as well. One thing worth knowing: it's the exact same total the confirmation shows and the exact same one that posts to QuickBooks — it's calculated once and used in all three places, so those numbers can't drift apart. If you're editing an existing bill that has lines this form doesn't display (item lines, a discount, a bundled group), the row will say how many it's carrying, so a total bigger than what you can see on screen is explained rather than looking wrong. Thanks for asking — it was a good catch that the number only showed up after you'd committed."
+    }
+  ]
+}
