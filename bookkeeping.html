@@ -1582,7 +1582,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       source: 'manual',
       syncedAt: nowIso()
     };
-    savePeriod(p);
+    // No "Period saved." and no cleared form over a month that did not reach storage.
+    if (!savePeriod(p)) { renderAll(); return; }
     if (window.bccAudit) window.bccAudit('financial-period-save', { key: p.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, period: period, source: 'manual' } });
     if (window.bccNotifySaved) window.bccNotifySaved('Period saved.');
     document.getElementById('panel').classList.remove('open');
@@ -1648,7 +1649,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         store them. Re-running the sync cannot help, and being told the sync failed is being
         told the figures are not there when they are. */
     var nFailed = 0;
-    cos.forEach(function (co) { (co.periods || []).forEach(function (p) { try { savePeriod(p); n++; } catch (e) { nFailed++; } }); });
+    /* savePeriod REPORTS a full store now rather than throwing, so the count has to read its
+       answer — inside a try that no longer catches anything, every month counted as stored
+       whether it was or not. */
+    cos.forEach(function (co) { (co.periods || []).forEach(function (p) { if (savePeriod(p)) n++; else nFailed++; }); });
         // The endpoint answers ok:true with per-company results, and a company can carry
         // an `error` (token refresh failed, needs re-auth) or `partial` (some months
         // didn't build). Counting those as successes meant a client's KPIs and period
