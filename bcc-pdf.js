@@ -1455,6 +1455,7 @@
       var e = ST.order[i];
       if (e.srcIndex !== i) return true;              // reordered
       if (e.rot) return true;                         // rotated
+      if (e.crop) return true;                        // cropped
       if (e.ann && e.ann.length) return true;         // stamped or signed
     }
     return false;

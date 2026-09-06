@@ -8327,10 +8327,16 @@ app.http('qbo-report', {
           data = flattenQboReport(await apiGet(bsReportQuery(asOf, method)));
           data.range = { asOf, method }; data.kind = 'report'; break;
         }
-        case 'ar-aging': { data = flattenQboReport(await apiGet('/reports/AgedReceivables')); data.kind = 'report'; break; }
-        case 'ap-aging': { data = flattenQboReport(await apiGet('/reports/AgedPayables')); data.kind = 'report'; break; }
-        case 'ar-aging-detail': { data = flattenQboReport(await apiGet('/reports/AgedReceivableDetail')); data.kind = 'report'; break; }
-        case 'ap-aging-detail': { data = flattenQboReport(await apiGet('/reports/AgedPayableDetail')); data.kind = 'report'; break; }
+        /* AS OF THE SELECTED DATE, and stamped with it. These four ignored the period the
+           bookkeeper had chosen and always ran as of TODAY, with nothing on the report to say
+           so — so a September aging report pulled while closing August showed September's
+           balances under an August heading, and reconciled against nothing. Every other report
+           here honours the range and publishes it through data.range; assembleMonthlyReport
+           already passes report_date to these same four endpoints. */
+        case 'ar-aging': { const asOfAR = url.searchParams.get('asOf') || today; data = flattenQboReport(await apiGet('/reports/AgedReceivables?report_date=' + encodeURIComponent(asOfAR))); data.range = { asOf: asOfAR }; data.kind = 'report'; break; }
+        case 'ap-aging': { const asOfAP = url.searchParams.get('asOf') || today; data = flattenQboReport(await apiGet('/reports/AgedPayables?report_date=' + encodeURIComponent(asOfAP))); data.range = { asOf: asOfAP }; data.kind = 'report'; break; }
+        case 'ar-aging-detail': { const asOfARD = url.searchParams.get('asOf') || today; data = flattenQboReport(await apiGet('/reports/AgedReceivableDetail?report_date=' + encodeURIComponent(asOfARD))); data.range = { asOf: asOfARD }; data.kind = 'report'; break; }
+        case 'ap-aging-detail': { const asOfAPD = url.searchParams.get('asOf') || today; data = flattenQboReport(await apiGet('/reports/AgedPayableDetail?report_date=' + encodeURIComponent(asOfAPD))); data.range = { asOf: asOfAPD }; data.kind = 'report'; break; }
         case 'trial-balance': {
           const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
           data = flattenQboReport(await apiGet('/reports/TrialBalance?start_date=' + from + '&end_date=' + to + '&accounting_method=' + method));

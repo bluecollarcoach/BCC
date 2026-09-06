@@ -4259,6 +4259,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      tab or a dropped request can't leave a gap. Scoped by the same per-client access
      rules as the rest of the app. */
   var _qlDays = 30, _qlOutcome = '', _qlMine = false;
+  /* Three filter controls and Refresh all refire loadQboLog. Without a generation guard a
+     slower EARLIER request lands last and paints the previous filter's rows under the new
+     selection — on the log a bookkeeper checks to see what was pushed to a client's books.
+     Its sibling loadActivity has had one since it was written. */
+  var _qlGen = 0;
   function renderQboLog() {
     var body = document.getElementById('qbolog-body'); if (!body) return;
     body.innerHTML =
@@ -4300,11 +4305,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function loadQboLog() {
     var list = document.getElementById('ql_list'); if (!list) return;
     list.innerHTML = '<div style="color:var(--muted);padding:10px;">Loading…</div>';
-    var realmAt = currentRealm;
+    var realmAt = currentRealm, myGen = ++_qlGen;
     fetch('/api/audit/qbo?' + qboLogQuery(), { credentials: 'include' })
       .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
       .then(function (resp) {
-        if (currentRealm !== realmAt) return; // client switched mid-load
+        if (myGen !== _qlGen || currentRealm !== realmAt) return; // superseded, or the client switched
         if (!resp || !resp.ok) { list.innerHTML = '<div style="color:var(--muted);padding:10px;">This log isn’t available for your access level.</div>'; return; }
         var rows = resp.rows || [];
         if (!rows.length) { list.innerHTML = '<div style="color:var(--muted);padding:14px;">Nothing has been pushed to QuickBooks for this client in this range.</div>'; return; }
@@ -4338,7 +4343,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
               '<td style="padding:4px 5px;white-space:nowrap;">' + result + '</td></tr>';
           }).join('') + '</tbody></table></div>';
       })
-      .catch(function () { if (currentRealm === realmAt) list.innerHTML = '<div style="color:var(--muted);padding:10px;">Could not load the QuickBooks log.</div>'; });
+      .catch(function () { if (myGen === _qlGen && currentRealm === realmAt) list.innerHTML = '<div style="color:var(--muted);padding:10px;">Could not load the QuickBooks log.</div>'; });
   }
 
   /* localStorage is a hard ~5MB per origin, shared with every other bcc- key on this app —
@@ -4510,8 +4515,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function renderInfo() {
     var body = document.getElementById('info-body'); if (!body) return;
     var realmForPrime = currentRealm;
-    // Same three states as the WIP tab: re-prime on anything that is not a real answer.
-    if (realmForPrime && _infoPrimed[realmForPrime] !== true && _infoPrimed[realmForPrime] !== 'busy') {
+    /* Same three states as the WIP tab — but THROTTLED. The prime's callback re-renders, and
+       the re-render re-primes, so an endpoint that can never answer became an unthrottled
+       fetch loop for as long as the tab stayed open. primeRetryOk is the same 5s-per-form
+       limiter the save path already uses. */
+    if (realmForPrime && _infoPrimed[realmForPrime] !== true && _infoPrimed[realmForPrime] !== 'busy'
+        && primeRetryOk('info:' + realmForPrime)) {
       /* Re-render only if nobody is typing in the form. renderInfo rebuilds body.innerHTML,
          so an unconditional repaint when the prime lands (a few hundred ms in) threw away
          whatever had been typed by then — and the pending 500ms autosave would have gone on
@@ -11338,7 +11347,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        blip stopped the page ever asking again and the contract figures stayed missing for the
        life of the session. Re-ask on anything that is not a confirmed answer or a request
        already in flight. */
-    if (realmForPrime && _wipPrimed[realmForPrime] !== true && _wipPrimed[realmForPrime] !== 'busy') {
+    // Throttled for the same reason as renderInfo: the prime callback re-renders, the
+    // re-render re-primes, and an endpoint that can never answer became a fetch loop.
+    if (realmForPrime && _wipPrimed[realmForPrime] !== true && _wipPrimed[realmForPrime] !== 'busy'
+        && primeRetryOk('wip:' + realmForPrime)) {
       // Re-render once the server answers: the priming fetch may have just replaced the
       // local copy, and the table below is built from it.
       // Same rule as renderInfo: never rebuild the table under someone's cursor.
