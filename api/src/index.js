@@ -1025,7 +1025,16 @@ app.http('data', {
         }
         const now = new Date().toISOString();
         const who = p.userDetails || p.userId || 'unknown';
+        /* Each item costs at least one Cosmos round trip and often two — the blind-write merge
+           and the chat merge both re-read first — so a long batch runs past the ~45s ceiling
+           and is killed mid-way: some keys written, the caller told nothing, and the whole
+           batch re-sent. Stop cleanly instead and hand back the keys NOT written, so the
+           client re-queues exactly those. Truncating silently was not an option: the client
+           treats any 2xx as "all of these are stored". */
+        const PUT_DEADLINE = Date.now() + 25000;
+        const deferredKeys = [];
         for (const it of items) {
+          if (Date.now() > PUT_DEADLINE) { deferredKeys.push(it.key); continue; }
           const doc = {
             id: it.key,
             tenantId: BCC_TENANT_ID,
@@ -1133,6 +1142,12 @@ app.http('data', {
         // request, and we don't want that to return cached empty fields
         // after a UI Save → Connect flow.
         if (touchesIntegration) { _intCache.byChannel.clear(); }
+        /* 204 stays the answer when everything landed — that is the common path and no client
+           has to change for it. When the budget deferred some keys, say which: a 2xx with no
+           body means "all stored" to the caller, and these are not. */
+        if (deferredKeys.length) {
+          return { status: 200, jsonBody: { ok: true, written: items.length - deferredKeys.length, deferred: deferredKeys } };
+        }
         return { status: 204 };
       }
 
@@ -4893,7 +4908,14 @@ app.http('sharepoint-map', {
             parameters: [{ name: '@t', value: BCC_TENANT_ID }]
           }).fetchAll();
           for (const co of spComps) { if (companyPrivateBlocked(co, p)) spHidden.add(String(co.realmId)); }
-        } catch (_) { /* leave spHidden empty: a failed lookup must not drop the whole save */ }
+        } catch (spErr) {
+          /* REFUSE. The carry-over below is the only thing that preserves an owner-only
+             client's mapping — the submitted map cannot contain it, because the response
+             withholds it — so an empty spHidden deletes that entry outright. Losing the
+             private client's folder mapping on a Cosmos blip is far worse than an admin
+             pressing Save again. */
+          return { status: 503, jsonBody: { ok: false, error: 'Could not check which clients are private just now, so nothing was saved — saving without that check could unmap a client\'s folder. Try again in a moment.' } };
+        }
         for (const rid of spHidden) {
           if (Object.prototype.hasOwnProperty.call(spPrev, rid)) map[rid] = spPrev[rid];
           else delete map[rid];

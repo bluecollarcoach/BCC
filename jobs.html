@@ -338,7 +338,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       }
       html += '</div></div>';
     });
-    document.getElementById('board').innerHTML = html;
+    /* An empty pipeline with a 0 on every column is a statement about the FIRM's engagements.
+       Made over a boot pull that has not landed — or has failed — it reads to a coach as the
+       whole pipeline having been lost. Every other list in this app asks first; this page had
+       no such guard anywhere in it. */
+    var boardEl = document.getElementById('board');
+    if (!all.length && window.bccDataComplete && !window.bccDataComplete()) {
+      boardEl.innerHTML = '<div style="padding:18px;background:#f7ecec;border:1px solid #e3b4b4;border-radius:8px;color:#6a1c1c;font-size:13px;">'
+        + '<strong>Couldn’t load your engagements.</strong> Nothing is missing — this device hasn’t finished getting them from the server. '
+        + 'Reload before adding one, so a new engagement doesn’t land beside a pipeline that isn’t all here.</div>';
+      return;
+    }
+    boardEl.innerHTML = html;
     wireBoardEvents();
   }
 

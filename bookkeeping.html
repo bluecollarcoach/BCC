@@ -1034,12 +1034,21 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     p.tenantId = 'blue-collar-coach';
     p.docType = 'financial-period';
-    localStorage.setItem(p.id, JSON.stringify(p));
+    // Returns whether the month actually reached storage — the sync loop counts what LANDED.
+    return bkStore(p.id, p, 'That month');
   }
   // ...and the matching delete, same tier.
   // Returns whether it actually deleted: the caller writes an audit row and repaints, and
   // both were happening for deletions the tier had refused.
-  function deletePeriod(id) { if (bkRefuseIfReadOnly()) return false; localStorage.removeItem(id); return true; }
+  function isPeriodKey(id) { return typeof id === 'string' && id.indexOf(PER_PREFIX) === 0; }
+  function deletePeriod(id) {
+    // savePeriod's comment calls this pair symmetric; it was not. These documents ARE the
+    // client's closed months, and removeItem publishes the deletion to the whole firm.
+    if (!isPeriodKey(id)) return false;
+    if (bkRefuseIfReadOnly()) return false;
+    localStorage.removeItem(id);
+    return true;
+  }
   // Net = Revenue − COGS − Operating Expenses (COGS is 0 for legacy/manual periods).
   // Prefer QBO's authoritative Net Income (includes other income/expense); fall
   // back to Revenue − COGS − OpEx for manual/legacy periods without netCents.
@@ -4438,11 +4447,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (typedBack) {
       d.id = 'bcc-client-info-' + realm; d.tenantId = 'blue-collar-coach'; d.docType = 'client-info';
       d.realmId = realm; d.updatedAt = nowIso(); d.updatedBy = myUpn();
-      try {
-        localStorage.setItem(d.id, JSON.stringify(d));
+      if (bkStore(d.id, d, 'This client’s details')) {
         var sA = document.getElementById('ci_status'); if (sA) sA.textContent = 'Saved';
-      } catch (e) {
-        (window.bccNotify || alert)('This client’s details were NOT saved — this browser has run out of local storage space. Copy anything you have just typed, free some space, then save again.', 'error', 15000);
+      } else {
         var sB = document.getElementById('ci_status'); if (sB) sB.textContent = 'NOT saved — this browser is out of storage space';
       }
     }
@@ -4957,7 +4964,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     t.assigneeUpn = (document.getElementById('te_assignee') || {}).value || '';
     t.note = ((document.getElementById('te_note') || {}).value || '').slice(0, 4000);
     t.updatedAt = nowIso(); t.updatedBy = myUpn();
-    localStorage.setItem(id, JSON.stringify(t));
+    // Do not notify a new assignee about an edit that was never stored.
+    if (!bkStore(id, t, 'That task')) { renderTasks(); return; }
     if (String(t.assigneeUpn || '').toLowerCase() !== prevAssignee) taskAssignNotify(t);
     if (window.bccAudit) window.bccAudit('client-task-update', { key: id, path: '/bookkeeping.html', meta: { realmId: currentRealm } });
     _taskEdit = null; renderTasks(); if (typeof updateDrawer === 'function') updateDrawer();
@@ -5031,7 +5039,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     } else {
       t.status = done ? 'done' : 'open'; t.doneAt = done ? nowIso() : null;
     }
-    t.updatedAt = nowIso(); localStorage.setItem(id, JSON.stringify(t));
+    t.updatedAt = nowIso();
+    // A refused write must not leave the box ticked: renderTasks repaints from storage.
+    if (!bkStore(id, t, 'That task')) { renderTasks(); return; }
     // A task named "Month end complete" is a workflow hand-off: completing it
     // notifies the meeting scheduler to book the month-end client meeting.
     if (done && /month[\s-]*end\s*complete/i.test(t.title || '')) {
@@ -6872,15 +6882,21 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      prefix, so it was swept into the list and painted as a phantom notarization request with
      no document and no client, and its Delete button wiped the firm's setting. Match on the
      docType the request writer actually stamps rather than on the prefix alone. */
-  function allNotary() { var pre = currentRealm ? notaryPrefix() : 'bcc-notary-'; var out = []; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (!k || k.indexOf(pre) !== 0) continue; if (k === NOTARY_CONTACT_KEY) continue; try { var r = JSON.parse(localStorage.getItem(k)); if (r && r.id && r.docType === 'notary-request') out.push(r); } catch (e) {} } return out; }
+  // The KEY is the identity, not the `id` field inside the document — a record whose stored
+  // id disagreed sent every later write and DELETE at whatever that field named.
+  function isNotaryKey(id) { return typeof id === 'string' && id.indexOf('bcc-notary-') === 0 && id !== NOTARY_CONTACT_KEY; }
+  function allNotary() { var pre = currentRealm ? notaryPrefix() : 'bcc-notary-'; var out = []; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (!k || k.indexOf(pre) !== 0) continue; if (k === NOTARY_CONTACT_KEY) continue; try { var r = JSON.parse(localStorage.getItem(k)); if (r && r.docType === 'notary-request') { r.id = k; out.push(r); } } catch (e) {} } return out; }
   function loadNotaryReq(id) { try { return JSON.parse(localStorage.getItem(id)); } catch (e) { return null; } }
   /* The gate lives HERE, on the one write, rather than on each button that reaches it — and
      it reports whether the write happened, because three callers went on to say "saved" and
      repaint the row from an object they had already mutated in memory. */
   function saveNotaryReq(r) {
+    if (!r || !isNotaryKey(r.id)) return false;   // never write outside the notary namespace
     if (bkRefuseIfReadOnly()) return false;
     r.updatedAt = nowIso(); r.updatedBy = myUpn();
-    localStorage.setItem(r.id, JSON.stringify(r));
+    // saveNotaryReq's whole contract is "did the write happen" — three callers say "saved"
+    // and repaint from it, so a full store must answer false rather than throw past them.
+    if (!bkStore(r.id, r, 'This notarization request')) return false;
     if (window.bccAudit) window.bccAudit('client-file-upload', { key: r.id, path: '/bookkeeping.html', meta: { realmId: currentRealm || 'firm', source: 'notary' } });
     return true;
   }
@@ -6972,7 +6988,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     body.querySelectorAll('[data-nt-del]').forEach(function (b) { b.onclick = function () {
       if (bkRefuseIfReadOnly()) return;
       if (!confirm('Delete this notarization request? (Files already uploaded stay in Files.)')) return;
-      localStorage.removeItem(b.getAttribute('data-nt-del')); renderNotary();
+      /* removeItem is a firm-wide publish of a DELETION, and this id came out of a DOM
+         attribute built from the record's own field. Anything outside the notary namespace is
+         not this button's to delete. */
+      var ntDelId = b.getAttribute('data-nt-del');
+      if (!isNotaryKey(ntDelId)) { renderNotary(); return; }
+      localStorage.removeItem(ntDelId); renderNotary();
     }; });
   }
   function notaryMsg(id, txt) { var el = document.querySelector('[data-nt-msg="' + id + '"]'); if (el) { el.textContent = txt; if (txt) setTimeout(function () { if (el.textContent === txt) el.textContent = ''; }, 4000); } }
@@ -9405,15 +9426,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       return true;
     } catch (e) { return false; }
   }
+  function isCprKey(id) { return typeof id === 'string' && id.indexOf('bcc-cpr-') === 0; }
   function cprSave(silent, ratesConfirmed) {
     if (bkRefuseIfReadOnly()) return;
     if (!cprDraft) return;
+    if (!isCprKey(cprDraft.id)) return;   // never write outside the certified-payroll namespace
     cprDraft.updatedAt = nowIso(); cprDraft.updatedBy = myUpn();
     // ...but only once the JOB is named: the number is meaningless until then, and clearing
     // it on a save made before the project name was typed froze the client-wide number and
     // permanently disabled the per-job renumbering for that report.
     if (String(cprDraft.projectName || '').trim()) cprDraft.autoNo = false;
-    localStorage.setItem(cprDraft.id, JSON.stringify(cprDraft));
+    /* Guarded, like cprKeepDraft twelve lines above. Unwrapped, a full store threw out of the
+       click handler: nothing stored, no audit row, no copy filed to the client's Files, and
+       no message — on a payroll that gets filed with the State. */
+    if (!bkStore(cprDraft.id, cprDraft, 'This certified payroll')) return;
     if (window.bccAudit) window.bccAudit('cpr-save', { key: cprDraft.id, path:'/bookkeeping.html', meta:{ realmId: currentRealm, payrollNo: cprDraft.payrollNo } });
     cprSaveToFiles(cprDraft, silent, ratesConfirmed); // also file a copy in the client's documents
   }
@@ -10519,16 +10545,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       return true;
     } catch (e) { return false; }
   }
+  function isPayappKey(id) { return typeof id === 'string' && id.indexOf('bcc-payapp-') === 0; }
   function payappSave(silent) {
     if (bkRefuseIfReadOnly()) return;
     if (!payappDraft) return;
+    if (!isPayappKey(payappDraft.id)) return;   // never write outside the pay-application namespace
     /* Once this application names its project it has a contract-scoped number, and saving is
        the point at which that number becomes a fact — it goes onto a G702 filed with the
        owner and architect. Freeze it, exactly as cprSave does for a certified payroll, so
        reopening the application later and touching the project name cannot move it. */
     if (String(payappDraft.projectName || '').trim()) payappDraft.autoNo = false;
     payappDraft.updatedAt = nowIso(); payappDraft.updatedBy = myUpn();
-    localStorage.setItem(payappDraft.id, JSON.stringify(payappDraft));
+    // Guarded, like payappKeepDraft above. This document goes to the owner and the architect.
+    if (!bkStore(payappDraft.id, payappDraft, 'This pay application')) return;
     if (window.bccAudit) window.bccAudit('payapp-save', { key: payappDraft.id, path: '/bookkeeping.html', meta: { realmId: currentRealm, appNo: payappDraft.appNo } });
     payappSaveToFiles(payappDraft, silent);
   }

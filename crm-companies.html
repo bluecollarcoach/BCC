@@ -344,7 +344,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var out = [];
     for (var i = 0; i < localStorage.length; i++) {
       var k = localStorage.key(i); if (!k || k.indexOf(COMPANY_PREFIX) !== 0) continue;
-      try { var c = JSON.parse(localStorage.getItem(k)); if (c && c.id) out.push(c); } catch (_) {}
+      // Trust the KEY, not the document's own `id` — a record whose stored id disagreed sent
+      // every later write and delete at whatever that field named. crm.html already does this.
+      try { var c = JSON.parse(localStorage.getItem(k)); if (c) { c.id = k; out.push(c); } } catch (_) {}
     }
     return out.sort(function (a, b) { return (b.updatedAt || '').localeCompare(a.updatedAt || ''); });
   }
@@ -404,7 +406,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (!isCompanyKey(c.id)) c.id = COMPANY_PREFIX + uid();
     if (!c.tenantId) c.tenantId = 'blue-collar-coach';
     c.docType = 'company';
-    localStorage.setItem(c.id, JSON.stringify(c));
+    /* localStorage is a hard ~5MB per origin shared with every other bcc- key. Unwrapped, the
+       throw escaped this function AND the import loop above it: some companies created, the
+       rest silently absent, and the whole thing reported as a failed sync. NULL is the
+       refusal contract every caller here already checks. */
+    try {
+      localStorage.setItem(c.id, JSON.stringify(c));
+    } catch (e) {
+      (window.bccNotify || alert)('That was NOT saved — this browser has run out of local storage space. Nothing earlier has been lost. Close some tabs or ask an admin to clear an old chat channel, then try again.', 'error', 15000);
+      return null;
+    }
     return c;
   }
   function deleteCompany(id) { if (!isCompanyKey(id)) return; if (ccRefuseIfReadOnly()) return; localStorage.removeItem(id); }
@@ -552,6 +563,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function importOwnCustomers() {
     if (!_ownBooksRealm) return;
     if (ccRefuseIfReadOnly()) return;
+    /* This import de-duplicates against what this device already holds. Run before the
+       bootstrap pull has landed, that set is EMPTY — nothing matches, every customer is
+       created again, and the firm's CRM is doubled for everybody by one button press.
+       De-duplication is only meaningful against the whole set, so refuse until we have it. */
+    if (window.bccDataComplete && !window.bccDataComplete()) {
+      (window.bccNotify || alert)('Not yet — this device hasn’t finished loading the companies you already have, so an import now would create a second copy of every one of them. Give it a moment, or reload, then try again.', 'warn', 12000);
+      return;
+    }
     var btn = document.getElementById('custImportBtn'); if (btn) { btn.disabled = true; }
     setSyncMeta('Reading customers from QuickBooks…');
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(_ownBooksRealm) + '/customers', { credentials: 'include' })
@@ -559,7 +578,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .then(function (resp) {
         if (!resp || !resp.ok) throw new Error((resp && resp.error) || 'could not read customers');
         var existing = allCompanies();
-        var byQbo = {}, byName = {}, byRaw = {};
+        /* Null-prototype maps: these are keyed by company NAME, and on a plain object a
+           customer called "Constructor" or "toString" matches Object.prototype — so that
+           client reads as already imported and is silently skipped for ever. */
+        var byQbo = Object.create(null), byName = Object.create(null), byRaw = Object.create(null);
         existing.forEach(function (c) {
           if (c.qboCustomerId) byQbo[String(c.qboCustomerId)] = c;
           byName[normName(c.name)] = c;
@@ -787,7 +809,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (matched.length === 0) {
       emptyEl.hidden = false;
       var big = emptyEl.querySelector('.big');
-      if (big) big.textContent = all.length === 0 ? 'No companies yet.' : 'No matches.';
+      /* "No companies yet." is a claim about the FIRM's CRM — only make it once this device
+         has actually been told what the firm holds. "No matches." is about the SEARCH the
+         person just typed and is always a real answer. crm.html's twin does exactly this. */
+      if (big) big.textContent = all.length !== 0 ? 'No matches.'
+        : ((window.bccDataComplete && !window.bccDataComplete())
+            ? 'Couldn’t load your companies — this device hasn’t finished getting them from the server. Reload to try again.'
+            : 'No companies yet.');
       return;
     }
     emptyEl.hidden = true;

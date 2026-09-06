@@ -1101,6 +1101,23 @@
             throw new Error('PUT failed ' + r.status);
           }
         }
+        /* The server answers 204 when every key landed. When a long batch ran past its time
+           budget it answers 200 with the keys it did NOT write — re-queue exactly those. A
+           2xx with no body means "all stored", so without this the deferred keys would be
+           dropped from the outbox as sent and the user's edits would be gone. */
+        if (r.ok && r.status !== 204) {
+          var putBody = null;
+          try { putBody = await r.json(); } catch (e) { putBody = null; }
+          var deferred = (putBody && Array.isArray(putBody.deferred)) ? putBody.deferred : [];
+          if (deferred.length) {
+            for (var dfi = 0; dfi < deferred.length; dfi++) {
+              var dk = deferred[dfi];
+              // A newer local write to the same key wins — it is already queued and is fresher.
+              if (!pending.has(dk) && Object.prototype.hasOwnProperty.call(rawByKey, dk)) pending.set(dk, rawByKey[dk]);
+            }
+            schedulePush();
+          }
+        }
         // Audit: one entry per batch flush, listing the keys touched
         if (!putRefused) window.bccAudit && window.bccAudit('data-write', { meta: { keys: puts.map(function (p) { return p.key; }) } });
       }

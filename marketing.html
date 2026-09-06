@@ -379,7 +379,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (matched.length === 0) {
       rowsEl.innerHTML = '';
       emptyEl.hidden = false;
-      emptyEl.querySelector('.big').textContent = all.length === 0 ? 'No campaigns yet.' : 'No matches.';
+      // Same rule as crm.html: a claim about the firm waits until the pull has landed.
+      emptyEl.querySelector('.big').textContent = all.length !== 0 ? 'No matches.'
+        : ((window.bccDataComplete && !window.bccDataComplete())
+            ? 'Couldn’t load your campaigns — this device hasn’t finished getting them from the server. Reload to try again.'
+            : 'No campaigns yet.');
       return;
     }
     emptyEl.hidden = true;
