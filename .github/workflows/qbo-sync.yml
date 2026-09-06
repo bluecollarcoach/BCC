@@ -29,12 +29,14 @@ jobs:
           # get to as `remaining`; keep calling until that list is empty. Idempotent, so an
           # overlapping or repeated pass is harmless.
           ok=0
+          body='{}'
           for pass_no in 1 2 3 4 5 6 7 8; do
             code=""
             for attempt in 1 2 3; do
               code=$(curl -sS -o /tmp/out.json -w '%{http_code}' --max-time 600 \
                 -X POST 'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/cron/qbo-sync' \
-                -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}")
+                -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}" \
+                -H 'Content-Type: application/json' -d "$body")
               echo "pass $pass_no attempt $attempt -> HTTP $code"
               cat /tmp/out.json 2>/dev/null || true; echo
               if [ "$code" = "200" ]; then break; fi
@@ -45,6 +47,10 @@ jobs:
             left=$(node -e "try{const j=require('/tmp/out.json');console.log((j.remaining||[]).length)}catch(e){console.log(0)}")
             echo "companies still to sync: $left"
             if [ "$left" = "0" ]; then exit 0; fi
+            # Carry the remaining work FORWARD — [{realmId, fromMonth}]. Without it the next
+            # pass re-queried every company and restarted each at month 0, so the loop redid
+            # the same front companies and the tail of the client list was never synced.
+            body=$(node -e "try{const j=require('/tmp/out.json');process.stdout.write(JSON.stringify({resume:j.remaining||[]}))}catch(e){process.stdout.write('{}')}")
             sleep 5
           done
           # Still not finished after eight passes: that is a real problem, not a slow night.

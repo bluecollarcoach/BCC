@@ -5828,6 +5828,35 @@ app.http('integrations-qbo-sync', {
         return allow.length === 0 || allow.indexOf(who) >= 0;
       };
 
+      /* RESUME. `body.resume` is the previous pass's `remaining` — [{realmId, fromMonth}] —
+         and it is what makes the multi-pass loop converge. Without honouring it the route
+         re-queried every company and restarted each one at month 0, so the front of the list
+         was re-synced every pass and the tail never was. */
+      let startAt = null;
+      if (body && Array.isArray(body.resume) && body.resume.length) {
+        startAt = {};
+        const wanted = [];
+        for (const r of body.resume.slice(0, 200)) {
+          const rid = String((r && r.realmId) || '');
+          if (!/^[0-9]{4,}$/.test(rid)) continue;
+          startAt[rid] = Math.max(0, Math.min(11, parseInt(r && r.fromMonth, 10) || 0));
+          wanted.push(rid);
+        }
+        if (wanted.length) {
+          const docs = [];
+          for (const rid of wanted) {
+            const d = await c.item('bcc-qbo-company-' + rid, BCC_TENANT_ID).read().then(x => x.resource)
+              .catch(e => { if (e && (e.code === 404 || e.statusCode === 404)) return null; throw e; });
+            // Access is re-checked on every pass, exactly as it is on the first.
+            if (d && callerCanSee(d) && d.enabled !== false && d.refreshToken) docs.push(d);
+          }
+          if (!docs.length) return { jsonBody: { ok: true, companies: [], remaining: [] } };
+          const out2 = await syncQboCompanies(c, fields, docs, new Date(), startAt);
+          out2.forEach(o => logAudit('qbo-sync', { user: auditUser(request), meta: { realmId: o.realmId, companyName: o.companyName, periodsBuilt: o.periodsBuilt || 0, partial: !!o.partial, error: o.error, trigger: 'manual-resume' } }));
+          return { jsonBody: { ok: true, companies: out2, remaining: out2.remaining || [] } };
+        }
+      }
+
       // Which companies to sync — one (body.realmId) or every connected company.
       let companyDocs;
       if (body && body.realmId) {
@@ -5895,27 +5924,45 @@ async function qboFetch(url, opts, ms) {
    attached as a property so neither caller's forEach/map has to change, and a caller that
    ignores it still gets exactly what it got before. */
 const SYNC_BUDGET_MS = 22000;
-async function syncQboCompanies(c, fields, companyDocs, now) {
+/* `startAt` is { realmId: firstMonthIndex } — the MONTH CURSOR a previous pass stopped at.
+   Without it the resume never converged: each pass restarted every company at month 0 with a
+   fresh budget, redid the same front months, and left the same tail unsynced for ever. */
+async function syncQboCompanies(c, fields, companyDocs, now, startAt) {
   const basic = Buffer.from(fields.clientId + ':' + fields.clientSecret).toString('base64');
   const syncDeadline = Date.now() + SYNC_BUDGET_MS;
+  const resumeFrom = startAt || {};
   const queue = companyDocs.slice();
   const out = [];
-  const notAttempted = [];
+  /* Everything this pass did not finish: companies never started, AND companies whose month
+     loop was cut short — the second kind was missing entirely, which is why a truncated
+     company was never came back for. Each entry carries the month to resume at. */
+  const notFinished = [];
   async function worker() {
     while (queue.length) {
       // Do not START a company there is no budget left to finish: being killed mid-company is
       // how a client's months half-land and the run reports nothing at all.
-      if (Date.now() > syncDeadline) { notAttempted.push.apply(notAttempted, queue.splice(0)); return; }
+      if (Date.now() > syncDeadline) {
+        for (const left of queue.splice(0)) {
+          notFinished.push({ realmId: left && left.realmId, companyName: left && left.companyName, fromMonth: resumeFrom[left && left.realmId] || 0 });
+        }
+        return;
+      }
       const comp = queue.shift();
-      try { out.push(await syncOneCompany(comp)); }
+      try {
+        const r = await syncOneCompany(comp, Math.max(0, Math.min(11, parseInt(resumeFrom[comp.realmId], 10) || 0)));
+        out.push(r);
+        if (r && r.stoppedAtMonth != null) {
+          notFinished.push({ realmId: comp.realmId, companyName: comp.companyName, fromMonth: r.stoppedAtMonth });
+        }
+      }
       catch (e) { out.push({ realmId: comp && comp.realmId, companyName: comp && comp.companyName, error: String(e && e.message || e) }); }
     }
   }
   await Promise.all(Array.from({ length: Math.min(4, queue.length) || 1 }, worker));
-  out.remaining = notAttempted.map(x => ({ realmId: x && x.realmId, companyName: x && x.companyName }));
+  out.remaining = notFinished;
   return out;
 
-  async function syncOneCompany(comp) {
+  async function syncOneCompany(comp, fromMonth) {
         // comp.environment is authoritative (stamped at connect time). The shared
         // connector field must NOT override a company upward to production —
         // otherwise flipping the connector to production re-points existing
@@ -6077,9 +6124,13 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
            is more than the platform will allow on a slow night, and the months that never ran
            must be reported as UNATTEMPTED rather than blended into "failed" — one means try
            again, the other means something is wrong with the client's books. */
-        let monthsSkipped = 0;
-        for (let i = 0; i < 12; i++) {
-          if (Date.now() > syncDeadline) { monthsSkipped = 12 - i; break; }
+        /* Starts where the previous pass stopped, so each call advances instead of redoing the
+           same front months against a fresh budget. stoppedAtMonth is what the caller resumes
+           from; null means this company finished all twelve. */
+        let monthsSkipped = 0, stoppedAtMonth = null;
+        const startMonth = Math.max(0, Math.min(11, parseInt(fromMonth, 10) || 0));
+        for (let i = startMonth; i < 12; i++) {
+          if (Date.now() > syncDeadline) { monthsSkipped = 12 - i; stoppedAtMonth = i; break; }
           monthResults.push(await fetchMonth(i));
         }
         for (let k = 0; k < monthResults.length; k++) {
@@ -6106,7 +6157,12 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
            Re-read and patch only the fields this sync owns, guarded by that read's ETag. */
         const built = periods.length - failedWrites;
         const nowIsoStr = new Date().toISOString();
-        const syncStatus = built > 0 ? ((failedMonths || failedWrites) ? 'partial' : 'ok') : 'failed';
+        /* monthsSkipped counts here. failedMonths sees only months that were ATTEMPTED, so
+           without this a run cut off after four months reported 'ok' and stamped "synced
+           today" over eight months that were never refreshed. Not-yet-run and failed are
+           different things — both mean this company is NOT fully synced. */
+        const incomplete = failedMonths > 0 || failedWrites > 0 || monthsSkipped > 0;
+        const syncStatus = built > 0 ? (incomplete ? 'partial' : 'ok') : 'failed';
         for (let attempt = 0; attempt < 3; attempt++) {
           const fresh = await c.item(comp.id, BCC_TENANT_ID).read().then(r => r.resource).catch(() => null);
           if (!fresh) break;
@@ -6121,10 +6177,10 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
             break;
           } catch (e) { if (e && e.code !== 412) break; }   // 412 = someone else wrote; re-read and retry
         }
-        try { await c.items.upsert({ id: 'bcc-qbo-debug-sync-' + comp.realmId, tenantId: BCC_TENANT_ID, docType: 'qbo-debug', at: new Date().toISOString(), realmId: comp.realmId, env, base, periodsBuilt: periods.length, failedMonths, firstStatus: diag.firstStatus, firstBody: diag.firstBody }); } catch (_) {}
-        return { realmId: comp.realmId, companyName: comp.companyName, monthsSkipped,
+        try { await c.items.upsert({ id: 'bcc-qbo-debug-sync-' + comp.realmId, tenantId: BCC_TENANT_ID, docType: 'qbo-debug', at: new Date().toISOString(), realmId: comp.realmId, env, base, periodsBuilt: periods.length, failedMonths, monthsSkipped, startMonth, firstStatus: diag.firstStatus, firstBody: diag.firstBody }); } catch (_) {}
+        return { realmId: comp.realmId, companyName: comp.companyName, monthsSkipped, stoppedAtMonth,
           periodsBuilt: built, failedWrites,
-          partial: failedMonths > 0 || failedWrites > 0,
+          partial: incomplete,
           /* Report the failure this function already computed. Without `error`, a night where
              every ProfitAndLoss call was throttled returned partial:true and NO error, so the
              `anyOk` test below saw a healthy run, the endpoint answered 200 { ok: true }, the
@@ -6138,8 +6194,13 @@ async function syncQboCompanies(c, fields, companyDocs, now) {
              figures simply not there, with nobody told. syncStatus already says 'partial';
              this is what makes the report agree with it. */
           error: built > 0
-            ? ((failedMonths || failedWrites)
-                ? (failedMonths + ' month(s) could not be fetched and ' + failedWrites + ' could not be written — this client\'s figures are incomplete')
+            ? (incomplete
+                ? ([
+                    failedMonths ? (failedMonths + ' month(s) could not be fetched') : null,
+                    failedWrites ? (failedWrites + ' could not be written') : null,
+                    // The case that used to report itself as a clean success.
+                    monthsSkipped ? (monthsSkipped + ' month(s) were not reached before the time budget ran out') : null
+                  ].filter(Boolean).join(', ') + ' — this client\'s figures are incomplete')
                 : undefined)
             : ('no periods synced' + (diag.firstStatus ? ' (first response HTTP ' + diag.firstStatus + (diag.firstBody ? ': ' + String(diag.firstBody).slice(0, 200) : '') + ')' : '')),
           firstStatus: diag.firstStatus, firstBody: diag.firstBody, periods };
@@ -6170,13 +6231,33 @@ app.http('cron-qbo-sync', {
       if (fields._readFailed) return { status: 503, jsonBody: { ok: false, error: 'could not read the QuickBooks app credentials — nothing was synced' } };
       if (!fields.clientId || !fields.clientSecret) return { status: 200, jsonBody: { ok: true, skipped: 'QBO app credentials not configured' } };
       const c = container();
+      const body = await request.json().catch(() => ({}));
+      /* The workflow's next pass sends back the previous `remaining` — [{realmId, fromMonth}].
+         Honouring it is what makes the loop converge: without it every pass re-queried every
+         company and restarted each one at month 0, so the same front companies were synced
+         again and again and the tail was never reached. */
+      let startAt = null, resumeIds = null;
+      if (body && Array.isArray(body.resume) && body.resume.length) {
+        startAt = {}; resumeIds = [];
+        for (const r of body.resume.slice(0, 500)) {
+          const rid = String((r && r.realmId) || '');
+          if (!/^[0-9]{4,}$/.test(rid)) continue;
+          startAt[rid] = Math.max(0, Math.min(11, parseInt(r && r.fromMonth, 10) || 0));
+          resumeIds.push(rid);
+        }
+        if (!resumeIds.length) { startAt = null; resumeIds = null; }
+      }
       const { resources } = await c.items.query({
         query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="qbo-company"',
         parameters: [{ name: '@t', value: BCC_TENANT_ID }]
       }).fetchAll();
-      const companyDocs = resources.filter(co => co && co.enabled !== false && co.refreshToken);
-      if (!companyDocs.length) return { jsonBody: { ok: true, synced: 0, note: 'no connected companies' } };
-      const out = await syncQboCompanies(c, fields, companyDocs, new Date());
+      let companyDocs = resources.filter(co => co && co.enabled !== false && co.refreshToken);
+      if (resumeIds) {
+        const want = new Set(resumeIds);
+        companyDocs = companyDocs.filter(co => want.has(String(co.realmId)));
+      }
+      if (!companyDocs.length) return { jsonBody: { ok: true, synced: 0, remaining: [], note: resumeIds ? 'nothing left to resume' : 'no connected companies' } };
+      const out = await syncQboCompanies(c, fields, companyDocs, new Date(), startAt);
       out.forEach(o => logAudit('qbo-sync', { user: 'cron', meta: { realmId: o.realmId, companyName: o.companyName, periodsBuilt: o.periodsBuilt || 0, partial: !!o.partial, error: o.error, trigger: 'nightly' } }));
       const summary = out.map(o => ({ realmId: o.realmId, companyName: o.companyName, periodsBuilt: o.periodsBuilt, partial: o.partial, error: o.error }));
       context.log('cron-qbo-sync: synced ' + out.length + ' companies', JSON.stringify(summary));

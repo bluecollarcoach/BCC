@@ -635,8 +635,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     return out.sort(function (a, b) { return (b.at || '').localeCompare(a.at || ''); });
   }
+  // Returns the record on success and NULL on refusal — the contract the comment below
+  // promises and the callers now check. It used to return undefined either way.
   function saveConvo(cv) {
-    if (!crmCanEdit()) { crmRefusedToast(); return; }
+    if (!crmCanEdit()) { crmRefusedToast(); return null; }
     cv.updatedAt = nowIso();
     if (!cv.createdAt) cv.createdAt = cv.updatedAt;
     if (!cv.at) cv.at = cv.updatedAt;
@@ -652,6 +654,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       (window.bccNotify || alert)('That was NOT saved — this browser has run out of local storage space. Nothing earlier has been lost. Close some tabs or ask an admin to clear an old chat channel, then try again.', 'error', 15000);
       return null;
     }
+    return cv;   // the record on success — the other half of the NULL-on-refusal contract
   }
   function deleteConvo(id) { if (!isConvoKey(id)) return; if (!crmCanEdit()) { crmRefusedToast(); return; } localStorage.removeItem(id); }
 
@@ -666,8 +669,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     return out.sort(function (a, b) { return (b.weekOf || '').localeCompare(a.weekOf || '') || (b.createdAt || '').localeCompare(a.createdAt || ''); });
   }
+  // Same contract as saveConvo and saveContact: the record, or NULL.
   function saveWeeklyNote(w) {
-    if (!crmCanEdit()) { crmRefusedToast(); return; }
+    if (!crmCanEdit()) { crmRefusedToast(); return null; }
     w.updatedAt = nowIso();
     if (!w.createdAt) w.createdAt = w.updatedAt;
     if (!isWeeklyKey(w.id)) w.id = WEEKLY_PREFIX + uid();
@@ -682,6 +686,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       (window.bccNotify || alert)('That was NOT saved — this browser has run out of local storage space. Nothing earlier has been lost. Close some tabs or ask an admin to clear an old chat channel, then try again.', 'error', 15000);
       return null;
     }
+    return w;    // the record on success — the other half of the NULL-on-refusal contract
   }
   function deleteWeeklyNote(id) { if (!isWeeklyKey(id)) return; if (!crmCanEdit()) { crmRefusedToast(); return; } localStorage.removeItem(id); }
   // Monday of the current week, YYYY-MM-DD (default "week of" for a new note).
@@ -1048,7 +1053,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       updated.customerType = document.getElementById('d-type').value;
       var dCompany = document.getElementById('d-companyId');
       if (dCompany) updated.companyId = dCompany.value || null;
-      saveContact(updated);
+      /* saveContact already returns NULL on refusal — this button ignored it, toasted
+         "Contact updated." and then repainted from STORAGE, which discarded every field the
+         person had just typed. renderDetailKeepTyped carries the typed values forward so
+         they can fix the problem and save again. */
+      if (!saveContact(updated)) { renderDetailKeepTyped(updated.id); return; }
       if (window.bccAudit) window.bccAudit('contact-update', { key: updated.id, path: '/crm.html' });
       if (window.bccNotifySaved) window.bccNotifySaved('Contact updated.');
       else (window.bccNotify || alert)('Saved.', 'success');
@@ -1144,7 +1153,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         at: nowIso(),
         createdBy: (window.bccUser && window.bccUser.userDetails) || ''
       };
-      saveConvo(cv);
+      /* Clear the boxes only once it is STORED. Clearing regardless took the summary and
+         details off the screen as well as failing to save them — for a view-only user, or a
+         full browser store, the note existed nowhere afterwards. The audit row went out too,
+         recording a conversation that was never written. */
+      if (!saveConvo(cv)) { renderDetailKeepTyped(c.id); return; }
       if (window.bccAudit) window.bccAudit('convo-add', { key: cv.id, path: '/crm.html', meta: { type: cv.type, summary: summary } });
       document.getElementById('convoSummary').value = '';
       document.getElementById('convoDetails').value = '';
@@ -1169,7 +1182,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         note: note,
         createdBy: (window.bccUser && window.bccUser.userDetails) || ''
       };
-      saveWeeklyNote(w);
+      // Same rule: no "Weekly note saved." and no cleared box over a refused write.
+      if (!saveWeeklyNote(w)) { renderDetailKeepTyped(c.id); return; }
       if (window.bccAudit) window.bccAudit('weekly-note-add', { key: w.id, path: '/crm.html', meta: { weekOf: w.weekOf } });
       if (window.bccNotifySaved) window.bccNotifySaved('Weekly note saved.');
       document.getElementById('weeklyNote').value = '';

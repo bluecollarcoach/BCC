@@ -237,7 +237,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      refused, and so the refusal is not delivered minutes later by the sync layer. */
   function jobsCanEdit() {
     if (!window.bccCanEdit || !(window.bccUser && window.bccUser.userDetails)) return true;
-    return !!window.bccCanEdit('engagements');
+    /* 'jobs', not 'engagements'. BCC_APP_KEYS has no 'engagements', so it fell through to the
+       member default map, missed there too, and resolved to 'none' — every non-admin was
+       refused every write on this page, including people an admin had explicitly granted
+       Engagements edit. The server maps bcc-engagement- to 'jobs' (SINGLE_APP_KEY_PREFIXES),
+       so the page was refusing exactly what the server would have accepted. */
+    return !!window.bccCanEdit('jobs');
   }
   var _jobsViewWarned = false;
   function jobsRefuseReadOnly() {

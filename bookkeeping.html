@@ -1595,20 +1595,43 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        11" and left eight clients' figures stale with nothing saying so. Bounded, so a server
        that kept reporting work left could never spin here forever. */
     var _syncPasses = 0, _syncAll = [];
-    var runSync = function () {
+    /* Each pass SENDS BACK the previous `remaining` — [{realmId, fromMonth}]. Without it the
+       server re-queried every company and restarted each at month 0, so the loop redid the
+       front of the list every pass and the tail of the client list was never synced. */
+    var runSync = function (resume) {
       _syncPasses++;
-      return fetch('/api/integrations/qbo/sync', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: body })
+      var payload = body;
+      if (resume && resume.length) {
+        try { payload = JSON.stringify(Object.assign(JSON.parse(body || '{}'), { resume: resume })); }
+        catch (e) { payload = JSON.stringify({ resume: resume }); }
+      }
+      return fetch('/api/integrations/qbo/sync', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: payload })
         .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
         .then(function (j) {
           _syncAll = _syncAll.concat(j.companies || []);
           var left = (j.remaining || []).length;
-          if (left && _syncPasses < 12) { btn.textContent = 'Syncing… (' + left + ' left)'; return runSync(); }
+          if (left && _syncPasses < 12) { btn.textContent = 'Syncing… (' + left + ' left)'; return runSync(j.remaining); }
           return { companies: _syncAll, remaining: j.remaining || [] };
         });
     };
-    runSync()
+    runSync(null)
       .then(function (resp) {
-        var cos = resp.companies || [];
+        /* One row per CLIENT, not per pass. A company that took three passes appeared three
+           times, so three clients reported as "Synced 9 of 9 company(ies)" — a count of
+           attempts dressed up as a count of clients. Periods still sum, because each pass
+           genuinely builds a different set of months. */
+        var _byRealm = {};
+        (resp.companies || []).forEach(function (co) {
+          var k = String(co.realmId || co.companyName || '?');
+          var prev = _byRealm[k];
+          if (!prev) { _byRealm[k] = Object.assign({}, co); return; }
+          prev.periods = (prev.periods || []).concat(co.periods || []);
+          prev.periodsBuilt = (prev.periodsBuilt || 0) + (co.periodsBuilt || 0);
+          prev.partial = prev.partial || co.partial;
+          prev.error = prev.error || co.error;      // the first real complaint wins
+          prev.needsReauth = prev.needsReauth || co.needsReauth;
+        });
+        var cos = Object.keys(_byRealm).map(function (k) { return _byRealm[k]; });
         var n = 0;
         /* Count what LANDED, and keep a local storage failure apart from a sync failure. An
         unwrapped write threw out of this loop and the catch below reported "Sync failed" — but
@@ -10748,12 +10771,26 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // only in that input until it blurs.
     if (pane && ae && pane.contains(ae)) { _close = fresh; if (mergedBack) saveClose(); return; }
     _close = fresh;
-    if (mergedBack) saveClose();
-    renderClose();
+    /* Repaint only when the document being painted from is the one storage holds. A REFUSED
+       merge leaves _close ahead of storage, and renderClose re-enters primeClose -> adoptClose
+       -> saveClose, which refuses again: unbounded recursion that kills the tab. The branch
+       restores above make that impossible on their own; this makes it impossible twice. */
+    var savedOk = true;
+    if (mergedBack) savedOk = (saveClose() !== false);
+    if (savedOk) renderClose();
+  }
+  /* Returns FALSE on every refusal, and always leaves _close equal to what storage holds.
+     Both matter: adoptClose's early-out compares the two, and a refusal that leaves them
+     apart makes the adopt→save→repaint→adopt cycle unable to terminate. */
+  function closeReload() {
+    var r = null;
+    try { r = loadCloseDoc(_close && _close.period); } catch (e) { r = null; }
+    if (r) _close = r;
+    return false;
   }
   function saveClose() {
-    if (!_close) return;
-    if (bkRefuseIfReadOnly()) return;
+    if (!_close) return false;
+    if (bkRefuseIfReadOnly()) return closeReload();
     if (_closePrimed[_close.id] !== true) {
       /* Refuse rather than publish a blank checklist over a month that has been worked. The
          control is never disabled — the retry lives behind this handler — and the message is
@@ -10776,7 +10813,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           });
         }
       }
-      return;
+      return closeReload();
     }
     _close.updatedAt = nowIso(); _close.updatedBy = myUpn();
     /* A refused write must not leave the tick showing. Put the in-memory document BACK to
@@ -10785,11 +10822,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        adoptClose, adoptClose merges the still-typed values back and calls saveClose again,
        which fails again — unbounded recursion on precisely the full-storage path this branch
        exists to handle. */
-    if (!bkStore(_close.id, _close, 'That step')) {
-      var _reload = null; try { _reload = loadCloseDoc(_close.period); } catch (e) {}
-      if (_reload) _close = _reload;
-      return false;
-    }
+    if (!bkStore(_close.id, _close, 'That step')) return closeReload();
     return true;
   }
   /* Read-modify-write for every Close mutation. _close is a module global captured when the
