@@ -1980,7 +1980,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           var T = { cash: 0, in90: 0, out90: 0, opNet: 0, p: [0, 0, 0] };
           comps.forEach(function (c, i) { var r = calc(c, st[i]); T.cash += c.cash || 0; T.in90 += c.in90 || 0; T.out90 += c.out90 || 0; T.opNet += r.opNet; T.p[0] += r.proj[0]; T.p[1] += r.proj[1]; T.p[2] += r.proj[2]; });
           var tr = document.getElementById('cf_totalrow'); if (!tr) return;
-          tr.innerHTML = '<td><strong>All companies</strong></td><td class="num"><strong>' + money2(T.cash) + '</strong></td><td colspan="3"></td>' +
+          /* Never label a partial sum "All companies": say how many clients are in it and
+             flag it, so a total that is short by a client cannot be read as the firm's. */
+          var totLabel = errs.length
+            ? '<strong>' + comps.length + ' of ' + (comps.length + errs.length) + ' companies</strong>'
+              + '<div style="color:var(--burgundy);font-size:10.5px;font-weight:400;">' + errs.length + ' not read — total is short</div>'
+            : '<strong>All companies</strong>';
+          tr.innerHTML = '<td>' + totLabel + '</td><td class="num"><strong>' + money2(T.cash) + '</strong></td><td colspan="3"></td>' +
             '<td class="num">' + fmtBold(T.opNet) + '</td><td class="num" style="color:#0f7a3d;"><strong>+' + money2(T.in90) + '</strong></td><td class="num" style="color:var(--burgundy);"><strong>−' + money2(T.out90) + '</strong></td>' +
             '<td class="num">' + fmtBold(T.p[0]) + '</td><td class="num">' + fmtBold(T.p[1]) + '</td><td class="num">' + fmtBold(T.p[2]) + '</td>';
         }
@@ -10042,6 +10048,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       pg.drawRectangle({ x: x, y: y, width: w, height: h, borderColor: opt.border || line, borderWidth: opt.bw == null ? 0.5 : opt.bw, color: opt.fill });
     }
 
+    /* The employees actually PRINTED. Hoisted above the column spec because the "Other"
+       deduction headers below must be derived from this list, not from r.employees — a blank
+       or removed row was titling a column that appears nowhere beneath it. */
+    var emps = (r.employees || []).filter(function (e) { return e && ((e.name || '').trim() || !cprEmpIsBlank(e)); });
+
     // Column spec — widths sum to <= PW-2M (744). Day columns spliced in after OT/ST.
     var cols = [
       { key:'name',  w:100, align:'left',   h:'Employee name,\naddress & ID' },
@@ -10055,8 +10066,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       { key:'fica',  w:30,  align:'right',  h:'FICA' },
       { key:'fed',   w:28,  align:'right',  h:'Fed\ntax' },
       { key:'state', w:30,  align:'right',  h:'State\ntax' },
-      { key:'oth1',  w:28,  align:'right',  h:'Other' + (cprOtherLabel(r.employees, 1) ? '\n' + cprOtherLabel(r.employees, 1) : '') },
-      { key:'oth2',  w:28,  align:'right',  h:'Other' + (cprOtherLabel(r.employees, 2) ? '\n' + cprOtherLabel(r.employees, 2) : '') },
+      { key:'oth1',  w:28,  align:'right',  h:'Other' + (cprOtherLabel(emps, 1) ? '\n' + cprOtherLabel(emps, 1) : '') },
+      { key:'oth2',  w:28,  align:'right',  h:'Other' + (cprOtherLabel(emps, 2) ? '\n' + cprOtherLabel(emps, 2) : '') },
       { key:'ded',   w:38,  align:'right',  h:'Tot\nded.' },
       { key:'net',   w:42,  align:'right',  h:'Net\nwages' }
     ];
@@ -10068,7 +10079,6 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var cx = M; cols.forEach(function (c) { c.x = cx; cx += c.w; });
     function col(k) { for (var i = 0; i < cols.length; i++) if (cols[i].key === k) return cols[i]; return null; }
 
-    var emps = (r.employees || []).filter(function (e) { return e && ((e.name || '').trim() || !cprEmpIsBlank(e)); });
     var chunks = []; for (var c = 0; c < Math.max(1, Math.ceil(emps.length / 8)); c++) chunks.push(emps.slice(c * 8, c * 8 + 8));
     var totals = { hrs:0, job:0, gp:0, ded:0, net:0 };
     emps.forEach(function (e) { var cc = computeEmp(e); totals.hrs += cc.totalHrs; totals.job += cc.grossJob; totals.gp += cc.grossPeriod; totals.ded += cc.ded; totals.net += cc.net; });

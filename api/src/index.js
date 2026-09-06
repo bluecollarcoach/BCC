@@ -4122,21 +4122,38 @@ async function docAccessFilter(p) {
      own overlay is client-side only; the API handed over contracts, SOPs and signed agreements
      to a still-valid session cookie.
      The check is deliberately scoped to firm-wide docs. CLIENT-folder documents stay governed
-     by driveClientAccess below, so bookkeeping.html's client files and CRM's contact documents
-     keep working for a bookkeeper whose Documents tier is None — setting that tier is meant to
-     hide the Documents page, not to break the Bookkeeping and CRM tabs. */
+     by driveClientAccess below, so bookkeeping.html's client files keep working for a
+     bookkeeper whose Documents tier is None — setting that tier is meant to hide the Documents
+     page, not to break the Bookkeeping tab. (This once said the same of CRM's contact
+     documents. It was not true: those are firm-wide docs carrying linkedContactId, not client
+     folders, so this gate emptied every contact's panel. See the CRM tier just below.) */
+  /* Two tiers, because the firm-wide bucket holds two different things. Browsing the library
+     is a Documents question. A named contact's own attachments — reached from the contact
+     record, listed in the CRM panel — is a CRM one, and judging those on the Documents tier
+     silently emptied that panel for every CRM user set to Documents = None. Client-folder docs
+     are unaffected: driveClientAccess below still decides those. */
   const canSeeFirmWide = tierAtLeast(await appTierFor(p, 'documents'), 'view');
+  const canSeeContactDocs = tierAtLeast(await appTierFor(p, 'crm'), 'view');
   const cache = new Map(); // realm -> boolean
-  return async (meta) => {
+  // Counts what this filter WITHHELD, so a caller can tell "you have none" from "you may not
+  // see these" — the two render as completely different sentences to the person reading them.
+  const allow = async (meta) => {
     const realm = docFolderRealm(meta);
-    if (!realm) return canSeeFirmWide;          // non-client docs: the Documents tier decides
-    if (noFin) return false;                    // 'tasks'/'none' see no client financial docs
-    if (cache.has(realm)) return cache.get(realm);
+    if (!realm) {
+      const okFw = canSeeFirmWide || (!!(meta && meta.linkedContactId) && canSeeContactDocs);
+      if (!okFw) allow.hidden++;
+      return okFw;
+    }
+    if (noFin) { allow.hidden++; return false; } // 'tasks'/'none' see no client financial docs
+    if (cache.has(realm)) { const v = cache.get(realm); if (!v) allow.hidden++; return v; }
     const acc = await driveClientAccess(p, realm);
     const ok = !acc.err;
     cache.set(realm, ok);
+    if (!ok) allow.hidden++;
     return ok;
   };
+  allow.hidden = 0;
+  return allow;
 }
 
 function driveTokenUrl(creds) { return creds.provider === 'google' ? 'https://oauth2.googleapis.com/token' : ('https://login.microsoftonline.com/' + creds.tenant + '/oauth2/v2.0/token'); }
@@ -4809,12 +4826,21 @@ app.http('sharepoint-import-all', {
       const who = (p.userDetails || p.userId || '').toLowerCase();
       const batch = pending.slice(0, SP_BATCH);
       const results = [];
+      /* The crawl above takes 18s of the ~45s ceiling; this half — up to 20 files of up to
+         25 MB, each a Graph download plus a blob upload — had no clock at all. Stop cleanly
+         with the files not attempted left in `pending`, so the browser's round loop makes
+         forward progress instead of the request being killed and the round reporting nothing. */
+      const SP_DL_DEADLINE = Date.now() + 20000;
+      let spDlStopped = false;
       /* A RETRY BUDGET for the round, not one retry per file. This handler already does 20
          downloads and 20 blob uploads inside a Static Web Apps managed function, which has a
          hard ~45s ceiling — twenty extra 800ms waits would push a slow round over it, and a
          round that times out fails ENTIRELY, which is worse than the blip being retried. */
       let retryBudget = 3;
       for (const f of batch) {
+        // Leave room for a whole file: starting a 25 MB download with two seconds left is how
+        // the request dies mid-upload with a blob written and no record of it.
+        if (Date.now() > SP_DL_DEADLINE) { spDlStopped = true; break; }
         try {
           if (f.size > MAX_UPLOAD_BYTES) { results.push({ id: f.id, name: f.name, ok: false, error: 'over 25 MB' }); continue; }
           let dr = await fetch('https://graph.microsoft.com/v1.0/drives/' + driveId + '/items/' + encodeURIComponent(f.id) + '/content', { headers: { Authorization: 'Bearer ' + access } });
@@ -4861,8 +4887,11 @@ app.http('sharepoint-import-all', {
       }
       const importedNow = results.filter(r => r.ok).length;
       const failed = results.filter(r => !r.ok);
-      // Anything that failed would otherwise loop forever — count it as processed.
-      const remaining = Math.max(0, pending.length - batch.length);
+      /* Anything that FAILED would otherwise loop forever — count it as processed. Anything
+         the clock never reached is a different thing entirely and must stay in the count, or
+         the files skipped by SP_DL_DEADLINE would be reported as done. results.length is what
+         was actually attempted; batch.length is only what was offered. */
+      const remaining = Math.max(0, pending.length - results.length);
       logAudit('document-upload', { user: who, path: '/api/integrations/sharepoint/import-all', meta: { realmId, imported: importedNow, source: 'sharepoint-bulk' } });
       // If enumeration itself was cut short, `totalFiles` is not the total and `done`
       // does not mean "everything is imported" — say which, rather than reporting a
@@ -4885,8 +4914,10 @@ app.http('sharepoint-import-all', {
         // How many are still queued AFTER this batch, so the caller can show real progress
         // rather than inferring it from a counter that only ever goes up.
         queued: pending.length,
-        done: remaining === 0 && !enumTruncated,
-        enumTruncated, enumNote
+        // A round that stopped on its own clock is NOT done, whatever `remaining` says about
+        // the batch it was given — the caller must come back for the files it did not reach.
+        done: remaining === 0 && !enumTruncated && !spDlStopped,
+        enumTruncated, enumNote, stoppedEarly: spDlStopped
       } };
     } catch (e) { context.error('sharepoint-import-all', e); return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
@@ -5209,6 +5240,11 @@ app.http('drive-files', {
           items = items.concat(batch.map(f => ({ id: f.id, name: f.name, folder: f.mimeType === 'application/vnd.google-apps.folder', mimeType: f.mimeType || null, size: f.size ? Number(f.size) : null, modified: f.modifiedTime || null, webUrl: f.webViewLink || null })));
           pageToken = j.nextPageToken || '';
           if (!pageToken || items.length >= DRIVE_MAX) break;
+          /* Stop paging once the verification budget is spent: another page costs a round trip
+             whose results cannot be checked, on a request already near the ceiling. AFTER the
+             pageToken check on purpose — claiming truncation when there was no next page tells
+             someone their search is incomplete when it is whole. */
+          if (search && gRootId && (gBudget <= 0 || Date.now() > gDeadline)) { truncated = true; break; }
         }
         if (pageToken) truncated = true;
       } else {
@@ -6358,20 +6394,28 @@ app.http('cron-cleanup', {
     const secret = process.env.CRON_SECRET || '';
     const given = request.headers.get('x-bcc-cron-secret') || '';
     if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    const CLEAN_T0 = Date.now();
     const RETENTION_DAYS = 30;
     const OAUTHSTATE_RETENTION_DAYS = 1;
     const MAX_DELETES_PER_RUN = 3000;
+    /* From request entry, and shared by BOTH purges — they run one after the other, so a
+       per-purge clock would allow twice the budget. Being killed here reports nothing at all
+       for a run that deleted thousands of rows; stopping cleanly says how far it got, and the
+       backlog simply continues tomorrow, which is what the per-run cap already assumes. */
+    const CLEAN_DEADLINE = CLEAN_T0 + 30000;
     async function purge(docType, cutoffIso) {
       const c = container();
       const { resources } = await c.items.query({
         query: 'SELECT TOP ' + MAX_DELETES_PER_RUN + ' c.id FROM c WHERE c.tenantId=@t AND c.docType=@dt AND (c.ts < @cutoff OR c.at < @cutoff)',
         parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@dt', value: docType }, { name: '@cutoff', value: cutoffIso }]
       }).fetchAll();
-      let deleted = 0;
+      let deleted = 0, stopped = false;
       for (const r of resources) {
+        if (Date.now() > CLEAN_DEADLINE) { stopped = true; break; }
         try { await c.item(r.id, BCC_TENANT_ID).delete(); deleted++; } catch (e) { if (e.code !== 404) throw e; }
       }
-      return { deleted, scanned: resources.length, hitCap: resources.length >= MAX_DELETES_PER_RUN };
+      // `stopped` is not a failure: the rest goes tomorrow, exactly as hitCap already means.
+      return { deleted, scanned: resources.length, hitCap: resources.length >= MAX_DELETES_PER_RUN, stopped };
     }
     try {
       const access = await purge('access', new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString());
@@ -8276,6 +8320,10 @@ app.http('qbo-report', {
   authLevel: 'anonymous',
   route: 'integrations/qbo/companies/{realmId}/report',
   handler: withAccessLog(async (request, context) => {
+    // Anchored at ENTRY. Every scan below measures against this, not against the moment it
+    // happens to start — the access resolve, the token refresh and a vendor pull all come
+    // out of the same ~45s the platform allows.
+    const RPT_T0 = Date.now();
     const p = principal(request);
     if (!p) return unauthorized();
     if (!domainAllowed(p)) return domainBlocked();
@@ -8406,9 +8454,15 @@ app.http('qbo-report', {
             const matchAcct = (lines, path) => { for (const l of (lines || [])) { const d = l[path]; const v = d && d.AccountRef && String(d.AccountRef.value); if (v && uncatIds[v]) return uncatIds[v]; } return null; };
             // Page through each entity (can't filter by nested line-account in QBO SQL, so scan+filter).
             // Bounded to 6 pages (6k txns / 24mo) to stay under the gateway timeout; flag if capped.
+            /* A wall clock as well as the page cap — its twin scan 45 lines below has had one
+               since sweep 21, and this one did not. Six pages of 1000 transactions is a lot of
+               QuickBooks on a slow night, and being killed at the ceiling leaves this screen
+               with nothing rather than a partial list marked capped. */
+            const frDeadline = RPT_T0 + 22000;
             const pageScan = async (name, path, mk) => {
               const out = []; let start = 1;
               for (let page = 0; page < 6; page++) {
+                if (Date.now() > frDeadline) { scanCapped = true; return out; }
                 const j = await apiGet('/query?query=' + encodeURIComponent("SELECT * FROM " + name + " WHERE TxnDate >= '" + from + "' ORDERBY TxnDate DESC STARTPOSITION " + start + ' MAXRESULTS 1000'));
                 const arr = (j.QueryResponse && j.QueryResponse[name]) || [];
                 arr.forEach(r => { const acc = matchAcct(r.Line, path); if (acc) out.push(mk(r, acc)); });
@@ -8454,7 +8508,7 @@ app.http('qbo-report', {
              this screen with no list and no message, on the worklist that decides who gets a
              1099-NEC — whereas stopping early and saying "capped" is a partial answer somebody
              can act on. */
-          const v1099Deadline = Date.now() + 22000;
+          const v1099Deadline = RPT_T0 + 22000;
           const pageScan = async (name, sumFn) => {
             let start = 1;
             for (let p = 0; p < 8; p++) {
@@ -8670,7 +8724,25 @@ function qboWriteSummary(entity, f, b) {
   else if (entity === 'journalentry') {
     // A journal entry balances, so "total" is the debit side, not the sum of all lines.
     out.total = lines.filter(l => l && l.postingType === 'Debit').reduce((s, l) => s + qboAmount(l.amount), 0);
-  } else if (lines.length) out.total = Math.round(sum * 100) / 100;
+  } else if (lines.length || (b.op === 'update' && Array.isArray(f.keepLines) && f.keepLines.length)) {
+    /* Include the preserved, unrendered lines — item lines, discounts, group bundles. The
+       confirmation the bookkeeper approved counts them (txnPostedTotal), so auditing the push
+       without them records a figure that is not the one they agreed to, on the log the firm
+       treats as authoritative for what was attempted. Same arithmetic, same exclusions. */
+    const KEEP_NONMONEY = { SubTotalLineDetail: 1, DescriptionOnly: 1 };
+    // b.op guarded, exactly as the two payload builders guard it — otherwise the log would
+    // report a figure that was never sent.
+    const keepSum = ((b.op === 'update' && Array.isArray(f.keepLines)) ? f.keepLines : []).reduce((t, l) => {
+      if (!l || KEEP_NONMONEY[l.DetailType]) return t;
+      if (l.DetailType === 'GroupLineDetail') {
+        const gl = (l.GroupLineDetail && l.GroupLineDetail.Line) || [];
+        return t + gl.reduce((u, cl) => u + qboAmount(cl && cl.Amount), 0);
+      }
+      const a2 = qboAmount(l.Amount);
+      return t + (l.DetailType === 'DiscountLineDetail' ? -a2 : a2);
+    }, 0);
+    out.total = Math.round((sum + keepSum) * 100) / 100;
+  }
   // Master records (customer/vendor/item/account/project) carry a name, not a total.
   const nm = f.displayName || f.name;
   if (nm) out.name = String(nm).slice(0, 160);
@@ -9335,6 +9407,10 @@ app.http('ai-enrich-company', {
   authLevel: 'anonymous',
   route: 'ai/enrich-company',
   handler: withAccessLog(async (request, context) => {
+    /* Up to eight 9-second site fetches, then a 35-second AI call. Started blind, that is well
+       past the ~45s ceiling and the person gets a dead request with no message. Measured from
+       entry so the AI call is only begun when there is time left to finish it. */
+    const ENRICH_T0 = Date.now();
     const p = principal(request);
     if (!p) return unauthorized();
     if (!domainAllowed(p)) return domainBlocked();
@@ -9354,7 +9430,12 @@ app.http('ai-enrich-company', {
       const site = await fetchSiteText(website);
       if (!site || !site.text || site.text.length < 40) return { jsonBody: { ok: false, error: 'Could not read that website.', website: website } };
       let aboutText = '';
-      try { const ab = await fetchSiteText(site.url.replace(/\/+$/, '') + '/about'); if (ab && ab.text) aboutText = ab.text.slice(0, 6000); } catch (_) {}
+      /* The /about page is a bonus, not the answer — skip it rather than spend a second
+         9-second fetch that pushes the AI call past the ceiling. Enrichment from the home
+         page alone is a good result; a killed request is not. */
+      if (Date.now() - ENRICH_T0 < 12000) {
+        try { const ab = await fetchSiteText(site.url.replace(/\/+$/, '') + '/about'); if (ab && ab.text) aboutText = ab.text.slice(0, 6000); } catch (_) {}
+      }
       const content = (site.text.slice(0, 9000) + (aboutText ? '\n\n[/about page]\n' + aboutText : '')).slice(0, 14000);
       const tool = {
         name: 'record_company',
@@ -9376,10 +9457,16 @@ app.http('ai-enrich-company', {
         }
       };
       const model = process.env.AI_MODEL || 'claude-sonnet-4-6';
+      /* Give the AI call what is actually left of the ceiling instead of its stock 35s. Under
+         6 seconds is not enough for a real answer, so say so plainly rather than start a call
+         the platform will kill — a killed request renders as nothing at all, and the person is
+         left staring at a spinner that never resolves. */
+      const enrichLeft = Math.min(AI_TIMEOUT_MS, 40000 - (Date.now() - ENRICH_T0));
+      if (enrichLeft < 6000) return { status: 504, jsonBody: { ok: false, website: website, error: 'Reading that website took too long. Try again, or fill the details in by hand.' } };
       const r = await aiFetch(JSON.stringify({
           model: model, max_tokens: 1024, tools: [tool], tool_choice: { type: 'tool', name: 'record_company' },
           messages: [{ role: 'user', content: [{ type: 'text', text: 'Below is text scraped from the website of ' + (company || website) + '. Extract factual company details and call record_company. Only include facts clearly supported by the text — OMIT any field you are unsure about; never guess years in business or address. If a founded year is given, compute yearsInBusiness from ' + (new Date().getFullYear()) + '.\n\n=== WEBSITE CONTENT ===\n' + content }] }]
-        }), key);
+        }), key, enrichLeft);
       if (!r.ok) { const t = (await r.text().catch(() => '')).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'AI error ' + r.status, detail: t } }; }
       const j = await r.json();
       const tu = (j.content || []).find(c => c.type === 'tool_use');
@@ -10572,6 +10659,7 @@ app.http('qbo-companyinfo', {
 app.http('qbo-cashflow', {
   methods: ['GET'], authLevel: 'anonymous', route: 'integrations/qbo/cashflow',
   handler: withAccessLog(async (request, context) => {
+    const CF_T0 = Date.now();   // the budget below measures from HERE, not from the fan-out
     const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
     try {
       // The 'tasks' tier's documented "no financials" guarantee was only enforced by
@@ -10612,14 +10700,18 @@ app.http('qbo-cashflow', {
          slow company took the whole response down — the modal rendered nothing instead of the
          forecasts that had completed — and nothing here could finish inside the platform's
          ~45s ceiling once the firm had more than a handful of clients. */
-      const CF_DEADLINE = Date.now() + 30000;
+      /* Anchored at entry and RESERVED: a company is six-plus serial QuickBooks round trips,
+         so permitting one to START with a second left is how the request gets killed anyway.
+         CF_RESERVE is what one company plausibly needs; below that, name it as unreached. */
+      const CF_DEADLINE = CF_T0 + 30000;
       const CF_CALL_MS = 12000;
+      const CF_RESERVE = 8000;
       const cfQueue = visible.slice();
       const companies = [];
       const cfWorker = async () => {
         while (cfQueue.length) {
           const comp = cfQueue.shift();
-          if (Date.now() > CF_DEADLINE) {
+          if (Date.now() > CF_DEADLINE - CF_RESERVE) {
             // Named, not dropped: a client silently missing from a cash-flow forecast reads
             // as a client with no cash flow.
             companies.push({ realmId: comp.realmId, companyName: comp.companyName, error: 'took too long to read — open this client on its own to get its forecast' });
@@ -11230,7 +11322,9 @@ app.http('documents-list-create', {
         const allow = await docAccessFilter(p);
         const items = [];
         for (const d of resources.slice(0, DOC_PAGE)) { if (await allow(d)) items.push(d); }
-        return { jsonBody: { items, truncated: docTruncated } };
+        // `hidden` is what access removed. Without it an empty list is indistinguishable from
+        // "this contact has no documents", and every screen prints the second one.
+        return { jsonBody: { items, truncated: docTruncated, hidden: allow.hidden } };
       } catch (err) {
         context.error('documents list error', err);
         return { status: 500, jsonBody: { error: 'list failed', detail: String(err && err.message || err) } };

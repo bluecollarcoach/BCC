@@ -1218,13 +1218,23 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .then(function (d) {
         var box2 = document.getElementById('contactDocs'); if (!box2) return;
         var docs = (d && d.items) || [];
-        if (!docs.length) { box2.innerHTML = '<p class="muted" style="font-size:13px;">No documents linked to this contact yet.</p>'; return; }
+        /* "None linked" is a claim about the CONTACT; an access filter emptying the list is a
+           claim about the VIEWER. Printing the first when the second is true tells someone the
+           signed agreement was never filed. `hidden` is what the server withheld. */
+        if (!docs.length) {
+          box2.innerHTML = (d && d.hidden)
+            ? '<p class="muted" style="font-size:13px;">' + d.hidden + ' document' + (d.hidden === 1 ? '' : 's') + ' linked to this contact — your access does not include them.</p>'
+            : '<p class="muted" style="font-size:13px;">No documents linked to this contact yet.</p>';
+          return;
+        }
         box2.innerHTML = '<ul style="list-style:none;padding:0;margin:0;">' + docs.map(function (dd) {
           return '<li style="padding:8px 0;border-bottom:1px solid #f1efe9;font-size:13.5px;">' +
             (dd.storageKey ? '<a href="/api/documents/' + esc(dd.id) + '/download" target="_blank" rel="noreferrer" style="color:var(--ink);text-decoration:none;font-weight:600;">' : '<span style="color:var(--ink);font-weight:600;">') +
             esc(dd.name || '(no name)') + (dd.storageKey ? '</a>' : '</span>') +
             ' <span class="muted" style="font-size:11.5px;">· ' + esc(dd.folder || '/') + '</span></li>';
-        }).join('') + '</ul><div style="margin-top:10px;font-size:12px;"><a href="documents.html?contact=' + esc(contactId) + '" style="color:var(--gold-deep);text-decoration:none;font-weight:700;">See all in Documents →</a></div>';
+        }).join('') + '</ul>'
+          + ((d && d.hidden) ? '<p class="muted" style="font-size:12px;margin:6px 0 0;">' + d.hidden + ' more not shown — outside your access.</p>' : '')
+          + '<div style="margin-top:10px;font-size:12px;"><a href="documents.html?contact=' + esc(contactId) + '" style="color:var(--gold-deep);text-decoration:none;font-weight:700;">See all in Documents →</a></div>';
       })
       .catch(function () { var b = document.getElementById('contactDocs'); if (b) b.innerHTML = '<p class="muted" style="font-size:13px;">Could not load documents.</p>'; });
   }
