@@ -2483,6 +2483,211 @@ app.http('errorlog', {
   })
 });
 
+/* ============================ NIGHTLY DATA BACKUP ============================
+ * A daily snapshot of every Cosmos document to blob storage, keeping 7 days.
+ *
+ * The whole firm's work lives in ONE Cosmos container: client info, WIP, certified payrolls,
+ * pay applications, the month-end close checklists, tasks, time, chat, CRM. A bad write, a bad
+ * delete, or a bug in this file can take any of it, and until now there was nothing to go back
+ * to. This is that.
+ *
+ * FOUR RULES, and the second is the one that matters most:
+ *  1. IT NEVER CLAIMS TO HAVE FINISHED WHEN IT HASN'T. The manifest — the only thing that marks
+ *     a day's backup as usable — is written after the LAST page and nowhere else. A run that is
+ *     cut off leaves parts with no manifest, which reads as exactly what it is: incomplete.
+ *  2. RETENTION CANNOT RUN UNLESS TODAY'S BACKUP COMPLETED. Pruning on a failed night would
+ *     delete the last good copies to make room for a broken one. That is the version of this
+ *     feature that loses the data it exists to protect, so the prune is gated on the manifest
+ *     it just wrote and on nothing else.
+ *  3. SECRETS ARE REDACTED. A backup is a second copy of every QuickBooks and Microsoft refresh
+ *     token in the firm, sitting in a blob. They come out, and the manifest records which
+ *     fields were removed so a restore knows those connections need reconnecting rather than
+ *     appearing to have empty tokens.
+ *  4. IT FITS THE PLATFORM. Managed Functions stop at ~45s, so each call takes a budget from
+ *     request entry, writes whole pages, and hands back a cursor. The workflow calls again
+ *     until it is done, and a day that never gets there simply has no manifest.
+ *
+ * Its own container, NOT the documents container: this one file holds every client's data, and
+ * nine routes in this API serve blobs out of bcc-docs. Keeping them apart means none of them
+ * can ever address it.
+ * ========================================================================================= */
+const BACKUP_KEEP_DAYS = 7;
+const BACKUP_PAGE = 200;            // documents per Cosmos page
+const BACKUP_BUDGET_MS = 28000;     // from request entry; one page must still fit after the check
+let _backupContainer = null;
+async function getBackupContainer() {
+  if (_backupContainer) return _backupContainer;
+  const conn = process.env.AZURE_STORAGE_CONNECTION_STRING;
+  if (!conn) throw new Error('AZURE_STORAGE_CONNECTION_STRING not set');
+  const { BlobServiceClient } = require('@azure/storage-blob');
+  const name = process.env.AZURE_STORAGE_CONTAINER_BACKUPS || 'bcc-backups';
+  const cont = BlobServiceClient.fromConnectionString(conn).getContainerClient(name);
+  // No public access — this is every client's data in one place.
+  await cont.createIfNotExists();
+  _backupContainer = cont;
+  return cont;
+}
+/* Field names whose VALUES are credentials. Explicit, plus a suffix rule, because a backup that
+   leaks the firm's QuickBooks tokens is worse than no backup at all. Deliberately narrow: over-
+   redacting silently breaks a restore, so ids, emails and anything a person typed stay intact. */
+const BACKUP_SECRET_KEYS = new Set([
+  'refreshtoken', 'accesstoken', 'refresh_token', 'access_token', 'idtoken', 'id_token',
+  'clientsecret', 'client_secret', 'password', 'passcode', 'privatekey', 'apikey', 'api_key',
+  'cronsecret', 'webhooksecret', 'vapidprivatekey'
+]);
+function backupIsSecretKey(k) {
+  const low = String(k || '').toLowerCase();
+  if (BACKUP_SECRET_KEYS.has(low)) return true;
+  return /(^|[^a-z])(secret)$/.test(low) || low.endsWith('refreshtoken') || low.endsWith('accesstoken');
+}
+/* Returns a COPY with credentials replaced, and counts what it removed by field name so the
+   manifest can say so. Depth-capped: these documents are user data and a cycle or a pathological
+   nesting must not take the backup down. */
+function backupRedact(doc, counts, depth) {
+  depth = depth || 0;
+  if (depth > 12 || doc === null || typeof doc !== 'object') return doc;
+  if (Array.isArray(doc)) return doc.map(x => backupRedact(x, counts, depth + 1));
+  const out = {};
+  for (const k of Object.keys(doc)) {
+    if (backupIsSecretKey(k)) {
+      if (doc[k] !== null && doc[k] !== undefined && doc[k] !== '') {
+        counts[k] = (counts[k] || 0) + 1;
+        out[k] = '[redacted-by-backup]';
+      } else {
+        out[k] = doc[k];
+      }
+    } else {
+      out[k] = backupRedact(doc[k], counts, depth + 1);
+    }
+  }
+  return out;
+}
+// The firm's own day, not the server's: a backup labelled with tomorrow's date from 7pm Central
+// onward would make "yesterday's copy" mean something different every evening.
+function backupDayStr(d) {
+  try { return (d || new Date()).toLocaleDateString('en-CA', { timeZone: 'America/Chicago' }); }
+  catch (e) { return (d || new Date()).toISOString().slice(0, 10); }
+}
+
+/**
+ * POST /api/cron/backup   { day?, cursor?, part?, docs? }
+ * One page-run of the daily snapshot. Answers `done:false` with a cursor while there is more;
+ * the caller posts again with that cursor until `done:true`. CRON_SECRET only.
+ */
+app.http('cron-backup', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'cron/backup',
+  handler: async (request, context) => {
+    const T0 = Date.now();
+    const secret = process.env.CRON_SECRET || '';
+    const given = request.headers.get('x-bcc-cron-secret') || '';
+    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    try {
+      const b = await request.json().catch(() => ({}));
+      const day = /^\d{4}-\d{2}-\d{2}$/.test(String(b.day || '')) ? String(b.day) : backupDayStr();
+      let cursor = b.cursor ? String(b.cursor) : undefined;
+      let part = Math.max(0, parseInt(b.part, 10) || 0);
+      let docsSoFar = Math.max(0, parseInt(b.docs, 10) || 0);
+      let bytesSoFar = Math.max(0, parseInt(b.bytes, 10) || 0);
+      const redacted = (b.redacted && typeof b.redacted === 'object' && !Array.isArray(b.redacted)) ? b.redacted : {};
+
+      const cont = await getBackupContainer();
+      const c = container();
+      const prefix = 'backups/' + day + '/';
+      let done = false, pages = 0;
+
+      while (true) {
+        // Leave room for a WHOLE page — reading 200 documents and then being killed before the
+        // blob write means that page is simply missing from a backup that looks fine.
+        if (Date.now() - T0 > BACKUP_BUDGET_MS) break;
+        const it = c.items.query(
+          { query: 'SELECT * FROM c WHERE c.tenantId=@t', parameters: [{ name: '@t', value: BCC_TENANT_ID }] },
+          { maxItemCount: BACKUP_PAGE, continuationToken: cursor }
+        );
+        const page = await it.fetchNext();
+        const rows = page.resources || [];
+        if (rows.length) {
+          const ndjson = rows.map(r => JSON.stringify(backupRedact(r, redacted, 0))).join('\n') + '\n';
+          const buf = Buffer.from(ndjson, 'utf8');
+          const name = prefix + 'part-' + String(part + 1).padStart(4, '0') + '.ndjson';
+          /* The blob write is what makes the page real. It is awaited and unguarded on purpose:
+             a failure here must reach the handler's catch and answer 500, because the ONE thing
+             this endpoint must never do is carry on and later write a manifest over a gap. */
+          await cont.getBlockBlobClient(name).uploadData(buf, { blobHTTPHeaders: { blobContentType: 'application/x-ndjson' } });
+          part += 1;
+          docsSoFar += rows.length;
+          bytesSoFar += buf.length;
+        }
+        cursor = page.continuationToken;
+        pages += 1;
+        if (!cursor) { done = true; break; }
+      }
+
+      if (!done) {
+        // Explicitly NOT a manifest. Nothing downstream may treat this as a usable backup.
+        return { jsonBody: { ok: true, day, done: false, part, docs: docsSoFar, bytes: bytesSoFar, cursor, redacted, pages } };
+      }
+
+      /* THE MANIFEST IS THE BACKUP. Written only here, after the last page, so a day without one
+         is a day whose snapshot is incomplete — which is a fact somebody can act on, unlike a
+         directory of parts that merely looks plausible. */
+      const finishedAt = new Date().toISOString();
+      const manifest = {
+        complete: true, day, parts: part, documents: docsSoFar, bytes: bytesSoFar,
+        finishedAt, tenantId: BCC_TENANT_ID, format: 'ndjson', keepDays: BACKUP_KEEP_DAYS,
+        redactedFields: redacted,
+        note: 'One JSON document per line. Fields listed in redactedFields were replaced with '
+          + '"[redacted-by-backup]" — those connections must be reconnected after a restore, not '
+          + 'restored from this file.'
+      };
+      const mBuf = Buffer.from(JSON.stringify(manifest, null, 2), 'utf8');
+      await cont.getBlockBlobClient(prefix + 'manifest.json').uploadData(mBuf, { blobHTTPHeaders: { blobContentType: 'application/json' } });
+
+      /* RETENTION, and only now. Reached only after the manifest above was written, so a night
+         that failed cannot delete the copies that did work — the prune runs to make room for a
+         backup that exists, never for one that might. */
+      const cutoff = new Date(Date.now() - BACKUP_KEEP_DAYS * 86400000);
+      const cutoffDay = backupDayStr(cutoff);
+      const prunedDays = new Set();
+      let pruneError = null, pruneDeleted = 0, pruneFailed = 0, pruneIncomplete = false;
+      try {
+        /* Its OWN budget, measured from the same request entry. The manifest is already
+           written at this point, so the backup is safe whatever happens here — but overrunning
+           the platform ceiling would kill the response, and the workflow would then report a
+           failed backup for a day that actually succeeded. Whatever is left simply goes
+           tomorrow night; an expired copy lingering one more day costs nothing. */
+        const PRUNE_DEADLINE = T0 + 38000;
+        for await (const blob of cont.listBlobsFlat({ prefix: 'backups/' })) {
+          if (Date.now() > PRUNE_DEADLINE) { pruneIncomplete = true; break; }
+          const m = /^backups\/(\d{4}-\d{2}-\d{2})\//.exec(blob.name);
+          if (!m) continue;
+          // STRICTLY older than the cutoff day, and never today's own folder.
+          if (m[1] >= cutoffDay || m[1] === day) continue;
+          // Counted as DELETED only when it actually was — a day listed as pruned whose blobs
+          // are still there is the same lie in the other direction.
+          try { await cont.deleteBlob(blob.name); pruneDeleted++; prunedDays.add(m[1]); }
+          catch (de) { pruneFailed++; }
+        }
+      } catch (e) {
+        // A failed prune is not a failed backup — say it, keep the good news, keep the files.
+        pruneError = String((e && e.message) || e).slice(0, 200);
+      }
+      const pruned = Array.from(prunedDays).sort();
+
+      context.log('cron-backup: ' + day + ' complete — ' + docsSoFar + ' docs in ' + part + ' part(s), '
+        + bytesSoFar + ' bytes; pruned ' + pruneDeleted + ' blob(s) across ' + pruned.length + ' day(s)'
+        + (pruneIncomplete ? ' (prune not finished — resumes tomorrow)' : ''));
+      return { jsonBody: { ok: true, day, done: true, part, docs: docsSoFar, bytes: bytesSoFar, redacted,
+        pruned, pruneDeleted, pruneFailed, pruneIncomplete, keepDays: BACKUP_KEEP_DAYS, pruneError } };
+    } catch (err) {
+      context.error('cron-backup error', err);
+      try { await logError('POST /api/cron/backup', err, { user: 'cron' }); } catch (_) {}
+      return { status: 500, jsonBody: { ok: false, error: String((err && err.message) || err) } };
+    }
+  }
+});
+
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',

@@ -1,0 +1,66 @@
+name: Nightly data backup
+
+# A daily snapshot of every Cosmos document to blob storage, keeping 7 days.
+#
+# The endpoint takes a wall-clock budget per call (Managed Functions stop at ~45s) and hands
+# back a cursor, so this loops until it reports done. The MANIFEST is what marks a day's backup
+# as usable and it is written only after the last page — so if this workflow fails part way,
+# that day has parts and no manifest, which is visibly incomplete rather than quietly wrong.
+# Retention runs inside the same call, after the manifest, and never otherwise.
+on:
+  schedule:
+    - cron: '0 8 * * *'    # 08:00 UTC daily (~3am US Central) — before the QBO sync at 09:00
+  workflow_dispatch: {}    # allow a manual run
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Snapshot Cosmos to blob storage
+        run: |
+          API='https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/cron/backup'
+          # Warm the cold start first, so the first real call spends its budget on work.
+          curl -sS --max-time 60 -o /dev/null \
+            'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/profile' || true
+
+          body='{}'
+          for pass_no in $(seq 1 40); do
+            code=""
+            for attempt in 1 2 3; do
+              code=$(curl -sS -o /tmp/out.json -w '%{http_code}' --max-time 120 \
+                -X POST "$API" \
+                -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}" \
+                -H 'Content-Type: application/json' \
+                -d "$body")
+              echo "pass $pass_no attempt $attempt -> HTTP $code"
+              if [ "$code" = "200" ]; then break; fi
+              sleep 15
+            done
+            if [ "$code" != "200" ]; then
+              echo "BACKUP FAILED on pass $pass_no — this day has NO manifest and is not a usable backup."
+              cat /tmp/out.json 2>/dev/null || true
+              exit 1
+            fi
+
+            done_flag=$(node -e "const j=require('/tmp/out.json');console.log(j.done?'1':'0')")
+            docs=$(node -e "const j=require('/tmp/out.json');console.log(j.docs||0)")
+            echo "  documents so far: $docs"
+            if [ "$done_flag" = "1" ]; then
+              node -e "
+                const j=require('/tmp/out.json');
+                console.log('COMPLETE: '+j.docs+' documents, '+(j.part||0)+' part(s), '+(j.bytes||0)+' bytes for '+j.day);
+                console.log('pruned days: '+JSON.stringify(j.pruned||[]));
+                const red=j.redacted||{}; const keys=Object.keys(red);
+                console.log('redacted credential fields: '+(keys.length?keys.map(k=>k+'='+red[k]).join(', '):'none'));
+                if (j.pruneError) { console.error('RETENTION DID NOT RUN CLEANLY: '+j.pruneError); process.exit(1); }
+              " || exit 1
+              exit 0
+            fi
+            # Carry the cursor and running totals into the next call.
+            body=$(node -e "
+              const j=require('/tmp/out.json');
+              process.stdout.write(JSON.stringify({day:j.day,cursor:j.cursor,part:j.part,docs:j.docs,bytes:j.bytes,redacted:j.redacted}));
+            ")
+          done
+          echo "STILL NOT FINISHED after 40 passes — no manifest was written, so today has no usable backup."
+          exit 1
