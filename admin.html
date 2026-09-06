@@ -642,11 +642,23 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   var GOAL_FIELDS = [
     { grp: 'Months of cash', goal: 'monthsCash', floor: 'monthsCashMin', step: '0.5', fmt: 'x' },
     { grp: 'Current ratio', goal: 'currentRatio', floor: 'currentRatioMin', step: '0.1', fmt: 'x' },
-    { grp: 'Gross margin', goal: 'grossMargin', floor: 'grossMarginMin', step: '1', fmt: '%' },
-    { grp: 'Net margin', goal: 'netMargin', floor: 'netMarginMin', step: '1', fmt: '%' }
+    // step 0.1, matching what the field can actually hold: these are stored as fractions and
+    // now render to a tenth of a percent, so step 1 would mark a real saved value invalid.
+    { grp: 'Gross margin', goal: 'grossMargin', floor: 'grossMarginMin', step: '0.1', fmt: '%' },
+    { grp: 'Net margin', goal: 'netMargin', floor: 'netMarginMin', step: '0.1', fmt: '%' }
   ];
   var _goalDefaults = {};
-  function goalToInput(f, key, g) { var v = g[key]; if (v == null) return ''; return f.fmt === '%' ? Math.round(v * 100) : v; }
+  /* Rounded for DISPLAY only where it is lossless. A percentage goal is stored as a fraction,
+     and Math.round(v * 100) turned a 34.5% target into "35" — which the next Save read back
+     and stored as 0.35. The figure an admin set drifted every time the form was re-saved,
+     with nothing to show for it. Keep a tenth of a percent, and drop a trailing '.0'. */
+  function goalToInput(f, key, g) {
+    var v = g[key];
+    if (v == null) return '';
+    if (f.fmt !== '%') return v;
+    var pct = Math.round(v * 1000) / 10;
+    return (pct === Math.round(pct)) ? Math.round(pct) : pct;
+  }
   function inputToGoal(f, raw) { var n = parseFloat(raw); if (!isFinite(n)) return null; return f.fmt === '%' ? n / 100 : n; }
   function renderGoalsForm(g) {
     var suffix = function (f) { return f.fmt === '%' ? '%' : '×'; };
@@ -966,10 +978,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   /* ===== BOOKKEEPING TIME ===== */
   function bkFmtDur(secs) { secs = Math.round(secs || 0); var h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60); if (h) return h + 'h ' + m + 'm'; if (m) return m + 'm'; return secs + 's'; }
   function bkDefaultRange() {
+    /* BOTH ends from the same calendar. `from` was built from LOCAL fields and `to` from
+       toISOString(), which is UTC — so from about 7pm Central the range ran to TOMORROW and a
+       month-end report quietly picked up the first day of the next month. */
+    var ymdLocal = function (d) {
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    };
     var to = new Date(), from = new Date(to.getFullYear(), to.getMonth(), 1);
     var f = document.getElementById('bkFrom'), t = document.getElementById('bkTo');
-    if (f && !f.value) f.value = from.toISOString().slice(0, 10);
-    if (t && !t.value) t.value = to.toISOString().slice(0, 10);
+    if (f && !f.value) f.value = ymdLocal(from);
+    if (t && !t.value) t.value = ymdLocal(to);
   }
   var _bkLoaded = false;
   function renderBkTime() {

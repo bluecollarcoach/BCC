@@ -3781,7 +3781,14 @@ function mergeBlindPersonalDoc(oldData, newData) {
      and must not have it banked as well — that would count the same hours twice. The union
      below dedupes on the pair itself, so banking is idempotent even if it somehow runs twice. */
   const banked = [];
-  if (Object.prototype.hasOwnProperty.call(b, 'clockedInAt') && a.clockedInAt && a.clockedOutAt) {
+  if (Object.prototype.hasOwnProperty.call(b, 'clockedInAt') && a.clockedInAt && a.clockedOutAt
+      /* ...and only when the incoming write is a NEW punch, not an EDIT of the stored one.
+         Correcting a missed clock-out re-sends the SAME clockedInAt with a different
+         clockedOutAt; banking the stored pair then kept the old shift in `segments` AND wrote
+         the corrected pair into the fields, so the day counted that shift twice and the
+         person's payroll hours went up because they fixed a typo. Same clock-in means same
+         punch. */
+      && String(b.clockedInAt || '') !== String(a.clockedInAt || '')) {
     banked.push({ inAt: a.clockedInAt, outAt: a.clockedOutAt });
   }
   for (const k of Object.keys(b)) {
@@ -11206,14 +11213,24 @@ app.http('documents-list-create', {
         let where = 'c.tenantId = @t AND c.docType = "document"';
         if (folder) { where += ' AND STARTSWITH(c.folder, @f)'; params.push({ name: '@f', value: folder }); }
         if (linkedContactId) { where += ' AND c.linkedContactId = @lc'; params.push({ name: '@lc', value: linkedContactId }); }
-        const q = { query: 'SELECT * FROM c WHERE ' + where + ' ORDER BY c.createdAt DESC', parameters: params };
+        /* PROJECTED and CAPPED. This was SELECT * over every document row in the tenant,
+           fetched whole and then filtered per row — so the firm-wide listing pulled every
+           client's document metadata across the wire to render a page of it, on a Free Tier
+           container with 1000 RU/s shared by everything else the app does. Ask for the fields
+           the listing renders, and take one page.
+           TOP is applied BEFORE docAccessFilter, so a caller who can see few documents may get
+           fewer than the cap — `truncated` says when there may be more, rather than letting a
+           short list read as the whole library. */
+        const DOC_PAGE = 500;
+        const q = { query: 'SELECT TOP ' + (DOC_PAGE + 1) + ' c.id, c.name, c.folder, c.tags, c.sizeBytes, c.mimeType, c.uploaderUpn, c.uploadedBy, c.createdAt, c.updatedAt, c.linkedContactId, c.linkedEngagementId, c.storageKey, c.sharepointItemId, c.source, c.docType FROM c WHERE ' + where + ' ORDER BY c.createdAt DESC', parameters: params };
         const { resources } = await c.items.query(q).fetchAll();
+        const docTruncated = resources.length > DOC_PAGE;
         // Defense in depth: drop any client-folder docs the caller can't access, so a
         // linkedContactId (or any query shape) can never surface another client's files.
         const allow = await docAccessFilter(p);
         const items = [];
-        for (const d of resources) { if (await allow(d)) items.push(d); }
-        return { jsonBody: { items } };
+        for (const d of resources.slice(0, DOC_PAGE)) { if (await allow(d)) items.push(d); }
+        return { jsonBody: { items, truncated: docTruncated } };
       } catch (err) {
         context.error('documents list error', err);
         return { status: 500, jsonBody: { error: 'list failed', detail: String(err && err.message || err) } };

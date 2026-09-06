@@ -288,7 +288,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     };
     mutator(e);
     e.updatedAt = new Date().toISOString();
-    localStorage.setItem(id, JSON.stringify(e));
+    /* localStorage is a hard ~5MB per origin shared with every other bcc- key. Unwrapped, the
+       throw escaped this function and the click handler above it: the lesson stayed ticked,
+       nothing was stored and nothing was said. NULL is this function's refusal contract. */
+    try {
+      localStorage.setItem(id, JSON.stringify(e));
+    } catch (err) {
+      (window.bccNotify || alert)('That was NOT saved — this browser has run out of local storage space. Your other progress is safe. Close some tabs, then try again.', 'error', 15000);
+      return null;
+    }
     return e;
   }
   function progressFor(course) {
@@ -572,7 +580,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         if (!meUpn()) { (window.bccNotify || alert)('Still signing you in — give it a second and tick that again.', 'warn'); return; }
         var lid = row.dataset.lesson;
         var nowDone = !row.classList.contains('done');
-        saveEnrollment(c.id, function (e) {
+        var saved = saveEnrollment(c.id, function (e) {
           e.progress = e.progress || {};
           if (nowDone) e.progress[lid] = 'complete';
           else delete e.progress[lid];
@@ -580,6 +588,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           var allComplete = lessons.length > 0 && lessons.every(function (l) { return e.progress[l.id] === 'complete'; });
           e.completedAt = allComplete ? (e.completedAt || new Date().toISOString()) : null;
         });
+        /* saveEnrollment returns NULL when it refuses — no identity yet, or the learner's
+           progress has not been primed. The audit row went out regardless, so the log recorded
+           a lesson completed that was never written, and the repaint below then un-ticked it. */
+        if (!saved) { renderLearner(c.id); return; }
         if (window.bccAudit) window.bccAudit('enrollment-update', { key: enrollmentIdFor(c.id), path: '/training.html', meta: { courseId: c.id, lessonId: lid, action: nowDone ? 'complete' : 'reset' } });
         renderLearner(c.id);
       });

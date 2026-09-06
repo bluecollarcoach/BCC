@@ -2420,7 +2420,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // YTD pair sits right below the monthly Revenue/Net Income row, same left-right order.
     if (k.revenueYtd != null) add('Revenue YTD', mrMoney0(k.revenueYtd), '', null, null, 'none');
     if (k.netIncomeYtd != null) add('Net Income YTD', mrMoney0(k.netIncomeYtd), '', null, null, 'none', 'posneg', k.netIncomeYtd);
-    if (k.grossMargin != null) add('Gross Margin', Math.round(k.grossMargin * 100) + '%', (k.grossMarginPrior != null ? ('was ' + Math.round(k.grossMarginPrior * 100) + '%') : ''), k.grossMargin, k.grossMarginPrior, 'up-good', 'grossMargin', k.grossMargin);
+    /* The arrow is computed on the SAME rounded figures that are printed. Against the raw
+       fraction, 0.344 -> 0.354 is a 2.9% relative move that mrTrend called flat while the two
+       numbers beside it read "34%" and "was 35%" — the report disagreeing with itself in one
+       line, in the copy that goes to the client. */
+    if (k.grossMargin != null) add('Gross Margin', Math.round(k.grossMargin * 100) + '%', (k.grossMarginPrior != null ? ('was ' + Math.round(k.grossMarginPrior * 100) + '%') : ''), Math.round(k.grossMargin * 100), (k.grossMarginPrior != null ? Math.round(k.grossMarginPrior * 100) : null), 'up-good', 'grossMargin', k.grossMargin);
     if (k.ar) add('A/R Outstanding', mrMoney0(k.ar), (k.arOver90 > 0 ? mrMoney0(k.arOver90) + ' over 90d' : ''), k.ar, k.arPrior, 'neutral');
     if (k.retainage) add('Retainage', mrMoney0(k.retainage), '', k.retainage, k.retainagePrior, 'neutral');
     if (k.ap) add('A/P Balance', mrMoney0(k.ap), (k.apOver90 > 0 ? mrMoney0(k.apOver90) + ' over 90d' : ''), k.ap, k.apPrior, 'up-bad');
@@ -2438,7 +2442,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // line (more specific) instead of both (Lyle: "one and the same... duplicate").
     // With 2+ accounts the total is a real sum, not a duplicate of any single line.
     if (k.longTermDebt && (k.debtLines || []).length !== 1) add('Long-Term Debt', mrMoney0(k.longTermDebt), '', k.longTermDebt, k.longTermDebtPrior, 'up-bad');
-    (k.debtLines || []).forEach(function (dl) { if (dl && dl.label) add(dl.label, mrMoney0(dl.amount), '', null, null, 'none'); });
+    /* A line of credit classified as a long-term liability comes back BOTH as the named
+       "Line of Credit" KPI above and again here under its own account name — the client's
+       report showed the same debt twice, and a reader adding the rows up got a number the
+       balance sheet does not have. The KPI is derived by matching /line of credit/i on the
+       row label, so skip exactly the rows it already covers. */
+    (k.debtLines || []).forEach(function (dl) {
+      if (!dl || !dl.label) return;
+      if (k.lineOfCredit && /line of credit/i.test(dl.label)) return;   // already shown above
+      add(dl.label, mrMoney0(dl.amount), '', null, null, 'none');
+    });
     add('Total Equity', mrMoney0(k.equity), '', k.equity, k.equityPrior, 'up-good', 'posneg', k.equity);
     if (k.currentRatio != null) add('Current Ratio', String(k.currentRatio), (k.currentRatioPrior != null ? ('was ' + k.currentRatioPrior) : ''), k.currentRatio, k.currentRatioPrior, 'up-good', 'currentRatio', k.currentRatio);
     if (k.inventory) add('Inventory', mrMoney0(k.inventory), '', k.inventory, k.inventoryPrior, 'neutral');
