@@ -192,7 +192,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (!a.tenantId) a.tenantId = 'blue-collar-coach';
     a.docType = 'kb-article';
     if (!a.slug) a.slug = slugify(a.title || 'untitled');
-    localStorage.setItem(a.id, JSON.stringify(a));
+    /* localStorage is a hard ~5MB per origin shared with every other bcc- key. Unwrapped, the
+       throw escaped this function AND the click handler above it: nothing stored, nothing
+       said, and the row still on screen. NULL is the refusal contract the callers check. */
+    try {
+      localStorage.setItem(a.id, JSON.stringify(a));
+    } catch (err) {
+      (window.bccNotify || alert)('That was NOT saved — this browser has run out of local storage space. Nothing earlier has been lost. Close some tabs or ask an admin to clear an old chat channel, then try again.', 'error', 15000);
+      return null;
+    }
     return a;
   }
   function deleteArticle(id) {

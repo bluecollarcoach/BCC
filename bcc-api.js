@@ -845,11 +845,21 @@
     if (this === window.localStorage && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0) {
       try { _localMints.add(key); } catch (e) {}
     }
-    // Writes made before auth settles used to fall straight through this guard and be
-    // lost. Capture the owner-only ones so bootstrap can replay them; outboxRehydrate
-    // decides what is safe to keep.
+    /* Writes made before auth settles used to fall straight through this guard and be lost.
+       They are captured for EVERY syncable family, not just the four owner-only ones — the
+       matching removeItem hook below already queues every family, and the asymmetry meant a
+       shared-document WRITE made in that first second (a task ticked, a WIP figure typed, a
+       close step noted) was dropped on the floor while the DELETE of the same record would
+       have been kept. Queued UNTRUSTED either way; outboxRehydrate is what decides at replay
+       time which of them may be attributed, so nothing is guessed at here — it simply stops
+       being thrown away before that decision can be made.
+       The same three device-local / server-owned exclusions the signed-in branch applies are
+       applied here, or this would queue records that must never be pushed at all. */
     if (this === window.localStorage && !signedIn && !_authUnknown && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0
-        && OFFLINE_OWNED_PREFIXES.some(function (p) { return key.indexOf(p) === 0; })) {
+        && DEVICE_LOCAL_KEYS.indexOf(key) < 0
+        && key.indexOf('bcc-financial-period-') !== 0
+        && key.indexOf('bcc-cpr-sends-') !== 0
+        && key.indexOf('bcc-email-') !== 0) {
       outboxPut(key, value, false);
     }
     if (this === window.localStorage && (signedIn || _authUnknown) && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0) {

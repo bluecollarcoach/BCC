@@ -4666,9 +4666,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      no toast. Used where the ACTION is allowed but the accompanying write is not, so the
      refusal can be worded for what actually happened instead of "that was not saved". */
   function bkCanEditFinancialsRefused() { return !bkCanEditFinancials(); }
+  var _roWarnAt = 0;
   function bkRefuseIfReadOnly() {
     if (bkCanEditFinancials()) return false;
-    (window.bccNotify || alert)('Your Bookkeeping access is view-only, so that was not saved. Ask an admin for edit access.', 'warn', 8000);
+    /* Once per burst. Two of the callers are wired to oninput — one call per KEYSTROKE — so an
+       unlatched eight-second toast meant a wall of them per word. A tier refusal is a STATE,
+       not an event; saying it once is saying it. The refusal itself still returns every time. */
+    var nowRo = Date.now();
+    if (nowRo - _roWarnAt > 20000) {
+      _roWarnAt = nowRo;
+      (window.bccNotify || alert)('Your Bookkeeping access is view-only, so that was not saved. Ask an admin for edit access.', 'warn', 8000);
+    }
     return true;
   }
   function canWriteTasks() {

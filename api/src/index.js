@@ -1516,7 +1516,9 @@ app.http('audit', {
       const realmOf = (r) => {
         if (r && r.meta && r.meta.realmId) return String(r.meta.realmId);
         // 'access' rows carry the realm in the path instead of in meta.
-        const m = /\/(?:companies|qbo)\/(\d{6,})/.exec(String((r && r.path) || ''));
+        // Every route family that embeds a realmId, not just the first two. A realm id is a
+        // realm id whichever path carries it, and the owner-only client's must never travel.
+        const m = /\/(?:companies|qbo|drive|sharepoint|client-mailbox|clientdrive|emailmeta|email-meta|payapp|bookkeeping)\/(\d{4,})/.exec(String((r && r.path) || ''));
         return m ? m[1] : '';
       };
       const items = resources.filter(r => { const rid = realmOf(r); return !rid || auditAcc.allowed(rid); });
@@ -2915,7 +2917,12 @@ app.http('bookkeeping-time', {
         try {
         let secs = Math.round(Number(e.seconds) || 0);
         if (!(secs > 0)) continue;
-        if (secs > 3600) { capped += secs - 3600; secs = 3600; } // per-beat cap (clock jumps)
+        /* Per-beat cap (a laptop waking from sleep). The trimmed remainder is BANKED, not
+           dropped: the daily ceiling's overflow is recorded in cappedSeconds and reported to
+           admins as "held back", and this one was thrown away — the same trim, reported in one
+           of two places, quietly shrinking somebody's tracked time. */
+        let beatTrim = 0;
+        if (secs > 3600) { beatTrim = secs - 3600; capped += beatTrim; secs = 3600; }
         const id = 'bcc-bktime-' + sanitizeUpn(who) + '-' + realmId + '-' + day;
         // Optimistic-concurrency add so overlapping flushes (multiple tabs, or an
         // unload beacon racing a keepalive fetch) can't silently lose increments.
@@ -2935,7 +2942,8 @@ app.http('bookkeeping-time', {
           const _before = doc.seconds || 0;
           doc.seconds = Math.min(_before + secs, DAILY_CAP);
           _added = doc.seconds - _before;
-          if (_added < secs) doc.cappedSeconds = (doc.cappedSeconds || 0) + (secs - _added);
+          // Both trims: what the daily ceiling held back, plus what the per-beat cap did.
+          if (_added < secs || beatTrim) doc.cappedSeconds = (doc.cappedSeconds || 0) + (secs - _added) + beatTrim;
           if (e.companyName) doc.companyName = String(e.companyName);
           doc.userName = name; doc.updatedAt = new Date().toISOString();
           try {
