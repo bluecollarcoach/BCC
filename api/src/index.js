@@ -10656,6 +10656,264 @@ app.http('qbo-companyinfo', {
  * Returns current cash + both drivers; the UI recomputes live as the owner edits.
  * Access-scoped exactly like the sync (admin = all; others = enabled + allow-list).
  */
+/* =====================================================================================
+ * THE FIRM'S OWN CASH FLOW — OWNER ONLY.
+ *
+ * Everything else in this file is about a CLIENT's books. This is about ours, which is why
+ * the gate is the strictest one the codebase can express and why it FAILS CLOSED.
+ *
+ * companyPrivateBlocked returns false when privateToUpn is unset. That is right for a client
+ * company (unlocked means "shared with the team") and exactly wrong here, where "nobody has
+ * claimed the lock yet" must never resolve to "every admin may read the firm's P&L". So an
+ * absent lock is a refusal, and the caller is told to go set it.
+ *
+ * isAppAdmin is checked as a RESTRICTION ahead of the lock, never as a short-circuit past it
+ * — the same order bookkeeping-time-post and qbo-kpis use.
+ * ===================================================================================== */
+const FIRM_CF_ID = 'bcc-report-firmcashflow';   // 'bcc-report-' is in PROTECTED_KEY_PREFIXES,
+                                                // so /api/data can never hand this to a browser.
+const FIRM_CF_MONTHS = 12;
+
+async function firmBooksAccess(request) {
+  const p = principal(request);
+  if (!p) return { err: unauthorized() };
+  if (!domainAllowed(p)) return { err: domainBlocked() };
+  if (!(await isAppAdmin(p))) return { err: forbidden('admin only') };
+  const comp = await ownBooksCompany();
+  if (!comp) {
+    return { notReady: 'No QuickBooks company is marked as the firm’s own books yet. Open Clients → the firm’s own company → Access, tick “This is the firm’s own books” and “Only I can see this company”, then come back.' };
+  }
+  /* THE LOAD-BEARING LINE. Without a lock nobody is blocked, so an own-books company that
+     nobody has claimed would be readable by every admin. Refuse, and say how to fix it. */
+  if (!String(comp.privateToUpn || '').trim()) {
+    return { notReady: 'The firm’s own books are not locked to an owner yet, so this stays closed. Open that company → Access and tick “Only I can see this company”.' };
+  }
+  if (companyPrivateBlocked(comp, p)) return { err: forbidden('no access to this company') };
+  if (comp.enabled === false) {
+    return { notReady: 'The firm’s QuickBooks connection is switched off. Turn it back on under that company → Access first.' };
+  }
+  return { p, comp };
+}
+
+/* The saved plan. Modelled on bcc-report-goals: server-owned, defaults merged on read, a 404
+   is a real answer and every OTHER Cosmos error propagates — a swallowed read here would
+   quietly discard the owner's edits and re-seed from QuickBooks as though they were never
+   made, which is the "appearance of data loss" this app must never produce. */
+function firmCfDefaults() {
+  return {
+    months: FIRM_CF_MONTHS,
+    billingSeed: 'invoiced',   // 'invoiced' = last month's invoices; 'income' = last month's P&L income
+    billingPerMonth: null,     // null = follow the seed; an array of numbers = the owner's own figures
+    openingCash: null,         // null = today's bank balance from the books
+    accounts: {},              // acctId -> { include, label, monthly, isWages, people: [{ id, name, amount, include }] }
+    extraLines: [],            // owner-added costs that are not in last month's books at all
+    updatedAt: null, updatedBy: null
+  };
+}
+async function getFirmCf() {
+  const d = await container().item(FIRM_CF_ID, BCC_TENANT_ID).read().then(r => r.resource)
+    .catch(e => { if (e && (e.code === 404 || e.statusCode === 404)) return null; throw e; });
+  return Object.assign(firmCfDefaults(), (d && d.plan) || {});
+}
+
+/* Money in, money out, month by month — computed in ONE place and used by BOTH the projection
+   table and its totals, so the row and the total can never disagree (the same reason
+   txnPostedTotal exists on the transaction form). */
+function firmCfNumber(v) { const n = Number(v); return isFinite(n) ? n : 0; }
+
+app.http('firm-cashflow', {
+  methods: ['GET', 'POST'],
+  authLevel: 'anonymous',
+  route: 'firm/cashflow',
+  handler: withAccessLog(async (request, context) => {
+    /* Anchored at ENTRY. Below this point are a token mint, a balance sheet, a P&L and a paged
+       invoice query — four-plus serial QuickBooks round trips against the ~45s the platform
+       allows. A budget measured from where the loop starts promises time that does not exist. */
+    const FC_T0 = Date.now();
+    const FC_DEADLINE = FC_T0 + 32000;
+    const FC_CALL_MS = 10000;
+
+    const acc = await firmBooksAccess(request);
+    if (acc.err) return acc.err;
+    if (acc.notReady) return { jsonBody: { ok: true, available: false, why: acc.notReady } };
+    const { p, comp } = acc;
+
+    // ---- POST: save the owner's plan. No QuickBooks involved, so no clock needed. ----
+    if (request.method === 'POST') {
+      const body = await request.json().catch(() => null);
+      if (!body || typeof body !== 'object') return badRequest('a plan object is required');
+      const prior = await getFirmCf();
+      const plan = Object.assign({}, prior);
+
+      if (body.billingSeed === 'invoiced' || body.billingSeed === 'income') plan.billingSeed = body.billingSeed;
+      if (body.billingPerMonth === null) plan.billingPerMonth = null;
+      else if (Array.isArray(body.billingPerMonth)) {
+        /* null is PRESERVED, never coerced. The row is deliberately sparse: a month the owner
+           has not typed over holds null and keeps following the seed. Number(null) is 0, so
+           mapping straight through firmCfNumber would have written a hard zero into every
+           month they never touched — a forecast quietly emptied by the act of saving it. */
+        plan.billingPerMonth = body.billingPerMonth.slice(0, FIRM_CF_MONTHS)
+          .map(v => (v === null || v === undefined || v === '') ? null : firmCfNumber(v));
+      }
+      if (body.openingCash === null) plan.openingCash = null;
+      else if (body.openingCash !== undefined) plan.openingCash = firmCfNumber(body.openingCash);
+
+      if (body.accounts && typeof body.accounts === 'object') {
+        const out = {};
+        /* Object.create(null) — an expense account QuickBooks calls "constructor" or
+           "__proto__" would otherwise collide with Object.prototype and silently discard the
+           owner's include/exclude decision for it. */
+        const src = Object.assign(Object.create(null), body.accounts);
+        for (const k of Object.keys(src)) {
+          const a = src[k] || {};
+          out[String(k).slice(0, 80)] = {
+            include: a.include !== false,
+            label: String(a.label || '').slice(0, 160),
+            monthly: (a.monthly === null || a.monthly === undefined) ? null : firmCfNumber(a.monthly),
+            isWages: !!a.isWages,
+            people: (Array.isArray(a.people) ? a.people : []).slice(0, 40).map((q, i) => ({
+              id: String((q && q.id) || ('p' + i)).slice(0, 40),
+              name: String((q && q.name) || '').slice(0, 80),
+              amount: firmCfNumber(q && q.amount),
+              include: !(q && q.include === false)
+            }))
+          };
+        }
+        plan.accounts = out;
+      }
+      if (Array.isArray(body.extraLines)) {
+        plan.extraLines = body.extraLines.slice(0, 60).map((l, i) => ({
+          id: String((l && l.id) || ('x' + i)).slice(0, 40),
+          label: String((l && l.label) || '').slice(0, 160),
+          monthly: firmCfNumber(l && l.monthly),
+          include: !(l && l.include === false)
+        }));
+      }
+      plan.updatedAt = new Date().toISOString();
+      plan.updatedBy = String(p.userDetails || p.userId || '').toLowerCase();
+
+      await container().items.upsert({
+        id: FIRM_CF_ID, tenantId: BCC_TENANT_ID, docType: 'firm-cashflow', plan
+      });
+      logAudit('firm-cashflow-save', { user: plan.updatedBy, path: '/api/firm/cashflow', key: FIRM_CF_ID,
+        meta: { accounts: Object.keys(plan.accounts || {}).length, extraLines: (plan.extraLines || []).length } });
+      // Hand the SAVED plan back, so the screen redraws from what is stored rather than from
+      // what it hoped it sent.
+      return { jsonBody: { ok: true, saved: true, plan } };
+    }
+
+    // ---- GET: last month's real figures, plus the saved plan. ----
+    try {
+      const fields = await getIntegrationFields('qbo');
+      const { accessToken, base } = await qboAccessForCompany(comp, fields);
+      const apiGet = async (path) => {
+        const u = base + '/v3/company/' + encodeURIComponent(comp.realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70';
+        const r = await qboFetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } }, FC_CALL_MS);
+        if (!r.ok) throw new Error('QBO ' + r.status);
+        return r.json();
+      };
+      const queryAll = async (sql) => {
+        let all = [], start = 1;
+        for (;;) {
+          if (Date.now() > FC_DEADLINE) { all.truncated = true; break; }
+          const j = await apiGet('/query?query=' + encodeURIComponent(sql + ' STARTPOSITION ' + start + ' MAXRESULTS 1000'));
+          const qr = j.QueryResponse || {}; const k = Object.keys(qr).find(x => Array.isArray(qr[x]));
+          const page = k ? qr[k] : []; all = all.concat(page);
+          if (page.length < 1000 || start > 20000) break;
+          start += 1000;
+        }
+        return all;
+      };
+
+      // Last COMPLETE calendar month — "last month's billing" means the month that has closed,
+      // never a part-month that would read low for no visible reason.
+      const now = new Date();
+      const lmEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+      const lmStart = new Date(lmEnd.getFullYear(), lmEnd.getMonth(), 1);
+      const iso = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+      const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+      const lmLabel = MONTH_NAMES[lmEnd.getMonth()] + ' ' + lmEnd.getFullYear();
+
+      const notes = [];   // every figure this run could NOT read, named rather than left at zero
+
+      // 1) Opening position: today's bank balance.
+      let cash = null;
+      try {
+        const bs = flattenQboReport(await apiGet(bsReportQuery(iso(now), 'Accrual')));
+        cash = (findByLabel(bs, /total bank account/i) ?? findByLabel(bs, /bank account/i) ?? findByLabel(bs, /checking|savings|cash on hand|^cash$/i));
+      } catch (e) {
+        notes.push('Could not read the bank balance' + (aiTimedOut(e) ? ' (QuickBooks took too long)' : '') + ' — set the opening cash by hand.');
+      }
+
+      // 2) Last month's P&L: income, and every expense line WITH its account id.
+      let plIncome = null, plExpenseTotal = null;
+      let expenseLines = [], expenseCapped = false;
+      if (Date.now() < FC_DEADLINE) {
+        try {
+          const plPath = '/reports/ProfitAndLoss?start_date=' + iso(lmStart) + '&end_date=' + iso(lmEnd) + '&accounting_method=Accrual';
+          const pl = flattenQboReport(await apiGet(plPath));
+          plIncome = (findByGroup(pl, 'Income') ?? findByLabel(pl, /total income/i));
+          plExpenseTotal = (findByGroup(pl, 'Expenses') ?? findByLabel(pl, /total expenses/i));
+          /* Every expense DATA row, carrying acctId. acctId is the handle the saved plan keys
+             on: an account renamed in QuickBooks must not lose the owner's decision about it,
+             and two accounts that share a label must not be merged into one row. */
+          for (const x of (pl.rows || [])) {
+            if (x.type !== 'data') continue;
+            /* Match the WORD, not a guessed list of codes: QuickBooks emits Expenses,
+               OtherExpense and OtherExpenses across report variants, and a section this misses
+               is a real cost silently absent from the forecast. No income group contains
+               "expense" or "cogs", so this cannot pull revenue in by accident. */
+            if (!/(expense|cogs)/i.test(String(x.group || ''))) continue;
+            const amt = reportNum((x.cells || [])[x.cells.length - 1]);
+            const label = String(x.label || '').trim();
+            if (!label) continue;
+            expenseLines.push({
+              acctId: x.acctId ? String(x.acctId) : ('label:' + label),
+              label, amount: amt, group: String(x.group || '')
+            });
+            if (expenseLines.length >= 200) { expenseCapped = true; break; }
+          }
+          if (expenseCapped) notes.push('Only the first 200 expense accounts were read, so the total out is low.');
+        } catch (e) {
+          notes.push('Could not read last month’s profit and loss' + (aiTimedOut(e) ? ' (QuickBooks took too long)' : '') + ' — the expense list below is empty because of that, not because there were no expenses.');
+        }
+      } else {
+        notes.push('Ran out of time before reading last month’s profit and loss. Refresh to try again.');
+      }
+
+      // 3) Last month's invoices — the literal reading of "last month's billing".
+      let invoiced = null, invoiceCount = 0, invoicesTruncated = false;
+      if (Date.now() < FC_DEADLINE) {
+        try {
+          const inv = await queryAll("SELECT Id, DocNumber, TxnDate, TotalAmt, Balance, CustomerRef FROM Invoice WHERE TxnDate >= '" + iso(lmStart) + "' AND TxnDate <= '" + iso(lmEnd) + "' ORDERBY TxnDate DESC");
+          invoicesTruncated = !!inv.truncated;
+          invoiceCount = inv.length;
+          invoiced = inv.reduce((t, r) => t + firmCfNumber(r && r.TotalAmt), 0);
+          if (invoicesTruncated) notes.push('Only part of last month’s invoices could be read, so the billed figure is low.');
+        } catch (e) {
+          notes.push('Could not read last month’s invoices' + (aiTimedOut(e) ? ' (QuickBooks took too long)' : '') + ' — seed the billing figure by hand.');
+        }
+      } else {
+        notes.push('Ran out of time before reading last month’s invoices.');
+      }
+
+      const plan = await getFirmCf();
+      return { jsonBody: {
+        ok: true, available: true,
+        companyName: comp.companyName || null,
+        lastMonth: { label: lmLabel, from: iso(lmStart), to: iso(lmEnd), invoiced, invoiceCount, plIncome, plExpenseTotal },
+        cash, expenseLines, plan, months: FIRM_CF_MONTHS,
+        // Named, not swallowed: a figure this run could not read is reported as unread rather
+        // than presented as zero.
+        notes
+      } };
+    } catch (err) {
+      context.error('firm-cashflow', err);
+      return { status: 502, jsonBody: { ok: false, error: String((err && err.message) || err) } };
+    }
+  })
+});
+
 app.http('qbo-cashflow', {
   methods: ['GET'], authLevel: 'anonymous', route: 'integrations/qbo/cashflow',
   handler: withAccessLog(async (request, context) => {

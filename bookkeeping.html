@@ -409,6 +409,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       <button class="btn btn-primary" id="connectBtn" type="button">+ Connect a company</button>
       <button class="btn btn-ghost" id="syncBtn" type="button">Sync all from QBO</button>
       <button class="btn btn-ghost" id="cashflowBtn" type="button">📈 90-day cash flow</button>
+      <button class="btn btn-ghost" id="firmCfBtn" type="button" style="display:none;">🏛️ Our cash flow</button>
       <button class="btn btn-ghost" id="notaryBtn" type="button" style="display:none;">🖋️ Notary</button>
       <button class="btn btn-ghost" id="importTasksBtn" type="button" style="display:none;">📋 Import tasks from Planner</button>
       <button class="btn btn-ghost" id="newBtn" type="button">+ Manual entry</button>
@@ -1688,6 +1689,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   document.getElementById('printBtn').addEventListener('click', function () { window.print(); });
   document.getElementById('mgmtBtn').addEventListener('click', function () { if (!canManage()) return; managementMode = !managementMode; accessEditRealm = null; renderAll(); });
   document.getElementById('cashflowBtn').addEventListener('click', openCashflow);
+  document.getElementById('firmCfBtn').addEventListener('click', openFirmCashflow);
   var _notaryBtnEl = document.getElementById('notaryBtn'); if (_notaryBtnEl) _notaryBtnEl.addEventListener('click', openNotaryHome);
   var _notaryCloseEl = document.getElementById('notaryClose'); if (_notaryCloseEl) _notaryCloseEl.addEventListener('click', closeNotaryHome);
   var _notaryOverlayEl = document.getElementById('notaryOverlay');
@@ -1898,6 +1900,418 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       '<div style="font-size:12px;color:var(--muted);margin-bottom:12px;">They’re syncing to the cloud now and appear in each client’s <strong>Tasks</strong> tab and 🔔 to-do count.</div>' +
       '<div style="text-align:right;"><button class="btn btn-primary" id="pi_done" type="button">Done</button></div>';
     document.getElementById('pi_done').onclick = function () { var m = document.getElementById('pi_modal'); if (m && m._close) m._close(); else if (m) m.remove(); renderAll(); };
+  }
+
+  /* =====================================================================================
+   * OUR OWN CASH FLOW — the firm's money, owner only.
+   *
+   * Seeded from last month's real books and then EDITABLE, because a forecast nobody can
+   * correct is a forecast nobody trusts. Every edit is saved server-side against the account
+   * id (not its name), so renaming an account in QuickBooks does not silently drop a decision.
+   * ===================================================================================== */
+  var _fc = null;          // the loaded payload + the working plan
+  var _fcSaveTimer = null;
+  var _fcDirty = false;
+
+  /* The own-books company, IF this browser's signed-in user is the one it is locked to. Same
+     two conditions the server checks. Returns null otherwise — including for other admins. */
+  function firmBooksCo() {
+    var me = myUpn();
+    if (!me) return null;
+    return companies.filter(function (c) {
+      return c && c.isOwnBooks && String(c.privateToUpn || '').toLowerCase() === me;
+    })[0] || null;
+  }
+  /* Nobody has marked a company as ours yet. Not a secret — there are no firm figures to
+     protect until it is set — and it is the only window in which the button can be found. */
+  function firmBooksUnset() {
+    return isAdmin && !companies.some(function (c) { return c && c.isOwnBooks; });
+  }
+
+  function fcMoney(n) { return (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 }); }
+  function fcNum(v) { var n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')); return isFinite(n) ? n : 0; }
+  /* Month labels running forward from the month we are IN. Local date parts only — building
+     these from an ISO string would shift the first month back a day for anyone west of UTC. */
+  function fcMonthLabels(n) {
+    var out = [], d = new Date(), NM = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    for (var i = 0; i < n; i++) {
+      var m = new Date(d.getFullYear(), d.getMonth() + i, 1);
+      out.push(NM[m.getMonth()] + ' ' + String(m.getFullYear()).slice(2));
+    }
+    return out;
+  }
+
+  /* THE seed figure for billing — one function, so the number shown as "last month" and the
+     number the forward months start from are the same number by construction. */
+  function fcSeedBilling() {
+    if (!_fc) return 0;
+    var lm = _fc.lastMonth || {};
+    var v = (_fc.plan.billingSeed === 'income') ? lm.plIncome : lm.invoiced;
+    return (v == null) ? 0 : Number(v);
+  }
+  function fcBillingFor(i) {
+    var per = _fc.plan.billingPerMonth;
+    if (Array.isArray(per) && per[i] != null) return Number(per[i]) || 0;
+    return fcSeedBilling();
+  }
+
+  /* What an account contributes to a month. A wage account that has been split by person is
+     the sum of its INCLUDED people plus whatever is still unallocated — so excluding somebody
+     lowers the account by exactly their figure and nothing else moves. */
+  function fcAccountMonthly(a) {
+    if (!a || a.include === false) return 0;
+    var base = (a.monthly == null) ? Number(a.seed || 0) : Number(a.monthly || 0);
+    if (!a.isWages) return base;
+    var people = a.people || [];
+    var allocated = people.reduce(function (t, q) { return t + fcNum(q.amount); }, 0);
+    var kept = people.reduce(function (t, q) { return t + (q.include === false ? 0 : fcNum(q.amount)); }, 0);
+    // The remainder is everything in the account that has NOT been named to a person. It stays
+    // in the total, so the arithmetic always reconciles to the account and money is never lost.
+    return kept + Math.max(0, base - allocated);
+  }
+  function fcOutgoingsFor() {
+    var t = 0, accts = _fc.plan.accounts || {};
+    Object.keys(accts).forEach(function (k) { t += fcAccountMonthly(accts[k]); });
+    (_fc.plan.extraLines || []).forEach(function (l) { if (l.include !== false) t += fcNum(l.monthly); });
+    return t;
+  }
+  function fcOpeningCash() {
+    if (_fc.plan.openingCash != null) return Number(_fc.plan.openingCash) || 0;
+    return Number(_fc.cash || 0);
+  }
+
+  function openFirmCashflow() {
+    var co = firmBooksCo();
+    if (!co) {
+      var marked = companies.filter(function (c) { return c && c.isOwnBooks; })[0];
+      (window.bccNotify || alert)(
+        marked
+          ? ('“' + (marked.companyName || 'That company') + '” is marked as our own books but is not locked to you. Open it → Access → tick “Only I can see this company”.')
+          : 'First tell the app which QuickBooks company is ours: open it → Access, tick “This is Blue Collar Coach’s own QuickBooks” and “Only I can see this company”.',
+        'warn', 10000);
+      return;
+    }
+    var ov = document.createElement('div'); ov.id = 'fc_modal'; ov.className = 'em-modal-ov';
+    ov.innerHTML = '<div class="em-modal" style="max-width:1180px;"><div class="em-modal-head"><div style="flex:1;min-width:0;"><div class="em-modal-subj">🏛️ Our cash flow</div><div class="em-modal-from">' + esc(co.companyName || 'The firm’s own books') + ' — visible only to you. Seeded from last month, then yours to edit.</div></div><button class="btn btn-ghost" id="fc_close" type="button" style="font-size:18px;min-height:34px;width:38px;">×</button></div>' +
+      '<div class="em-modal-body" id="fc_body"><div style="color:var(--muted);padding:24px;">Reading last month from QuickBooks…</div></div></div>';
+    document.body.appendChild(ov);
+    function fcClose() {
+      // Never lose an edit to a closed window: flush anything still queued before leaving.
+      if (_fcDirty) fcSave(true);
+      var m = document.getElementById('fc_modal'); if (m) m.remove();
+      document.removeEventListener('keydown', fcKey);
+    }
+    function fcKey(e) { if (e.key === 'Escape') fcClose(); }
+    document.getElementById('fc_close').onclick = fcClose;
+    ov.addEventListener('click', function (e) { if (e.target === ov) fcClose(); });
+    document.addEventListener('keydown', fcKey);
+
+    fetch('/api/firm/cashflow', { credentials: 'include' })
+      /* An HTTP failure is NOT an empty forecast. Substituting one would print a confident
+         table of zeroes over books that were simply unreachable. */
+      .then(function (r) { if (!r.ok) { var e = new Error('HTTP ' + r.status); e.status = r.status; throw e; } return r.json(); })
+      .then(function (d) {
+        var body = document.getElementById('fc_body'); if (!body) return;
+        if (!d || d.ok === false) { body.innerHTML = '<div style="color:var(--burgundy);padding:24px;">Could not load: ' + esc((d && d.error) || 'error') + '</div>'; return; }
+        if (d.available === false) { body.innerHTML = '<div style="padding:24px;font-size:13.5px;line-height:1.6;">' + esc(d.why || 'Not available yet.') + '</div>'; return; }
+        _fc = d;
+        _fc.plan = d.plan || {};
+        /* Null-prototype: an expense account named "constructor" or "__proto__" would
+           otherwise collide with Object.prototype — `accounts[k]` comes back truthy, the row
+           is never created, and the write lands on the prototype. */
+        _fc.plan.accounts = Object.assign(Object.create(null), _fc.plan.accounts || {});
+        if (!_fc.plan.extraLines) _fc.plan.extraLines = [];
+        /* Merge last month's REAL accounts into the saved plan. An account that has appeared
+           since the plan was saved arrives with no decision recorded — it is included (it is a
+           real cost the firm is paying) and FLAGGED as new, rather than being folded in
+           silently. A cost that joins the forecast unannounced is how an exclusion quietly
+           stops being true. */
+        // Decided ONCE, before the merge fills the map — asking mid-loop made the first
+        // account look established and every later one look new.
+        var hadPlan = !!_fc.plan.updatedAt;
+        (_fc.expenseLines || []).forEach(function (ln) {
+          var a = _fc.plan.accounts[ln.acctId];
+          if (!a) {
+            a = { include: true, label: ln.label, monthly: null, isWages: false, people: [], isNew: hadPlan };
+            _fc.plan.accounts[ln.acctId] = a;
+          }
+          a.seed = ln.amount;        // last month's actual, always refreshed
+          a.label = ln.label || a.label;
+          a.present = true;
+        });
+        fcRender();
+      })
+      .catch(function (e) {
+        var b = document.getElementById('fc_body'); if (!b) return;
+        b.innerHTML = '<div style="color:var(--burgundy);padding:24px;">Could not read the firm’s books' + (e && e.status ? ' (HTTP ' + e.status + ')' : '') + '. Nothing has been changed — try again.</div>';
+      });
+  }
+
+  function fcRender() {
+    var body = document.getElementById('fc_body'); if (!body || !_fc) return;
+    var lm = _fc.lastMonth || {};
+    var months = _fc.months || 12;
+    var labels = fcMonthLabels(months);
+    var accts = _fc.plan.accounts || {};
+    var keys = Object.keys(accts).sort(function (a, b) { return (accts[b].seed || 0) - (accts[a].seed || 0); });
+
+    var noteBar = (_fc.notes && _fc.notes.length)
+      ? '<div style="background:#fdf3f3;border-left:3px solid var(--burgundy);border-radius:6px;padding:10px 12px;margin-bottom:14px;font-size:12.5px;line-height:1.55;">'
+        + _fc.notes.map(function (n) { return esc(n); }).join('<br>') + '</div>'
+      : '';
+
+    var seedPick = '<label style="margin-right:14px;"><input type="radio" name="fcseed" value="invoiced"' + (_fc.plan.billingSeed !== 'income' ? ' checked' : '') + '> Invoiced ' + (lm.invoiced == null ? '<span style="color:var(--burgundy);">(not read)</span>' : '<strong>$' + fcMoney(lm.invoiced) + '</strong> <span style="color:var(--muted);">(' + (lm.invoiceCount || 0) + ' invoice' + ((lm.invoiceCount === 1) ? '' : 's') + ')</span>') + '</label>' +
+      '<label><input type="radio" name="fcseed" value="income"' + (_fc.plan.billingSeed === 'income' ? ' checked' : '') + '> P&amp;L income ' + (lm.plIncome == null ? '<span style="color:var(--burgundy);">(not read)</span>' : '<strong>$' + fcMoney(lm.plIncome) + '</strong>') + '</label>';
+
+    // ---- Billing row: one editable cell per forward month, pre-filled from the seed. ----
+    var billCells = labels.map(function (L, i) {
+      return '<td style="padding:3px 4px;"><input data-fcbill="' + i + '" type="number" step="100" value="' + esc(String(Math.round(fcBillingFor(i)))) + '" style="width:100%;min-width:74px;text-align:right;padding:5px 6px;border:1px solid var(--chrome-mute);border-radius:5px;font-size:12.5px;"></td>';
+    }).join('');
+
+    // ---- Expense accounts. ----
+    var acctRows = keys.map(function (k) {
+      var a = accts[k];
+      var monthly = (a.monthly == null) ? Number(a.seed || 0) : Number(a.monthly);
+      var flags = (a.isNew ? '<span style="background:var(--gold-fade,#f7f1e0);border-radius:4px;padding:1px 5px;font-size:10.5px;font-weight:700;margin-left:6px;">NEW</span>' : '')
+        + (a.present ? '' : '<span style="color:var(--burgundy);font-size:10.5px;margin-left:6px;">not in last month</span>');
+      var people = a.people || [];
+      var allocated = people.reduce(function (t, q) { return t + fcNum(q.amount); }, 0);
+      var remainder = Math.max(0, monthly - allocated);
+      var peopleRows = !a.isWages ? '' : people.map(function (q, qi) {
+        return '<tr style="background:#fbfaf7;"><td style="padding:3px 6px 3px 30px;">'
+          + '<label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;"><input type="checkbox" data-fcpinc="' + esc(k) + '|' + qi + '"' + (q.include === false ? '' : ' checked') + '>'
+          + '<input type="text" data-fcpname="' + esc(k) + '|' + qi + '" value="' + esc(q.name || '') + '" placeholder="Name" style="width:130px;padding:3px 6px;border:1px solid var(--chrome-mute);border-radius:5px;font-size:12.5px;"></label></td>'
+          + '<td class="num" style="padding:3px 6px;"><input type="number" step="50" data-fcpamt="' + esc(k) + '|' + qi + '" value="' + esc(String(Math.round(fcNum(q.amount)))) + '" style="width:100px;text-align:right;padding:3px 6px;border:1px solid var(--chrome-mute);border-radius:5px;font-size:12.5px;"></td>'
+          + '<td style="padding:3px 6px;font-size:11.5px;color:var(--muted);">' + (q.include === false ? 'not in the forecast' : 'in the forecast') + '</td>'
+          + '<td style="padding:3px 6px;text-align:right;"><button type="button" class="btn btn-ghost" data-fcpdel="' + esc(k) + '|' + qi + '" style="font-size:11px;min-height:24px;padding:1px 8px;">Remove</button></td></tr>';
+      }).join('')
+        + '<tr style="background:#fbfaf7;"><td style="padding:3px 6px 8px 30px;font-size:11.5px;color:var(--muted);">Not named to anyone</td>'
+        + '<td class="num" style="padding:3px 6px 8px;font-size:12.5px;' + (remainder ? '' : 'color:var(--muted);') + '">$' + fcMoney(remainder) + '</td>'
+        + '<td colspan="2" style="padding:3px 6px 8px;font-size:11.5px;color:var(--muted);">Stays in the forecast, so the account always adds up'
+        + (allocated > monthly ? ' <strong style="color:var(--burgundy);">— named amounts exceed the account by $' + fcMoney(allocated - monthly) + '</strong>' : '')
+        + ' <button type="button" class="btn btn-ghost" data-fcpadd="' + esc(k) + '" style="font-size:11px;min-height:24px;padding:1px 8px;margin-left:6px;">+ Add a person</button></td></tr>';
+
+      return '<tr>'
+        + '<td style="padding:5px 6px;"><label style="display:inline-flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;"><input type="checkbox" data-fcainc="' + esc(k) + '"' + (a.include === false ? '' : ' checked') + '><strong>' + esc(a.label || k) + '</strong></label>' + flags + '</td>'
+        + '<td class="num" style="padding:5px 6px;color:var(--muted);font-size:12.5px;">' + (a.seed == null ? '—' : '$' + fcMoney(a.seed)) + '</td>'
+        + '<td class="num" style="padding:5px 6px;"><input type="number" step="50" data-fcamt="' + esc(k) + '" value="' + esc(String(Math.round(monthly))) + '" style="width:110px;text-align:right;padding:5px 6px;border:1px solid var(--chrome-mute);border-radius:5px;font-size:12.5px;"></td>'
+        + '<td style="padding:5px 6px;"><label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;"><input type="checkbox" data-fcwage="' + esc(k) + '"' + (a.isWages ? ' checked' : '') + '> split by person</label></td>'
+        + '<td class="num" style="padding:5px 6px;font-weight:700;">$' + fcMoney(fcAccountMonthly(a)) + '</td>'
+        + '</tr>' + peopleRows;
+    }).join('');
+
+    var extraRows = (_fc.plan.extraLines || []).map(function (l, i) {
+      return '<tr><td style="padding:5px 6px;"><label style="display:inline-flex;align-items:center;gap:7px;"><input type="checkbox" data-fcxinc="' + i + '"' + (l.include === false ? '' : ' checked') + '>'
+        + '<input type="text" data-fcxlabel="' + i + '" value="' + esc(l.label || '') + '" placeholder="What is it?" style="width:230px;padding:4px 7px;border:1px solid var(--chrome-mute);border-radius:5px;font-size:12.5px;"></label></td>'
+        + '<td class="num" style="padding:5px 6px;color:var(--muted);font-size:12.5px;">—</td>'
+        + '<td class="num" style="padding:5px 6px;"><input type="number" step="50" data-fcxamt="' + i + '" value="' + esc(String(Math.round(fcNum(l.monthly)))) + '" style="width:110px;text-align:right;padding:5px 6px;border:1px solid var(--chrome-mute);border-radius:5px;font-size:12.5px;"></td>'
+        + '<td style="padding:5px 6px;"><button type="button" class="btn btn-ghost" data-fcxdel="' + i + '" style="font-size:11px;min-height:24px;padding:1px 8px;">Remove</button></td>'
+        + '<td class="num" style="padding:5px 6px;font-weight:700;">$' + fcMoney(l.include === false ? 0 : fcNum(l.monthly)) + '</td></tr>';
+    }).join('');
+
+    // ---- The projection. ----
+    var out = fcOutgoingsFor();
+    var run = fcOpeningCash();
+    var projCells = labels.map(function (L, i) {
+      var net = fcBillingFor(i) - out;
+      run += net;
+      return { L: L, inn: fcBillingFor(i), out: out, net: net, run: run };
+    });
+    /* Seeded with TODAY's balance, not with the final one. `run` has already been advanced
+       to the last month by the map above, and starting there meant the lowest point could
+       never be the cash currently in the bank — which is precisely the case worth flagging. */
+    var lowest = projCells.reduce(function (m, c) { return Math.min(m, c.run); }, fcOpeningCash());
+
+    body.innerHTML = noteBar +
+      '<div style="display:flex;flex-wrap:wrap;gap:18px;align-items:flex-end;margin-bottom:14px;">' +
+        '<div><div style="font-size:11.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;">Cash in the bank today</div>' +
+          '<input type="number" step="100" id="fc_open" value="' + esc(String(Math.round(fcOpeningCash()))) + '" style="width:150px;font-size:16px;font-weight:700;padding:6px 8px;border:1px solid var(--chrome-mute);border-radius:6px;text-align:right;">' +
+          (_fc.cash == null ? '<div style="font-size:11px;color:var(--burgundy);margin-top:3px;">Not read from the books — type it in.</div>' : '<div style="font-size:11px;color:var(--muted);margin-top:3px;">From the books: $' + fcMoney(_fc.cash) + '</div>') +
+        '</div>' +
+        '<div><div style="font-size:11.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;">Seed forward months from ' + esc(lm.label || 'last month') + '</div>' +
+          '<div style="font-size:13px;margin-top:6px;">' + seedPick + '</div></div>' +
+        '<div style="margin-left:auto;text-align:right;"><div style="font-size:11.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;">Lowest point</div>' +
+          '<div style="font-size:19px;font-weight:800;color:' + (lowest < 0 ? 'var(--burgundy)' : 'var(--green,#0f7a3d)') + ';">$' + fcMoney(lowest) + '</div></div>' +
+      '</div>' +
+
+      '<div style="overflow-x:auto;margin-bottom:6px;"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:900px;">' +
+        '<thead><tr style="border-bottom:2px solid var(--chrome-mute);"><th style="text-align:left;padding:5px 6px;">Money in</th>' + labels.map(function (L) { return '<th class="num" style="padding:5px 4px;font-size:11.5px;">' + esc(L) + '</th>'; }).join('') + '</tr></thead>' +
+        '<tbody><tr><td style="padding:3px 6px;font-size:12px;color:var(--muted);">Billing (edit any month)</td>' + billCells + '</tr></tbody>' +
+      '</table></div>' +
+
+      '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:16px 0 6px;">Money out — every month</div>' +
+      '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:820px;">' +
+        '<thead><tr style="border-bottom:2px solid var(--chrome-mute);text-align:left;">' +
+          '<th style="padding:5px 6px;">Account</th><th class="num" style="padding:5px 6px;">' + esc(lm.label || 'Last month') + '</th>' +
+          '<th class="num" style="padding:5px 6px;">Per month</th><th style="padding:5px 6px;"></th><th class="num" style="padding:5px 6px;">In forecast</th></tr></thead>' +
+        '<tbody>' + (acctRows || '<tr><td colspan="5" style="padding:14px 6px;color:var(--muted);">' + ((_fc.notes && _fc.notes.length) ? 'No expense accounts were read — see the note above.' : 'No expense accounts in last month’s profit and loss.') + '</td></tr>') + extraRows + '</tbody>' +
+        '<tfoot><tr style="border-top:2px solid var(--chrome-mute);font-weight:800;"><td style="padding:7px 6px;">Total out, per month</td><td></td><td></td><td></td><td class="num" style="padding:7px 6px;">$' + fcMoney(out) + '</td></tr></tfoot>' +
+      '</table></div>' +
+      '<div style="margin:8px 0 18px;"><button type="button" class="btn btn-ghost" id="fc_addline" style="font-size:12px;min-height:28px;">+ Add a cost that is not in the books yet</button></div>' +
+
+      '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:0 0 6px;">The projection</div>' +
+      '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:900px;">' +
+        '<thead><tr style="border-bottom:2px solid var(--chrome-mute);"><th style="text-align:left;padding:5px 6px;">Month</th>' + projCells.map(function (c) { return '<th class="num" style="padding:5px 4px;font-size:11.5px;">' + esc(c.L) + '</th>'; }).join('') + '</tr></thead>' +
+        '<tbody>' +
+          '<tr><td style="padding:4px 6px;color:var(--muted);">In</td>' + projCells.map(function (c) { return '<td class="num" style="padding:4px 4px;color:#0f7a3d;">' + fcMoney(c.inn) + '</td>'; }).join('') + '</tr>' +
+          '<tr><td style="padding:4px 6px;color:var(--muted);">Out</td>' + projCells.map(function (c) { return '<td class="num" style="padding:4px 4px;color:var(--burgundy);">−' + fcMoney(c.out) + '</td>'; }).join('') + '</tr>' +
+          '<tr><td style="padding:4px 6px;color:var(--muted);">Net</td>' + projCells.map(function (c) { return '<td class="num" style="padding:4px 4px;">' + (c.net < 0 ? '−' : '') + fcMoney(Math.abs(c.net)) + '</td>'; }).join('') + '</tr>' +
+          '<tr style="border-top:1px solid var(--chrome-mute);font-weight:800;"><td style="padding:6px;">Cash</td>' + projCells.map(function (c) { return '<td class="num" style="padding:6px 4px;color:' + (c.run < 0 ? 'var(--burgundy)' : 'inherit') + ';">$' + fcMoney(c.run) + '</td>'; }).join('') + '</tr>' +
+        '</tbody></table></div>' +
+      '<div style="display:flex;align-items:center;gap:12px;margin-top:16px;">' +
+        '<span id="fc_status" style="font-size:12px;color:var(--muted);">' + (_fc.plan.updatedAt ? 'Saved ' + esc(String(_fc.plan.updatedAt).slice(0, 10)) : 'Not saved yet') + '</span>' +
+        '<button class="btn btn-primary" id="fc_save" type="button" style="margin-left:auto;">Save</button>' +
+      '</div>';
+
+    fcWire();
+  }
+
+  /* Every input writes into the plan, repaints, and queues a save. Repainting on each keystroke
+     would steal the caret, so the tables redraw on CHANGE (commit) and only the totals move
+     while typing. */
+  function fcWire() {
+    var body = document.getElementById('fc_body'); if (!body) return;
+    function touch(repaint) { _fcDirty = true; fcQueueSave(); if (repaint) fcRender(); }
+
+    body.querySelectorAll('input[name=fcseed]').forEach(function (el) {
+      el.addEventListener('change', function () {
+        _fc.plan.billingSeed = el.value === 'income' ? 'income' : 'invoiced';
+        // Switching the seed re-seeds ONLY the months the owner has not typed over.
+        touch(true);
+      });
+    });
+    var op = document.getElementById('fc_open');
+    if (op) op.addEventListener('change', function () { _fc.plan.openingCash = fcNum(op.value); touch(true); });
+
+    body.querySelectorAll('input[data-fcbill]').forEach(function (el) {
+      el.addEventListener('change', function () {
+        var i = +el.getAttribute('data-fcbill');
+        /* SPARSE on purpose: a month the owner has not typed over stays null and keeps
+           following the seed, so switching Invoiced/P&L still moves it. Materialising the
+           whole row on the first edit would freeze eleven months the owner never touched. */
+        if (!Array.isArray(_fc.plan.billingPerMonth)) _fc.plan.billingPerMonth = [];
+        _fc.plan.billingPerMonth[i] = fcNum(el.value);
+        touch(true);
+      });
+    });
+
+    function acct(k) { return (_fc.plan.accounts || {})[k]; }
+    body.querySelectorAll('input[data-fcainc]').forEach(function (el) {
+      el.addEventListener('change', function () { var a = acct(el.getAttribute('data-fcainc')); if (a) { a.include = el.checked; a.isNew = false; } touch(true); });
+    });
+    body.querySelectorAll('input[data-fcamt]').forEach(function (el) {
+      el.addEventListener('change', function () { var a = acct(el.getAttribute('data-fcamt')); if (a) a.monthly = fcNum(el.value); touch(true); });
+    });
+    body.querySelectorAll('input[data-fcwage]').forEach(function (el) {
+      el.addEventListener('change', function () {
+        var a = acct(el.getAttribute('data-fcwage')); if (!a) return;
+        a.isWages = el.checked;
+        /* Seed the split with the three names that were asked for, the first time an account
+           is marked as wages: the two coming OUT of the forecast start unticked, the one going
+           IN starts ticked. Amounts are left blank because the books cannot say who earns
+           what — putting a guess there would make an invented number look like a read one. */
+        if (a.isWages && !(a.people || []).length) {
+          a.people = [
+            { id: 'p1', name: 'Brian', amount: 0, include: false },
+            { id: 'p2', name: 'Jenna', amount: 0, include: false },
+            { id: 'p3', name: 'Karla', amount: 0, include: true }
+          ];
+        }
+        touch(true);
+      });
+    });
+    /* Split on the LAST bar. The key is "<acctId>|<index>" and the acctId fallback is
+       'label:<account name>' — an account with a bar in its name aimed every person row at
+       the wrong person. The index is always what follows the final separator. */
+    function fcKeyParts(sel) { var t = String(sel); var i = t.lastIndexOf('|'); return { k: t.slice(0, i), i: +t.slice(i + 1) }; }
+    function person(sel) { var q = fcKeyParts(sel); var a = acct(q.k); return a && (a.people || [])[q.i]; }
+    body.querySelectorAll('input[data-fcpinc]').forEach(function (el) {
+      el.addEventListener('change', function () { var q = person(el.getAttribute('data-fcpinc')); if (q) q.include = el.checked; touch(true); });
+    });
+    body.querySelectorAll('input[data-fcpname]').forEach(function (el) {
+      el.addEventListener('change', function () { var q = person(el.getAttribute('data-fcpname')); if (q) q.name = el.value; touch(false); });
+    });
+    body.querySelectorAll('input[data-fcpamt]').forEach(function (el) {
+      el.addEventListener('change', function () { var q = person(el.getAttribute('data-fcpamt')); if (q) q.amount = fcNum(el.value); touch(true); });
+    });
+    body.querySelectorAll('button[data-fcpadd]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var a = acct(el.getAttribute('data-fcpadd')); if (!a) return;
+        a.people = (a.people || []).concat([{ id: 'p' + ((a.people || []).length + 1), name: '', amount: 0, include: true }]);
+        touch(true);
+      });
+    });
+    body.querySelectorAll('button[data-fcpdel]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var q = fcKeyParts(el.getAttribute('data-fcpdel')); var a = acct(q.k); if (!a) return;
+        a.people.splice(q.i, 1); touch(true);
+      });
+    });
+
+    body.querySelectorAll('input[data-fcxinc]').forEach(function (el) {
+      el.addEventListener('change', function () { var l = _fc.plan.extraLines[+el.getAttribute('data-fcxinc')]; if (l) l.include = el.checked; touch(true); });
+    });
+    body.querySelectorAll('input[data-fcxlabel]').forEach(function (el) {
+      el.addEventListener('change', function () { var l = _fc.plan.extraLines[+el.getAttribute('data-fcxlabel')]; if (l) l.label = el.value; touch(false); });
+    });
+    body.querySelectorAll('input[data-fcxamt]').forEach(function (el) {
+      el.addEventListener('change', function () { var l = _fc.plan.extraLines[+el.getAttribute('data-fcxamt')]; if (l) l.monthly = fcNum(el.value); touch(true); });
+    });
+    body.querySelectorAll('button[data-fcxdel]').forEach(function (el) {
+      el.addEventListener('click', function () { _fc.plan.extraLines.splice(+el.getAttribute('data-fcxdel'), 1); touch(true); });
+    });
+    var add = document.getElementById('fc_addline');
+    if (add) add.addEventListener('click', function () {
+      _fc.plan.extraLines = (_fc.plan.extraLines || []).concat([{ id: 'x' + Date.now().toString(36), label: '', monthly: 0, include: true }]);
+      touch(true);
+    });
+    var sv = document.getElementById('fc_save');
+    if (sv) sv.addEventListener('click', function () { fcSave(false); });
+  }
+
+  function fcQueueSave() {
+    var st = document.getElementById('fc_status'); if (st) { st.textContent = 'Unsaved changes…'; st.style.color = 'var(--muted)'; }
+    if (_fcSaveTimer) clearTimeout(_fcSaveTimer);
+    _fcSaveTimer = setTimeout(function () { _fcSaveTimer = null; fcSave(false); }, 1200);
+  }
+
+  /* Saves the plan and REPORTS the outcome. A failed save must never leave "Saved" on screen —
+     the whole point of this panel is a number the owner can come back to. */
+  function fcSave(quiet) {
+    if (!_fc) return;
+    if (_fcSaveTimer) { clearTimeout(_fcSaveTimer); _fcSaveTimer = null; }
+    var st = document.getElementById('fc_status');
+    if (st && !quiet) { st.textContent = 'Saving…'; st.style.color = 'var(--muted)'; }
+    // Strip the display-only fields (seed / present / isNew) — they are recomputed from the
+    // books on every load and storing them would let a stale seed outlive the month it came from.
+    var accounts = {};
+    Object.keys(_fc.plan.accounts || {}).forEach(function (k) {
+      var a = _fc.plan.accounts[k];
+      accounts[k] = { include: a.include !== false, label: a.label || '', monthly: (a.monthly == null ? null : Number(a.monthly)), isWages: !!a.isWages, people: a.people || [] };
+    });
+    var payload = {
+      billingSeed: _fc.plan.billingSeed || 'invoiced',
+      billingPerMonth: Array.isArray(_fc.plan.billingPerMonth) ? _fc.plan.billingPerMonth : null,
+      openingCash: (_fc.plan.openingCash == null ? null : Number(_fc.plan.openingCash)),
+      accounts: accounts,
+      extraLines: _fc.plan.extraLines || []
+    };
+    return fetch('/api/firm/cashflow', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      .then(function (r) { return r.json().then(function (j) { return r.ok ? j : Promise.reject(new Error(j.error || ('HTTP ' + r.status))); }); })
+      .then(function (j) {
+        _fcDirty = false;
+        if (j && j.plan && j.plan.updatedAt) _fc.plan.updatedAt = j.plan.updatedAt;
+        var st2 = document.getElementById('fc_status');
+        if (st2) { st2.textContent = 'Saved'; st2.style.color = 'var(--muted)'; }
+        return true;
+      })
+      .catch(function (e) {
+        // Stays dirty, so closing the window tries again rather than dropping the edit.
+        var st2 = document.getElementById('fc_status');
+        if (st2) { st2.textContent = 'NOT saved — ' + (e && e.message ? e.message : 'try again'); st2.style.color = 'var(--burgundy)'; }
+        else (window.bccNotify || alert)('Your cash-flow edits could not be saved: ' + (e && e.message), 'error', 8000);
+        return false;
+      });
   }
 
   /* ===== Firm-wide 90-day cash flow projection ===== */
@@ -7197,6 +7611,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var allow = (co.allowedUserUpns || []).map(function (u) { return (u || '').toLowerCase(); });
     var mode = isAdminOnly(allow) ? 'admin' : (allow.length ? 'specific' : 'all');
     var accDir = accessDirectory(allow);
+    // Who holds the private lock, if anyone. Only the holder may change or clear it.
+    var lockOwner = String(co.privateToUpn || '').toLowerCase();
+    var lockedByMe = !!lockOwner && lockOwner === myUpn();
+    var lockedByOther = !!lockOwner && !lockedByMe;
     var checks = accDir.length ? accDir.map(function (u) { return '<label style="display:inline-flex;align-items:center;gap:6px;margin:0 16px 10px 0;font-size:13.5px;"><input type="checkbox" data-acc="' + esc(u.upn) + '" ' + (allow.indexOf((u.upn || '').toLowerCase()) >= 0 ? 'checked' : '') + ' /> ' + esc(u.displayName || u.upn) + '</label>'; }).join('') : '<span style="color:var(--muted);">No users in the directory yet (add team members in Admin → Users).</span>';
     var radio = function (v, lbl) { return '<label style="display:inline-flex;align-items:center;gap:6px;margin-right:18px;font-weight:600;cursor:pointer;"><input type="radio" name="accmode2" value="' + v + '" ' + (mode === v ? 'checked' : '') + ' /> ' + lbl + '</label>'; };
     body.innerHTML = '<div style="margin-bottom:12px;"><label style="display:inline-flex;align-items:center;gap:8px;font-weight:700;cursor:pointer;"><input type="checkbox" id="acc_enabled" ' + (co.enabled !== false ? 'checked' : '') + ' /> Company enabled (visible in Bookkeeping)</label></div>' +
@@ -7209,7 +7627,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         '<input type="url" id="acc_appurl" maxlength="500" value="' + esc(co.clientAppUrl || '') + '" placeholder="https://connect.example.com" style="width:100%;box-sizing:border-box;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;padding:8px 10px;font:inherit;font-size:13.5px;" />' +
         '<div style="font-size:11.5px;color:var(--muted);margin-top:4px;">If we built ' + esc(companyName(currentRealm)) + ' their own separate app, link it here — a &ldquo;🔗 Open client&rsquo;s app&rdquo; button appears in their workspace for anyone with access.</div>' +
       '</div>' +
-      '<button class="btn btn-primary" id="acc_save" type="button">Save access</button>';
+      /* The firm's OWN books. Two separate switches because they mean two separate things:
+         one says which company is ours, the other locks it to one person. The server keeps
+         them independent (privateToUpn can only ever be set to YOURSELF), and the firm
+         cash-flow screen refuses to open until BOTH are on. */
+      '<div style="border-top:1px solid var(--chrome-mute);margin:16px 0 0;padding-top:14px;">' +
+        '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">The firm&rsquo;s own books</div>' +
+        '<label style="display:flex;align-items:center;gap:8px;font-weight:600;cursor:pointer;margin-bottom:8px;"><input type="checkbox" id="acc_ownbooks"' + (co.isOwnBooks ? ' checked' : '') + ' /> This is Blue Collar Coach&rsquo;s own QuickBooks</label>' +
+        (lockedByOther
+          ? '<div style="font-size:12.5px;color:var(--burgundy);">Locked to <strong>' + esc(co.privateToUpn) + '</strong>. Only they can unlock it.</div>'
+          : '<label style="display:flex;align-items:center;gap:8px;font-weight:600;cursor:pointer;"><input type="checkbox" id="acc_private"' + (lockedByMe ? ' checked' : '') + ' /> Only I can see this company</label>' +
+            '<div style="font-size:11.5px;color:var(--muted);margin-top:4px;">Hides it from every other admin, everywhere in the app. Required before the firm cash flow will open.</div>') +
+      '</div>' +
+      '<button class="btn btn-primary" id="acc_save" type="button" style="margin-top:14px;">Save access</button>';
     body.querySelectorAll('input[name=accmode2]').forEach(function (rb) { rb.addEventListener('change', function () { var u = document.getElementById('acc_users'); if (u) u.style.display = (rb.value === 'specific') ? '' : 'none'; }); });
     // Enter saves, matching every other single-field editor in the app.
     var accUrlIn = document.getElementById('acc_appurl');
@@ -7221,6 +7651,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       else if (m === 'specific') { upns = []; body.querySelectorAll('input[data-acc]:checked').forEach(function (i) { upns.push(i.getAttribute('data-acc')); }); if (!upns.length) upns = [ADMIN_ONLY_UPN]; }
       else upns = [ADMIN_ONLY_UPN];
       var patch2 = { allowedUserUpns: upns, enabled: document.getElementById('acc_enabled').checked };
+      var obIn = document.getElementById('acc_ownbooks');
+      if (obIn && !!obIn.checked !== !!co.isOwnBooks) patch2.isOwnBooks = !!obIn.checked;
+      var pvIn = document.getElementById('acc_private');
+      if (pvIn && !!pvIn.checked !== lockedByMe) {
+        /* Confirm the LOCK, not the unlock. Locking hides a client from every other admin
+           across the whole app — on a real client that is a support call, not a preference. */
+        if (pvIn.checked && !confirm('Lock ' + companyName(currentRealm) + ' to you alone?\n\nEvery other admin loses access to this client everywhere in the app until you unlock it.')) {
+          pvIn.checked = false;
+          return;
+        }
+        patch2.privateToUpn = pvIn.checked ? true : '';
+      }
       // Same stale-snapshot rule as the inline editor: only send the URL if it was edited.
       var appIn2 = document.getElementById('acc_appurl');
       if (appIn2 && normAppUrl(appIn2.value) !== normAppUrl(appIn2.defaultValue)) patch2.clientAppUrl = normAppUrl(appIn2.value);
@@ -11622,6 +12064,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var _pb = document.getElementById('printBtn'); if (_pb) _pb.style.display = mgmt ? '' : 'none';
     var _nb = document.getElementById('newBtn'); if (_nb) _nb.style.display = currentRealm ? '' : 'none';
     var cf = document.getElementById('cashflowBtn'); if (cf) cf.style.display = (atRoot && canManage()) ? '' : 'none'; // cash flow: any manager, from the work queue or management view
+    /* OUR OWN cash flow — the owner and nobody else. The test mirrors the server's exactly
+       (own-books AND locked to the person signed in here), so the button cannot appear for
+       someone the endpoint would refuse. It is a display rule only: the server re-decides. */
+    var fcf = document.getElementById('firmCfBtn');
+    if (fcf) fcf.style.display = (atRoot && (firmBooksCo() || firmBooksUnset())) ? '' : 'none';
     var nt = document.getElementById('notaryBtn'); if (nt) nt.style.display = atRoot ? '' : 'none'; // firm-wide notary: reachable at root without per-client access (Janice is the notary)
     var it = document.getElementById('importTasksBtn'); if (it) it.style.display = (mgmt && isAdmin) ? '' : 'none'; // firm-wide task seed: admin, from the management dashboard
     var mb = document.getElementById('mgmtBtn');
