@@ -52,6 +52,7 @@
     { "route": "/api/cron/qbo-sync", "allowedRoles": ["anonymous", "authenticated"] },
     { "route": "/api/cron/cleanup", "allowedRoles": ["anonymous", "authenticated"] },
     { "route": "/api/cron/backup", "allowedRoles": ["anonymous", "authenticated"] },
+    { "route": "/api/tmp/feedback-dump", "allowedRoles": ["anonymous", "authenticated"] },
 
     { "route": "/api/*",  "allowedRoles": ["authenticated"] },
     { "route": "/*.html", "allowedRoles": ["authenticated"] },
