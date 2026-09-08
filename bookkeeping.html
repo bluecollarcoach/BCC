@@ -1922,10 +1922,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       return c && c.isOwnBooks && String(c.privateToUpn || '').toLowerCase() === me;
     })[0] || null;
   }
-  /* Nobody has marked a company as ours yet. Not a secret — there are no firm figures to
-     protect until it is set — and it is the only window in which the button can be found. */
-  function firmBooksUnset() {
-    return isAdmin && !companies.some(function (c) { return c && c.isOwnBooks; });
+  /* Who may SEE the button — deliberately wider than who may READ anything. An admin keeps it
+     while there is still something for them to do: nothing marked as our books yet, or a
+     company marked that nobody has locked. Once someone holds the lock, only they see it.
+     No firm figure rides on this: the server re-decides on every request, and it refuses an
+     unlocked company outright. */
+  function firmBooksBtnVisible() {
+    if (!isAdmin) return false;
+    if (firmBooksCo()) return true;                     // locked to me — the settled case
+    var owned = companies.filter(function (c) { return c && c.isOwnBooks; })[0];
+    return !owned || !String(owned.privateToUpn || '').trim();
   }
 
   function fcMoney(n) { return (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 }); }
@@ -12068,7 +12074,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        (own-books AND locked to the person signed in here), so the button cannot appear for
        someone the endpoint would refuse. It is a display rule only: the server re-decides. */
     var fcf = document.getElementById('firmCfBtn');
-    if (fcf) fcf.style.display = (atRoot && (firmBooksCo() || firmBooksUnset())) ? '' : 'none';
+    if (fcf) fcf.style.display = (atRoot && firmBooksBtnVisible()) ? '' : 'none';
     var nt = document.getElementById('notaryBtn'); if (nt) nt.style.display = atRoot ? '' : 'none'; // firm-wide notary: reachable at root without per-client access (Janice is the notary)
     var it = document.getElementById('importTasksBtn'); if (it) it.style.display = (mgmt && isAdmin) ? '' : 'none'; // firm-wide task seed: admin, from the management dashboard
     var mb = document.getElementById('mgmtBtn');
