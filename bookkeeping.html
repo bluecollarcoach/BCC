@@ -1911,6 +1911,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
    * ===================================================================================== */
   var _fc = null;          // the loaded payload + the working plan
   var _fcRows = [];        // this render's billing rows, in order — controls address them BY INDEX
+  var _fcNewKey = null;    // the row just added, so the next render can put the caret in it
   var _fcClients = [];     // this render's client names, likewise
   var _fcSaveTimer = null;
   var _fcDirty = false;
@@ -1957,6 +1958,33 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var v = (_fc.plan.billingSeed === 'income') ? lm.plIncome : lm.invoiced;
     return (v == null) ? 0 : Number(v);
   }
+  /* Rows we added by hand carry this prefix. Server rows are keyed by QuickBooks ids, so the
+     two can never be confused for one another. */
+  function fcIsManual(key) { return String(key || '').indexOf('man~') === 0; }
+  function fcNorm(x) { return String(x == null ? '' : x).trim().toLowerCase(); }
+  /* Does a hand-added row now also exist in the books? Matched on client AND service name,
+     because that is all a person has to go on — the ids will never line up. */
+  function fcDuplicateOf(row) {
+    if (!row) return false;
+    var c = fcNorm(row.client), sv = fcNorm(row.service);
+    if (!c || !sv) return false;
+    return (_fc.billingLines || []).some(function (ln) {
+      return fcNorm(ln.customerName) === c && fcNorm(ln.itemName) === sv;
+    });
+  }
+  function fcAddBillingRow(clientName, serviceName, groupId) {
+    var key = 'man~' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    _fc.plan.billingLines[key] = {
+      include: true, monthly: 0,
+      customerName: String(clientName || ''), itemName: String(serviceName || ''),
+      /* Its own group unless it is joining one — a blank name must not merge two new clients.
+         A row added under a client that came from the books carries NO group id, so it groups
+         by their name and sits with their real services. */
+      groupId: groupId || (clientName ? null : ('g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)))
+    };
+    return key;
+  }
+
   /* What one billing row contributes each month. */
   function fcLineMonthly(b) {
     if (!b || b.include === false) return 0;
@@ -2123,12 +2151,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        an HTML attribute. ---- */
     _fcRows = Object.keys(_fc.plan.billingLines || {}).map(function (k) {
       var b = _fc.plan.billingLines[k];
-      return { key: k, b: b, client: b.customerName || '(no client)', service: b.itemName || '(no service)' };
+      return {
+        key: k, b: b,
+        client: b.customerName || '(no client)',
+        service: b.itemName || '(no service)',
+        // What this row is grouped UNDER. An id for anything we added, so an unnamed client is
+        // still its own client; the name for anything the books gave us.
+        gid: b.groupId || (b.customerName || '(no client)')
+      };
     });
     // Biggest client first, and within a client the biggest service first — the order the
     // owner reads it in when deciding what actually matters.
     var byClient = Object.create(null);
-    _fcRows.forEach(function (r) { (byClient[r.client] = byClient[r.client] || []).push(r); });
+    _fcRows.forEach(function (r) { (byClient[r.gid] = byClient[r.gid] || []).push(r); });
     var clientNames = Object.keys(byClient).sort(function (a, b2) {
       var ta = byClient[a].reduce(function (t, r) { return t + fcLineMonthly(r.b); }, 0);
       var tb = byClient[b2].reduce(function (t, r) { return t + fcLineMonthly(r.b); }, 0);
@@ -2138,12 +2173,21 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     _fcClients = clientNames;
     var splitRows = clientNames.map(function (cn) {
       var rows = byClient[cn].slice().sort(function (a, b2) { return fcLineMonthly(b2.b) - fcLineMonthly(a.b); });
+      // The DISPLAY name, read off the rows — `cn` is an opaque group id for anything we added.
+      var gname = rows[0].b.customerName || '';
       var clientTotal = rows.reduce(function (t, r) { return t + fcLineMonthly(r.b); }, 0);
       var lastTotal = rows.reduce(function (t, r) { return t + Number(r.b.seed || 0); }, 0);
       var allOn = rows.every(function (r) { return r.b.include !== false; });
+      /* A client we added by hand needs an editable name — nothing in QuickBooks is going to
+         supply one. A client from the books does not: their name is a fact, and letting it
+         drift would mean the split no longer reconciles to the invoices it came from. */
+      var manualClient = rows.every(function (r) { return fcIsManual(r.key); });
+      var nameEl = manualClient
+        ? '<input type="text" data-fcbclient="' + clientNames.indexOf(cn) + '" value="' + esc(gname) + '" placeholder="Client name" style="width:190px;padding:4px 7px;border:1px solid var(--chrome-mute);border-radius:5px;font-size:13px;font-weight:700;">'
+        : '<span>' + esc(gname || '(no client)') + '</span>';
       var head = '<tr style="background:#faf8f3;border-top:1px solid var(--chrome-mute);">' +
         '<td style="padding:6px;"><label style="display:inline-flex;align-items:center;gap:7px;cursor:pointer;font-weight:700;font-size:13px;">' +
-          '<input type="checkbox" data-fcclient="' + clientNames.indexOf(cn) + '"' + (allOn ? ' checked' : '') + ' title="Turn this whole client on or off"><span>' + esc(cn) + '</span></label>' +
+          '<input type="checkbox" data-fcclient="' + clientNames.indexOf(cn) + '"' + (allOn ? ' checked' : '') + ' title="Turn this whole client on or off">' + nameEl + '</label>' +
           '<span style="color:var(--muted);font-size:11.5px;margin-left:6px;">' + rows.length + ' service' + (rows.length === 1 ? '' : 's') + '</span></td>' +
         '<td class="num" style="padding:6px;color:var(--muted);font-size:12px;">$' + fcMoney(lastTotal) + '</td>' +
         '<td></td>' +
@@ -2151,16 +2195,30 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       return head + rows.map(function (r) {
         var i = _fcRows.indexOf(r);
         var monthly = (r.b.monthly == null) ? Number(r.b.seed || 0) : Number(r.b.monthly);
+        var manual = fcIsManual(r.key);
+        /* A row we added by hand for work that has SINCE started being invoiced would be
+           counted twice — once as our guess and once as the real thing — and the forecast
+           would read high with nothing to show why. Say so; never delete their row for them. */
+        var dupe = manual && fcDuplicateOf(r);
+        var nameCell = manual
+          ? '<input type="text" data-fcbsvc="' + i + '" value="' + esc(r.service === '(no service)' ? '' : r.service) + '" placeholder="Service" style="width:170px;padding:3px 6px;border:1px solid var(--chrome-mute);border-radius:5px;font-size:12.5px;">'
+          : esc(r.service);
         return '<tr><td style="padding:3px 6px 3px 28px;">' +
             '<label style="display:inline-flex;align-items:center;gap:7px;cursor:pointer;font-size:12.5px;">' +
-            '<input type="checkbox" data-fcbinc="' + i + '"' + (r.b.include === false ? '' : ' checked') + '>' + esc(r.service) + '</label>' +
+            '<input type="checkbox" data-fcbinc="' + i + '"' + (r.b.include === false ? '' : ' checked') + '>' + nameCell + '</label>' +
             (r.b.isNew ? '<span style="background:var(--gold-fade,#f7f1e0);border-radius:4px;padding:1px 5px;font-size:10.5px;font-weight:700;margin-left:6px;">NEW</span>' : '') +
-            (r.b.present ? '' : '<span style="color:var(--burgundy);font-size:10.5px;margin-left:6px;">not billed last month</span>') +
+            (manual ? '<span style="color:var(--muted);font-size:10.5px;margin-left:6px;">added by you</span>'
+                    : (r.b.present ? '' : '<span style="color:var(--burgundy);font-size:10.5px;margin-left:6px;">not billed last month</span>')) +
+            (dupe ? '<div style="color:var(--burgundy);font-size:11px;margin:2px 0 0 25px;">Now in the books as well — remove this row or it counts twice.</div>' : '') +
           '</td>' +
-          '<td class="num" style="padding:3px 6px;color:var(--muted);font-size:12px;">' + (r.b.seed == null ? '—' : '$' + fcMoney(r.b.seed)) + '</td>' +
-          '<td class="num" style="padding:3px 6px;"><input type="number" step="50" data-fcbamt="' + i + '" value="' + esc(String(Math.round(monthly))) + '" style="width:104px;text-align:right;padding:4px 6px;border:1px solid var(--chrome-mute);border-radius:5px;font-size:12.5px;"></td>' +
-          '<td class="num" style="padding:3px 6px;font-weight:600;">$' + fcMoney(fcLineMonthly(r.b)) + '</td></tr>';
-      }).join('');
+          '<td class="num" style="padding:3px 6px;color:var(--muted);font-size:12px;">' + (manual ? '—' : (r.b.seed == null ? '—' : '$' + fcMoney(r.b.seed))) + '</td>' +
+          '<td class="num" style="padding:3px 6px;"><input type="number" step="50" data-fcbamt="' + i + '" value="' + esc(String(Math.round(monthly))) + '" style="width:104px;text-align:right;padding:4px 6px;border:1px solid ' + (dupe ? 'var(--burgundy)' : 'var(--chrome-mute)') + ';border-radius:5px;font-size:12.5px;"></td>' +
+          '<td class="num" style="padding:3px 6px;font-weight:600;">$' + fcMoney(fcLineMonthly(r.b)) +
+            (manual ? ' <button type="button" class="btn btn-ghost" data-fcbdel="' + i + '" style="font-size:11px;min-height:22px;padding:0 7px;margin-left:6px;">Remove</button>' : '') +
+          '</td></tr>';
+      }).join('')
+        // Add a service to THIS client — the row arrives pre-filled with their name.
+        + '<tr><td colspan="4" style="padding:0 6px 6px 28px;"><button type="button" class="btn btn-ghost" data-fcaddsvc="' + clientNames.indexOf(cn) + '" style="font-size:11px;min-height:22px;padding:0 8px;">+ Add a service' + (gname ? ' for ' + esc(gname) : '') + '</button></td></tr>';
     }).join('');
 
     /* Whatever was on the invoices but on no line — tax, shipping, rounding. Shown as its own
@@ -2260,7 +2318,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           '<th class="num" style="padding:5px 6px;">Per month</th><th class="num" style="padding:5px 6px;">In forecast</th></tr></thead>' +
         '<tbody>' + (splitRows || '<tr><td colspan="4" style="padding:14px 6px;color:var(--muted);">' + ((_fc.notes && _fc.notes.length) ? 'No invoice lines were read — see the note above. The single figure below is being used instead.' : 'Last month’s invoices carry no service lines, so the single figure below is being used.') + '</td></tr>') + unatRow + '</tbody>' +
         '<tfoot><tr style="border-top:2px solid var(--chrome-mute);font-weight:800;"><td style="padding:7px 6px;">Billing, per month</td><td></td><td></td><td class="num" style="padding:7px 6px;">$' + fcMoney(fcBillingBase()) + '</td></tr></tfoot>' +
-      '</table></div>' + serviceCut +
+      '</table></div>' +
+      '<div style="margin:8px 0 0;"><button type="button" class="btn btn-ghost" id="fc_addclient" style="font-size:12px;min-height:28px;">+ Add a client we have not billed yet</button></div>' +
+      serviceCut +
 
       '<div style="overflow-x:auto;margin:16px 0 6px;"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:900px;">' +
         '<thead><tr style="border-bottom:2px solid var(--chrome-mute);"><th style="text-align:left;padding:5px 6px;">Billing by month</th>' + labels.map(function (L) { return '<th class="num" style="padding:5px 4px;font-size:11.5px;">' + esc(L) + '</th>'; }).join('') + '</tr></thead>' +
@@ -2333,11 +2393,52 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // forecast, and doing it service by service is where a row gets missed.
     body.querySelectorAll('input[data-fcclient]').forEach(function (el) {
       el.addEventListener('change', function () {
-        var name = _fcClients[+el.getAttribute('data-fcclient')];
-        if (name == null) return;
-        _fcRows.forEach(function (r) { if (r.client === name) { r.b.include = el.checked; r.b.isNew = false; } });
+        var gid = _fcClients[+el.getAttribute('data-fcclient')];
+        if (gid == null) return;
+        _fcRows.forEach(function (r) { if (r.gid === gid) { r.b.include = el.checked; r.b.isNew = false; } });
         touch(true);
       });
+    });
+    body.querySelectorAll('input[data-fcbsvc]').forEach(function (el) {
+      el.addEventListener('change', function () {
+        var r = _fcRows[+el.getAttribute('data-fcbsvc')];
+        if (r) r.b.itemName = el.value;
+        touch(true);
+      });
+    });
+    body.querySelectorAll('input[data-fcbclient]').forEach(function (el) {
+      el.addEventListener('change', function () {
+        var gid = _fcClients[+el.getAttribute('data-fcbclient')];
+        if (gid == null) return;
+        // EVERY row in the group — renaming one service's client would split the client in two.
+        _fcRows.forEach(function (r) { if (r.gid === gid) r.b.customerName = el.value; });
+        touch(true);
+      });
+    });
+    body.querySelectorAll('button[data-fcbdel]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var r = _fcRows[+el.getAttribute('data-fcbdel')];
+        // Only ever a row we added — a row from the books is a fact, and is excluded, not erased.
+        if (r && fcIsManual(r.key)) delete _fc.plan.billingLines[r.key];
+        touch(true);
+      });
+    });
+    body.querySelectorAll('button[data-fcaddsvc]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var gid = _fcClients[+el.getAttribute('data-fcaddsvc')];
+        if (gid == null) return;
+        var peer = _fcRows.filter(function (r) { return r.gid === gid; })[0];
+        var nm = peer ? (peer.b.customerName || '') : '';
+        /* Join THIS client: a hand-added client keeps its group id, and a client from the
+           books is grouped by name, so the new row is grouped by name too and lands with them. */
+        _fcNewKey = fcAddBillingRow(nm, '', fcIsManual(peer && peer.key) ? gid : null);
+        touch(true);
+      });
+    });
+    var addc = document.getElementById('fc_addclient');
+    if (addc) addc.addEventListener('click', function () {
+      _fcNewKey = fcAddBillingRow('', '');
+      touch(true);
     });
     var un = document.getElementById('fc_unat');
     if (un) un.addEventListener('change', function () { _fc.plan.unattributedInclude = un.checked; touch(true); });
@@ -2433,6 +2534,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     });
     var sv = document.getElementById('fc_save');
     if (sv) sv.addEventListener('click', function () { fcSave(false); });
+
+    /* Put the caret in the row that was just added. Without this a new client appears
+       somewhere in a long table with no indication of where, and the click reads as a no-op. */
+    if (_fcNewKey) {
+      var nr = _fcRows.filter(function (r) { return r.key === _fcNewKey; })[0];
+      _fcNewKey = null;
+      if (nr) {
+        var idx = _fcRows.indexOf(nr);
+        var el2 = body.querySelector('input[data-fcbclient="' + _fcClients.indexOf(nr.gid) + '"]')
+               || body.querySelector('input[data-fcbsvc="' + idx + '"]');
+        if (el2 && el2.focus) { try { el2.focus(); el2.select && el2.select(); } catch (_) {} }
+        if (el2 && el2.scrollIntoView) { try { el2.scrollIntoView({ block: 'center' }); } catch (_) {} }
+      }
+    }
   }
 
   function fcQueueSave() {
@@ -2460,7 +2575,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var b = _fc.plan.billingLines[k];
       // seed/present/isNew are recomputed from the books every load — storing them would let
       // a stale figure outlive the month it came from.
-      billingLines[k] = { include: b.include !== false, monthly: (b.monthly == null ? null : Number(b.monthly)), customerName: b.customerName || '', itemName: b.itemName || '' };
+      billingLines[k] = { include: b.include !== false, monthly: (b.monthly == null ? null : Number(b.monthly)), customerName: b.customerName || '', itemName: b.itemName || '', groupId: b.groupId || null };
     });
     var payload = {
       billingMode: _fc.plan.billingMode === 'total' ? 'total' : 'lines',

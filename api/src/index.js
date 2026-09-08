@@ -10765,7 +10765,10 @@ app.http('firm-cashflow', {
             include: l.include !== false,
             monthly: (l.monthly === null || l.monthly === undefined) ? null : firmCfNumber(l.monthly),
             customerName: String(l.customerName || '').slice(0, 160),
-            itemName: String(l.itemName || '').slice(0, 160)
+            itemName: String(l.itemName || '').slice(0, 160),
+            // Keeps a hand-added client's services together across a reload, and keeps two
+            // unnamed new clients apart. Null for anything that came from QuickBooks.
+            groupId: l.groupId ? String(l.groupId).slice(0, 60) : null
           };
         }
         plan.billingLines = bl;
