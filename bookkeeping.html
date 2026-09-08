@@ -2938,8 +2938,22 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (d.kind === 'list') {
       if (!d.items || !d.items.length) return '<div style="color:var(--muted);padding:10px;">No records.</div>';
       var cols = Object.keys(d.items[0]).filter(function (k) { return k !== 'id'; });
+      // Voiding is scoped to the two entities this list already lets someone edit.
+      var canVoid = d.editable === 'invoice' || d.editable === 'bill';
       var head = '<tr>' + cols.map(function (k) { return '<th' + ((k === 'balance' || k === 'total') ? ' class="num"' : '') + '>' + esc(k) + '</th>'; }).join('') + (d.editable ? '<th></th>' : '') + '</tr>';
-      var bodyL = d.items.map(function (it) { return '<tr>' + cols.map(function (k) { var v = it[k]; var num = (k === 'balance' || k === 'total'); return '<td' + (num ? ' class="num"' : '') + '>' + (num ? money2(v) : (v === true ? 'yes' : v === false ? 'no' : esc(v == null ? '' : v))) + '</td>'; }).join('') + (d.editable ? ('<td style="text-align:right;">' + (it.id ? '<button class="btn btn-ghost" data-txedit="' + esc(it.id) + '" type="button" style="font-size:11px;min-height:26px;">Edit</button>' : '') + '</td>') : '') + '</tr>'; }).join('');
+      var bodyL = d.items.map(function (it) { return '<tr>' + cols.map(function (k) {
+          var v = it[k]; var num = (k === 'balance' || k === 'total');
+          if (num) return '<td class="num">' + money2(v) + '</td>';
+          // 'voided'/'paid'/'open' is only ever the all-bills/all-invoices status column —
+          // colored here rather than hard-coding a status-specific renderer that would have
+          // to be kept in step with every OTHER report type this same function draws.
+          if (k === 'status' && v === 'voided') return '<td><span style="color:var(--burgundy);font-weight:700;">voided</span></td>';
+          if (k === 'status' && v === 'paid') return '<td><span style="color:var(--muted);">paid</span></td>';
+          return '<td>' + (v === true ? 'yes' : v === false ? 'no' : esc(v == null ? '' : v)) + '</td>';
+        }).join('') + (d.editable ? ('<td style="text-align:right;white-space:nowrap;">' +
+          (it.id ? '<button class="btn btn-ghost" data-txedit="' + esc(it.id) + '" type="button" style="font-size:11px;min-height:26px;">Edit</button>' : '') +
+          (it.id && canVoid && it.status !== 'voided' ? ' <button class="btn btn-ghost" data-txvoid="' + esc(it.id) + '" type="button" style="font-size:11px;min-height:26px;color:var(--burgundy);">Void</button>' : '') +
+          '</td>') : '') + '</tr>'; }).join('');
       return reportStamp(resp) + '<table><thead>' + head + '</thead><tbody>' + bodyL + '</tbody></table>';
     }
     var cc = d.columns || [];
@@ -4288,9 +4302,72 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       })
       .catch(function (e) { if (currentRealm === realmAt) (window.bccNotify || alert)('Could not load for edit: ' + e.message, 'warn'); });
   }
+  /* Voiding. A fresh read first, same realm-race guard as editTxn and for the same reason —
+     the list row's own total/balance can be stale, and QuickBooks will refuse a void built
+     on a stale SyncToken as a conflicting edit rather than doing what was asked. */
+  function voidTxn(entity, id, btn) {
+    var realmAt = currentRealm;
+    var ot = btn && btn.textContent;
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    function restore() { if (btn) { btn.disabled = false; btn.textContent = ot; } }
+    fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/entity?type=' + encodeURIComponent(entity) + '&id=' + encodeURIComponent(id), { credentials: 'include' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (currentRealm !== realmAt) return;
+        if (!d || !d.ok || !d.entity) throw new Error((d && d.error) || 'not found');
+        var e = d.entity;
+        // The button is already hidden for a row already marked voided — this catches a
+        // stale list (someone else voided it, or it opened before a refresh) rather than
+        // sending a second void at QuickBooks and finding out from its refusal. TotalAmt 0
+        // catches it too even when the PrivateNote tag never got written — voiding zeroes
+        // the total itself, which a fully-paid bill never does (it keeps its original total
+        // with only the balance reduced), so this does not fire on an ordinary paid bill.
+        if (/\[Voided in BCC/i.test(String(e.PrivateNote || '')) || Number(e.TotalAmt) === 0) {
+          restore();
+          (window.bccNotify || alert)('This ' + entity + ' already shows a $0 total in QuickBooks — it looks like it has already been voided.', 'warn');
+          return;
+        }
+        var party = ((e.CustomerRef || e.VendorRef || {}).name) || '';
+        var total = e.TotalAmt, balance = e.Balance;
+        // Informational, not a block — QuickBooks is the authority on whether a linked
+        // payment actually stops the void, and qboWriteFailMsg already surfaces its refusal
+        // verbatim if it does. This just means the confirm isn't a surprise either way.
+        // ANY amount applied, not just fully paid — a partial payment links a transaction to
+        // the void just as a full one does, and only checking for a zero balance missed it.
+        var warn = (Number(balance) < Number(total))
+          ? '\n\nThis shows as ' + (Number(balance) === 0 ? 'fully' : 'partially') + ' paid. If a payment is linked to it, QuickBooks will refuse the void until that payment is removed first.'
+          : '';
+        var msg = 'Void this ' + entity + (e.DocNumber ? ' (#' + e.DocNumber + ')' : '') + (party ? ' — ' + party : '') +
+          '?\n\nAmount: $' + txnMoney(qbonum(total)) + '\n\nThis zeroes it out in ' + companyName(currentRealm) + '’s live QuickBooks — the lines and amount are gone, though QuickBooks keeps the record marked voided rather than deleting it. This cannot be undone from here.' + warn;
+        if (!confirm(msg)) { restore(); return; }
+        if (btn) btn.textContent = '…';
+        var body = { entity: entity, op: 'void', id: e.Id, syncToken: e.SyncToken, fields: { total: total, docNumber: e.DocNumber } };
+        fetch('/api/integrations/qbo/companies/' + encodeURIComponent(realmAt) + '/write', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+          .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
+          .then(function (resp) {
+            if (!resp.ok) throw new Error(resp.error || 'void failed');
+            if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: realmAt, entity: entity, op: 'void', id: resp.id } });
+            // Realm-gated like every other toast this form raises — a bookkeeper who has
+            // already moved on to a different client should not see a bare "voided" or an
+            // error toast with no company name while looking at someone else's screen.
+            if (currentRealm === realmAt) {
+              var label = entity.charAt(0).toUpperCase() + entity.slice(1);
+              if (window.bccNotifySaved) window.bccNotifySaved(label + ' voided.');
+              /* The void itself already succeeded — the amount is zeroed in QuickBooks either
+                 way — so this is informational, not an alarm. Told rather than left silent:
+                 the marker is a courtesy for reports, not the thing that just happened. */
+              if (resp.noteFailed && window.bccNotify) window.bccNotify(label + ' voided, but a follow-up note could not be saved. This does not affect the void.', 'warn', 8000);
+              loadQboKpis(); if (qboActiveReport) loadQboReport(qboActiveReport, null);
+            } else restore();
+          })
+          .catch(function (e2) { restore(); if (currentRealm === realmAt) (window.bccNotify || alert)(qboWriteFailMsg(e2), 'error', 9000); });
+      })
+      .catch(function (e) { restore(); if (currentRealm === realmAt) (window.bccNotify || alert)('Could not load to void: ' + e.message, 'warn'); });
+  }
   function wireTxEdit(out, data) {
     if (!data || !data.editable) return;
     out.querySelectorAll('[data-txedit]').forEach(function (b) { b.onclick = function () { editTxn(data.editable, b.getAttribute('data-txedit')); }; });
+    out.querySelectorAll('[data-txvoid]').forEach(function (b) { b.onclick = function () { voidTxn(data.editable, b.getAttribute('data-txvoid'), b); }; });
   }
 
   /* ----- Add master records (customers, vendors, items, accounts) ----- */

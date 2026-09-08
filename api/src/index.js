@@ -8199,6 +8199,25 @@ function bsReportQuery(endDateStr, method) {
 // Sum the numeric value of a flattened report row by its QBO group code (e.g.
 // "TotalCurrentAssets"), tolerant of label fallbacks.
 function reportNum(s) { const n = parseFloat(String(s == null ? '' : s).replace(/,/g, '')); return isNaN(n) ? 0 : n; }
+/* Tells a VOIDED transaction apart from a genuinely PAID one. Both zero out Balance, but
+ * voiding zeroes TotalAmt too — a paid bill keeps its original total with Balance reduced to
+ * 0. That is the PRIMARY signal, checked first, because it comes straight from QuickBooks and
+ * cannot go stale: a bill this app never touched still reads correctly.
+ *
+ * The PrivateNote marker (written by qbo-write's void branch, see the comment there) is kept
+ * only as a second signal for the one case TotalAmt can't cover — a bill whose total was
+ * already exactly $0 before anyone voided it (rare, but a $0 line-item bill is possible and
+ * would otherwise misread as paid). It is NOT the primary check: qbo-write writes it in a
+ * best-effort follow-up call that can fail after the void itself has already succeeded, and a
+ * status this app shows in every report must not go permanently wrong because of a second
+ * network call's cosmetic failure.
+ */
+function qboVoidStatus(x) {
+  if (Number(x && x.Balance) > 0) return 'open';
+  if (Number(x && x.TotalAmt) === 0) return 'voided';
+  if (/\[Voided in BCC/i.test(String(x && x.PrivateNote || ''))) return 'voided';
+  return 'paid';
+}
 function findByGroup(flat, group) {
   // flattenQboReport tags every sub-account row with its section's group, so the
   // FIRST match is a sub-line (e.g. "Labor Income"), not the section total. The
@@ -8544,11 +8563,11 @@ app.http('qbo-report', {
         }
         case 'all-invoices': {
           const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
-          data = { kind: 'list', editable: 'invoice', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, CustomerRef FROM Invoice WHERE TxnDate >= '" + from + "' AND TxnDate <= '" + to + "' ORDERBY TxnDate DESC")).map(x => ({ id: x.Id, doc: x.DocNumber, name: x.CustomerRef && x.CustomerRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance, status: (Number(x.Balance) > 0 ? 'open' : 'paid') })) }; break;
+          data = { kind: 'list', editable: 'invoice', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, CustomerRef, PrivateNote FROM Invoice WHERE TxnDate >= '" + from + "' AND TxnDate <= '" + to + "' ORDERBY TxnDate DESC")).map(x => ({ id: x.Id, doc: x.DocNumber, name: x.CustomerRef && x.CustomerRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance, status: qboVoidStatus(x) })) }; break;
         }
         case 'all-bills': {
           const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
-          data = { kind: 'list', editable: 'bill', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, VendorRef FROM Bill WHERE TxnDate >= '" + from + "' AND TxnDate <= '" + to + "' ORDERBY TxnDate DESC")).map(x => ({ id: x.Id, doc: x.DocNumber, name: x.VendorRef && x.VendorRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance, status: (Number(x.Balance) > 0 ? 'open' : 'paid') })) }; break;
+          data = { kind: 'list', editable: 'bill', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, VendorRef, PrivateNote FROM Bill WHERE TxnDate >= '" + from + "' AND TxnDate <= '" + to + "' ORDERBY TxnDate DESC")).map(x => ({ id: x.Id, doc: x.DocNumber, name: x.VendorRef && x.VendorRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance, status: qboVoidStatus(x) })) }; break;
         }
         default: return { status: 400, jsonBody: { error: 'unknown report type "' + type + '"' } };
       }
@@ -8595,7 +8614,13 @@ async function qboResolveAccess(request, realmId, opts) {
     return r.json();
   };
   const apiPost = async (path, bodyObj) => {
-    const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + '?minorversion=70';
+    /* Matches apiGet's own '&' vs '?' check just above. Every caller until voiding passed a
+       bare path with no query string, so this was never exercised — but the void operation
+       MUST be invoked as '?operation=void', and appending '?minorversion=70' unconditionally
+       produced '?operation=void?minorversion=70': a second '?' is not a separator, so QBO
+       would have read the whole thing as one literal operation value, never 'void', and the
+       call would silently fail to void anything. */
+    const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70';
     const r = await fetch(u, { method: 'POST', headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(bodyObj) });
     if (!r.ok) throw new Error('QBO ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 300));
     return r.json();
@@ -8764,12 +8789,57 @@ app.http('qbo-write', {
       const entity = String(b.entity || '').toLowerCase();
       const f = b.fields || {};
       auditEntity = entity;
-      auditOp = b.op === 'update' ? 'update' : 'create';
+      auditOp = b.op === 'update' ? 'update' : (b.op === 'void' ? 'void' : 'create');
       // A compact description of WHAT was pushed, built from the request only — no
       // extra QBO lookups, so auditing can never slow down or fail the write.
       auditSummary = qboWriteSummary(entity, f, b);
       const cap = { invoice: 'Invoice', bill: 'Bill', purchase: 'Purchase', payment: 'Payment', customer: 'Customer', vendor: 'Vendor', item: 'Item', account: 'Account', journalentry: 'JournalEntry', project: 'Customer' }[entity];
       if (!cap) return badRequest('unsupported entity: ' + entity);
+
+      if (b.op === 'void') {
+        /* A validation refusal here returns directly rather than throwing, so — unlike a
+           QuickBooks-side refusal (stale SyncToken, a locked period), which lands in the
+           catch below and is logged there — these two would otherwise leave zero trail that
+           anyone tried to void anything. Every push to a client's live books, refused or not,
+           has to be findable; log it explicitly rather than relying on the shared catch. */
+        if (entity !== 'invoice' && entity !== 'bill') {
+          const why = 'voiding is only supported for invoices and bills';
+          logAudit('qbo-write-failed', { user: auditUser(request), path: '/api/integrations/qbo/companies/' + request.params.realmId + '/write', meta: { realmId: request.params.realmId, entity, op: 'void', outcome: 'refused', error: why } });
+          return badRequest(why);
+        }
+        if (!b.id || !b.syncToken) {
+          const why = 'id and syncToken required to void';
+          logAudit('qbo-write-failed', { user: auditUser(request), path: '/api/integrations/qbo/companies/' + request.params.realmId + '/write', meta: { realmId: request.params.realmId, entity, op: 'void', outcome: 'refused', error: why } });
+          return badRequest(why);
+        }
+        const voided = await ctx.apiPost('/' + entity + '?operation=void', { Id: String(b.id), SyncToken: String(b.syncToken) });
+        const vres = voided[cap] || {};
+        /* Best-effort tag, in a try of its own: the void itself already succeeded even if
+           this fails, and a cosmetic follow-up failing must never make the bookkeeper think
+           the void did not happen. Appended, not overwritten — a bookkeeper's existing memo
+           on a now-dead transaction is still their note, not ours to erase. */
+        let noteFailed = null;
+        try {
+          if (vres.Id && vres.SyncToken) {
+            const marker = '[Voided in BCC ' + new Date().toISOString().slice(0, 10) + ']';
+            const existingNote = String(vres.PrivateNote || '').trim();
+            await ctx.apiPost('/' + entity, {
+              Id: String(vres.Id), SyncToken: String(vres.SyncToken), sparse: true,
+              PrivateNote: (existingNote ? existingNote + ' ' : '') + marker
+            });
+          }
+        } catch (e2) { noteFailed = String((e2 && e2.message) || e2).slice(0, 300); }
+        logAudit('qbo-write', { user: auditUser(request), path: '/api/integrations/qbo/companies/' + request.params.realmId + '/write', meta: {
+          realmId: request.params.realmId, entity, op: 'void', outcome: 'voided',
+          id: vres.Id || String(b.id), docNumber: vres.DocNumber,
+          // What it WAS before voiding, from the caller — built from the request only, same
+          // reasoning as every other audit summary here: never slow or risk the write itself
+          // to go fetch a number we could instead just be told.
+          voidedTotal: f.total != null ? qboAmount(f.total) : undefined,
+          noteFailed: noteFailed || undefined
+        } });
+        return { jsonBody: { ok: true, id: vres.Id, docNumber: vres.DocNumber, voided: true, noteFailed: noteFailed || undefined } };
+      }
       let payload;
       /* Lines the editor preserves but does not render (item lines, discounts, tax). On an
          update they are concatenated back onto the payload, so they are real lines — but the
