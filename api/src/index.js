@@ -10670,9 +10670,15 @@ app.http('qbo-companyinfo', {
  * isAppAdmin is checked as a RESTRICTION ahead of the lock, never as a short-circuit past it
  * — the same order bookkeeping-time-post and qbo-kpis use.
  * ===================================================================================== */
+/* A SubTotal line repeats the whole document and a description line carries no money —
+   counting either would double or pad the split. Identical to TXN_KEEP_NONMONEY on the
+   transaction form and KEEP_NONMONEY in qboWriteSummary; three copies of one rule, which is
+   this codebase's most repeated defect, so they are pinned together by test. */
+const FIRM_CF_NONMONEY = { SubTotalLineDetail: 1, DescriptionOnly: 1 };
 const FIRM_CF_ID = 'bcc-report-firmcashflow';   // 'bcc-report-' is in PROTECTED_KEY_PREFIXES,
                                                 // so /api/data can never hand this to a browser.
 const FIRM_CF_MONTHS = 12;
+const FIRM_CF_MAX_LINES = 400;   // client x service rows returned; the rest are named, not dropped
 
 async function firmBooksAccess(request) {
   const p = principal(request);
@@ -10702,10 +10708,13 @@ async function firmBooksAccess(request) {
 function firmCfDefaults() {
   return {
     months: FIRM_CF_MONTHS,
-    billingSeed: 'invoiced',   // 'invoiced' = last month's invoices; 'income' = last month's P&L income
-    billingPerMonth: null,     // null = follow the seed; an array of numbers = the owner's own figures
+    billingMode: 'lines',      // 'lines' = sum of the per-client/service rows; 'total' = one figure
+    billingSeed: 'invoiced',   // when mode is 'total': last month's invoices, or its P&L income
+    billingPerMonth: null,     // null = follow the basis; a SPARSE array = the months typed over
+    billingLines: {},          // key -> { include, monthly, customerName, itemName }
     openingCash: null,         // null = today's bank balance from the books
     accounts: {},              // acctId -> { include, label, monthly, isWages, people: [{ id, name, amount, include }] }
+    unattributedInclude: true, // tax/shipping/rounding: on the invoice but on no line
     extraLines: [],            // owner-added costs that are not in last month's books at all
     updatedAt: null, updatedBy: null
   };
@@ -10746,6 +10755,22 @@ app.http('firm-cashflow', {
       const plan = Object.assign({}, prior);
 
       if (body.billingSeed === 'invoiced' || body.billingSeed === 'income') plan.billingSeed = body.billingSeed;
+      if (body.billingMode === 'lines' || body.billingMode === 'total') plan.billingMode = body.billingMode;
+      if (body.billingLines && typeof body.billingLines === 'object') {
+        const bl = {};
+        const bsrc = Object.assign(Object.create(null), body.billingLines);
+        for (const k of Object.keys(bsrc)) {
+          const l = bsrc[k] || {};
+          bl[String(k).slice(0, 300)] = {
+            include: l.include !== false,
+            monthly: (l.monthly === null || l.monthly === undefined) ? null : firmCfNumber(l.monthly),
+            customerName: String(l.customerName || '').slice(0, 160),
+            itemName: String(l.itemName || '').slice(0, 160)
+          };
+        }
+        plan.billingLines = bl;
+      }
+      if (body.unattributedInclude !== undefined) plan.unattributedInclude = body.unattributedInclude !== false;
       if (body.billingPerMonth === null) plan.billingPerMonth = null;
       else if (Array.isArray(body.billingPerMonth)) {
         /* null is PRESERVED, never coerced. The row is deliberately sparse: a month the owner
@@ -10883,13 +10908,62 @@ app.http('firm-cashflow', {
 
       // 3) Last month's invoices — the literal reading of "last month's billing".
       let invoiced = null, invoiceCount = 0, invoicesTruncated = false;
+      let billingLines = [], billingUnattributed = 0;
       if (Date.now() < FC_DEADLINE) {
         try {
-          const inv = await queryAll("SELECT Id, DocNumber, TxnDate, TotalAmt, Balance, CustomerRef FROM Invoice WHERE TxnDate >= '" + iso(lmStart) + "' AND TxnDate <= '" + iso(lmEnd) + "' ORDERBY TxnDate DESC");
+          /* SELECT * because we need Line[]: the client is on the invoice (CustomerRef) and
+             the service is on each line (SalesItemLineDetail.ItemRef). There is no narrower
+             projection that carries both — QuickBooks will not let you select into Line. */
+          const inv = await queryAll("SELECT * FROM Invoice WHERE TxnDate >= '" + iso(lmStart) + "' AND TxnDate <= '" + iso(lmEnd) + "' ORDERBY TxnDate DESC");
           invoicesTruncated = !!inv.truncated;
           invoiceCount = inv.length;
           invoiced = inv.reduce((t, r) => t + firmCfNumber(r && r.TotalAmt), 0);
           if (invoicesTruncated) notes.push('Only part of last month’s invoices could be read, so the billed figure is low.');
+
+          /* Aggregate to one row per client × service. Null-prototype: a QuickBooks customer
+             or item literally named "constructor" would otherwise collide with
+             Object.prototype and silently merge into — or discard — another client's row. */
+          const agg = Object.create(null);
+          for (const r of inv) {
+            const cid = String((r.CustomerRef && r.CustomerRef.value) || '');
+            const cname = String((r.CustomerRef && (r.CustomerRef.name || r.CustomerRef.value)) || '(no client)');
+            for (const l of (Array.isArray(r.Line) ? r.Line : [])) {
+              if (!l || FIRM_CF_NONMONEY[l.DetailType]) continue;
+              /* A group line carries no Amount of its own; its children do. Same rule the
+                 transaction form's running total uses, so a bundled service is counted once
+                 and at the figure the invoice actually shows. */
+              const kids = (l.DetailType === 'GroupLineDetail' && l.GroupLineDetail && Array.isArray(l.GroupLineDetail.Line))
+                ? l.GroupLineDetail.Line : [l];
+              for (const cl of kids) {
+                if (!cl || FIRM_CF_NONMONEY[cl.DetailType]) continue;
+                const det = cl.SalesItemLineDetail || {};
+                const iid = String((det.ItemRef && det.ItemRef.value) || '');
+                const iname = String((det.ItemRef && (det.ItemRef.name || det.ItemRef.value))
+                  || cl.Description || '(no service)').slice(0, 120);
+                let amt = firmCfNumber(cl.Amount);
+                if (cl.DetailType === 'DiscountLineDetail') amt = -amt;
+                if (!amt) continue;
+                const key = 'c' + cid + '~i' + iid + '~' + iname.toLowerCase();
+                if (!agg[key]) agg[key] = { key, customerId: cid, customerName: cname, itemId: iid, itemName: iname, amount: 0 };
+                agg[key].amount += amt;
+              }
+            }
+          }
+          const allRows = Object.keys(agg).map(k => agg[k]).sort((a, b) => b.amount - a.amount);
+          billingLines = allRows.slice(0, FIRM_CF_MAX_LINES);
+          if (allRows.length > FIRM_CF_MAX_LINES) {
+            /* NO SILENT CAPS. Without this the dropped rows would land in billingUnattributed
+               and be presented as tax and rounding — a real client's billing relabelled, with
+               nothing on screen saying the split was short. */
+            notes.push('Only the ' + FIRM_CF_MAX_LINES + ' largest client/service rows are shown; the remaining '
+              + (allRows.length - FIRM_CF_MAX_LINES) + ' are counted in the unattributed line, not lost.');
+          }
+          /* WHAT THE LINES DO NOT ADD UP TO. Tax, shipping and rounding live on the invoice,
+             not on any line, so the split is legitimately short of the invoiced total — and a
+             split presented as the whole of the billing would understate the firm every month.
+             Report the difference; the screen shows it as its own row. */
+          const splitTotal = billingLines.reduce((t, l) => t + l.amount, 0);
+          billingUnattributed = Math.round(((invoiced || 0) - splitTotal) * 100) / 100;
         } catch (e) {
           notes.push('Could not read last month’s invoices' + (aiTimedOut(e) ? ' (QuickBooks took too long)' : '') + ' — seed the billing figure by hand.');
         }
@@ -10902,6 +10976,7 @@ app.http('firm-cashflow', {
         ok: true, available: true,
         companyName: comp.companyName || null,
         lastMonth: { label: lmLabel, from: iso(lmStart), to: iso(lmEnd), invoiced, invoiceCount, plIncome, plExpenseTotal },
+        billingLines, billingUnattributed,
         cash, expenseLines, plan, months: FIRM_CF_MONTHS,
         // Named, not swallowed: a figure this run could not read is reported as unread rather
         // than presented as zero.

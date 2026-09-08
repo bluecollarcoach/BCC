@@ -1910,6 +1910,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
    * id (not its name), so renaming an account in QuickBooks does not silently drop a decision.
    * ===================================================================================== */
   var _fc = null;          // the loaded payload + the working plan
+  var _fcRows = [];        // this render's billing rows, in order — controls address them BY INDEX
+  var _fcClients = [];     // this render's client names, likewise
   var _fcSaveTimer = null;
   var _fcDirty = false;
 
@@ -1955,10 +1957,29 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var v = (_fc.plan.billingSeed === 'income') ? lm.plIncome : lm.invoiced;
     return (v == null) ? 0 : Number(v);
   }
+  /* What one billing row contributes each month. */
+  function fcLineMonthly(b) {
+    if (!b || b.include === false) return 0;
+    return (b.monthly == null) ? Number(b.seed || 0) : Number(b.monthly || 0);
+  }
+  /* The monthly base: the sum of the client × service rows, plus whatever sat on the invoices
+     but on no line (tax, shipping, rounding) unless the owner has switched it off. Falls back
+     to the single seed figure when there is no split to work from — a firm that bills without
+     line items still gets a forecast. */
+  function fcBillingBase() {
+    if (!_fc) return 0;
+    if (_fc.plan.billingMode === 'total') return fcSeedBilling();
+    var lines = _fc.plan.billingLines || {};
+    var keys = Object.keys(lines);
+    if (!keys.length) return fcSeedBilling();
+    var t = keys.reduce(function (sum, k) { return sum + fcLineMonthly(lines[k]); }, 0);
+    if (_fc.plan.unattributedInclude !== false) t += Number(_fc.billingUnattributed || 0);
+    return t;
+  }
   function fcBillingFor(i) {
     var per = _fc.plan.billingPerMonth;
     if (Array.isArray(per) && per[i] != null) return Number(per[i]) || 0;
-    return fcSeedBilling();
+    return fcBillingBase();
   }
 
   /* What an account contributes to a month. A wage account that has been split by person is
@@ -2035,6 +2056,23 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         // Decided ONCE, before the merge fills the map — asking mid-loop made the first
         // account look established and every later one look new.
         var hadPlan = !!_fc.plan.updatedAt;
+        /* Billing rows, keyed by client+service exactly as the server built them. A client
+           who did not invoice last month keeps their saved row (they are still a client — the
+           forecast is about what we EXPECT), and a row that has appeared since the plan was
+           saved is flagged NEW rather than folded in silently. */
+        _fc.plan.billingLines = Object.assign(Object.create(null), _fc.plan.billingLines || {});
+        var hadBilling = !!_fc.plan.updatedAt;
+        (_fc.billingLines || []).forEach(function (ln) {
+          var b = _fc.plan.billingLines[ln.key];
+          if (!b) {
+            b = { include: true, monthly: null, customerName: ln.customerName, itemName: ln.itemName, isNew: hadBilling };
+            _fc.plan.billingLines[ln.key] = b;
+          }
+          b.seed = ln.amount;
+          b.customerName = ln.customerName || b.customerName;
+          b.itemName = ln.itemName || b.itemName;
+          b.present = true;
+        });
         (_fc.expenseLines || []).forEach(function (ln) {
           var a = _fc.plan.accounts[ln.acctId];
           if (!a) {
@@ -2066,13 +2104,88 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         + _fc.notes.map(function (n) { return esc(n); }).join('<br>') + '</div>'
       : '';
 
-    var seedPick = '<label style="margin-right:14px;"><input type="radio" name="fcseed" value="invoiced"' + (_fc.plan.billingSeed !== 'income' ? ' checked' : '') + '> Invoiced ' + (lm.invoiced == null ? '<span style="color:var(--burgundy);">(not read)</span>' : '<strong>$' + fcMoney(lm.invoiced) + '</strong> <span style="color:var(--muted);">(' + (lm.invoiceCount || 0) + ' invoice' + ((lm.invoiceCount === 1) ? '' : 's') + ')</span>') + '</label>' +
-      '<label><input type="radio" name="fcseed" value="income"' + (_fc.plan.billingSeed === 'income' ? ' checked' : '') + '> P&amp;L income ' + (lm.plIncome == null ? '<span style="color:var(--burgundy);">(not read)</span>' : '<strong>$' + fcMoney(lm.plIncome) + '</strong>') + '</label>';
+    var haveSplit = !!Object.keys(_fc.plan.billingLines || {}).length;
+    var basisIs = (_fc.plan.billingMode === 'total') ? ('total:' + (_fc.plan.billingSeed === 'income' ? 'income' : 'invoiced')) : 'lines';
+    var seedPick =
+      (haveSplit ? '<label style="margin-right:14px;"><input type="radio" name="fcseed" value="lines"' + (basisIs === 'lines' ? ' checked' : '') + '> By client &amp; service <strong>$' + fcMoney(fcBillingBase()) + '</strong></label>' : '') +
+      '<label style="margin-right:14px;"><input type="radio" name="fcseed" value="total:invoiced"' + (basisIs === 'total:invoiced' ? ' checked' : '') + '> Invoiced ' + (lm.invoiced == null ? '<span style="color:var(--burgundy);">(not read)</span>' : '<strong>$' + fcMoney(lm.invoiced) + '</strong> <span style="color:var(--muted);">(' + (lm.invoiceCount || 0) + ' invoice' + ((lm.invoiceCount === 1) ? '' : 's') + ')</span>') + '</label>' +
+      '<label><input type="radio" name="fcseed" value="total:income"' + (basisIs === 'total:income' ? ' checked' : '') + '> P&amp;L income ' + (lm.plIncome == null ? '<span style="color:var(--burgundy);">(not read)</span>' : '<strong>$' + fcMoney(lm.plIncome) + '</strong>') + '</label>';
 
-    // ---- Billing row: one editable cell per forward month, pre-filled from the seed. ----
+    // ---- Billing row: one editable cell per forward month, pre-filled from the basis. ----
     var billCells = labels.map(function (L, i) {
-      return '<td style="padding:3px 4px;"><input data-fcbill="' + i + '" type="number" step="100" value="' + esc(String(Math.round(fcBillingFor(i)))) + '" style="width:100%;min-width:74px;text-align:right;padding:5px 6px;border:1px solid var(--chrome-mute);border-radius:5px;font-size:12.5px;"></td>';
+      var per = _fc.plan.billingPerMonth;
+      var overridden = Array.isArray(per) && per[i] != null;
+      return '<td style="padding:3px 4px;"><input data-fcbill="' + i + '" type="number" step="100" value="' + esc(String(Math.round(fcBillingFor(i)))) + '" title="' + (overridden ? 'Typed over — clear it to follow the split again' : 'Following the split') + '" style="width:100%;min-width:74px;text-align:right;padding:5px 6px;border:1px solid ' + (overridden ? 'var(--gold-deep,#a8862c)' : 'var(--chrome-mute)') + ';border-radius:5px;font-size:12.5px;' + (overridden ? 'font-weight:700;' : '') + '"></td>';
     }).join('');
+
+    /* ---- The split. _fcRows is rebuilt on every render and is what every control on these
+       rows indexes into, so no client or service name ever has to survive being embedded in
+       an HTML attribute. ---- */
+    _fcRows = Object.keys(_fc.plan.billingLines || {}).map(function (k) {
+      var b = _fc.plan.billingLines[k];
+      return { key: k, b: b, client: b.customerName || '(no client)', service: b.itemName || '(no service)' };
+    });
+    // Biggest client first, and within a client the biggest service first — the order the
+    // owner reads it in when deciding what actually matters.
+    var byClient = Object.create(null);
+    _fcRows.forEach(function (r) { (byClient[r.client] = byClient[r.client] || []).push(r); });
+    var clientNames = Object.keys(byClient).sort(function (a, b2) {
+      var ta = byClient[a].reduce(function (t, r) { return t + fcLineMonthly(r.b); }, 0);
+      var tb = byClient[b2].reduce(function (t, r) { return t + fcLineMonthly(r.b); }, 0);
+      return tb - ta;
+    });
+
+    _fcClients = clientNames;
+    var splitRows = clientNames.map(function (cn) {
+      var rows = byClient[cn].slice().sort(function (a, b2) { return fcLineMonthly(b2.b) - fcLineMonthly(a.b); });
+      var clientTotal = rows.reduce(function (t, r) { return t + fcLineMonthly(r.b); }, 0);
+      var lastTotal = rows.reduce(function (t, r) { return t + Number(r.b.seed || 0); }, 0);
+      var allOn = rows.every(function (r) { return r.b.include !== false; });
+      var head = '<tr style="background:#faf8f3;border-top:1px solid var(--chrome-mute);">' +
+        '<td style="padding:6px;"><label style="display:inline-flex;align-items:center;gap:7px;cursor:pointer;font-weight:700;font-size:13px;">' +
+          '<input type="checkbox" data-fcclient="' + clientNames.indexOf(cn) + '"' + (allOn ? ' checked' : '') + ' title="Turn this whole client on or off"><span>' + esc(cn) + '</span></label>' +
+          '<span style="color:var(--muted);font-size:11.5px;margin-left:6px;">' + rows.length + ' service' + (rows.length === 1 ? '' : 's') + '</span></td>' +
+        '<td class="num" style="padding:6px;color:var(--muted);font-size:12px;">$' + fcMoney(lastTotal) + '</td>' +
+        '<td></td>' +
+        '<td class="num" style="padding:6px;font-weight:700;">$' + fcMoney(clientTotal) + '</td></tr>';
+      return head + rows.map(function (r) {
+        var i = _fcRows.indexOf(r);
+        var monthly = (r.b.monthly == null) ? Number(r.b.seed || 0) : Number(r.b.monthly);
+        return '<tr><td style="padding:3px 6px 3px 28px;">' +
+            '<label style="display:inline-flex;align-items:center;gap:7px;cursor:pointer;font-size:12.5px;">' +
+            '<input type="checkbox" data-fcbinc="' + i + '"' + (r.b.include === false ? '' : ' checked') + '>' + esc(r.service) + '</label>' +
+            (r.b.isNew ? '<span style="background:var(--gold-fade,#f7f1e0);border-radius:4px;padding:1px 5px;font-size:10.5px;font-weight:700;margin-left:6px;">NEW</span>' : '') +
+            (r.b.present ? '' : '<span style="color:var(--burgundy);font-size:10.5px;margin-left:6px;">not billed last month</span>') +
+          '</td>' +
+          '<td class="num" style="padding:3px 6px;color:var(--muted);font-size:12px;">' + (r.b.seed == null ? '—' : '$' + fcMoney(r.b.seed)) + '</td>' +
+          '<td class="num" style="padding:3px 6px;"><input type="number" step="50" data-fcbamt="' + i + '" value="' + esc(String(Math.round(monthly))) + '" style="width:104px;text-align:right;padding:4px 6px;border:1px solid var(--chrome-mute);border-radius:5px;font-size:12.5px;"></td>' +
+          '<td class="num" style="padding:3px 6px;font-weight:600;">$' + fcMoney(fcLineMonthly(r.b)) + '</td></tr>';
+      }).join('');
+    }).join('');
+
+    /* Whatever was on the invoices but on no line — tax, shipping, rounding. Shown as its own
+       row and counted by default: dropping it silently would make every forward month short
+       by exactly the amount the books say we billed and the lines cannot explain. */
+    var unat = Number(_fc.billingUnattributed || 0);
+    var unatRow = (!_fcRows.length || Math.abs(unat) < 0.005) ? '' :
+      '<tr style="border-top:1px solid var(--chrome-mute);"><td style="padding:6px;">' +
+        '<label style="display:inline-flex;align-items:center;gap:7px;cursor:pointer;font-size:12.5px;color:var(--muted);">' +
+        '<input type="checkbox" id="fc_unat"' + (_fc.plan.unattributedInclude === false ? '' : ' checked') + '>' +
+        (unat < 0 ? 'Invoice-level discounts and rounding — on the invoices, on no line'
+                  : 'Tax, shipping and rounding — on the invoices, on no line') + '</label></td>' +
+        '<td class="num" style="padding:6px;color:var(--muted);font-size:12px;">$' + fcMoney(unat) + '</td><td></td>' +
+        '<td class="num" style="padding:6px;font-weight:600;">$' + fcMoney(_fc.plan.unattributedInclude === false ? 0 : unat) + '</td></tr>';
+
+    // The SAME rows, cut by service instead of by client — the second half of the question.
+    var byService = Object.create(null);
+    _fcRows.forEach(function (r) { byService[r.service] = (byService[r.service] || 0) + fcLineMonthly(r.b); });
+    var svcNames = Object.keys(byService).sort(function (a, b2) { return byService[b2] - byService[a]; });
+    var serviceCut = !svcNames.length ? '' :
+      '<details style="margin:10px 0 0;"><summary style="cursor:pointer;font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;">By service, across every client</summary>' +
+      '<table style="border-collapse:collapse;font-size:12.5px;margin-top:8px;min-width:320px;">' +
+      svcNames.map(function (n) {
+        return '<tr><td style="padding:3px 14px 3px 0;">' + esc(n) + '</td><td class="num" style="padding:3px 0;font-weight:600;">$' + fcMoney(byService[n]) + '</td></tr>';
+      }).join('') + '</table></details>';
 
     // ---- Expense accounts. ----
     var acctRows = keys.map(function (k) {
@@ -2134,15 +2247,24 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           '<input type="number" step="100" id="fc_open" value="' + esc(String(Math.round(fcOpeningCash()))) + '" style="width:150px;font-size:16px;font-weight:700;padding:6px 8px;border:1px solid var(--chrome-mute);border-radius:6px;text-align:right;">' +
           (_fc.cash == null ? '<div style="font-size:11px;color:var(--burgundy);margin-top:3px;">Not read from the books — type it in.</div>' : '<div style="font-size:11px;color:var(--muted);margin-top:3px;">From the books: $' + fcMoney(_fc.cash) + '</div>') +
         '</div>' +
-        '<div><div style="font-size:11.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;">Seed forward months from ' + esc(lm.label || 'last month') + '</div>' +
+        '<div><div style="font-size:11.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;">Forward months are based on ' + esc(lm.label || 'last month') + '</div>' +
           '<div style="font-size:13px;margin-top:6px;">' + seedPick + '</div></div>' +
         '<div style="margin-left:auto;text-align:right;"><div style="font-size:11.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;">Lowest point</div>' +
           '<div style="font-size:19px;font-weight:800;color:' + (lowest < 0 ? 'var(--burgundy)' : 'var(--green,#0f7a3d)') + ';">$' + fcMoney(lowest) + '</div></div>' +
       '</div>' +
 
-      '<div style="overflow-x:auto;margin-bottom:6px;"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:900px;">' +
-        '<thead><tr style="border-bottom:2px solid var(--chrome-mute);"><th style="text-align:left;padding:5px 6px;">Money in</th>' + labels.map(function (L) { return '<th class="num" style="padding:5px 4px;font-size:11.5px;">' + esc(L) + '</th>'; }).join('') + '</tr></thead>' +
-        '<tbody><tr><td style="padding:3px 6px;font-size:12px;color:var(--muted);">Billing (edit any month)</td>' + billCells + '</tr></tbody>' +
+      '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:0 0 6px;">Money in — by client and service</div>' +
+      '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:640px;">' +
+        '<thead><tr style="border-bottom:2px solid var(--chrome-mute);text-align:left;">' +
+          '<th style="padding:5px 6px;">Client / service</th><th class="num" style="padding:5px 6px;">' + esc(lm.label || 'Last month') + '</th>' +
+          '<th class="num" style="padding:5px 6px;">Per month</th><th class="num" style="padding:5px 6px;">In forecast</th></tr></thead>' +
+        '<tbody>' + (splitRows || '<tr><td colspan="4" style="padding:14px 6px;color:var(--muted);">' + ((_fc.notes && _fc.notes.length) ? 'No invoice lines were read — see the note above. The single figure below is being used instead.' : 'Last month’s invoices carry no service lines, so the single figure below is being used.') + '</td></tr>') + unatRow + '</tbody>' +
+        '<tfoot><tr style="border-top:2px solid var(--chrome-mute);font-weight:800;"><td style="padding:7px 6px;">Billing, per month</td><td></td><td></td><td class="num" style="padding:7px 6px;">$' + fcMoney(fcBillingBase()) + '</td></tr></tfoot>' +
+      '</table></div>' + serviceCut +
+
+      '<div style="overflow-x:auto;margin:16px 0 6px;"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:900px;">' +
+        '<thead><tr style="border-bottom:2px solid var(--chrome-mute);"><th style="text-align:left;padding:5px 6px;">Billing by month</th>' + labels.map(function (L) { return '<th class="num" style="padding:5px 4px;font-size:11.5px;">' + esc(L) + '</th>'; }).join('') + '</tr></thead>' +
+        '<tbody><tr><td style="padding:3px 6px;font-size:12px;color:var(--muted);">Type over any month' + (Array.isArray(_fc.plan.billingPerMonth) && _fc.plan.billingPerMonth.some(function (v) { return v != null; }) ? ' <button type="button" class="btn btn-ghost" id="fc_clearmonths" style="font-size:10.5px;min-height:22px;padding:0 7px;">clear</button>' : '') + '</td>' + billCells + '</tr></tbody>' +
       '</table></div>' +
 
       '<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:16px 0 6px;">Money out — every month</div>' +
@@ -2181,10 +2303,48 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
 
     body.querySelectorAll('input[name=fcseed]').forEach(function (el) {
       el.addEventListener('change', function () {
-        _fc.plan.billingSeed = el.value === 'income' ? 'income' : 'invoiced';
-        // Switching the seed re-seeds ONLY the months the owner has not typed over.
+        // Switching the basis moves every month the owner has NOT typed over; the sparse
+        // billingPerMonth row is what keeps the ones they have.
+        if (el.value === 'lines') { _fc.plan.billingMode = 'lines'; }
+        else {
+          _fc.plan.billingMode = 'total';
+          _fc.plan.billingSeed = (el.value === 'total:income') ? 'income' : 'invoiced';
+        }
         touch(true);
       });
+    });
+
+    // ---- The client × service split. ----
+    body.querySelectorAll('input[data-fcbinc]').forEach(function (el) {
+      el.addEventListener('change', function () {
+        var r = _fcRows[+el.getAttribute('data-fcbinc')];
+        if (r) { r.b.include = el.checked; r.b.isNew = false; }
+        touch(true);
+      });
+    });
+    body.querySelectorAll('input[data-fcbamt]').forEach(function (el) {
+      el.addEventListener('change', function () {
+        var r = _fcRows[+el.getAttribute('data-fcbamt')];
+        if (r) r.b.monthly = fcNum(el.value);
+        touch(true);
+      });
+    });
+    // A whole client on or off — losing or winning one is the commonest single change to a
+    // forecast, and doing it service by service is where a row gets missed.
+    body.querySelectorAll('input[data-fcclient]').forEach(function (el) {
+      el.addEventListener('change', function () {
+        var name = _fcClients[+el.getAttribute('data-fcclient')];
+        if (name == null) return;
+        _fcRows.forEach(function (r) { if (r.client === name) { r.b.include = el.checked; r.b.isNew = false; } });
+        touch(true);
+      });
+    });
+    var un = document.getElementById('fc_unat');
+    if (un) un.addEventListener('change', function () { _fc.plan.unattributedInclude = un.checked; touch(true); });
+    var clr = document.getElementById('fc_clearmonths');
+    if (clr) clr.addEventListener('click', function () {
+      // Back to following the split, rather than twelve frozen copies of an old number.
+      _fc.plan.billingPerMonth = null; touch(true);
     });
     var op = document.getElementById('fc_open');
     if (op) op.addEventListener('change', function () { _fc.plan.openingCash = fcNum(op.value); touch(true); });
@@ -2295,7 +2455,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var a = _fc.plan.accounts[k];
       accounts[k] = { include: a.include !== false, label: a.label || '', monthly: (a.monthly == null ? null : Number(a.monthly)), isWages: !!a.isWages, people: a.people || [] };
     });
+    var billingLines = {};
+    Object.keys(_fc.plan.billingLines || {}).forEach(function (k) {
+      var b = _fc.plan.billingLines[k];
+      // seed/present/isNew are recomputed from the books every load — storing them would let
+      // a stale figure outlive the month it came from.
+      billingLines[k] = { include: b.include !== false, monthly: (b.monthly == null ? null : Number(b.monthly)), customerName: b.customerName || '', itemName: b.itemName || '' };
+    });
     var payload = {
+      billingMode: _fc.plan.billingMode === 'total' ? 'total' : 'lines',
+      billingLines: billingLines,
+      unattributedInclude: _fc.plan.unattributedInclude !== false,
       billingSeed: _fc.plan.billingSeed || 'invoiced',
       billingPerMonth: Array.isArray(_fc.plan.billingPerMonth) ? _fc.plan.billingPerMonth : null,
       openingCash: (_fc.plan.openingCash == null ? null : Number(_fc.plan.openingCash)),
