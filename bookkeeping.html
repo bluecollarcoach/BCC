@@ -12160,6 +12160,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       })
       .catch(function (e) { if (currentRealm !== realmAt) return; var out = document.getElementById('wip_out'); if (out) out.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:10px;">' + esc(e.message) + '</div>'; });
   }
+  var _wipSearch = '';             // survives across renders of THIS client's tab
+  var _wipRealmForSearch = null;   // which client _wipSearch belongs to
   function renderWipTable(jobs) {
     var out = document.getElementById('wip_out'); if (!out) return;
     var m = mrMoney0;
@@ -12176,7 +12178,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         '<td class="num" style="text-align:right;padding:3px 5px;">' + m(job.income || 0) + '</td>' +
         '<td class="num wc-over" style="text-align:right;padding:3px 5px;"></td></tr>';
     }).join('');
-    out.innerHTML = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:760px;"><thead><tr style="background:#f7f1e3;">' +
+    if (_wipRealmForSearch !== currentRealm) { _wipSearch = ''; _wipRealmForSearch = currentRealm; }
+    out.innerHTML = '<div style="margin-bottom:8px;"><input type="search" id="wip_search" placeholder="Search jobs…" value="' + esc(_wipSearch || '') + '" style="width:100%;max-width:280px;padding:6px 10px;border:1px solid var(--chrome-mute);border-radius:6px;font-size:12.5px;"></div>' +
+      '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:760px;"><thead><tr style="background:#f7f1e3;">' +
       ['Job', 'Contract', 'Est. cost', 'Cost to date', '% comp', 'Earned', 'Billed', 'Over/(under)'].map(function (h, i) { return '<th style="text-align:' + (i === 0 ? 'left' : 'right') + ';padding:5px;font-size:10.5px;text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid #c5a55a;">' + h + '</th>'; }).join('') +
       '</tr></thead><tbody>' + rows + '</tbody><tfoot id="wip_totals"></tfoot></table></div>' +
       '<div id="wip_totals_note" style="font-size:11px;color:#8a6d2f;margin-top:8px;"></div>' +
@@ -12190,8 +12194,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
          Both are kept: Billed still totals every job (it is a real figure the bookkeeper
          needs), and the footnote says how much of it the other two columns exclude. */
       var tot = { contract: 0, est: 0, cost: 0, earned: 0, billed: 0, over: 0, setupBilled: 0, setupJobs: 0, openJobs: 0 };
+      var q = String(_wipSearch || '').trim().toLowerCase();
+      var anyVisible = false;
       out.querySelectorAll('[data-wrow]').forEach(function (row) {
         var name = row.getAttribute('data-job');
+        // Never hide a row someone is actively typing into — a match disappearing under the
+        // cursor mid-edit is worse than a search that is briefly one keystroke behind.
+        var hasFocus = row.contains(document.activeElement);
+        var hit = !q || String(name || '').toLowerCase().indexOf(q) >= 0;
+        row.hidden = !hit && !hasFocus;
+        if (!row.hidden) anyVisible = true;
+        if (row.hidden) return;   // excluded from the totals below, same as being filtered out
         var _ov = (_wip.jobs && Object.prototype.hasOwnProperty.call(_wip.jobs, name) && _wip.jobs[name] && typeof _wip.jobs[name] === 'object') ? _wip.jobs[name] : {};
         var c = wipCalc(jobs[+row.getAttribute('data-wrow')], _ov);
         // Show the true cost ratio (which can exceed 100% and is the useful overrun
@@ -12212,12 +12225,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var gapN = tot.openJobs - tot.setupJobs, gapAmt = tot.billed - tot.setupBilled;
       var note = document.getElementById('wip_totals_note');
       if (note) {
-        note.innerHTML = gapN
-          ? ('Total Billed covers every job. Total Earned and Total Over/(under) cover only the ' + tot.setupJobs + ' job' + (tot.setupJobs === 1 ? '' : 's') +
+        var msgs = [];
+        // Said FIRST and plainly: a filtered total must never be mistaken for the company's.
+        if (q) msgs.push('Totals reflect the ' + tot.openJobs + ' job' + (tot.openJobs === 1 ? '' : 's') + ' matching “' + esc(_wipSearch) + '”, not every job.');
+        if (gapN) msgs.push('Total Billed covers every job shown. Total Earned and Total Over/(under) cover only the ' + tot.setupJobs + ' job' + (tot.setupJobs === 1 ? '' : 's') +
              ' with both a contract and an estimated cost — ' + m(gapAmt) + ' billed on ' + gapN + ' job' + (gapN === 1 ? '' : 's') +
-             ' is excluded from those two columns. Fill in the contract and estimate to bring ' + (gapN === 1 ? 'it' : 'them') + ' in.')
-          : '';
+             ' is excluded from those two columns. Fill in the contract and estimate to bring ' + (gapN === 1 ? 'it' : 'them') + ' in.');
+        note.innerHTML = msgs.join(' ');
       }
+      // An empty result reads as "the company has no jobs" unless it says otherwise.
+      var noneRow = out.querySelector('.wip-noresults');
+      if (!anyVisible && !noneRow) {
+        var tb = out.querySelector('tbody');
+        if (tb) tb.insertAdjacentHTML('beforeend', '<tr class="wip-noresults"><td colspan="8" style="padding:14px 5px;color:var(--muted);">No job matches “' + esc(_wipSearch) + '”.</td></tr>');
+      } else if (anyVisible && noneRow) { noneRow.remove(); }
       if (tf) tf.innerHTML = '<tr style="font-weight:700;border-top:2px solid #c5a55a;"><td style="padding:5px;">Total</td><td class="num" style="text-align:right;padding:5px;">' + m(tot.contract) + '</td><td class="num" style="text-align:right;padding:5px;">' + m(tot.est) + '</td><td class="num" style="text-align:right;padding:5px;">' + m(tot.cost) + '</td><td></td><td class="num" style="text-align:right;padding:5px;">' + m(tot.earned) + '</td><td class="num" style="text-align:right;padding:5px;">' + m(tot.billed) + '</td><td class="num" style="text-align:right;padding:5px;color:' + (tot.over >= 0 ? '#b7791f' : '#c0392b') + ';">' + m(tot.over) + '</td></tr>';
     }
     out.querySelectorAll('[data-wrow]').forEach(function (row) {
@@ -12235,8 +12256,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           d.jobs[name][inp.getAttribute('data-wf')] = inp.value;
           _wip = d; saveWip(); recalcAll();
         };
+        // A row kept visible only because it had focus (searched-away, being edited) must
+        // re-hide on leaving it — otherwise it lingers after the edit, under a search it no
+        // longer matches, until something else happens to trigger another recalcAll.
+        inp.onblur = function () { recalcAll(); };
       });
     });
+    var searchEl = document.getElementById('wip_search');
+    if (searchEl) searchEl.oninput = function () { _wipSearch = searchEl.value; recalcAll(); };
     recalcAll();
   }
 
