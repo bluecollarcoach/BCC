@@ -640,6 +640,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   <div class="card" id="tab-payroll" style="display:none; margin-top:14px;">
     <div id="payroll-body"></div>
   </div>
+  <div class="card" id="tab-mur" style="display:none; margin-top:14px;">
+    <div id="mur-body"></div>
+  </div>
   <div class="card" id="tab-payapp" style="display:none; margin-top:14px;">
     <div id="payapp-body"></div>
   </div>
@@ -4630,6 +4633,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     { key: 'mail',         label: 'Mail inbox',         ic: '📬' },
     { key: 'email',        label: 'Email',              ic: '✉️' },
     { key: 'payroll',      label: 'Certified payroll',  ic: '🧮' },
+    { key: 'mur',          label: 'MUR reports',        ic: '📈' },
     { key: 'payapp',       label: 'Pay applications',   ic: '📄' },
     { key: 'wip',          label: 'Job costing',        ic: '🏗️' },
     { key: 'info',         label: 'Client info',        ic: '🏢' },
@@ -4642,7 +4646,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     { title: '',              keys: ['overview'] },
     { title: 'Communication', keys: ['email', 'tasks', 'activity'] },
     { title: 'Bookkeeping',   keys: ['transactions', 'qbolog', 'reports', 'close'] },
-    { title: 'Documents',     keys: ['files', 'mail', 'payroll', 'payapp', 'wip'] },
+    { title: 'Documents',     keys: ['files', 'mail', 'payroll', 'mur', 'payapp', 'wip'] },
     { title: 'Setup',         keys: ['info', 'access'] }
   ];
   function sectionLabel(k) { var s = SECTIONS.find(function (x) { return x.key === k; }); return s ? s.label : 'Overview'; }
@@ -4802,7 +4806,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // ----- Section visibility -----
   function hideAllSections() {
     ['qboKpis', 'qboReports', 'qboWrite'].forEach(function (id) { var e = document.getElementById(id); if (e) e.style.display = 'none'; });
-    ['overview', 'activity', 'qbolog', 'info', 'files', 'mail', 'tasks', 'email', 'payroll', 'payapp', 'wip', 'close', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
+    ['overview', 'activity', 'qbolog', 'info', 'files', 'mail', 'tasks', 'email', 'payroll', 'mur', 'payapp', 'wip', 'close', 'access'].forEach(function (t) { var e = document.getElementById('tab-' + t); if (e) e.style.display = 'none'; });
   }
   function showSection(sec) {
     hideAllSections();
@@ -4871,6 +4875,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     else if (sec === 'tasks') renderTasks();
     else if (sec === 'email') renderEmail();
     else if (sec === 'payroll') renderPayroll();
+    else if (sec === 'mur') renderMur();
     else if (sec === 'payapp') renderPayApp();
     else if (sec === 'close') renderClose();
     else if (sec === 'wip') renderWip();
@@ -9111,6 +9116,333 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function cprSendWhen(iso) {
     if (!iso) return '';
     try { return new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); } catch (e) { return iso; }
+  }
+
+  /* =====================================================================================
+   * MUR REPORTS — state subcontractor workforce-utilization reports (Karla, 2026-09-08:
+   * "add a MUR Reporting section under documents just like certified payroll is set up...
+   * a notes section... we can send the email right in that section... others we upload but
+   * then we could store the files there").
+   *
+   * This is a TRACKER, not a data-entry form for the report itself — the report is filled
+   * out from the state's own template elsewhere, and this keeps track of one entry per
+   * reporting period per project: upload the finished file and/or email it, either way it
+   * is stored here for the whole team, with one running note on where these go. Building
+   * the fillable state template INTO the app (the part Karla herself was unsure about) is
+   * a separate, larger piece — the demographic/hours grid on that form is exactly the kind
+   * of compliance math that has to be gotten right the first time, not rushed alongside a
+   * tracker. This ships what she described first and asked for outright.
+   * ===================================================================================== */
+  function murPrefix() { return 'bcc-mur-' + currentRealm + '-'; }
+  function allMur() { var out = []; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (!k || k.indexOf(murPrefix()) !== 0) continue; try { var r = JSON.parse(localStorage.getItem(k)); if (r && r.id) out.push(r); } catch (e) {} } return out; }
+
+  /* ---- The reference note: same shape and purpose as certified payroll's, one client-
+     level note only (no per-job split — she asked for one place to track "where these go",
+     not one note per project). A SEPARATE small implementation rather than generalizing
+     cprNote* — that is live, daily-used code with its own legacy-format fallback, and
+     duplicating this non-financial autosave pattern is far lower risk than refactoring
+     working production code for a brand-new feature. ---- */
+  function murNoteKey(realm) { return 'bcc-murnote-' + (realm || currentRealm) + '-general'; }
+  function murNoteGet() {
+    try {
+      var raw = localStorage.getItem(murNoteKey());
+      if (raw) { var d = JSON.parse(raw); if (d && typeof d.text === 'string') return d.text; }
+    } catch (e) {}
+    return '';
+  }
+  function murNoteSet(text, realm) {
+    if (bkRefuseIfReadOnly()) return false;
+    var rlm = realm || currentRealm;
+    if (!rlm) return false;
+    var id = murNoteKey(rlm);
+    return bkStore(id, {
+      id: id, tenantId: 'blue-collar-coach', docType: 'mur-note', realmId: rlm,
+      text: String(text == null ? '' : text), updatedAt: nowIso(), updatedBy: myUpn()
+    }, 'This note');
+  }
+  var _murNoteTimer = null;
+  function murNotesWire() {
+    var el = document.getElementById('murnote_text'); if (!el) return;
+    var st = document.getElementById('murnote_status');
+    el.addEventListener('input', function () {
+      if (st) st.textContent = 'Saving…';
+      clearTimeout(_murNoteTimer);
+      var realmAt = currentRealm, val = el.value;
+      _murNoteTimer = setTimeout(function () {
+        var ok = murNoteSet(val, realmAt);
+        if (st && currentRealm === realmAt) st.textContent = ok ? 'Saved' : '';
+      }, 500);
+    });
+  }
+  function murNotesBox() {
+    var v = murNoteGet();
+    return '<div style="margin:10px 0;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:8px;padding:10px 12px;background:#fcfbf7;">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">' +
+      '<strong id="murnote_label" style="font-size:12.5px;">📌 Notes for ' + esc(companyName(currentRealm)) + '’s MUR reports</strong>' +
+      '<span id="murnote_status" style="font-size:11.5px;color:var(--muted);"></span></div>' +
+      '<textarea id="murnote_text" rows="3" placeholder="Where these go, who to send them to, anything the next person needs. Saved for the whole team — never printed on a form." ' +
+      'style="width:100%;box-sizing:border-box;margin-top:6px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:6px;padding:8px;font:inherit;font-size:13px;">' + esc(v) + '</textarea></div>';
+  }
+
+  function murNew() {
+    if (bkRefuseIfReadOnly()) return;
+    var id = murPrefix() + uid2();
+    var rec = {
+      id: id, tenantId: 'blue-collar-coach', docType: 'mur', realmId: currentRealm,
+      projectName: '', periodFrom: '', periodTo: '',
+      fileDocId: null, fileName: null, sentTo: [], sentAt: null,
+      updatedAt: nowIso(), updatedBy: myUpn()
+    };
+    if (!bkStore(id, rec, 'This MUR report')) return;
+    renderMur();
+  }
+  function murLoad(id) { try { var r = JSON.parse(localStorage.getItem(id)); return (r && r.id) ? r : null; } catch (e) { return null; } }
+  function murPatch(id, patch) {
+    if (bkRefuseIfReadOnly()) return false;
+    var rec = murLoad(id); if (!rec) return false;
+    Object.assign(rec, patch, { updatedAt: nowIso(), updatedBy: myUpn() });
+    return bkStore(id, rec, 'This MUR report') ? rec : false;
+  }
+  function murDelete(id) {
+    if (bkRefuseIfReadOnly()) return;
+    if (!confirm('Delete this MUR report entry?\n\nThis only removes the tracking entry here — it does not touch a copy already sent, or anything filed with the state.')) return;
+    try { localStorage.removeItem(id); } catch (e) {}
+    renderMur();
+  }
+
+  function murPeriodLabel(r) {
+    if (!r.periodFrom && !r.periodTo) return '(no period set)';
+    var f = r.periodFrom || '?', t = r.periodTo || '?';
+    return f === t ? f : (f + ' – ' + t);
+  }
+  function murSentLabel(r) {
+    if (!r.sentAt) return '<span style="color:var(--muted);">Not sent</span>';
+    var when = '';
+    try { when = new Date(r.sentAt).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }); } catch (e) { when = r.sentAt; }
+    return 'Sent ' + esc(when) + ' to ' + esc((r.sentTo || []).join(', '));
+  }
+
+  // One shared hidden file input for every row's Upload button — cheaper than one per row,
+  // and only ever bound to whichever row was clicked most recently.
+  var _murUploadFor = null;
+  function murUploadPick(id) {
+    if (bkRefuseIfReadOnly()) return;
+    _murUploadFor = id;
+    var el = document.getElementById('mur_fileinput'); if (el) { el.value = ''; el.click(); }
+  }
+  function murUploadGo(file) {
+    var id = _murUploadFor; if (!id || !file) return;
+    var rec = murLoad(id); if (!rec) return;
+    var realmAt = currentRealm;
+    // Re-queried live, never captured once — a renderMur() triggered by anything else
+    // (adding a row, another upload finishing) replaces this whole panel's DOM, and a
+    // reference grabbed before that fetch resolves would silently point at nothing.
+    function upBtnNow() { var row = document.querySelector('[data-mur-row="' + id + '"]'); return row ? row.querySelector('[data-mur-upload]') : null; }
+    var b0 = upBtnNow(); if (b0) { b0.disabled = true; b0.textContent = 'Uploading…'; }
+    var fd = new FormData();
+    fd.append('file', file);
+    fd.append('folder', '/clients/' + realmAt);
+    fd.append('tags', 'MUR report' + (rec.projectName ? ', ' + rec.projectName : ''));
+    fetch('/api/documents', { method: 'POST', credentials: 'include', body: fd })
+      .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })
+      .then(function (j) {
+        if (currentRealm !== realmAt) return; // the file is saved either way; just don't repaint over a different client
+        // sizeBytes lets the email panel refuse a too-large attachment BEFORE fetching and
+        // base64-encoding it, rather than only after — see murEmailSend.
+        murPatch(id, { fileDocId: j.id, fileName: file.name, fileSizeBytes: j.sizeBytes || null });
+        if (window.bccAudit) window.bccAudit('client-file-upload', { path: '/bookkeeping.html', meta: { realmId: realmAt, name: file.name, via: 'mur-report' } });
+        if (window.bccNotifySaved) window.bccNotifySaved('File stored.');
+        renderMur();
+      })
+      .catch(function (e) {
+        var b1 = upBtnNow(); if (b1) { b1.disabled = false; b1.textContent = rec.fileName ? 'Replace' : 'Upload'; }
+        (window.bccNotify || alert)('Could not store the file: ' + e.message, 'error', 8000);
+      });
+  }
+
+  // ---- Email, one shared panel for whichever row is open. Attaches the stored file, if any. ----
+  var _murEmailFor = null;
+  function murEmailPanel(id) {
+    var box = document.getElementById('mur_emailbox'); if (!box) return;
+    if (_murEmailFor === id) { box.style.display = 'none'; box.innerHTML = ''; _murEmailFor = null; return; }
+    // Refused before the compose panel even opens — sending a real email to a state agency
+    // is not something a view-only bookkeeper should be able to reach the Send button for,
+    // regardless of whether the tracking record afterward would also refuse to save.
+    if (bkRefuseIfReadOnly()) return;
+    var rec = murLoad(id); if (!rec) return;
+    // Never open a compose panel for a report that does not belong to the client on screen —
+    // Send is keyed off currentRealm at click time, not the record's own realm, so this is
+    // the same hazard the certified-payroll editor guards against for its in-progress draft.
+    if (rec.realmId !== currentRealm) return;
+    _murEmailFor = id;
+    var info = {}; try { info = JSON.parse(localStorage.getItem('bcc-client-info-' + currentRealm)) || {}; } catch (e) {}
+    var from = (mailboxActive && mailboxActive() && _clientMailbox && _clientMailbox.mailbox)
+      ? _clientMailbox.mailbox
+      : ((companyName(currentRealm) || 'this client') + '’s shared mailbox if one is set up, otherwise ' + (myUpn() || 'your account'));
+    var periodTxt = murPeriodLabel(rec);
+    var subj = 'MUR Report' + (rec.projectName ? ' — ' + rec.projectName : '') + (rec.periodTo ? ' (' + periodTxt + ')' : '');
+    var toVal = (rec.sentTo || []).length ? rec.sentTo.join(', ') : (info.email || '');
+    box.style.display = '';
+    box.innerHTML = '<div class="card" style="background:var(--gold-fade);border:1px solid var(--chrome-mute);margin-top:12px;">' +
+      '<div style="font-weight:700;font-size:14px;margin-bottom:4px;">✉️ Email this MUR report</div>' +
+      '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Sending from <strong>' + esc(from) + '</strong>' +
+        (rec.fileName ? ' · attaching <strong>' + esc(rec.fileName) + '</strong>' : ' · <span style="color:var(--burgundy);">no file uploaded for this period yet — this will send with no attachment</span>') + '</div>' +
+      '<div class="ws-form">' +
+      '<label class="full">To (comma-separated)<input id="mue_to" autocomplete="off" value="' + esc(toVal) + '" placeholder="prime@example.com" /></label>' +
+      '<label class="full">CC (optional)<input id="mue_cc" autocomplete="off" value="" /></label>' +
+      '<label class="full">Subject<input id="mue_subj" value="' + esc(subj) + '" /></label>' +
+      '<label class="full">Message<textarea id="mue_body" rows="5">Attached is the MUR report' + (rec.projectName ? ' for ' + esc(rec.projectName) : '') + (rec.periodTo ? ' for the period ' + esc(periodTxt) : '') + '.</textarea></label>' +
+      '<div class="full" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><button class="btn btn-primary" id="mue_send" type="button">Send</button>' +
+      '<button class="btn btn-ghost" id="mue_cancel" type="button">Cancel</button><span id="mue_status" style="font-size:12.5px;color:var(--muted);"></span></div>' +
+      '</div></div>';
+    document.getElementById('mue_cancel').onclick = function () { box.style.display = 'none'; box.innerHTML = ''; _murEmailFor = null; };
+    document.getElementById('mue_send').onclick = function () { murEmailSend(id); };
+  }
+  function murEmailSend(id) {
+    // Checked again, not just at panel-open — the panel can sit open for a while, and a
+    // tier change or a stale page should not let a real send through on an old permission.
+    if (bkRefuseIfReadOnly()) return;
+    var realmAt = currentRealm;
+    var rec = murLoad(id); if (!rec) return;
+    // Same guard as opening the panel, re-checked here too: the panel can sit open across a
+    // client switch (nothing destroys it just because the tab is hidden), and Send must
+    // never attach one client's file and post it under a different client's mailbox/realmId.
+    if (rec.realmId !== realmAt) { (window.bccNotify || alert)('This report belongs to a different client than the one now open — close this panel and reopen it from that client’s MUR tab.', 'warn', 9000); return; }
+    var st = document.getElementById('mue_status');
+    var to = (document.getElementById('mue_to').value || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+    if (!to.length) { (window.bccNotify || alert)('Add at least one recipient.', 'warn'); return; }
+    var cc = (document.getElementById('mue_cc').value || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+    var subject = (document.getElementById('mue_subj').value || '').trim() || 'MUR Report';
+    var bodyText = document.getElementById('mue_body').value || '';
+    // Known from the upload response, before any of this runs — say so before spending a
+    // fetch and a base64 encode on a file that was always going to be refused. Older records
+    // uploaded before this field existed fall through to the post-encode check below instead
+    // of being trusted blind.
+    if (rec.fileSizeBytes && rec.fileSizeBytes > 3 * 1024 * 1024) {
+      (window.bccNotify || alert)('That file is about ' + Math.round(rec.fileSizeBytes / 1048576) + ' MB — Outlook limits email attachments to ~3 MB. Upload a smaller scan, or send it a different way.', 'warn', 10000);
+      return;
+    }
+    var btn = document.getElementById('mue_send'); btn.disabled = true;
+    if (st) st.textContent = rec.fileDocId ? 'Preparing attachment…' : 'Sending…';
+    // No file yet is not an error — some are sent as a plain email per Karla's own message —
+    // so this proceeds with an empty attachment list rather than refusing to send at all.
+    var prep = rec.fileDocId
+      ? fetch('/api/documents/' + encodeURIComponent(rec.fileDocId) + '/download?bytes=1', { credentials: 'include' })
+          .then(function (r) { if (!r.ok) throw new Error('could not read the stored file (HTTP ' + r.status + ')'); return r.arrayBuffer(); })
+          .then(function (buf) { return [{ name: rec.fileName || 'MUR report', contentType: 'application/octet-stream', contentBytes: b64FromBytes(buf) }]; })
+      : Promise.resolve([]);
+    prep.then(function (atts) {
+      // Backstop for a record with no fileSizeBytes on file (uploaded before this check
+      // existed) — same math certified payroll's own email path uses.
+      var approxB = atts.reduce(function (s, a) { return s + Math.ceil(String(a.contentBytes || '').length * 0.75); }, 0);
+      if (approxB > 3 * 1024 * 1024) throw new Error('That file is about ' + Math.round(approxB / 1048576) + ' MB — Outlook limits email attachments to ~3 MB. Upload a smaller scan, or send it a different way.');
+      if (st) st.textContent = 'Sending…';
+      var payload = { to: to, subject: subject, bodyHtml: esc(bodyText).replace(/\n/g, '<br>'), attachments: atts };
+      if (cc.length) payload.cc = cc;
+      if (realmAt) { payload.realmId = realmAt; payload.fallbackToSender = true; }
+      return fetch('/api/integrations/msgraph/send-mail', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+    })
+      .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
+      .then(function (resp) {
+        if (resp && resp.ok === false) throw new Error(resp.error || 'send failed');
+        // The email is already sent at this point — a failure recording it is a SEPARATE,
+        // lesser problem and must say so as one, not vanish behind the "emailed" toast that
+        // would otherwise imply the tracker caught up too.
+        var patched = murPatch(id, { sentTo: to, sentAt: nowIso() });
+        if (window.bccAudit) window.bccAudit('client-email-send', { key: id, path: '/bookkeeping.html', meta: { realmId: realmAt, what: 'mur-report', recipients: to.length } });
+        if (window.bccNotifySaved) window.bccNotifySaved('MUR report emailed.');
+        if (!patched && window.bccNotify) window.bccNotify('The email sent, but this tracker could not record it as sent — the row may still show “Not sent.” The email itself went out regardless.', 'warn', 10000);
+        if (currentRealm === realmAt) { var box = document.getElementById('mur_emailbox'); if (box) { box.style.display = 'none'; box.innerHTML = ''; } _murEmailFor = null; renderMur(); }
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        if (st) st.textContent = '';
+        (window.bccNotify || alert)('Could not send: ' + e.message, 'error', 9000);
+      });
+  }
+
+  function renderMur() {
+    var body = document.getElementById('mur-body'); if (!body) return;
+    /* An email composed for a DIFFERENT client's report must never survive a client switch.
+       hideAllSections only ever sets display:none — it does not clear this tab's markup or
+       _murEmailFor — so switching from client A to client B and back into the MUR tab would
+       otherwise still have client A's compose panel "open" underneath, and the snapshot logic
+       below would faithfully restore it into client B's freshly-rendered screen. Send is keyed
+       off currentRealm at click time, so that would attach and mail client A's file under
+       client B's identity. murLoad has no realm awareness of its own — checked here, every
+       render, rather than trusted to whatever called this one. */
+    if (_murEmailFor) {
+      var openRec = murLoad(_murEmailFor);
+      if (!openRec || openRec.realmId !== currentRealm) _murEmailFor = null;
+    }
+    /* Preserve an in-progress email compose across a repaint triggered by something else —
+       adding a row, or uploading a file for a DIFFERENT one. A full re-render replaces this
+       whole panel's HTML; silently dropping a half-typed recipient list or message is worse
+       than the surrounding rows staying visually stale for a moment. (Only ever reaches here
+       for a report that DOES belong to the current client — the check above just ruled out
+       every other case.) */
+    var emailSnap = null;
+    if (_murEmailFor) {
+      var toEl0 = document.getElementById('mue_to');
+      if (toEl0) {
+        emailSnap = {
+          id: _murEmailFor, to: toEl0.value,
+          cc: (document.getElementById('mue_cc') || {}).value || '',
+          subj: (document.getElementById('mue_subj') || {}).value || '',
+          body: (document.getElementById('mue_body') || {}).value || ''
+        };
+      }
+    }
+    var all = allMur().sort(function (a, b) { return String(b.periodTo || b.updatedAt || '').localeCompare(String(a.periodTo || a.updatedAt || '')); });
+    var head = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px;">' +
+      '<h3 style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;margin:0;">MUR reports <span style="color:var(--muted);font-weight:400;font-size:12px;">— ' + esc(companyName(currentRealm)) + '</span></h3>' +
+      '<button class="btn btn-primary" id="mur_new" type="button">+ Add report period</button></div>' +
+      '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Track each month’s subcontractor workforce report — upload the finished file, email it, or both. This does not fill out the report itself.</div>';
+    var rows = !all.length ? '' : all.map(function (r) {
+      return '<tr data-mur-row="' + esc(r.id) + '">' +
+        '<td style="padding:4px 6px;"><input data-mur-f="projectName" data-mur-id="' + esc(r.id) + '" value="' + esc(r.projectName || '') + '" placeholder="Project / job" style="width:170px;padding:5px 7px;border:1px solid var(--chrome-mute);border-radius:6px;font-size:12.5px;"></td>' +
+        '<td style="padding:4px 6px;white-space:nowrap;">' +
+          '<input type="date" data-mur-f="periodFrom" data-mur-id="' + esc(r.id) + '" value="' + esc(r.periodFrom || '') + '" style="padding:5px 6px;border:1px solid var(--chrome-mute);border-radius:6px;font-size:12.5px;"> – ' +
+          '<input type="date" data-mur-f="periodTo" data-mur-id="' + esc(r.id) + '" value="' + esc(r.periodTo || '') + '" style="padding:5px 6px;border:1px solid var(--chrome-mute);border-radius:6px;font-size:12.5px;"></td>' +
+        '<td style="padding:4px 6px;">' + (r.fileName
+          ? ('<a href="/api/documents/' + esc(r.fileDocId) + '/download" target="_blank" rel="noreferrer" style="color:var(--ink);font-weight:600;text-decoration:none;">📎 ' + esc(r.fileName) + '</a> ' +
+             '<button class="btn btn-ghost" data-mur-upload="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:24px;padding:0 7px;">Replace</button>')
+          : ('<button class="btn btn-ghost" data-mur-upload="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:26px;">Upload</button>')) + '</td>' +
+        '<td style="padding:4px 6px;font-size:12px;">' + murSentLabel(r) + '</td>' +
+        '<td style="padding:4px 6px;text-align:right;white-space:nowrap;">' +
+          '<button class="btn btn-ghost" data-mur-email="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:26px;">✉️ Email</button> ' +
+          '<button class="btn btn-ghost" data-mur-del="' + esc(r.id) + '" type="button" style="font-size:11px;min-height:26px;">Delete</button></td></tr>';
+    }).join('');
+    var list = all.length
+      ? ('<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:720px;"><thead><tr style="background:#f7f1e3;">' +
+         '<th style="text-align:left;padding:5px 6px;">Project</th><th style="text-align:left;padding:5px 6px;">Period</th><th style="text-align:left;padding:5px 6px;">File</th>' +
+         '<th style="text-align:left;padding:5px 6px;">Sent</th><th style="padding:5px 6px;"></th></tr></thead><tbody>' + rows + '</tbody></table></div>')
+      : (bootDataOk()
+          ? '<div style="color:var(--muted);padding:10px 0;">No MUR reports tracked yet. Click <strong>+ Add report period</strong> to start.</div>'
+          : '<div style="background:#f7ecec;border:1px solid #e3b4b4;border-radius:8px;padding:10px 12px;color:#6a1c1c;font-size:12.5px;"><strong>This client’s MUR reports could not be loaded.</strong> This device has not finished getting them from the server — reload before adding one.</div>');
+    body.innerHTML = head + murNotesBox() + list +
+      '<input type="file" id="mur_fileinput" style="display:none;" />' +
+      '<div id="mur_emailbox" style="display:none;"></div>';
+    murNotesWire();
+    var newBtn = document.getElementById('mur_new'); if (newBtn) newBtn.onclick = murNew;
+    var fileInput = document.getElementById('mur_fileinput');
+    if (fileInput) fileInput.onchange = function () { var f = fileInput.files && fileInput.files[0]; if (f) murUploadGo(f); };
+    body.querySelectorAll('[data-mur-f]').forEach(function (el) {
+      el.addEventListener('change', function () { murPatch(el.getAttribute('data-mur-id'), (function () { var o = {}; o[el.getAttribute('data-mur-f')] = el.value; return o; })()); });
+    });
+    body.querySelectorAll('[data-mur-upload]').forEach(function (b) { b.onclick = function () { murUploadPick(b.getAttribute('data-mur-upload')); }; });
+    body.querySelectorAll('[data-mur-email]').forEach(function (b) { b.onclick = function () { murEmailPanel(b.getAttribute('data-mur-email')); }; });
+    body.querySelectorAll('[data-mur-del]').forEach(function (b) { b.onclick = function () { murDelete(b.getAttribute('data-mur-del')); }; });
+    // Reopen the compose panel with what was typed, rather than the defaults it would
+    // otherwise reseed from. Skipped if that report was the thing just deleted.
+    if (emailSnap && murLoad(emailSnap.id)) {
+      _murEmailFor = null; // murEmailPanel toggles CLOSED if already open for this id
+      murEmailPanel(emailSnap.id);
+      var t2 = document.getElementById('mue_to'); if (t2) t2.value = emailSnap.to;
+      var c2 = document.getElementById('mue_cc'); if (c2) c2.value = emailSnap.cc;
+      var s2 = document.getElementById('mue_subj'); if (s2) s2.value = emailSnap.subj;
+      var b2 = document.getElementById('mue_body'); if (b2) b2.value = emailSnap.body;
+    }
   }
 
   var _cprSearch = '';

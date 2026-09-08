@@ -142,6 +142,15 @@ const CLIENT_SCOPED_ID_RE = [
      Gated by client access and the bookkeeping tier, like the reports it sits beside. */
   /^bcc-cprnote-([^-]+)-[0-9a-z]+$/,
   /^bcc-cprnotes-([^-]+)$/,
+  // MUR (state subcontractor workforce-utilization) reports, per client — one document per
+  // report period, plus the client-level reference note beside it (same "where do these go"
+  // notes pattern as certified payroll, its own separate keys). Registered here, not just
+  // invented: an id this table doesn't match is UNSCOPED (dataKeyClientRealm returns null),
+  // which skips the client-access AND bookkeeping-tier gate entirely on read, write and
+  // delete — every signed-in member could then reach every client's MUR data regardless of
+  // which clients they are actually granted.
+  /^bcc-mur-([^-]+)-[0-9a-z]+$/,
+  /^bcc-murnote-([^-]+)-[0-9a-z]+$/,
 ];
 function dataKeyClientRealm(id) {
   id = String(id || '');
