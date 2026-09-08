@@ -2705,6 +2705,26 @@ app.http('cron-backup', {
   }
 });
 
+/* ==== TEMPORARY feedback read endpoint — REMOVED in the same session ==== */
+app.http('tmp-feedback-dump', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'tmp/feedback-dump',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    const given = request.headers.get('x-bcc-cron-secret') || '';
+    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    try {
+      const { resources } = await container().items.query({
+        query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+      }).fetchAll();
+      return { jsonBody: { ok: true, count: (resources || []).length, items: resources || [] } };
+    } catch (e) {
+      return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } };
+    }
+  }
+});
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',

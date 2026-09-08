@@ -1,0 +1,16 @@
+name: TEMP feedback dump
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch feedback queue
+        run: |
+          curl -sS --max-time 60 \
+            -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/tmp/feedback-dump' \
+            -o /tmp/fb.json
+          cat /tmp/fb.json
