@@ -2710,6 +2710,31 @@ app.http('cron-backup', {
    involved, so it cannot be reached from a browser session. It exists so the feedback queue
    can be read while working on it, and it is deleted again in the same session; if you are
    reading this in main, something went wrong and it should be removed. */
+app.http('tmp-feedback-attach', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'tmp/feedback-attach/{id}/{attId}',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    const given = request.headers.get('x-bcc-cron-secret') || '';
+    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    try {
+      const doc = await container().item(String(request.params.id), BCC_TENANT_ID).read().then(r => r.resource)
+        .catch(e => { if (e && (e.code === 404 || e.statusCode === 404)) return null; throw e; });
+      if (!doc || doc.docType !== 'feedback') return { status: 404, jsonBody: { ok: false, error: 'not found' } };
+      const att = (doc.attachments || []).find(a => a && a.id === String(request.params.attId));
+      if (!att) return { status: 404, jsonBody: { ok: false, error: 'no such attachment' } };
+      const cont = getBlobContainer();
+      const dl = await cont.getBlockBlobClient(att.storageKey).download();
+      const chunks = [];
+      for await (const ch of dl.readableStreamBody) chunks.push(ch);
+      const buf = Buffer.concat(chunks);
+      return { jsonBody: { ok: true, mimeType: att.mimeType, name: att.name, b64: buf.toString('base64') } };
+    } catch (e) {
+      return { status: 502, jsonBody: { ok: false, error: String(e && e.message || e) } };
+    }
+  }
+});
 app.http('tmp-feedback-dump', {
   methods: ['GET'],
   authLevel: 'anonymous',

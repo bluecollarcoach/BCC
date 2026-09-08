@@ -14,3 +14,17 @@ jobs:
             'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/tmp/feedback-dump' \
             -o /tmp/fb.json
           cat /tmp/fb.json
+      - name: Fetch attachment 1
+        run: |
+          curl -sS --max-time 60 \
+            -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/tmp/feedback-attach/bcc-feedback-mtsuat8q-3cxw4h/672a74afc53167c1' \
+            -o /tmp/att1.json
+          cat /tmp/att1.json
+      - name: Fetch attachment 2
+        run: |
+          curl -sS --max-time 60 \
+            -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/tmp/feedback-attach/bcc-feedback-mtsuat8q-3cxw4h/849dda08ed0f9a36' \
+            -o /tmp/att2.json
+          cat /tmp/att2.json
