@@ -1983,34 +1983,63 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       /* Its own group unless it is joining one — a blank name must not merge two new clients.
          A row added under a client that came from the books carries NO group id, so it groups
          by their name and sits with their real services. */
-      groupId: groupId || (clientName ? null : ('g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)))
+      groupId: groupId || (clientName ? null : ('g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8))),
+      confidence: 'confirmed', months: null
     };
     return key;
   }
 
-  /* What one billing row contributes each month. */
-  function fcLineMonthly(b) {
+  /* A line the owner has flagged as not-yet-sure — a proposal, a verbal "maybe", a client who
+     has not signed. Kept OUT of the cash projection until they flip it to confirmed, so upside
+     never quietly inflates a number meant to be depended on. */
+  function fcIsPotential(b) { return !!(b && b.confidence === 'potential'); }
+  /* What one billing row contributes in forward month `i` (0 = the current month, matching
+     fcMonthLabels). A row with a `months` count is a FIXED-TERM engagement — a project that
+     bills for a few months and then is done, not a raise that lasts forever — so it drops to
+     zero once `i` reaches that count. Callers that omit `i` get the current month, which is
+     also what every "In forecast" / "per month" column not itself walking the calendar shows. */
+  function fcLineMonthly(b, i) {
     if (!b || b.include === false) return 0;
+    if (i == null) i = 0;
+    if (b.months != null && i >= Number(b.months)) return 0;
     return (b.monthly == null) ? Number(b.seed || 0) : Number(b.monthly || 0);
   }
-  /* The monthly base: the sum of the client × service rows, plus whatever sat on the invoices
-     but on no line (tax, shipping, rounding) unless the owner has switched it off. Falls back
-     to the single seed figure when there is no split to work from — a firm that bills without
-     line items still gets a forecast. */
-  function fcBillingBase() {
+  /* The CONFIRMED monthly base at forward month `i`: the sum of the non-potential client ×
+     service rows still running at that month, plus whatever sat on the invoices but on no line
+     (tax, shipping, rounding) unless the owner has switched it off. Falls back to the single
+     seed figure only when there is no split AT ALL to work from — a firm that bills without
+     line items still gets a forecast. Checked against the UNFILTERED key count, not the
+     confirmed one: a split that is entirely "potential" must total zero here, not silently
+     fall back to the full seed figure and count it as sure money anyway. */
+  function fcBillingConfirmedAt(i) {
     if (!_fc) return 0;
     if (_fc.plan.billingMode === 'total') return fcSeedBilling();
     var lines = _fc.plan.billingLines || {};
-    var keys = Object.keys(lines);
-    if (!keys.length) return fcSeedBilling();
-    var t = keys.reduce(function (sum, k) { return sum + fcLineMonthly(lines[k]); }, 0);
+    var allKeys = Object.keys(lines);
+    if (!allKeys.length) return fcSeedBilling();
+    var t = allKeys.filter(function (k) { return !fcIsPotential(lines[k]); })
+      .reduce(function (sum, k) { return sum + fcLineMonthly(lines[k], i); }, 0);
     if (_fc.plan.unattributedInclude !== false) t += Number(_fc.billingUnattributed || 0);
     return t;
   }
+  /* The POTENTIAL monthly total at forward month `i` — shown alongside the confirmed figure,
+     never folded into it. */
+  function fcBillingPotentialAt(i) {
+    if (!_fc || _fc.plan.billingMode === 'total') return 0;
+    var lines = _fc.plan.billingLines || {};
+    return Object.keys(lines).filter(function (k) { return fcIsPotential(lines[k]); })
+      .reduce(function (sum, k) { return sum + fcLineMonthly(lines[k], i); }, 0);
+  }
+  function fcBillingBase() { return fcBillingConfirmedAt(0); }
+  /* A row's contribution wherever a total on screen is meant to equal what is actually
+     counted below (a client's rollup, the "In forecast" column, the per-service cut) — a
+     potential row is zero here, on purpose, so those sub-totals always reconcile to the
+     confirmed footer instead of silently running ahead of it. */
+  function fcCountedMonthly(b, i) { return fcIsPotential(b) ? 0 : fcLineMonthly(b, i); }
   function fcBillingFor(i) {
     var per = _fc.plan.billingPerMonth;
     if (Array.isArray(per) && per[i] != null) return Number(per[i]) || 0;
-    return fcBillingBase();
+    return fcBillingConfirmedAt(i);
   }
 
   /* What an account contributes to a month. A wage account that has been split by person is
@@ -2096,7 +2125,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         (_fc.billingLines || []).forEach(function (ln) {
           var b = _fc.plan.billingLines[ln.key];
           if (!b) {
-            b = { include: true, monthly: null, customerName: ln.customerName, itemName: ln.itemName, isNew: hadBilling };
+            b = { include: true, monthly: null, customerName: ln.customerName, itemName: ln.itemName, isNew: hadBilling, confidence: 'confirmed', months: null };
             _fc.plan.billingLines[ln.key] = b;
           }
           b.seed = ln.amount;
@@ -2168,17 +2197,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var byClient = Object.create(null);
     _fcRows.forEach(function (r) { (byClient[r.gid] = byClient[r.gid] || []).push(r); });
     var clientNames = Object.keys(byClient).sort(function (a, b2) {
-      var ta = byClient[a].reduce(function (t, r) { return t + fcLineMonthly(r.b); }, 0);
-      var tb = byClient[b2].reduce(function (t, r) { return t + fcLineMonthly(r.b); }, 0);
+      var ta = byClient[a].reduce(function (t, r) { return t + fcCountedMonthly(r.b); }, 0);
+      var tb = byClient[b2].reduce(function (t, r) { return t + fcCountedMonthly(r.b); }, 0);
       return tb - ta;
     });
 
     _fcClients = clientNames;
     var splitRows = clientNames.map(function (cn) {
-      var rows = byClient[cn].slice().sort(function (a, b2) { return fcLineMonthly(b2.b) - fcLineMonthly(a.b); });
+      var rows = byClient[cn].slice().sort(function (a, b2) { return fcCountedMonthly(b2.b) - fcCountedMonthly(a.b); });
       // The DISPLAY name, read off the rows — `cn` is an opaque group id for anything we added.
       var gname = rows[0].b.customerName || '';
-      var clientTotal = rows.reduce(function (t, r) { return t + fcLineMonthly(r.b); }, 0);
+      var clientTotal = rows.reduce(function (t, r) { return t + fcCountedMonthly(r.b); }, 0);
       var lastTotal = rows.reduce(function (t, r) { return t + Number(r.b.seed || 0); }, 0);
       var allOn = rows.every(function (r) { return r.b.include !== false; });
       /* A client we added by hand needs an editable name — nothing in QuickBooks is going to
@@ -2212,17 +2241,30 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             (r.b.isNew ? '<span style="background:var(--gold-fade,#f7f1e0);border-radius:4px;padding:1px 5px;font-size:10.5px;font-weight:700;margin-left:6px;">NEW</span>' : '') +
             (manual ? '<span style="color:var(--muted);font-size:10.5px;margin-left:6px;">added by you</span>'
                     : (r.b.present ? '' : '<span style="color:var(--burgundy);font-size:10.5px;margin-left:6px;">not billed last month</span>')) +
+            (fcIsPotential(r.b) ? '<span style="background:#fff4d6;color:#8a6416;border-radius:4px;padding:1px 5px;font-size:10.5px;font-weight:700;margin-left:6px;">POTENTIAL</span>' : '') +
+            (r.b.months != null ? '<span style="color:var(--muted);font-size:10.5px;margin-left:6px;">' + esc(String(r.b.months)) + ' mo then stops</span>' : '') +
             (dupe ? '<div style="color:var(--burgundy);font-size:11px;margin:2px 0 0 25px;">Now in the books as well — remove this row or it counts twice.</div>' : '') +
+            '<div style="margin:3px 0 0 25px;">' +
+              '<label style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;font-size:10.5px;color:var(--muted);" title="Not signed or not certain yet — kept out of the cash projection below until confirmed">' +
+                '<input type="checkbox" data-fcbpotential="' + i + '"' + (fcIsPotential(r.b) ? ' checked' : '') + '> potential, not for sure</label>' +
+              '<label style="display:inline-flex;align-items:center;gap:5px;margin-left:14px;font-size:10.5px;color:var(--muted);" title="Stops contributing after this many forward months — a fixed-term engagement, not a permanent one. Blank = ongoing.">runs for' +
+                '<input type="number" min="0" max="' + months + '" data-fcbmonths="' + i + '" placeholder="ongoing" value="' + (r.b.months == null ? '' : esc(String(r.b.months))) + '" style="width:46px;padding:2px 4px;border:1px solid var(--chrome-mute);border-radius:4px;font-size:10.5px;text-align:center;">mo</label>' +
+            '</div>' +
           '</td>' +
           '<td class="num" style="padding:3px 6px;color:var(--muted);font-size:12px;">' + (manual ? '—' : (r.b.seed == null ? '—' : '$' + fcMoney(r.b.seed))) + '</td>' +
           '<td class="num" style="padding:3px 6px;"><input type="number" step="50" data-fcbamt="' + i + '" value="' + esc(String(Math.round(monthly))) + '" style="width:104px;text-align:right;padding:4px 6px;border:1px solid ' + (dupe ? 'var(--burgundy)' : 'var(--chrome-mute)') + ';border-radius:5px;font-size:12.5px;"></td>' +
-          '<td class="num" style="padding:3px 6px;font-weight:600;">$' + fcMoney(fcLineMonthly(r.b)) +
+          '<td class="num" style="padding:3px 6px;font-weight:600;">' +
+            (fcIsPotential(r.b)
+              ? '<span style="color:var(--muted);font-weight:400;">$0 <span style="font-size:10.5px;">($' + fcMoney(fcLineMonthly(r.b)) + ' potential)</span></span>'
+              : '$' + fcMoney(fcLineMonthly(r.b))) +
             (manual ? ' <button type="button" class="btn btn-ghost" data-fcbdel="' + i + '" style="font-size:11px;min-height:22px;padding:0 7px;margin-left:6px;">Remove</button>' : '') +
           '</td></tr>';
       }).join('')
         // Add a service to THIS client — the row arrives pre-filled with their name.
         + '<tr><td colspan="4" style="padding:0 6px 6px 28px;"><button type="button" class="btn btn-ghost" data-fcaddsvc="' + clientNames.indexOf(cn) + '" style="font-size:11px;min-height:22px;padding:0 8px;">+ Add a service' + (gname ? ' for ' + esc(gname) : '') + '</button></td></tr>';
     }).join('');
+
+    var potentialNow = fcBillingPotentialAt(0);
 
     /* Whatever was on the invoices but on no line — tax, shipping, rounding. Shown as its own
        row and counted by default: dropping it silently would make every forward month short
@@ -2239,7 +2281,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
 
     // The SAME rows, cut by service instead of by client — the second half of the question.
     var byService = Object.create(null);
-    _fcRows.forEach(function (r) { byService[r.service] = (byService[r.service] || 0) + fcLineMonthly(r.b); });
+    _fcRows.forEach(function (r) { byService[r.service] = (byService[r.service] || 0) + fcCountedMonthly(r.b); });
     var svcNames = Object.keys(byService).sort(function (a, b2) { return byService[b2] - byService[a]; });
     var serviceCut = !svcNames.length ? '' :
       '<details style="margin:10px 0 0;"><summary style="cursor:pointer;font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;">By service, across every client</summary>' +
@@ -2320,7 +2362,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           '<th style="padding:5px 6px;">Client / service</th><th class="num" style="padding:5px 6px;">' + esc(lm.label || 'Last month') + '</th>' +
           '<th class="num" style="padding:5px 6px;">Per month</th><th class="num" style="padding:5px 6px;">In forecast</th></tr></thead>' +
         '<tbody>' + (splitRows || '<tr><td colspan="4" style="padding:14px 6px;color:var(--muted);">' + ((_fc.notes && _fc.notes.length) ? 'No invoice lines were read — see the note above. The single figure below is being used instead.' : 'Last month’s invoices carry no service lines, so the single figure below is being used.') + '</td></tr>') + unatRow + '</tbody>' +
-        '<tfoot><tr style="border-top:2px solid var(--chrome-mute);font-weight:800;"><td style="padding:7px 6px;">Billing, per month</td><td></td><td></td><td class="num" style="padding:7px 6px;">$' + fcMoney(fcBillingBase()) + '</td></tr></tfoot>' +
+        '<tfoot><tr style="border-top:2px solid var(--chrome-mute);font-weight:800;"><td style="padding:7px 6px;">Billing, per month (confirmed)</td><td></td><td></td><td class="num" style="padding:7px 6px;">$' + fcMoney(fcBillingBase()) + '</td></tr>' +
+          (potentialNow ? '<tr><td style="padding:4px 6px;color:var(--muted);font-size:12px;">Potential revenue, per month <span style="font-style:italic;">(not counted in the projection below)</span></td><td></td><td></td><td class="num" style="padding:4px 6px;color:var(--muted);font-size:12.5px;">$' + fcMoney(potentialNow) + '</td></tr>' : '') +
+        '</tfoot>' +
       '</table></div>' +
       '<div style="margin:8px 0 0;"><button type="button" class="btn btn-ghost" id="fc_addclient" style="font-size:12px;min-height:28px;">+ Add a client we have not billed yet</button></div>' +
       serviceCut +
@@ -2415,6 +2459,21 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         if (gid == null) return;
         // EVERY row in the group — renaming one service's client would split the client in two.
         _fcRows.forEach(function (r) { if (r.gid === gid) r.b.customerName = el.value; });
+        touch(true);
+      });
+    });
+    body.querySelectorAll('input[data-fcbpotential]').forEach(function (el) {
+      el.addEventListener('change', function () {
+        var r = _fcRows[+el.getAttribute('data-fcbpotential')];
+        if (r) r.b.confidence = el.checked ? 'potential' : 'confirmed';
+        touch(true);
+      });
+    });
+    body.querySelectorAll('input[data-fcbmonths]').forEach(function (el) {
+      el.addEventListener('change', function () {
+        var r = _fcRows[+el.getAttribute('data-fcbmonths')];
+        if (!r) return;
+        r.b.months = (el.value === '') ? null : Math.max(0, Math.round(fcNum(el.value)));
         touch(true);
       });
     });
@@ -2578,7 +2637,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var b = _fc.plan.billingLines[k];
       // seed/present/isNew are recomputed from the books every load — storing them would let
       // a stale figure outlive the month it came from.
-      billingLines[k] = { include: b.include !== false, monthly: (b.monthly == null ? null : Number(b.monthly)), customerName: b.customerName || '', itemName: b.itemName || '', groupId: b.groupId || null };
+      billingLines[k] = { include: b.include !== false, monthly: (b.monthly == null ? null : Number(b.monthly)), customerName: b.customerName || '', itemName: b.itemName || '', groupId: b.groupId || null,
+        confidence: fcIsPotential(b) ? 'potential' : 'confirmed', months: (b.months == null ? null : Number(b.months)) };
     });
     var payload = {
       billingMode: _fc.plan.billingMode === 'total' ? 'total' : 'lines',
