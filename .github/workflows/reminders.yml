@@ -1,6 +1,7 @@
 name: Event reminders (push)
 
-# Fires Web Push reminders for sessions/events that are 24h or 15min out.
+# Fires reminders for sessions/events that are 24h or 15min out (web push), and for
+# client tasks due today (in-app + push + email, to the assignee).
 # The endpoint is idempotent (server-side de-dupe), so overlapping runs are
 # harmless. GitHub cron is best-effort and can lag a few minutes; every 10
 # minutes comfortably covers the 15-minute reminder window.

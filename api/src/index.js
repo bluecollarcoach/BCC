@@ -2961,6 +2961,50 @@ app.http('cron-reminders', {
         }
       }));
 
+      /* 5b) Client tasks due TODAY (business day), still open, and assigned — the gap Renee's
+         feedback named: sessions/events get reminded, tasks never did. Deliberately an EXACT
+         match on today, not "due today or earlier": a `<=` scan would, on the day this ships,
+         fire at once for every task that happens to already be overdue — a flood of alerts
+         about a backlog nobody asked to be surfaced all at once. Matching only today's date
+         means the day a task falls due is the one day it reminds, same cadence a person
+         checking their own calendar would get. The marker bakes in the due DATE rather than a
+         timestamp: it fires once per (task, dueDate) ever, and only fires again if the due
+         date itself changes (a re-date is a genuinely new thing to be told about). Full
+         notifyUser (in-app + push) PLUS email — tasks are the one reminder kind this firm
+         asked to also reach a mailbox, not just a phone that might be face-down. */
+      const todayBiz = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+      let taskDueCount = 0, taskNotified = 0, taskEmailed = 0;
+      try {
+        const { resources: taskDocs } = await c.items.query({
+          query: 'SELECT c.id, c.data FROM c WHERE c.tenantId = @t AND STARTSWITH(c.id, "bcc-task-") '
+            + 'AND c.data.status = "open" AND c.data.dueDate = @today',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@today', value: todayBiz }]
+        }).fetchAll();
+        const nameCache = new Map();
+        for (const d of taskDocs) {
+          const td = d.data || {};
+          const to = String(td.assigneeUpn || '').toLowerCase();
+          if (!to) continue; // unassigned — nobody to tell
+          const marker = d.id + ':due:' + td.dueDate;
+          if (sent[marker]) continue;
+          taskDueCount++;
+          // Don't tell someone about a client they no longer have access to — the same
+          // safeguard /api/notify applies when a live assignment names a realm.
+          if (td.realmId && !(await realmVisibleTo(to, td.realmId))) continue;
+          let cname = td.realmId ? nameCache.get(td.realmId) : '';
+          if (cname === undefined) { cname = await cprSignCompanyName(c, td.realmId); nameCache.set(td.realmId, cname); }
+          const title = '📋 Task due today — ' + (cname || td.realmId || 'a client');
+          const bodyText = String(td.title || '(untitled task)') + ' · due ' + td.dueDate;
+          try {
+            const stored = await notifyUser(c, to, { title, body: bodyText, url: '/bookkeeping.html', tag: marker });
+            if (stored) { sent[marker] = now; taskNotified++; }
+          } catch (_) {}
+          try { if (await emailNotifyUser(to, title, bodyText, '/bookkeeping.html')) taskEmailed++; } catch (_) {}
+        }
+      } catch (e) {
+        context.error && context.error('cron-reminders: task due-scan failed', e);
+      }
+
       // 5) Persist de-dupe markers for what actually went out, pruning anything older
       //    than 3 days. A reminder nobody could be sent stays unmarked, so the next run
       //    retries it — which is the point of a reminder.
@@ -2968,7 +3012,8 @@ app.http('cron-reminders', {
       for (const k of Object.keys(sent)) { if (now - sent[k] > 3 * REM_DAY_MS) delete sent[k]; }
       await c.items.upsert({ id: REM_SENT_ID, tenantId: BCC_TENANT_ID, docType: 'reminder-sent', data: { map: sent }, updatedAt: new Date().toISOString() });
 
-      return { jsonBody: { ok: true, scanned: docs.length, due: dueCount, pushed: okCount, pruned: deadCount } };
+      return { jsonBody: { ok: true, scanned: docs.length, due: dueCount, pushed: okCount, pruned: deadCount,
+        tasksDue: taskDueCount, tasksNotified: taskNotified, tasksEmailed: taskEmailed } };
     } catch (err) {
       // These run unattended, so console.error alone means nobody ever finds out. logError
       // puts it in the Errors page, which is the only surface anyone actually looks at.
