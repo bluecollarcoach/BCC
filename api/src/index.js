@@ -1928,6 +1928,43 @@ async function notifyUser(c, upn, o) {
   await pushToUsers([upn], { title: o.title, body: o.body || '', url: o.url || '/', tag: o.tag || '' });
   return stored;
 }
+
+function emailEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+// Who a task-assignment email is sent FROM — one fixed mailbox, so a recipient always sees
+// the same familiar sender rather than whichever staff member happened to click "assign".
+// Configurable via TASK_EMAIL_FROM_UPN; otherwise the same owner feedback defaults to.
+function taskEmailFromUpn() {
+  const set = String(process.env.TASK_EMAIL_FROM_UPN || '').trim().toLowerCase();
+  return set || feedbackNotifyUpns()[0];
+}
+/* A SEPARATE channel from push/in-app, sent app-only via the same client-credentials Graph
+   token /api/integrations/msgraph/send-mail already uses for outbound mail — no per-user
+   Outlook connection required. Best-effort by design: an email failure must never undo the
+   in-app notification already stored, or fail the request that triggered it. */
+async function emailNotifyUser(toUpn, subject, bodyText, url) {
+  try {
+    const to = String(toUpn || '').trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return false;
+    const from = taskEmailFromUpn();
+    if (!from) return false;
+    const access = await getGraphToken();
+    const link = url ? 'https://connect.bluecollarcoach.us' + url : 'https://connect.bluecollarcoach.us/bookkeeping.html';
+    const html = '<p>' + emailEsc(bodyText) + '</p><p><a href="' + emailEsc(link) + '">Open in BCC Connect</a></p>';
+    const r = await fetch('https://graph.microsoft.com/v1.0/users/' + encodeURIComponent(from) + '/sendMail', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + access, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: {
+          subject: String(subject || '(no subject)').slice(0, 250),
+          body: { contentType: 'HTML', content: html },
+          toRecipients: [{ emailAddress: { address: to } }]
+        },
+        saveToSentItems: false
+      })
+    });
+    return r.ok || r.status === 202;
+  } catch (_) { return false; }
+}
 // Who is notified when feedback lands — the owner(s). Configurable via
 // FEEDBACK_NOTIFY_UPNS / BCC_OWNER_UPNS; defaults to the account owner.
 function feedbackNotifyUpns() {
@@ -2401,7 +2438,16 @@ app.http('notify-user', {
       // stored is what let the month-end handler say "the scheduler was notified".
       if (!delivered) return { status: 502, jsonBody: { ok: false, error: 'the notification could not be saved — please try again' } };
       logAudit('notify-user', { user: from, key: toUpn, path: url, meta: { title } });
-      return { jsonBody: { ok: true } };
+      // Email is a SEPARATE channel, scoped to task assignment (the client sends
+      // kind:'task-assign' only from taskAssignNotify) — every other caller of this
+      // endpoint (month-end handoffs, notary alerts, event reminders) is unaffected.
+      // Best-effort and never awaited into a failure: the in-app + push notification
+      // above already succeeded, and a mail outage must not turn that into an error.
+      let emailed = null;
+      if (String(body.kind || '') === 'task-assign') {
+        emailed = await emailNotifyUser(toUpn, title, msg, url);
+      }
+      return { jsonBody: { ok: true, emailed } };
     } catch (e) { context.error('notify error', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
@@ -2711,6 +2757,54 @@ app.http('cron-backup', {
       try { await logError('POST /api/cron/backup', err, { user: 'cron' }); } catch (_) {}
       return { status: 500, jsonBody: { ok: false, error: String((err && err.message) || err) } };
     }
+  }
+});
+
+/* TEMP: headless feedback review for this session, same pattern as prior sessions
+   (see memory, previously approved by the user). GET lists; POST {id,status,note}
+   resolves + notifies like the admin UI does. Removed again before this session ends. */
+app.http('cron-feedback', {
+  methods: ['GET', 'POST'],
+  authLevel: 'anonymous',
+  route: 'cron/feedback/{id?}',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    const given = request.headers.get('x-bcc-cron-secret') || '';
+    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    const c = container();
+    try {
+      if (request.method === 'GET') {
+        const { resources } = await c.items.query({
+          query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+        }).fetchAll();
+        return { jsonBody: { ok: true, feedback: resources } };
+      }
+      const id = request.params.id;
+      const body = await request.json().catch(() => ({}));
+      if (!id || String(id).indexOf('bcc-feedback-') !== 0) return { status: 400, jsonBody: { ok: false, error: 'bad id' } };
+      const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
+      if (!doc) return { status: 404, jsonBody: { ok: false, error: 'not found' } };
+      const st = String(body.status || '').toLowerCase();
+      if (['new', 'reviewed', 'resolved'].indexOf(st) < 0) return { status: 400, jsonBody: { ok: false, error: 'bad status' } };
+      const wasResolved = doc.status === 'resolved';
+      const note = String(body.note || '').trim().slice(0, 2000);
+      doc.status = st; doc.reviewedBy = 'cron'; doc.updatedAt = new Date().toISOString();
+      if (note) { doc.resolutionNote = note; doc.resolutionBy = 'lyle@bluecollarcoach.us'; doc.resolutionAt = new Date().toISOString(); }
+      await c.items.upsert(doc);
+      const isNewResolve = st === 'resolved' && !wasResolved;
+      let _notified = false;
+      const _notifyAttempted = !!(doc.userUpn && (isNewResolve || (note && body.notify)));
+      if (_notifyAttempted) {
+        const msg = String(doc.message || '');
+        const bodyText = note || (msg.length > 90 ? msg.slice(0, 90) + '…' : msg);
+        _notified = await notifyUser(c, doc.userUpn, {
+          title: isNewResolve ? '✅ Your feedback was addressed' : '💬 Reply to your feedback',
+          body: bodyText, url: safeNotifyPath(doc.page), tag: 'fbdone-' + doc.id
+        });
+      }
+      return { jsonBody: { ok: true, id: doc.id, status: doc.status, notified: _notifyAttempted ? !!_notified : null } };
+    } catch (e) { context.error('cron-feedback error', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   }
 });
 

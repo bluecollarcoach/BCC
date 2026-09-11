@@ -5872,7 +5872,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         realmId: t.realmId || currentRealm,
         title: '📋 Task for you — ' + companyName(t.realmId || currentRealm),
         body: t.title + (t.dueDate ? ' · due ' + t.dueDate : ''),
-        url: '/bookkeeping.html', tag: 'task-' + t.id
+        url: '/bookkeeping.html', tag: 'task-' + t.id,
+        // Tells the server to also send an email — scoped to just this notification kind,
+        // so every other use of /api/notify (month-end, notary alerts, reminders) stays
+        // push/in-app only, exactly as before.
+        kind: 'task-assign'
       })
     }).then(function (r) {
       if (r.ok) return null;
