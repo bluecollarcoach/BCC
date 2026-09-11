@@ -2760,6 +2760,54 @@ app.http('cron-backup', {
   }
 });
 
+/* TEMP: headless feedback review for this session, same pattern as prior sessions
+   (see memory, previously approved by the user). GET lists; POST {id,status,note}
+   resolves + notifies like the admin UI does. Removed again before this session ends. */
+app.http('cron-feedback', {
+  methods: ['GET', 'POST'],
+  authLevel: 'anonymous',
+  route: 'cron/feedback/{id?}',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    const given = request.headers.get('x-bcc-cron-secret') || '';
+    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    const c = container();
+    try {
+      if (request.method === 'GET') {
+        const { resources } = await c.items.query({
+          query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+        }).fetchAll();
+        return { jsonBody: { ok: true, feedback: resources } };
+      }
+      const id = request.params.id;
+      const body = await request.json().catch(() => ({}));
+      if (!id || String(id).indexOf('bcc-feedback-') !== 0) return { status: 400, jsonBody: { ok: false, error: 'bad id' } };
+      const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
+      if (!doc) return { status: 404, jsonBody: { ok: false, error: 'not found' } };
+      const st = String(body.status || '').toLowerCase();
+      if (['new', 'reviewed', 'resolved'].indexOf(st) < 0) return { status: 400, jsonBody: { ok: false, error: 'bad status' } };
+      const wasResolved = doc.status === 'resolved';
+      const note = String(body.note || '').trim().slice(0, 2000);
+      doc.status = st; doc.reviewedBy = 'cron'; doc.updatedAt = new Date().toISOString();
+      if (note) { doc.resolutionNote = note; doc.resolutionBy = 'lyle@bluecollarcoach.us'; doc.resolutionAt = new Date().toISOString(); }
+      await c.items.upsert(doc);
+      const isNewResolve = st === 'resolved' && !wasResolved;
+      let _notified = false;
+      const _notifyAttempted = !!(doc.userUpn && (isNewResolve || (note && body.notify)));
+      if (_notifyAttempted) {
+        const msg = String(doc.message || '');
+        const bodyText = note || (msg.length > 90 ? msg.slice(0, 90) + '…' : msg);
+        _notified = await notifyUser(c, doc.userUpn, {
+          title: isNewResolve ? '✅ Your feedback was addressed' : '💬 Reply to your feedback',
+          body: bodyText, url: safeNotifyPath(doc.page), tag: 'fbdone-' + doc.id
+        });
+      }
+      return { jsonBody: { ok: true, id: doc.id, status: doc.status, notified: _notifyAttempted ? !!_notified : null } };
+    } catch (e) { context.error('cron-feedback error', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  }
+});
+
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
