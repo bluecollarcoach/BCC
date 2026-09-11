@@ -5993,9 +5993,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     return targets;
   }
+  // The client's saved signature (Renee's feedback: it's on file for certified payroll —
+  // don't make her redraw it for every other document, e.g. a contract, for that same
+  // client). Realm-parameterized like cprSigKey/cprGetCompanySig, but not tied to
+  // currentRealm: PDF tools can be opened for a client that is no longer the active one
+  // (a file fetched by URL captures its realm before the download, same race guard as
+  // pdfSaveTargets above).
+  function pdfSavedSigFor(realm) {
+    if (!realm) return null;
+    try { var s = JSON.parse(localStorage.getItem('bcc-cprsig-' + realm) || 'null'); return (s && s.src) ? s : null; } catch (e) { return null; }
+  }
   function openPdfTools(bytes, name, realm) {
     if (!window.bccPdfEditor) { (window.bccNotify || alert)('PDF tools are still loading — try again in a moment.', 'warn'); return; }
-    window.bccPdfEditor.open({ bytes: bytes, name: name || 'document.pdf', saveTargets: pdfSaveTargets(realm) });
+    var realmAt = realm || currentRealm;
+    window.bccPdfEditor.open({ bytes: bytes, name: name || 'document.pdf', saveTargets: pdfSaveTargets(realmAt), savedSignature: pdfSavedSigFor(realmAt) });
   }
   /* 40 MB is deliberate and stays: opening an oversized scan SPECIFICALLY to split it
      into savable parts is the documented workaround for the 25 MB upload ceiling, and

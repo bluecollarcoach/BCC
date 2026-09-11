@@ -12,13 +12,17 @@
  *
  * Public API (window.bccPdfEditor):
  *   .canEdit(name, mime) -> boolean            // is this a PDF we can open?
- *   .open({ bytes, name, saveTargets, onSaved })
+ *   .open({ bytes, name, saveTargets, onSaved, savedSignature })
  *       bytes:       ArrayBuffer | Uint8Array of the initial PDF (optional; if
  *                    omitted the editor opens empty and prompts to add a file).
  *       name:        original filename (used to suggest the export name).
  *       saveTargets: [{ label, icon?, handler(blob, filename) -> Promise }]
  *                    extra "Save to …" buttons (Download is always offered).
  *       onSaved:     optional () invoked after a saveTargets handler resolves.
+ *       savedSignature: optional { src, name?, title? } — a signature already on file
+ *                    (e.g. the client's saved certified-payroll signature) offered as a
+ *                    one-click option in the Signature tool, alongside draw/type, so the
+ *                    same signature does not have to be redrawn for every document.
  */
 (function () {
   'use strict';
@@ -187,6 +191,7 @@
       name: opts.name || 'document.pdf',
       saveTargets: Array.isArray(opts.saveTargets) ? opts.saveTargets : [],
       onSaved: typeof opts.onSaved === 'function' ? opts.onSaved : null,
+      savedSignature: (opts.savedSignature && opts.savedSignature.src) ? opts.savedSignature : null,
       sources: {},        // id -> { bytes:Uint8Array, pjs:pdfjsDoc }
       order: [],          // [{ key, srcId, srcIndex, base, rot, sel, ann:[] }]
       tab: 'pages',
@@ -907,7 +912,7 @@
           return;
         }
         dropOverlay(ST, w2, c2, { type: 'sig', src: res.dataUrl, aspect: res.w / res.h });
-      });
+      }, ST.savedSignature);
       return;
     }
     if (kind === 'date') {
@@ -1133,7 +1138,10 @@
   }
 
   /* ---------- signature pad modal ---------- */
-  function openSignaturePad(cb) {
+  // `saved`, when given ({src, name?, title?}), adds a one-click "Saved" tab so a
+  // signature already on file does not have to be redrawn for every document — the
+  // default tab when one is available, since that is the whole point of offering it.
+  function openSignaturePad(cb, saved) {
     var ov = document.createElement('div');
     ov.className = 'bpdf-pad-ov';
     ov.innerHTML =
@@ -1141,10 +1149,12 @@
         '<div class="bpdf-pad-head">✍️ Add your signature</div>' +
         '<div class="bpdf-pad-body">' +
           '<div class="bpdf-pad-tabs">' +
-            '<button class="bpdf-btn primary" data-pt="draw">✏️ Draw</button>' +
+            (saved ? '<button class="bpdf-btn primary" data-pt="saved">📌 Saved' + (saved.name ? ' — ' + esc(saved.name) : '') + '</button>' : '') +
+            '<button class="bpdf-btn' + (saved ? '' : ' primary') + '" data-pt="draw">✏️ Draw</button>' +
             '<button class="bpdf-btn" data-pt="type">⌨️ Type</button>' +
           '</div>' +
-          '<div id="bpdf-pad-draw"><canvas class="bpdf-padcanvas" id="bpdf-padcanvas"></canvas><div style="font-size:12px;color:var(--muted,#7a726a);margin-top:6px;">Draw above with your mouse or finger.</div></div>' +
+          (saved ? '<div id="bpdf-pad-saved"><img id="bpdf-pad-savedimg" src="' + esc(saved.src) + '" alt="saved signature" style="max-width:100%;max-height:140px;display:block;" /><div style="font-size:12px;color:var(--muted,#7a726a);margin-top:6px;">Your saved signature.</div></div>' : '') +
+          '<div id="bpdf-pad-draw" style="display:' + (saved ? 'none' : '') + ';"><canvas class="bpdf-padcanvas" id="bpdf-padcanvas"></canvas><div style="font-size:12px;color:var(--muted,#7a726a);margin-top:6px;">Draw above with your mouse or finger.</div></div>' +
           '<div id="bpdf-pad-type" style="display:none;"><input class="bpdf-typed" id="bpdf-typed" placeholder="Type your name" style="font-family:\'Segoe Script\',\'Bradley Hand\',\'Brush Script MT\',cursive;" /></div>' +
         '</div>' +
         '<div class="bpdf-pad-foot">' +
@@ -1155,9 +1165,10 @@
       '</div>';
     document.body.appendChild(ov);
 
-    var mode = 'draw';
+    var mode = saved ? 'saved' : 'draw';
     var canvas = ov.querySelector('#bpdf-padcanvas');
     var typed = ov.querySelector('#bpdf-typed');
+    var savedImg = ov.querySelector('#bpdf-pad-savedimg');
     // size the canvas to its displayed box for crisp lines
     var _sizedW = 0, _sizedH = 0;
     function sizeCanvas() {
@@ -1182,25 +1193,32 @@
     canvas.addEventListener('mousedown', start); canvas.addEventListener('mousemove', moved); window.addEventListener('mouseup', end);
     canvas.addEventListener('touchstart', start, { passive: false }); canvas.addEventListener('touchmove', moved, { passive: false }); window.addEventListener('touchend', end);
 
+    var savedPane = ov.querySelector('#bpdf-pad-saved');
     ov.querySelectorAll('[data-pt]').forEach(function (b) {
       b.onclick = function () {
         mode = b.getAttribute('data-pt');
         ov.querySelectorAll('[data-pt]').forEach(function (x) { x.classList.toggle('primary', x === b); });
+        if (savedPane) savedPane.style.display = mode === 'saved' ? '' : 'none';
         ov.querySelector('#bpdf-pad-draw').style.display = mode === 'draw' ? '' : 'none';
         ov.querySelector('#bpdf-pad-type').style.display = mode === 'type' ? '' : 'none';
         if (mode === 'draw') sizeCanvas();
-        else typed.focus();
+        else if (mode === 'type') typed.focus();
       };
     });
 
     function cleanup() { window.removeEventListener('mouseup', end); window.removeEventListener('touchend', end); document.removeEventListener('keydown', padKey); if (ov.parentNode) ov.parentNode.removeChild(ov); }
     ov.querySelector('[data-pd="cancel"]').onclick = function () { cleanup(); cb(null); };
     ov.querySelector('[data-pd="clear"]').onclick = function () {
-      if (mode === 'draw') { canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height); hasInk = false; } else typed.value = '';
+      if (mode === 'draw') { canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height); hasInk = false; } else if (mode === 'type') typed.value = '';
     };
     ov.querySelector('[data-pd="use"]').onclick = function () {
       var out = null;
-      if (mode === 'draw') {
+      if (mode === 'saved') {
+        // The dataURL decodes in-memory with no network round trip, so naturalWidth/Height
+        // are normally ready the instant the <img> is in the DOM — but fall back to the
+        // same default aspect dropOverlay already uses if a click somehow beats decode.
+        out = { dataUrl: saved.src, w: savedImg.naturalWidth || 240, h: savedImg.naturalHeight || 80 };
+      } else if (mode === 'draw') {
         if (!hasInk) { toast('Draw your signature first.', 'warn'); return; }
         out = trimCanvas(canvas);
       } else {
