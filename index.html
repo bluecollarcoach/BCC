@@ -261,6 +261,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     </a>
   </div>
 
+  <!-- Firm-only: the firm's own cash flow projection. Hidden for everyone by default —
+       gateFirmCashflowTile() below shows it ONLY for the fixed allow-list (mirrors
+       firmCashflowVisible() in bookkeeping.html and firmCashflowUpns() server-side, which
+       is the actual gate; this is display only). ?firmcf=1 tells bookkeeping.html to open
+       the modal immediately instead of landing on the work queue. -->
+  <div class="section-label" id="firmSectionLabel" style="display:none;">Firm</div>
+  <div class="secondary" id="firmSection" style="display:none;">
+    <a class="stile" href="bookkeeping.html?firmcf=1">
+      <span class="ic">&#127963;&#65039;</span><span class="name">BCC Billing &amp; Cashflow</span>
+      <span class="sub">Owners only</span>
+    </a>
+  </div>
+
   <div class="section-label">Revenue</div>
   <div class="secondary">
     <a class="stile" href="crm.html">
@@ -338,6 +351,21 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   window.addEventListener('bcc-auth-ready', personalizeHero);
   window.addEventListener('bcc-users-ready', personalizeHero);
+
+  /* BCC Billing & Cashflow — a fixed 3-person allow-list, not the per-app permission
+     system gateTiles() below uses for everything else. Mirrors firmCashflowVisible() in
+     bookkeeping.html and firmCashflowUpns() server-side (the actual gate — this is
+     display only, and fails closed: the tile starts hidden in the HTML and only THIS
+     function ever un-hides it, for exactly these three). */
+  var FIRM_CASHFLOW_UPNS = ['lyle@bluecollarcoach.us', 'mark@bluecollarcoach.us', 'renee@bluecollarcoach.us'];
+  function gateFirmCashflowTile() {
+    var who = ((window.bccUser && window.bccUser.userDetails) || '').toLowerCase();
+    var visible = !!who && FIRM_CASHFLOW_UPNS.indexOf(who) >= 0;
+    var lbl = document.getElementById('firmSectionLabel'), sec = document.getElementById('firmSection');
+    if (lbl) lbl.style.display = visible ? '' : 'none';
+    if (sec) sec.style.display = visible ? '' : 'none';
+  }
+  window.addEventListener('bcc-auth-ready', gateFirmCashflowTile);
 
   // Hide tiles for apps the user can't access (per-app permissions).
   function gateTiles() {

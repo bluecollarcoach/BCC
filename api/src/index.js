@@ -10827,18 +10827,26 @@ app.http('qbo-companyinfo', {
  * Access-scoped exactly like the sync (admin = all; others = enabled + allow-list).
  */
 /* =====================================================================================
- * THE FIRM'S OWN CASH FLOW — OWNER ONLY.
+ * THE FIRM'S OWN CASH FLOW — a NAMED allow-list, not the general owner-only lock.
  *
  * Everything else in this file is about a CLIENT's books. This is about ours, which is why
  * the gate is the strictest one the codebase can express and why it FAILS CLOSED.
  *
- * companyPrivateBlocked returns false when privateToUpn is unset. That is right for a client
- * company (unlocked means "shared with the team") and exactly wrong here, where "nobody has
- * claimed the lock yet" must never resolve to "every admin may read the firm's P&L". So an
- * absent lock is a refusal, and the caller is told to go set it.
+ * This used to be companyPrivateBlocked/privateToUpn — the same "Only I can see this
+ * company" single-owner lock every other private client company uses. That mechanism can
+ * only ever name ONE person, and this needed three (Lyle, Mark, Renee, 2026-09-11 request:
+ * "make it visible to Admins - Lyle, Mark, Renee... NOBODY ELSE even sees it"). So the gate
+ * here is now a FIXED allow-list (FIRM_CASHFLOW_UPNS), checked instead of privateToUpn —
+ * deliberately NOT the same check every other view of this QuickBooks company still uses.
+ * companyPrivateBlocked and privateToUpn are UNCHANGED and still govern every other screen
+ * (financials, dashboards, the client switcher): BCC's own company stays invisible there to
+ * everyone but its privateToUpn holder, exactly as before. Only THIS endpoint — the cash
+ * flow projection specifically — opens to the three named people. Widening the general lock
+ * instead of adding a narrow exception here would have handed all three of them the firm's
+ * full P&L/balance-sheet/dashboard access, which nobody asked for.
  *
- * isAppAdmin is checked as a RESTRICTION ahead of the lock, never as a short-circuit past it
- * — the same order bookkeeping-time-post and qbo-kpis use.
+ * isAppAdmin is checked as a RESTRICTION ahead of the allow-list, never as a short-circuit
+ * past it — the same order bookkeeping-time-post and qbo-kpis use.
  * ===================================================================================== */
 /* A SubTotal line repeats the whole document and a description line carries no money —
    counting either would double or pad the split. Identical to TXN_KEEP_NONMONEY on the
@@ -10850,21 +10858,26 @@ const FIRM_CF_ID = 'bcc-report-firmcashflow';   // 'bcc-report-' is in PROTECTED
 const FIRM_CF_MONTHS = 12;
 const FIRM_CF_MAX_LINES = 400;   // client x service rows returned; the rest are named, not dropped
 
+// Configurable via FIRM_CASHFLOW_UPNS (comma-separated) so this can change without a
+// redeploy; defaults to exactly who asked for it. Empty/unset does NOT mean "everyone" —
+// it falls back to this fixed default, never to an open gate.
+function firmCashflowUpns() {
+  const set = String(process.env.FIRM_CASHFLOW_UPNS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  return set.length ? set : ['lyle@bluecollarcoach.us', 'mark@bluecollarcoach.us', 'renee@bluecollarcoach.us'];
+}
+
 async function firmBooksAccess(request) {
   const p = principal(request);
   if (!p) return { err: unauthorized() };
   if (!domainAllowed(p)) return { err: domainBlocked() };
   if (!(await isAppAdmin(p))) return { err: forbidden('admin only') };
+  const who = String((p && (p.userDetails || p.userId)) || '').toLowerCase();
+  // THE LOAD-BEARING LINE. Not companyPrivateBlocked — see the block comment above.
+  if (firmCashflowUpns().indexOf(who) < 0) return { err: forbidden('no access to this company') };
   const comp = await ownBooksCompany();
   if (!comp) {
-    return { notReady: 'No QuickBooks company is marked as the firm’s own books yet. Open Clients → the firm’s own company → Access, tick “This is the firm’s own books” and “Only I can see this company”, then come back.' };
+    return { notReady: 'No QuickBooks company is marked as the firm’s own books yet. Open Clients → the firm’s own company → Access, tick “This is the firm’s own books”, then come back.' };
   }
-  /* THE LOAD-BEARING LINE. Without a lock nobody is blocked, so an own-books company that
-     nobody has claimed would be readable by every admin. Refuse, and say how to fix it. */
-  if (!String(comp.privateToUpn || '').trim()) {
-    return { notReady: 'The firm’s own books are not locked to an owner yet, so this stays closed. Open that company → Access and tick “Only I can see this company”.' };
-  }
-  if (companyPrivateBlocked(comp, p)) return { err: forbidden('no access to this company') };
   if (comp.enabled === false) {
     return { notReady: 'The firm’s QuickBooks connection is switched off. Turn it back on under that company → Access first.' };
   }

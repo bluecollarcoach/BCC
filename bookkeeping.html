@@ -1919,25 +1919,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   var _fcSaveTimer = null;
   var _fcDirty = false;
 
-  /* The own-books company, IF this browser's signed-in user is the one it is locked to. Same
-     two conditions the server checks. Returns null otherwise — including for other admins. */
-  function firmBooksCo() {
-    var me = myUpn();
-    if (!me) return null;
-    return companies.filter(function (c) {
-      return c && c.isOwnBooks && String(c.privateToUpn || '').toLowerCase() === me;
-    })[0] || null;
-  }
-  /* Who may SEE the button — deliberately wider than who may READ anything. An admin keeps it
-     while there is still something for them to do: nothing marked as our books yet, or a
-     company marked that nobody has locked. Once someone holds the lock, only they see it.
-     No firm figure rides on this: the server re-decides on every request, and it refuses an
-     unlocked company outright. */
-  function firmBooksBtnVisible() {
+  /* Who may see "Our cash flow" — a fixed allow-list (Lyle, Mark, Renee), not the usual
+     per-company "Only I can see this company" single-owner lock: this is BCC's own money
+     and the three of them all need eyes on it, so one privateToUpn can't express who this
+     is for. Mirrors firmCashflowUpns() server-side — the server re-decides on every
+     request and is the actual gate; this only decides whether the button/tile render. The
+     firm's own-books company itself stays hidden from all three in the ordinary client
+     switcher, dashboards and financials (companyPrivateBlocked is untouched everywhere
+     else) — this is the one narrow door into it. */
+  var FIRM_CASHFLOW_UPNS = ['lyle@bluecollarcoach.us', 'mark@bluecollarcoach.us', 'renee@bluecollarcoach.us'];
+  function firmCashflowVisible() {
     if (!isAdmin) return false;
-    if (firmBooksCo()) return true;                     // locked to me — the settled case
-    var owned = companies.filter(function (c) { return c && c.isOwnBooks; })[0];
-    return !owned || !String(owned.privateToUpn || '').trim();
+    var me = myUpn();
+    return !!me && FIRM_CASHFLOW_UPNS.indexOf(me) >= 0;
   }
 
   function fcMoney(n) { return (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 }); }
@@ -2068,18 +2062,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
 
   function openFirmCashflow() {
-    var co = firmBooksCo();
-    if (!co) {
-      var marked = companies.filter(function (c) { return c && c.isOwnBooks; })[0];
-      (window.bccNotify || alert)(
-        marked
-          ? ('“' + (marked.companyName || 'That company') + '” is marked as our own books but is not locked to you. Open it → Access → tick “Only I can see this company”.')
-          : 'First tell the app which QuickBooks company is ours: open it → Access, tick “This is Blue Collar Coach’s own QuickBooks” and “Only I can see this company”.',
-        'warn', 10000);
+    // A fast client-side no — the server re-decides on every request regardless (see
+    // firmBooksAccess), so this is UX only, never the actual gate. It exists because the
+    // company itself is not in `companies` for these three (companyPrivateBlocked still
+    // hides BCC's own books from everyone but its privateToUpn holder in the ordinary
+    // client list), so there is nothing here to look up the way other checks in this file
+    // look up a realmId — access is decided purely by WHO is signed in.
+    if (!firmCashflowVisible()) {
+      (window.bccNotify || alert)('This is not available to your account.', 'warn');
       return;
     }
     var ov = document.createElement('div'); ov.id = 'fc_modal'; ov.className = 'em-modal-ov';
-    ov.innerHTML = '<div class="em-modal" style="max-width:1180px;"><div class="em-modal-head"><div style="flex:1;min-width:0;"><div class="em-modal-subj">🏛️ Our cash flow</div><div class="em-modal-from">' + esc(co.companyName || 'The firm’s own books') + ' — visible only to you. Seeded from last month, then yours to edit.</div></div><button class="btn btn-ghost" id="fc_close" type="button" style="font-size:18px;min-height:34px;width:38px;">×</button></div>' +
+    ov.innerHTML = '<div class="em-modal" style="max-width:1180px;"><div class="em-modal-head"><div style="flex:1;min-width:0;"><div class="em-modal-subj">🏛️ Our cash flow</div><div class="em-modal-from" id="fc_subline">Blue Collar Coach — visible only to the firm’s owners. Seeded from last month, then yours to edit.</div></div><button class="btn btn-ghost" id="fc_close" type="button" style="font-size:18px;min-height:34px;width:38px;">×</button></div>' +
       '<div class="em-modal-body" id="fc_body"><div style="color:var(--muted);padding:24px;">Reading last month from QuickBooks…</div></div></div>';
     document.body.appendChild(ov);
     function fcClose() {
@@ -2101,6 +2095,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         var body = document.getElementById('fc_body'); if (!body) return;
         if (!d || d.ok === false) { body.innerHTML = '<div style="color:var(--burgundy);padding:24px;">Could not load: ' + esc((d && d.error) || 'error') + '</div>'; return; }
         if (d.available === false) { body.innerHTML = '<div style="padding:24px;font-size:13.5px;line-height:1.6;">' + esc(d.why || 'Not available yet.') + '</div>'; return; }
+        var subline = document.getElementById('fc_subline');
+        if (subline && d.companyName) subline.textContent = d.companyName + ' — visible only to the firm’s owners. Seeded from last month, then yours to edit.';
         _fc = d;
         _fc.plan = d.plan || {};
         /* Null-prototype: an expense account named "constructor" or "__proto__" would
@@ -12866,11 +12862,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var _pb = document.getElementById('printBtn'); if (_pb) _pb.style.display = mgmt ? '' : 'none';
     var _nb = document.getElementById('newBtn'); if (_nb) _nb.style.display = currentRealm ? '' : 'none';
     var cf = document.getElementById('cashflowBtn'); if (cf) cf.style.display = (atRoot && canManage()) ? '' : 'none'; // cash flow: any manager, from the work queue or management view
-    /* OUR OWN cash flow — the owner and nobody else. The test mirrors the server's exactly
-       (own-books AND locked to the person signed in here), so the button cannot appear for
-       someone the endpoint would refuse. It is a display rule only: the server re-decides. */
+    /* OUR OWN cash flow — the named allow-list and nobody else. Mirrors the server's check
+       (see firmCashflowVisible), so the button cannot appear for someone the endpoint would
+       refuse. It is a display rule only: the server re-decides. */
     var fcf = document.getElementById('firmCfBtn');
-    if (fcf) fcf.style.display = (atRoot && firmBooksBtnVisible()) ? '' : 'none';
+    if (fcf) fcf.style.display = (atRoot && firmCashflowVisible()) ? '' : 'none';
     var nt = document.getElementById('notaryBtn'); if (nt) nt.style.display = atRoot ? '' : 'none'; // firm-wide notary: reachable at root without per-client access (Janice is the notary)
     var it = document.getElementById('importTasksBtn'); if (it) it.style.display = (mgmt && isAdmin) ? '' : 'none'; // firm-wide task seed: admin, from the management dashboard
     var mb = document.getElementById('mgmtBtn');
@@ -12928,6 +12924,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         if (saved && companies.some(function (c) { return String(c.realmId) === String(saved); })) currentRealm = saved;
       }
       renderAll();
+      // The landing-page "BCC Billing & Cashflow" tile links here with ?firmcf=1 — jump
+      // straight to the modal rather than making the three people it's for find the
+      // toolbar button themselves. Gated the same way the button itself is: this does
+      // nothing for anyone not on the allow-list, silently, same as the button just not
+      // being there for them.
+      if (dq && dq.get('firmcf') === '1' && firmCashflowVisible()) openFirmCashflow();
       if (rid) { try { setSection('files'); } catch (_) {} }
       if (dr === 'connected' && window.bccNotifySaved) window.bccNotifySaved('Shared drive connected.');
       else if (dr && dr !== 'connected' && window.bccNotify) window.bccNotify('Drive connect failed: ' + ((dq && dq.get('detail')) || ''), 'warn', 7000);
