@@ -109,6 +109,24 @@
     padding: 34px 2px 14px;
   }
 
+  /* "More tools" — the fold for everything used rarely enough that showing it open by
+     default was mostly noise (2026-09-12 usage review). Every tile inside is unchanged;
+     this only changes what's visible before a click. */
+  .more-tools { margin-top: 6px; }
+  .more-tools summary {
+    list-style: none; cursor: pointer; user-select: none;
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 14px 2px; margin-top: 20px;
+    color: var(--muted); font-size: 13px; font-weight: 700; letter-spacing: 0.02em;
+  }
+  .more-tools summary::-webkit-details-marker { display: none; }
+  .more-tools summary .chev { color: var(--gold-deep); font-size: 11px; transition: transform 0.15s; display: inline-block; }
+  .more-tools[open] summary .chev { transform: rotate(90deg); }
+  .more-tools summary .count { color: var(--muted); font-weight: 500; }
+  .more-tools summary:hover { color: var(--ink-800); }
+  .more-tools summary:hover .chev { color: var(--gold); }
+  .more-tools .section-label:first-of-type { padding-top: 6px; }
+
   /* Primary tiles — large white cards, gold top stripe on hover */
   .primary { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; }
   .primary .tile {
@@ -274,57 +292,70 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     </a>
   </div>
 
-  <div class="section-label">Revenue</div>
-  <div class="secondary">
-    <a class="stile" href="crm.html">
-      <span class="ic">&#128101;</span><span class="name">CRM</span>
-      <span class="sub">Contacts, companies, deals</span>
-    </a>
-    <a class="stile" href="jobs.html">
-      <span class="ic">&#128203;</span><span class="name">Engagements</span>
-      <span class="sub">Pipeline &amp; status</span>
-    </a>
-    <a class="stile" href="rates.html">
-      <span class="ic">&#128176;</span><span class="name">Rate Sheet</span>
-      <span class="sub">Packages &amp; pricing</span>
-    </a>
-    <a class="stile" href="marketing.html">
-      <span class="ic">&#128226;</span><span class="name">Marketing</span>
-      <span class="sub">Google, Meta, LinkedIn</span>
-    </a>
-  </div>
+  <!-- 30-day usage review (2026-09-12): these 11 tiles collectively drew a handful of
+       visits each against 313 for Bookkeeping and 191 for this page — real, but rare
+       enough that showing all of them open, at equal weight, was mostly noise. Folded
+       behind one <details> rather than hidden: nothing here loses a route, a permission,
+       or gateTiles()'s per-app hiding (it still finds every .stile by querySelectorAll
+       regardless of the fold), and <details> keeps it keyboard- and screen-reader-
+       operable with no extra JS. Collapsed by default; the browser remembers open/closed
+       per element only for the current load, not across visits — deliberately, so it
+       never looks "stuck open" or "stuck closed" from a previous session. -->
+  <details class="more-tools">
+    <summary><span class="chev">&#9656;</span> More tools <span class="count">(11)</span></summary>
 
-  <div class="section-label">Operations</div>
-  <div class="secondary">
-    <a class="stile" href="scheduler.html">
-      <span class="ic">&#128467;</span><span class="name">Scheduler</span>
-      <span class="sub">Week &amp; month views</span>
-    </a>
-    <a class="stile" href="documents.html">
-      <span class="ic">&#128196;</span><span class="name">Documents</span>
-      <span class="sub">Contracts &amp; SOPs</span>
-    </a>
-    <a class="stile" href="chat.html">
-      <span class="ic">&#128172;</span><span class="name">Team Chat</span>
-      <span class="sub">Internal channels</span>
-    </a>
-    <a class="stile" href="training.html">
-      <span class="ic">&#127891;</span><span class="name">Training</span>
-      <span class="sub">Courses &amp; playbooks</span>
-    </a>
-    <a class="stile" href="events.html">
-      <span class="ic">&#127908;</span><span class="name">Events</span>
-      <span class="sub">Workshops &amp; meetups</span>
-    </a>
-    <a class="stile" href="kb.html">
-      <span class="ic">&#128218;</span><span class="name">Knowledge Base</span>
-      <span class="sub">Coaching playbooks</span>
-    </a>
-    <a class="stile" href="admin.html">
-      <span class="ic">&#9881;</span><span class="name">Admin</span>
-      <span class="sub">Users &amp; settings</span>
-    </a>
-  </div>
+    <div class="section-label">Revenue</div>
+    <div class="secondary">
+      <a class="stile" href="crm.html">
+        <span class="ic">&#128101;</span><span class="name">CRM</span>
+        <span class="sub">Contacts, companies, deals</span>
+      </a>
+      <a class="stile" href="jobs.html">
+        <span class="ic">&#128203;</span><span class="name">Engagements</span>
+        <span class="sub">Pipeline &amp; status</span>
+      </a>
+      <a class="stile" href="rates.html">
+        <span class="ic">&#128176;</span><span class="name">Rate Sheet</span>
+        <span class="sub">Packages &amp; pricing</span>
+      </a>
+      <a class="stile" href="marketing.html">
+        <span class="ic">&#128226;</span><span class="name">Marketing</span>
+        <span class="sub">Google, Meta, LinkedIn</span>
+      </a>
+    </div>
+
+    <div class="section-label">Operations</div>
+    <div class="secondary">
+      <a class="stile" href="scheduler.html">
+        <span class="ic">&#128467;</span><span class="name">Scheduler</span>
+        <span class="sub">Week &amp; month views</span>
+      </a>
+      <a class="stile" href="documents.html">
+        <span class="ic">&#128196;</span><span class="name">Documents</span>
+        <span class="sub">Contracts &amp; SOPs</span>
+      </a>
+      <a class="stile" href="chat.html">
+        <span class="ic">&#128172;</span><span class="name">Team Chat</span>
+        <span class="sub">Internal channels</span>
+      </a>
+      <a class="stile" href="training.html">
+        <span class="ic">&#127891;</span><span class="name">Training</span>
+        <span class="sub">Courses &amp; playbooks</span>
+      </a>
+      <a class="stile" href="events.html">
+        <span class="ic">&#127908;</span><span class="name">Events</span>
+        <span class="sub">Workshops &amp; meetups</span>
+      </a>
+      <a class="stile" href="kb.html">
+        <span class="ic">&#128218;</span><span class="name">Knowledge Base</span>
+        <span class="sub">Coaching playbooks</span>
+      </a>
+      <a class="stile" href="admin.html">
+        <span class="ic">&#9881;</span><span class="name">Admin</span>
+        <span class="sub">Users &amp; settings</span>
+      </a>
+    </div>
+  </details>
 </div>
 
 <footer>
