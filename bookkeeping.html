@@ -2960,9 +2960,18 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         var sMargin = kpiSeries(function (p) { return p.revenueCents ? (netOf(p) / p.revenueCents) * 100 : null; });
         var L = kpiMonths();
         var fMoney = function (x) { return money2(x); }, f1 = function (x) { return x.toFixed(1); }, fInt = function (x) { return Math.round(x).toLocaleString(); }, f2 = function (x) { return x.toFixed(2); }, fPct = function (x) { return x.toFixed(1) + '%'; };
+        /* The sparkline under these two tiles is always drawn from the synced monthly
+           history's raw expensesCents (kpiSeries/_burnAvgAt above) — it has no notion of
+           "Our cash flow"'s wage-exclusion plan and cannot be recomputed from it (that plan
+           has no saved history, only today's decisions). When burnMethod is 'firm-plan' the
+           headline number and its own trend line are each correct by a DIFFERENT
+           methodology and can disagree — name that right on the tile, the same reason
+           _trendNote below names the cash/accrual mismatch, rather than let a hover on the
+           last point show a number that quietly contradicts the headline above it. */
+        var _burnMethodSub = (k.burnMethod === 'firm-plan') ? 'cash ÷ overhead (Our cash flow; trend below is the ordinary avg)' : 'cash ÷ monthly overhead';
         tiles.innerHTML =
-          kpiTile('Months of cash', k.monthsOfCash == null ? '—' : k.monthsOfCash, 'cash ÷ monthly overhead', kpiTone('monthsOfCash', k.monthsOfCash), sparkline(sMonths, { labels: L, fmt: f1 })) +
-          kpiTile('Days of cash', k.daysOfCash == null ? '—' : k.daysOfCash, '', '', sparkline(sMonths.map(function (m) { return m == null ? null : m * 30; }), { labels: L, fmt: fInt })) +
+          kpiTile('Months of cash', k.monthsOfCash == null ? '—' : k.monthsOfCash, _burnMethodSub, kpiTone('monthsOfCash', k.monthsOfCash), sparkline(sMonths, { labels: L, fmt: f1 })) +
+          kpiTile('Days of cash', k.daysOfCash == null ? '—' : k.daysOfCash, (k.burnMethod === 'firm-plan' ? 'trend below is the ordinary avg' : ''), '', sparkline(sMonths.map(function (m) { return m == null ? null : m * 30; }), { labels: L, fmt: fInt })) +
           kpiTile('Current ratio', k.currentRatio == null ? '—' : k.currentRatio.toFixed(2), k.currentRatio == null ? 'no current liabilities' : 'assets ÷ liabilities', kpiTone('currentRatio', k.currentRatio), sparkline(sCR, { labels: L, fmt: f2 })) +
           kpiTile('Cash on hand', money2(k.cash), '', '', sparkline(sCash, { labels: L, fmt: fMoney })) +
           kpiTile('Working capital', money2(k.workingCapital), 'current assets − liabilities', kpiTone('posneg', k.workingCapital), sparkline(sWC, { labels: L, fmt: fMoney })) +
@@ -2983,7 +2992,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         var _staleNote = _staleMonths.length
           ? ' · ' + _staleMonths.length + ' month' + (_staleMonths.length === 1 ? '' : 's') + ' in the cash trend (' + _staleMonths.slice(0, 3).join(', ') + (_staleMonths.length > 3 ? '…' : '') + ') carried the prior month’s balance sheet forward — QuickBooks did not answer for them'
           : '';
-        document.getElementById('qboKpiNote').textContent = 'As of ' + resp.asOf + ' · ' + resp.method + ' basis · ' + _trendNote + ' · monthly overhead ' + money2(k.monthlyBurn) + ' (avg of ' + resp.burnMonths + ' mo, COGS excluded).' + _staleNote;
+        /* Blue Collar Coach's own company gets a different burn methodology (see qbo-kpis /
+           computeFirmMonthlyOutgoings on the server) — say so, the same reason _trendNote
+           names its own basis: two figures from us must never disagree without saying why. */
+        var _burnNote = (k.burnMethod === 'firm-plan')
+          ? 'monthly overhead ' + money2(k.monthlyBurn) + ' (from “Our cash flow” — last month’s expenses, adjusted for wage exclusions)'
+          : 'monthly overhead ' + money2(k.monthlyBurn) + ' (avg of ' + resp.burnMonths + ' mo, COGS excluded)';
+        document.getElementById('qboKpiNote').textContent = 'As of ' + resp.asOf + ' · ' + resp.method + ' basis · ' + _trendNote + ' · ' + _burnNote + '.' + _staleNote;
       })
       .catch(function (e) { if (myGen !== _qboKpiGen || currentRealm !== realmAt) return; tiles.innerHTML = ''; document.getElementById('qboKpiNote').innerHTML = '<span style="color:var(--burgundy);">' + esc(qboFriendly(e && e.message)) + '</span>'; });
   }

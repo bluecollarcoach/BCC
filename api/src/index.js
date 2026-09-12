@@ -9942,6 +9942,9 @@ app.http('ai-enrich-company', {
  * Computes headline financial-health KPIs from QBO Balance Sheet + trailing P&L:
  * cash, current ratio, working capital, monthly burn, months of cash (floored),
  * days of cash, revenue/net for the trailing window.
+ * For Blue Collar Coach's OWN books (comp.isOwnBooks), when the caller is on the
+ * firm-cashflow allow-list, monthly burn instead comes from the "Our cash flow" plan's own
+ * expense total (see computeFirmMonthlyOutgoings) — every other company is unaffected.
  */
 app.http('qbo-kpis', {
   methods: ['GET'],
@@ -10006,12 +10009,56 @@ app.http('qbo-kpis', {
       // complete-months window was added to remove, so silently reverting to it republishes
       // the ~40% drift under the same label. Published as burnComplete so the UI can caveat.
       let burnComplete = false;
+      let burnMethod = 'trailing-average';
       try {
         const burnPl = flattenQboReport(await apiGet('/reports/ProfitAndLoss?start_date=' + burnStart.toISOString().slice(0, 10) +
           '&end_date=' + burnEnd.toISOString().slice(0, 10) + '&accounting_method=' + method));
         const burnOpex = (findByGroup(burnPl, 'Expenses') ?? findByLabel(burnPl, /total expenses/i));
         if (burnOpex != null) { monthlyBurn = burnOpex / burnMonths; burnComplete = true; }
       } catch (_) { /* keep the fallback rather than failing the whole KPI card */ }
+
+      /* Blue Collar Coach's OWN books ONLY: "months of cash" here means OUR real runway, and
+         the trailing-average opex above can't see the owner's own curated adjustments to
+         ongoing overhead — e.g. a departed employee's wages already excluded in "Our cash
+         flow" (bcc-report-firmcashflow) still count as live burn in a raw P&L average. Use
+         that plan's own expense total instead, so the two views of our own runway never
+         disagree (see computeFirmMonthlyOutgoings). Every client company keeps the plain
+         trailing-average calc above, unchanged — there is no such plan for them, and this
+         block never runs for them.
+         Gated to the SAME allow-list as /api/firm/cashflow (firmCashflowUpns), not merely
+         isAppAdmin: the total below is derived from decisions — whose wages are excluded —
+         that are not meant for every admin to see, even summed. An admin outside that list
+         still sees the ordinary trailing-average figure for BCC's own company, same as today. */
+      if (comp.isOwnBooks) {
+        const who = String((p && (p.userDetails || p.userId)) || '').toLowerCase();
+        if (firmCashflowUpns().indexOf(who) >= 0) {
+          try {
+            /* comp.isOwnBooks has no server-side uniqueness enforcement (see the PATCH
+               handler that sets it) — a client company mistakenly ticked with that same
+               checkbox would otherwise inherit BCC's own wage-exclusion plan total for ITS
+               "months of cash" tile. Trust it only when it also matches the ONE canonical
+               own-books company, the same lookup firmBooksAccess() itself relies on. */
+            const owc = await ownBooksCompany();
+            if (owc && owc.realmId === realmId) {
+              /* Bounded separately from this handler's other (unguarded) QBO calls above: a
+                 hang here must degrade to the trailing-average figure below, never eat into
+                 the ~45s platform budget already spent on the balance sheet + two P&L calls —
+                 mirrors firm-cashflow's own qboFetch/FC_CALL_MS guard for the identical
+                 class of risk (see FC_CALL_MS near FIRM_CF_ID). */
+              const apiGetBounded = async (path) => {
+                const u = base + '/v3/company/' + encodeURIComponent(realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70';
+                const r = await qboFetch(u, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } }, 10000);
+                if (!r.ok) throw new Error('QBO ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 200));
+                return r.json();
+              };
+              const fc = await computeFirmMonthlyOutgoings(apiGetBounded);
+              if (fc.haveAccounts && fc.monthlyOutgoings > 0) {
+                monthlyBurn = fc.monthlyOutgoings; burnComplete = true; burnMethod = 'firm-plan';
+              }
+            }
+          } catch (_) { /* keep the trailing-average figure rather than failing the whole KPI card */ }
+        }
+      }
 
       const currentRatio = currentLiabilities > 0 ? currentAssets / currentLiabilities : null;
       const workingCapital = currentAssets - currentLiabilities;
@@ -10022,7 +10069,7 @@ app.http('qbo-kpis', {
         realmId, companyName: comp.companyName, asOf, method, burnMonths,
         kpis: {
           cash, currentAssets, currentLiabilities, currentRatio, workingCapital,
-          monthlyBurn, monthsOfCash, daysOfCash, burnComplete,
+          monthlyBurn, monthsOfCash, daysOfCash, burnComplete, burnMethod,
           revenue, cogs, opex, expenses, netIncome,
           netMargin: revenue ? netIncome / revenue : null,
           totalAssets, totalLiabilities
@@ -11197,6 +11244,102 @@ async function getFirmCf() {
   return Object.assign(firmCfDefaults(), (d && d.plan) || {});
 }
 
+/* Every expense/COGS DATA row from a flattened P&L report, carrying its QuickBooks account
+   id (or a 'label:'-prefixed fallback key when QBO omits one) so a renamed account keeps the
+   owner's decision about it and two same-named accounts are never merged. Shared by the
+   firm-cashflow endpoint below (the owner's editable plan) and computeFirmMonthlyOutgoings
+   (the read-only KPI use of that same plan) — one extraction, so a future change to what
+   counts as an expense row cannot make the two disagree. */
+function extractPlExpenseLines(pl, maxLines) {
+  const lines = [];
+  let capped = false;
+  for (const x of ((pl && pl.rows) || [])) {
+    if (x.type !== 'data') continue;
+    // Match the WORD, not a guessed list of codes: QuickBooks emits Expenses, OtherExpense
+    // and OtherExpenses across report variants, and a section this misses is a real cost
+    // silently absent. No income group contains "expense" or "cogs", so this cannot pull
+    // revenue in by accident.
+    if (!/(expense|cogs)/i.test(String(x.group || ''))) continue;
+    const amt = reportNum((x.cells || [])[x.cells.length - 1]);
+    const label = String(x.label || '').trim();
+    if (!label) continue;
+    lines.push({ acctId: x.acctId ? String(x.acctId) : ('label:' + label), label, amount: amt, group: String(x.group || '') });
+    if (maxLines && lines.length >= maxLines) { capped = true; break; }
+  }
+  return { lines, capped };
+}
+
+/* Pure half of computeFirmMonthlyOutgoings below — no QuickBooks call, no Cosmos read, just
+   the arithmetic — so it can be unit-tested in isolation against bookkeeping.html's
+   fcAccountMonthly/fcOutgoingsFor, which this is a line-for-line port of. `expenseLines` is
+   this month's real postings (from extractPlExpenseLines); `plan` is the saved firm-cashflow
+   plan (from getFirmCf()).
+   MUST sum the UNION of (a) every account the owner has ever saved a decision for and (b)
+   every account that actually posted this month — not just (a). bookkeeping.html's own
+   openFirmCashflow() merge (the reason this function exists) adds a fresh
+   { include:true, monthly:null, isWages:false } entry for any expense line with no saved
+   decision yet, THEN sums — so "Our cash flow" already counts a brand-new QuickBooks expense
+   account the moment it posts. Summing only the saved keys (an earlier version of this
+   function did exactly that) silently dropped that new account from this KPI until someone
+   next opened AND saved the plan — reintroducing, in the opposite direction, the exact
+   "two views of our own runway disagree" problem this feature exists to close. An account
+   not posting this month keeps contributing its saved manual `monthly` override if the owner
+   set one; otherwise it contributes 0 for this round, exactly as bookkeeping.html's merge
+   does when `.seed` is never set for it. */
+function sumFirmOutgoings(expenseLines, plan) {
+  const seedByAcct = Object.create(null);
+  for (const ln of (expenseLines || [])) seedByAcct[ln.acctId] = ln.amount;
+
+  const accts = (plan && plan.accounts) || {};
+  const savedKeys = Object.keys(accts);
+  // haveAccounts reflects the SAVED plan only (has the owner engaged with "Our cash flow" at
+  // least once?) — the caller uses this to fall back to the trailing-average calc for a
+  // never-configured plan, and that guard must not be defeated by every real business having
+  // SOME expense line post every month (which the union below always will).
+  const haveAccounts = savedKeys.length > 0;
+  const acctKeys = Array.from(new Set(savedKeys.concat(Object.keys(seedByAcct))));
+  let total = 0;
+  for (const k of acctKeys) {
+    // Same default openFirmCashflow's merge gives a brand-new account: included, no override.
+    const a = accts[k] || { include: true, isWages: false, monthly: null, people: [] };
+    if (a.include === false) continue;
+    const seed = Object.prototype.hasOwnProperty.call(seedByAcct, k) ? seedByAcct[k] : 0;
+    // Mirrors fcAccountMonthly: a manual `monthly` figure wins outright; otherwise fall back
+    // to this month's real posting for that account (0 if it posted nothing this round).
+    const base = (a.monthly == null) ? seed : (Number(a.monthly) || 0);
+    if (!a.isWages) { total += base; continue; }
+    const people = Array.isArray(a.people) ? a.people : [];
+    const allocated = people.reduce((t, q) => t + (Number(q && q.amount) || 0), 0);
+    const kept = people.reduce((t, q) => t + ((q && q.include === false) ? 0 : (Number(q && q.amount) || 0)), 0);
+    // The remainder is everything in the account not yet named to a person — kept in the
+    // total so this always reconciles to the account, same as fcAccountMonthly.
+    total += kept + Math.max(0, base - allocated);
+  }
+  for (const l of ((plan && plan.extraLines) || [])) {
+    if (l && l.include !== false) total += (Number(l && l.monthly) || 0);
+  }
+  return { monthlyOutgoings: Math.round(total * 100) / 100, haveAccounts };
+}
+
+/* Blue Collar Coach's OWN monthly overhead, computed EXACTLY the way "Our cash flow" (the
+   firm-cashflow endpoint + bookkeeping.html's fc* functions) already computes it for the
+   projection: last COMPLETE calendar month's real P&L expense lines, then the owner's saved
+   include/exclude and wage-split decisions (bcc-report-firmcashflow) applied on top by
+   sumFirmOutgoings — so the two views of our own runway can never disagree (see qbo-kpis,
+   which uses this ONLY for comp.isOwnBooks). Read-only: this never writes the plan, only
+   sums what it already says. */
+async function computeFirmMonthlyOutgoings(apiGet) {
+  const now = new Date();
+  const lmEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+  const lmStart = new Date(lmEnd.getFullYear(), lmEnd.getMonth(), 1);
+  const iso = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  const plPath = '/reports/ProfitAndLoss?start_date=' + iso(lmStart) + '&end_date=' + iso(lmEnd) + '&accounting_method=Accrual';
+  const pl = flattenQboReport(await apiGet(plPath));
+  const { lines: expenseLines } = extractPlExpenseLines(pl, 200);
+  const plan = await getFirmCf();
+  return sumFirmOutgoings(expenseLines, plan);
+}
+
 /* Money in, money out, month by month — computed in ONE place and used by BOTH the projection
    table and its totals, so the row and the total can never disagree (the same reason
    txnPostedTotal exists on the transaction form). */
@@ -11359,25 +11502,11 @@ app.http('firm-cashflow', {
           const pl = flattenQboReport(await apiGet(plPath));
           plIncome = (findByGroup(pl, 'Income') ?? findByLabel(pl, /total income/i));
           plExpenseTotal = (findByGroup(pl, 'Expenses') ?? findByLabel(pl, /total expenses/i));
-          /* Every expense DATA row, carrying acctId. acctId is the handle the saved plan keys
-             on: an account renamed in QuickBooks must not lose the owner's decision about it,
-             and two accounts that share a label must not be merged into one row. */
-          for (const x of (pl.rows || [])) {
-            if (x.type !== 'data') continue;
-            /* Match the WORD, not a guessed list of codes: QuickBooks emits Expenses,
-               OtherExpense and OtherExpenses across report variants, and a section this misses
-               is a real cost silently absent from the forecast. No income group contains
-               "expense" or "cogs", so this cannot pull revenue in by accident. */
-            if (!/(expense|cogs)/i.test(String(x.group || ''))) continue;
-            const amt = reportNum((x.cells || [])[x.cells.length - 1]);
-            const label = String(x.label || '').trim();
-            if (!label) continue;
-            expenseLines.push({
-              acctId: x.acctId ? String(x.acctId) : ('label:' + label),
-              label, amount: amt, group: String(x.group || '')
-            });
-            if (expenseLines.length >= 200) { expenseCapped = true; break; }
-          }
+          /* acctId is the handle the saved plan keys on: an account renamed in QuickBooks must
+             not lose the owner's decision about it, and two accounts that share a label must
+             not be merged into one row. Shared with computeFirmMonthlyOutgoings (see there). */
+          const extracted = extractPlExpenseLines(pl, 200);
+          expenseLines = extracted.lines; expenseCapped = extracted.capped;
           if (expenseCapped) notes.push('Only the first 200 expense accounts were read, so the total out is low.');
         } catch (e) {
           notes.push('Could not read last month’s profit and loss' + (aiTimedOut(e) ? ' (QuickBooks took too long)' : '') + ' — the expense list below is empty because of that, not because there were no expenses.');
