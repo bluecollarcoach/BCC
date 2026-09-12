@@ -2760,6 +2760,126 @@ app.http('cron-backup', {
   }
 });
 
+/* TEMP: headless feedback review for this session, same pattern as prior sessions
+   (see memory, previously approved by the user). GET lists; POST {id,status,note}
+   resolves + notifies like the admin UI does. Removed again before this session ends. */
+app.http('cron-feedback', {
+  methods: ['GET', 'POST'],
+  authLevel: 'anonymous',
+  route: 'cron/feedback/{id?}',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    const given = request.headers.get('x-bcc-cron-secret') || '';
+    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    const c = container();
+    try {
+      if (request.method === 'GET') {
+        const { resources } = await c.items.query({
+          query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+        }).fetchAll();
+        return { jsonBody: { ok: true, feedback: resources } };
+      }
+      const id = request.params.id;
+      const body = await request.json().catch(() => ({}));
+      if (!id || String(id).indexOf('bcc-feedback-') !== 0) return { status: 400, jsonBody: { ok: false, error: 'bad id' } };
+      const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
+      if (!doc) return { status: 404, jsonBody: { ok: false, error: 'not found' } };
+      const st = String(body.status || '').toLowerCase();
+      if (['new', 'reviewed', 'resolved'].indexOf(st) < 0) return { status: 400, jsonBody: { ok: false, error: 'bad status' } };
+      const wasResolved = doc.status === 'resolved';
+      const note = String(body.note || '').trim().slice(0, 2000);
+      doc.status = st; doc.reviewedBy = 'cron'; doc.updatedAt = new Date().toISOString();
+      if (note) { doc.resolutionNote = note; doc.resolutionBy = 'lyle@bluecollarcoach.us'; doc.resolutionAt = new Date().toISOString(); }
+      await c.items.upsert(doc);
+      const isNewResolve = st === 'resolved' && !wasResolved;
+      let _notified = false;
+      const _notifyAttempted = !!(doc.userUpn && (isNewResolve || (note && body.notify)));
+      if (_notifyAttempted) {
+        const msg = String(doc.message || '');
+        const bodyText = note || (msg.length > 90 ? msg.slice(0, 90) + '…' : msg);
+        _notified = await notifyUser(c, doc.userUpn, {
+          title: isNewResolve ? '✅ Your feedback was addressed' : '💬 Reply to your feedback',
+          body: bodyText, url: safeNotifyPath(doc.page), tag: 'fbdone-' + doc.id
+        });
+      }
+      return { jsonBody: { ok: true, id: doc.id, status: doc.status, notified: _notifyAttempted ? !!_notified : null } };
+    } catch (e) { context.error('cron-feedback error', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  }
+});
+
+/* TEMP: headless usage-log analysis for this session's navigability audit (see memory,
+   explicitly approved by the user 2026-09-12). GET only, read-only, no id param.
+   Aggregates the existing access/audit logs server-side rather than dumping raw rows —
+   access alone can be tens of thousands of rows over 30 days. Removed again before this
+   session ends. */
+app.http('cron-diag', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'cron/diag',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    const given = request.headers.get('x-bcc-cron-secret') || '';
+    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    const c = container();
+    const url = new URL(request.url);
+    const what = url.searchParams.get('what') || '';
+    const days = Math.max(1, Math.min(90, parseInt(url.searchParams.get('days'), 10) || 30));
+    const since = new Date(Date.now() - days * 86400000).toISOString();
+    try {
+      if (what === 'access') {
+        const { resources } = await c.items.query({
+          query: 'SELECT c.path, c.status, c.user, c.ts FROM c WHERE c.tenantId=@t AND c.docType="access" AND c.ts >= @s',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@s', value: since }]
+        }).fetchAll();
+        const by = {};
+        for (const r of resources) {
+          const key = String(r.path || '');
+          const row = by[key] || (by[key] = { path: key, count: 0, users: new Set(), errors: 0, lastTs: '' });
+          row.count++;
+          if (r.user) row.users.add(String(r.user).toLowerCase());
+          if (Number(r.status) >= 400) row.errors++;
+          if (String(r.ts || '') > row.lastTs) row.lastTs = r.ts;
+        }
+        const rows = Object.keys(by).map(k => ({ path: by[k].path, count: by[k].count, uniqueUsers: by[k].users.size, errors: by[k].errors, lastTs: by[k].lastTs }))
+          .sort((a, b) => b.count - a.count);
+        return { jsonBody: { ok: true, days, totalRows: resources.length, rows } };
+      }
+      if (what === 'audit') {
+        const { resources } = await c.items.query({
+          query: 'SELECT c.action, c.user, c.ts FROM c WHERE c.tenantId=@t AND c.docType="audit" AND c.ts >= @s',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@s', value: since }]
+        }).fetchAll();
+        const by = {};
+        for (const r of resources) {
+          const key = String(r.action || '');
+          const row = by[key] || (by[key] = { action: key, count: 0, users: new Set(), lastTs: '' });
+          row.count++;
+          if (r.user) row.users.add(String(r.user).toLowerCase());
+          if (String(r.ts || '') > row.lastTs) row.lastTs = r.ts;
+        }
+        const rows = Object.keys(by).map(k => ({ action: by[k].action, count: by[k].count, uniqueUsers: by[k].users.size, lastTs: by[k].lastTs }))
+          .sort((a, b) => b.count - a.count);
+        return { jsonBody: { ok: true, days, totalRows: resources.length, rows } };
+      }
+      if (what === 'errorlog') {
+        const limit = Math.max(1, Math.min(500, parseInt(url.searchParams.get('limit'), 10) || 200));
+        const { resources } = await c.items.query({
+          query: 'SELECT c.where, c.message, c.user, c.url, c.at FROM c WHERE c.tenantId=@t AND c.docType="errorlog" AND c.at >= @s ORDER BY c.at DESC',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@s', value: since }]
+        }).fetchAll();
+        return { jsonBody: { ok: true, days, totalRows: resources.length, errors: resources.slice(0, limit) } };
+      }
+      if (what === 'users') {
+        const cfg = await getAdminCfg();
+        const users = (cfg && Array.isArray(cfg.users) ? cfg.users : []).map(u => ({ upn: u.upn || u.email, status: u.status || 'active', role: u.role || null }));
+        return { jsonBody: { ok: true, users } };
+      }
+      return { status: 400, jsonBody: { ok: false, error: 'what must be one of: access, audit, errorlog, users' } };
+    } catch (e) { context.error('cron-diag error', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
+  }
+});
+
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
