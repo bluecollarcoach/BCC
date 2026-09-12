@@ -2988,7 +2988,16 @@
         // two emblems stacked. Only the IMAGE is hidden; the wordmark text stays as the
         // "go home" link so that destination (not in NAV_GROUPS) is not lost on desktop.
         'header.topbar a.home img{display:none;}' +
-        '.bcc-mobile-menu{display:block;transform:none;left:0;right:auto;top:52px;width:48px;overflow:hidden;box-shadow:1px 0 0 #e6e5e1,10px 0 26px rgba(15,23,42,0.05);transition:width 0.16s ease;}' +
+        // Toggled by applyExpanded() below — the wordmark text (not just the image) also
+        // steps aside while the rail shows its own copy, so it is never visible twice.
+        'header.topbar.bcc-topbar-brand-hidden .wordmark{visibility:hidden;}' +
+        // top:0, not 52px — the rail now runs the full viewport height, alongside the
+        // topbar's own row too, rather than starting in a separate strip below it. The
+        // rail (z-index 99, unchanged) stays ABOVE header.topbar (z-index 50) in that
+        // shared top-left corner, on purpose: the toggle button lives there and must stay
+        // clickable, and the topbar has nothing left to show in that corner anyway once
+        // its own logo is hidden and its content is padded clear of it (below).
+        '.bcc-mobile-menu{display:block;transform:none;left:0;right:auto;top:0;width:48px;overflow:hidden;box-shadow:1px 0 0 #e6e5e1,10px 0 26px rgba(15,23,42,0.05);transition:width 0.16s ease;}' +
         '.bcc-mobile-menu.bcc-mm-expanded{width:224px;box-shadow:1px 0 0 #e6e5e1,18px 0 36px rgba(15,23,42,0.14);}' +
         '.bcc-mobile-menu .bcc-mm-user{display:none;}' +
         '.bcc-mobile-menu .bcc-mm-close{display:none;}' +
@@ -3226,6 +3235,10 @@
         drawer.classList.toggle('bcc-mm-expanded', expanded);
         toggleBtn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
         toggleBtn.setAttribute('aria-label', expanded ? 'Minimize menu' : 'Expand menu');
+        // The wordmark lives in exactly one place at a time — the topbar's own copy
+        // (image already CSS-hidden on desktop/tablet) when the rail is collapsed, the
+        // rail's own copy when it's expanded. Never both, never neither.
+        topbar.classList.toggle('bcc-topbar-brand-hidden', expanded);
       }
       var storedExpanded = null;
       try { storedExpanded = localStorage.getItem(NAV_EXPANDED_KEY); } catch (e) {}
