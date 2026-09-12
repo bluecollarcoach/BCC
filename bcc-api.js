@@ -2956,40 +2956,46 @@
       '.bcc-mobile-menu .bcc-mm-foot a.bcc-mm-signin{color:#1a1a1a;}' +
       '.bcc-mm-toggle{display:none;}' +
       /* Desktop/tablet (>700px): the SAME menu — same markup, same NAV_GROUPS — becomes a
-         persistent docked rail instead of an on-demand overlay. Mobile is untouched: below
-         701px none of this applies and the full-screen slide-in drawer behaves exactly as
-         it always has. The hamburger button is hidden here because there is nothing left
-         for it to open — the rail is always visible; bcc-mm-toggle (inside the rail) is
-         what expands/collapses it instead.
+         persistent docked rail on the LEFT instead of an on-demand overlay from the
+         right. Mobile is untouched: below 701px none of this applies and the full-screen
+         slide-in drawer (still right-side) behaves exactly as it always has. The
+         hamburger button is hidden here because there is nothing left for it to open —
+         the rail is always visible; the logo at its top (bcc-mm-toggle) expands/collapses
+         it instead, the same job the topbar logo does everywhere else (link home) but
+         doubling as this rail's one control.
          RESERVES real layout space equal to the COLLAPSED width only (48px) via
-         `body{padding-right}` — verified necessary: an unreserved/overlay-only version
+         `body{padding-left}` — verified necessary: an unreserved/overlay-only version
          visibly clipped bookkeeping.html's own page-level "Notary" button, which sits at
-         the same right edge the rail docks to. header.topbar gets a matching negative
-         margin + padding so its own background still spans the full viewport edge to
-         edge (unaffected) while its CONTENT (bell, auth chip) sits inset by the same
-         48px, clearing the rail exactly like the rest of the page now does. The EXPANDED
-         width (224px) is NOT reserved — it overlays the extra ~176px as a deliberate,
-         temporary peek (shadowed, like a popover), so toggling does not reflow every
-         page's content on every click. */
+         the same edge the rail used to dock to on the right; the same reasoning applies
+         mirrored to the left. header.topbar gets a matching negative margin + padding so
+         its own background still spans the full viewport edge to edge while its home
+         logo/wordmark sit inset by the same 48px, clear of the rail. The EXPANDED width
+         (224px) is NOT reserved — it overlays the extra ~176px as a deliberate, temporary
+         peek, so toggling does not reflow every page's content on every click.
+         NO independent scrollbar: the rail must scroll as part of the ONE page scroll,
+         not a second nested one. Spacing below is deliberately tight (36px collapsed rows,
+         no group-divider gaps, footer hidden when collapsed — feedback and sign-out are
+         already reachable from the topbar on desktop) so the full list fits inside a
+         realistic viewport height without needing to scroll at all in the collapsed
+         state; overflow is hidden rather than auto as the fallback for the rare shorter
+         window, so a second scrollbar can never appear even in that case. */
       '@media (min-width:701px){' +
         '#bcc-hamburger{display:none;}' +
         '.bcc-mm-backdrop{display:none !important;}' +
-        'body{padding-right:48px;}' +
-        'header.topbar{margin-right:-48px;padding-right:56px;}' +
-        '.bcc-mobile-menu{display:block;transform:none;top:52px;width:48px;box-shadow:-1px 0 0 #e6e5e1,-10px 0 26px rgba(15,23,42,0.05);transition:width 0.16s ease;}' +
-        '.bcc-mobile-menu.bcc-mm-expanded{width:224px;box-shadow:-1px 0 0 #e6e5e1,-18px 0 36px rgba(15,23,42,0.14);}' +
+        'body{padding-left:48px;}' +
+        'header.topbar{margin-left:-48px;padding-left:56px;}' +
+        '.bcc-mobile-menu{display:block;transform:none;left:0;right:auto;top:52px;width:48px;overflow:hidden;box-shadow:1px 0 0 #e6e5e1,10px 0 26px rgba(15,23,42,0.05);transition:width 0.16s ease;}' +
+        '.bcc-mobile-menu.bcc-mm-expanded{width:224px;box-shadow:1px 0 0 #e6e5e1,18px 0 36px rgba(15,23,42,0.14);}' +
         '.bcc-mobile-menu .bcc-mm-user{display:none;}' +
         '.bcc-mobile-menu .bcc-mm-close{display:none;}' +
-        '.bcc-mm-toggle{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;height:44px;background:none;border:none;border-bottom:1px solid #f0ede3;color:#8a877e;cursor:pointer;font-size:15px;padding:0;}' +
-        '.bcc-mm-toggle:hover{background:#faf4e8;color:#a8884a;}' +
-        '.bcc-mm-toggle .bcc-mm-chev{transition:transform 0.16s ease;font-size:11px;}' +
-        '.bcc-mm-expanded .bcc-mm-toggle .bcc-mm-chev{transform:rotate(180deg);}' +
-        '.bcc-mobile-menu:not(.bcc-mm-expanded) .bcc-mm-grouplabel{height:1px;min-height:1px;padding:0;margin:9px 14px;background:#f0ede3;font-size:0;line-height:0;overflow:hidden;}' +
-        '.bcc-mobile-menu:not(.bcc-mm-expanded) a.bcc-mm-link{justify-content:center;padding:11px 0;gap:0;}' +
+        '.bcc-mm-toggle{display:flex;align-items:center;justify-content:center;width:100%;height:52px;background:none;border:none;border-bottom:1px solid #f0ede3;cursor:pointer;padding:0;flex-shrink:0;}' +
+        '.bcc-mm-toggle:hover{background:#faf4e8;}' +
+        '.bcc-mm-toggle img{width:28px;height:28px;border-radius:50%;display:block;}' +
+        '.bcc-mobile-menu:not(.bcc-mm-expanded) .bcc-mm-grouplabel{display:none;}' +
+        '.bcc-mobile-menu:not(.bcc-mm-expanded) .bcc-mm-group{padding:0;border-bottom:none;}' +
+        '.bcc-mobile-menu:not(.bcc-mm-expanded) a.bcc-mm-link{justify-content:center;padding:8px 0;gap:0;height:36px;box-sizing:border-box;}' +
         '.bcc-mobile-menu:not(.bcc-mm-expanded) a.bcc-mm-link .bcc-mm-label{display:none;}' +
-        '.bcc-mobile-menu:not(.bcc-mm-expanded) .bcc-mm-foot{padding:10px 0;display:flex;flex-direction:column;align-items:center;}' +
-        '.bcc-mobile-menu:not(.bcc-mm-expanded) .bcc-mm-foot a{width:100%;text-align:center;padding:10px 0;font-size:0;}' +
-        '.bcc-mobile-menu:not(.bcc-mm-expanded) .bcc-mm-foot a::before{content:attr(data-ic);font-size:16px;}' +
+        '.bcc-mobile-menu:not(.bcc-mm-expanded) .bcc-mm-foot{display:none;}' +
       '}' +
       // Compact auth chip — Sign out link is visible on desktop, hidden on
       // phone-sized viewports (where it lives in the hamburger drawer instead).
@@ -3156,9 +3162,10 @@
         : '<strong>Not signed in</strong>';
       // Expand/collapse toggle — desktop/tablet only (CSS-hidden below 701px, where the
       // drawer is the full mobile overlay instead and this button would have nothing
-      // sensible to do). Sits ahead of the user header so it is the first thing in the
-      // rail whichever state it's in.
-      var html = '<button class="bcc-mm-toggle" aria-label="Expand menu" aria-expanded="false"><span class="bcc-mm-chev">&#8249;</span></button>' +
+      // sensible to do). The BCC emblem doubles as the control, same as it doubles as
+      // "home" in the topbar everywhere else. Sits ahead of the user header so it is the
+      // first thing in the rail whichever state it's in.
+      var html = '<button class="bcc-mm-toggle" aria-label="Expand menu" aria-expanded="false"><img src="/bcc-logo.png" alt="" /></button>' +
                  '<div class="bcc-mm-user"><div>' + whoLine + '</div>' +
                  '<button class="bcc-mm-close" aria-label="Close menu">&times;</button></div>';
 
