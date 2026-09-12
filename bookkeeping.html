@@ -247,7 +247,17 @@
   .ws-crumb .cur { color:var(--ink); font-weight:700; }
   .ws-crumb .sep { color:var(--chrome-mute); }
   @media (min-width:1024px) {
-    .ws-rail { display:flex; flex-direction:column; position:fixed; left:0; top:54px; bottom:0; width:238px; z-index:45; background:#fff; border-right:1px solid var(--chrome-mute); overflow-y:auto; padding-bottom:24px; }
+    /* left:48px, not 0 — bcc-api.js docks its own persistent nav rail (48px collapsed)
+       at the true left edge on every page, >700px. Below 1024px this page falls back to
+       the .ws-menu-btn/.ws-drawer pattern instead of .ws-rail, and that drawer already
+       renders above bcc-api.js's rail (higher z-index) when opened, so no shift is
+       needed there — only this always-on rail, which would otherwise sit in the exact
+       same column and have its first 48px hidden under bcc-api.js's rail (which is on
+       top, z-index 99 > 45). body.in-client .page's margin-left is UNCHANGED at 238px —
+       it already clears .ws-rail's full width correctly once body's own 48px padding
+       (from bcc-api.js) is added on top of it, since .ws-rail is still exactly 238px
+       wide, just starting 48px further right than before. */
+    .ws-rail { display:flex; flex-direction:column; position:fixed; left:48px; top:54px; bottom:0; width:238px; z-index:45; background:#fff; border-right:1px solid var(--chrome-mute); overflow-y:auto; padding-bottom:24px; }
     body.in-client .page { padding-left:24px; margin-left:238px; max-width:1080px; }
     body.in-client .ws-menu-btn { display:none; }
     body.in-client #wsBack { display:none; }        /* rail has its own back */
