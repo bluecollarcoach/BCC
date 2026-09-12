@@ -2760,44 +2760,6 @@ app.http('cron-backup', {
   }
 });
 
-/* TEMP: one-off headless company toggle for this session, same CRON_SECRET pattern as
-   the feedback/diag endpoints (see memory, explicitly approved by the user). GET lists
-   qbo-company name/realmId/enabled/lastSyncAt/lastSyncError so the right company can be
-   confirmed before writing; POST {realmId, enabled} flips exactly that one field on
-   exactly that one company — no other field is touched. Removed again before this
-   session ends. */
-app.http('cron-company-toggle', {
-  methods: ['GET', 'POST'],
-  authLevel: 'anonymous',
-  route: 'cron/company-toggle',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    const given = request.headers.get('x-bcc-cron-secret') || '';
-    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
-    const c = container();
-    try {
-      if (request.method === 'GET') {
-        const { resources } = await c.items.query({
-          query: 'SELECT c.realmId, c.companyName, c.enabled, c.lastSyncAt, c.lastSyncError, c.privateToUpn FROM c WHERE c.tenantId=@t AND c.docType="qbo-company" ORDER BY c.companyName',
-          parameters: [{ name: '@t', value: BCC_TENANT_ID }]
-        }).fetchAll();
-        return { jsonBody: { ok: true, companies: resources } };
-      }
-      const body = await request.json().catch(() => ({}));
-      const realmId = String(body.realmId || '').trim();
-      if (!realmId) return { status: 400, jsonBody: { ok: false, error: 'realmId required' } };
-      if (typeof body.enabled !== 'boolean') return { status: 400, jsonBody: { ok: false, error: 'enabled (boolean) required' } };
-      const id = 'bcc-qbo-company-' + realmId;
-      const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
-      if (!doc) return { status: 404, jsonBody: { ok: false, error: 'not found' } };
-      doc.enabled = body.enabled;
-      doc.updatedAt = new Date().toISOString();
-      await c.items.upsert(doc);
-      return { jsonBody: { ok: true, realmId: doc.realmId, companyName: doc.companyName, enabled: doc.enabled } };
-    } catch (e) { context.error('cron-company-toggle error', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
-  }
-});
-
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
