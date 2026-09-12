@@ -2865,7 +2865,7 @@ app.http('cron-diag', {
       if (what === 'errorlog') {
         const limit = Math.max(1, Math.min(500, parseInt(url.searchParams.get('limit'), 10) || 200));
         const { resources } = await c.items.query({
-          query: 'SELECT c.where, c.message, c.user, c.url, c.at FROM c WHERE c.tenantId=@t AND c.docType="errorlog" AND c.at >= @s ORDER BY c.at DESC',
+          query: 'SELECT c["where"], c.message, c.user, c.url, c.at FROM c WHERE c.tenantId=@t AND c.docType="errorlog" AND c.at >= @s ORDER BY c.at DESC',
           parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@s', value: since }]
         }).fetchAll();
         return { jsonBody: { ok: true, days, totalRows: resources.length, errors: resources.slice(0, limit) } };
