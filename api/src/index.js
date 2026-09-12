@@ -2760,6 +2760,65 @@ app.http('cron-backup', {
   }
 });
 
+/**
+ * GET /api/nav/popular — the N most-visited pages firm-wide, trailing 90 days, cached.
+ * Powers the nav rail's collapsed "most used" view (bcc-api.js): it shows only these by
+ * default, with the full list one click (expand) away. The audit log's existing
+ * page-view rows (bcc-api.js already logs one on every navigation — see NAV_GROUPS'
+ * comment) are the source of truth, so this drifts to match real usage automatically —
+ * no manual curation, and a page nobody used a year ago that catches on later earns its
+ * way back onto the short list on its own.
+ * Cached in a report doc (bcc-report- prefix — /api/data can never hand it to a
+ * browser) and recomputed at most once per NAV_POPULAR_TTL_MS, so a page load never
+ * pays for a full audit-log scan; only whichever request happens to find the cache
+ * stale does, and everyone else reads the cached answer.
+ */
+const NAV_POPULAR_ID = 'bcc-report-navpopular';
+const NAV_POPULAR_TTL_MS = 6 * 3600 * 1000;
+const NAV_POPULAR_WINDOW_DAYS = 90;
+const NAV_POPULAR_TOP_N = 7;
+app.http('nav-popular', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'nav/popular',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    const c = container();
+    try {
+      const cached = await c.item(NAV_POPULAR_ID, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
+      if (cached && cached.computedAt && (Date.now() - Date.parse(cached.computedAt)) < NAV_POPULAR_TTL_MS && Array.isArray(cached.top) && cached.top.length) {
+        return { jsonBody: { ok: true, top: cached.top, computedAt: cached.computedAt } };
+      }
+      const since = new Date(Date.now() - NAV_POPULAR_WINDOW_DAYS * 86400000).toISOString();
+      const { resources } = await c.items.query({
+        query: 'SELECT c.meta FROM c WHERE c.tenantId=@t AND c.docType="audit" AND c.action="page-view" AND c.ts >= @s',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@s', value: since }]
+      }).fetchAll();
+      const counts = {};
+      for (const r of resources) {
+        const page = r.meta && r.meta.page;
+        if (!page) continue;
+        counts[page] = (counts[page] || 0) + 1;
+      }
+      const top = Object.keys(counts).sort((a, b) => counts[b] - counts[a]).slice(0, NAV_POPULAR_TOP_N);
+      const computedAt = new Date().toISOString();
+      // A cold start (no page-view rows yet, e.g. right after a data restore) must not
+      // cache an empty list — that would show NOTHING in the collapsed rail for the next
+      // NAV_POPULAR_TTL_MS. Answer honestly (empty) this once without writing it back, so
+      // the client's own hardcoded default carries it until real data exists to cache.
+      if (top.length) {
+        await c.items.upsert({ id: NAV_POPULAR_ID, tenantId: BCC_TENANT_ID, docType: 'nav-popular', top, computedAt });
+      }
+      return { jsonBody: { ok: true, top, computedAt } };
+    } catch (e) {
+      context.error('nav-popular error', e);
+      return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } };
+    }
+  })
+});
+
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',

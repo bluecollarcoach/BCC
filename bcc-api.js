@@ -2449,6 +2449,34 @@
     ]}
   ];
 
+  // "Most used" curation for the collapsed nav rail — /api/nav/popular ranks pages by
+  // real firm-wide page-view volume (trailing 90 days), recomputed periodically
+  // server-side from the audit log every page already writes to. Cached here so the
+  // FIRST render of every page has an instant, synchronous answer with no network wait
+  // and no layout flash; refreshed in the background on every page load so the list
+  // drifts with real usage automatically — no manual curation, ever, including a page
+  // that starts getting used a year from now.
+  var NAV_POPULAR_KEY = 'bcc-nav-popular';
+  var NAV_POPULAR_DEFAULT = ['bookkeeping.html', 'myday.html', 'sessions.html', 'dashboard.html'];
+  function navPopularPages() {
+    try {
+      var raw = localStorage.getItem(NAV_POPULAR_KEY);
+      if (!raw) return NAV_POPULAR_DEFAULT;
+      var parsed = JSON.parse(raw);
+      return (Array.isArray(parsed) && parsed.length) ? parsed : NAV_POPULAR_DEFAULT;
+    } catch (e) { return NAV_POPULAR_DEFAULT; }
+  }
+  function refreshNavPopular() {
+    fetch('/api/nav/popular', { credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d || !d.ok || !Array.isArray(d.top) || !d.top.length) return;
+        try { localStorage.setItem(NAV_POPULAR_KEY, JSON.stringify(d.top)); } catch (e) {}
+      })
+      .catch(function () {});
+  }
+  window.addEventListener('bcc-auth-ready', refreshNavPopular);
+
   /* ---------- UI ---------- */
   // Capture client-side JS errors + unhandled promise rejections into the server
   // error log (throttled to 1/min per message, only when signed in).
@@ -2955,6 +2983,7 @@
       '.bcc-mobile-menu .bcc-mm-foot a{display:block;padding:10px 0;font-size:14px;font-weight:700;color:#a8884a;text-decoration:none;}' +
       '.bcc-mobile-menu .bcc-mm-foot a.bcc-mm-signin{color:#1a1a1a;}' +
       '.bcc-mm-toggle{display:none;}' +
+      '.bcc-mm-more{display:none;}' +
       /* Desktop/tablet (>700px): the SAME menu — same markup, same NAV_GROUPS — becomes a
          persistent docked rail on the LEFT instead of an on-demand overlay from the
          right. Mobile is untouched: below 701px none of this applies and the full-screen
@@ -2998,7 +3027,7 @@
         // clickable, and the topbar has nothing left to show in that corner anyway once
         // its own logo is hidden and its content is padded clear of it (below).
         '.bcc-mobile-menu{display:block;transform:none;left:0;right:auto;top:0;width:48px;overflow:hidden;box-shadow:1px 0 0 #e6e5e1,10px 0 26px rgba(15,23,42,0.05);transition:width 0.16s ease;}' +
-        '.bcc-mobile-menu.bcc-mm-expanded{width:224px;box-shadow:1px 0 0 #e6e5e1,18px 0 36px rgba(15,23,42,0.14);}' +
+        '.bcc-mobile-menu.bcc-mm-expanded{width:250px;box-shadow:1px 0 0 #e6e5e1,18px 0 36px rgba(15,23,42,0.14);}' +
         '.bcc-mobile-menu .bcc-mm-user{display:none;}' +
         '.bcc-mobile-menu .bcc-mm-close{display:none;}' +
         '.bcc-mm-toggle{display:flex;align-items:center;width:100%;height:52px;background:none;border:none;border-bottom:1px solid #f0ede3;cursor:pointer;padding:0 10px;flex-shrink:0;gap:10px;}' +
@@ -3015,7 +3044,13 @@
         '.bcc-mobile-menu:not(.bcc-mm-expanded) .bcc-mm-group{padding:0;border-bottom:none;}' +
         '.bcc-mobile-menu:not(.bcc-mm-expanded) a.bcc-mm-link{justify-content:center;padding:8px 0;gap:0;height:36px;box-sizing:border-box;}' +
         '.bcc-mobile-menu:not(.bcc-mm-expanded) a.bcc-mm-link .bcc-mm-label{display:none;}' +
+        // The curated view: collapsed shows only the "most used" subset (bcc-mm-top —
+        // see navPopularPages()); expanded shows everything, unfiltered. This is the
+        // ONLY difference between the two states besides width/labels.
+        '.bcc-mobile-menu:not(.bcc-mm-expanded) a.bcc-mm-link:not(.bcc-mm-top){display:none;}' +
         '.bcc-mobile-menu:not(.bcc-mm-expanded) .bcc-mm-foot{display:none;}' +
+        '.bcc-mobile-menu:not(.bcc-mm-expanded) .bcc-mm-more{display:flex;align-items:center;justify-content:center;width:100%;height:32px;background:none;border:none;border-top:1px solid #f0ede3;color:#8a877e;cursor:pointer;font-size:16px;letter-spacing:2px;padding:0;flex-shrink:0;}' +
+        '.bcc-mobile-menu:not(.bcc-mm-expanded) .bcc-mm-more:hover{background:#faf4e8;color:#a8884a;}' +
       '}' +
       // Compact auth chip — Sign out link is visible on desktop, hidden on
       // phone-sized viewports (where it lives in the hamburger drawer instead).
@@ -3193,6 +3228,11 @@
       // permission. If the signed-in user has 'none' on a page, the link is
       // hidden entirely so they don't see destinations they can't open.
       var here = (location.pathname.split('/').pop() || 'index.html').toLowerCase();
+      // bcc-mm-top marks the collapsed rail's curated "most used" subset (CSS hides
+      // everything else while collapsed — see the desktop media query above). The
+      // current page always counts as top too, regardless of its real popularity —
+      // collapsing must never hide the one link showing where you already are.
+      var popularSet = navPopularPages().map(function (s) { return String(s).toLowerCase(); });
       NAV_GROUPS.forEach(function (grp) {
         var visibleItems = grp.items.filter(function (it) {
           var key = window.BCC_PAGE_TO_APP[it.href.toLowerCase()] || 'home';
@@ -3203,14 +3243,22 @@
         html += '<div class="bcc-mm-group">';
         html += '<div class="bcc-mm-grouplabel">' + escapeHtml(grp.label) + '</div>';
         visibleItems.forEach(function (it) {
-          var current = (it.href.toLowerCase() === here) ? ' bcc-mm-current' : '';
-          html += '<a class="bcc-mm-link' + current + '" href="' + it.href + '" title="' + escapeHtml(it.name) + '">' +
+          var hrefLc = it.href.toLowerCase();
+          var current = (hrefLc === here) ? ' bcc-mm-current' : '';
+          var top = (popularSet.indexOf(hrefLc) >= 0 || hrefLc === here) ? ' bcc-mm-top' : '';
+          html += '<a class="bcc-mm-link' + current + top + '" href="' + it.href + '" title="' + escapeHtml(it.name) + '">' +
                     '<span class="bcc-mm-ic">' + it.icon + '</span>' +
                     '<span class="bcc-mm-label">' + escapeHtml(it.name) + '</span>' +
                   '</a>';
         });
         html += '</div>';
       });
+
+      // "See more" — desktop/tablet collapsed state only (CSS-hidden everywhere else);
+      // expands the rail to reveal the full list, same action the logo toggle performs.
+      // A dedicated control here (rather than relying on people discovering the logo
+      // does double duty) is what actually answers "allow an expansion... to see more".
+      html += '<button type="button" class="bcc-mm-more" aria-label="Show all destinations">&#8943;</button>';
 
       // Footer: feedback + sign in/out action
       // data-ic backs the collapsed-rail icon (CSS content:attr(data-ic)) — these links
@@ -3243,11 +3291,18 @@
       var storedExpanded = null;
       try { storedExpanded = localStorage.getItem(NAV_EXPANDED_KEY); } catch (e) {}
       applyExpanded(storedExpanded === '1');
-      toggleBtn.addEventListener('click', function (e) {
-        e.stopPropagation();
-        var next = !drawer.classList.contains('bcc-mm-expanded');
+      function setExpanded(next) {
         applyExpanded(next);
         try { localStorage.setItem(NAV_EXPANDED_KEY, next ? '1' : '0'); } catch (err) {}
+      }
+      toggleBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        setExpanded(!drawer.classList.contains('bcc-mm-expanded'));
+      });
+      var moreBtn = drawer.querySelector('.bcc-mm-more');
+      if (moreBtn) moreBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        setExpanded(true);
       });
 
       function closeMenu() {
