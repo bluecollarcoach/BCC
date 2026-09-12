@@ -2984,13 +2984,24 @@
         '.bcc-mm-backdrop{display:none !important;}' +
         'body{padding-left:48px;}' +
         'header.topbar{margin-left:-48px;padding-left:56px;}' +
+        // The rail carries its own logo now — the topbar's would sit directly above it,
+        // two emblems stacked. Only the IMAGE is hidden; the wordmark text stays as the
+        // "go home" link so that destination (not in NAV_GROUPS) is not lost on desktop.
+        'header.topbar a.home img{display:none;}' +
         '.bcc-mobile-menu{display:block;transform:none;left:0;right:auto;top:52px;width:48px;overflow:hidden;box-shadow:1px 0 0 #e6e5e1,10px 0 26px rgba(15,23,42,0.05);transition:width 0.16s ease;}' +
         '.bcc-mobile-menu.bcc-mm-expanded{width:224px;box-shadow:1px 0 0 #e6e5e1,18px 0 36px rgba(15,23,42,0.14);}' +
         '.bcc-mobile-menu .bcc-mm-user{display:none;}' +
         '.bcc-mobile-menu .bcc-mm-close{display:none;}' +
-        '.bcc-mm-toggle{display:flex;align-items:center;justify-content:center;width:100%;height:52px;background:none;border:none;border-bottom:1px solid #f0ede3;cursor:pointer;padding:0;flex-shrink:0;}' +
+        '.bcc-mm-toggle{display:flex;align-items:center;width:100%;height:52px;background:none;border:none;border-bottom:1px solid #f0ede3;cursor:pointer;padding:0 10px;flex-shrink:0;gap:10px;}' +
         '.bcc-mm-toggle:hover{background:#faf4e8;}' +
-        '.bcc-mm-toggle img{width:28px;height:28px;border-radius:50%;display:block;}' +
+        '.bcc-mobile-menu:not(.bcc-mm-expanded) .bcc-mm-toggle{justify-content:center;padding:0;}' +
+        '.bcc-mm-toggle img{width:28px;height:28px;border-radius:50%;display:block;flex-shrink:0;}' +
+        // Only shown when expanded — matches the topbar's own wordmark (Source Serif 4 is
+        // already loaded by every page for that reason) so it reads as the same brand
+        // mark, just relocated onto the rail.
+        '.bcc-mm-brand{display:none;font-family:"Source Serif 4",Georgia,serif;font-size:15px;font-weight:600;color:#1a1a1a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+        '.bcc-mm-brand em{color:#a8884a;font-style:normal;}' +
+        '.bcc-mm-expanded .bcc-mm-brand{display:block;}' +
         '.bcc-mobile-menu:not(.bcc-mm-expanded) .bcc-mm-grouplabel{display:none;}' +
         '.bcc-mobile-menu:not(.bcc-mm-expanded) .bcc-mm-group{padding:0;border-bottom:none;}' +
         '.bcc-mobile-menu:not(.bcc-mm-expanded) a.bcc-mm-link{justify-content:center;padding:8px 0;gap:0;height:36px;box-sizing:border-box;}' +
@@ -3165,7 +3176,7 @@
       // sensible to do). The BCC emblem doubles as the control, same as it doubles as
       // "home" in the topbar everywhere else. Sits ahead of the user header so it is the
       // first thing in the rail whichever state it's in.
-      var html = '<button class="bcc-mm-toggle" aria-label="Expand menu" aria-expanded="false"><img src="/bcc-logo.png" alt="" /></button>' +
+      var html = '<button class="bcc-mm-toggle" aria-label="Expand menu" aria-expanded="false"><img src="/bcc-logo.png" alt="" /><span class="bcc-mm-brand">Blue Collar <em>Coach</em></span></button>' +
                  '<div class="bcc-mm-user"><div>' + whoLine + '</div>' +
                  '<button class="bcc-mm-close" aria-label="Close menu">&times;</button></div>';
 
