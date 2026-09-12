@@ -2862,6 +2862,25 @@ app.http('cron-diag', {
           .sort((a, b) => b.count - a.count);
         return { jsonBody: { ok: true, days, totalRows: resources.length, rows } };
       }
+      if (what === 'pageviews') {
+        // bcc-api.js logs { action:'page-view', meta:{ page } } on every page load — the
+        // per-page breakdown the plain action count above can't see.
+        const { resources } = await c.items.query({
+          query: 'SELECT c.user, c.ts, c.meta FROM c WHERE c.tenantId=@t AND c.docType="audit" AND c.action="page-view" AND c.ts >= @s',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@s', value: since }]
+        }).fetchAll();
+        const by = {};
+        for (const r of resources) {
+          const key = String((r.meta && r.meta.page) || '(unknown)');
+          const row = by[key] || (by[key] = { page: key, count: 0, users: new Set(), lastTs: '' });
+          row.count++;
+          if (r.user) row.users.add(String(r.user).toLowerCase());
+          if (String(r.ts || '') > row.lastTs) row.lastTs = r.ts;
+        }
+        const rows = Object.keys(by).map(k => ({ page: by[k].page, count: by[k].count, uniqueUsers: by[k].users.size, lastTs: by[k].lastTs }))
+          .sort((a, b) => b.count - a.count);
+        return { jsonBody: { ok: true, days, totalRows: resources.length, rows } };
+      }
       if (what === 'errorlog') {
         const limit = Math.max(1, Math.min(500, parseInt(url.searchParams.get('limit'), 10) || 200));
         const { resources } = await c.items.query({
@@ -2875,7 +2894,7 @@ app.http('cron-diag', {
         const users = (cfg && Array.isArray(cfg.users) ? cfg.users : []).map(u => ({ upn: u.upn || u.email, status: u.status || 'active', role: u.role || null }));
         return { jsonBody: { ok: true, users } };
       }
-      return { status: 400, jsonBody: { ok: false, error: 'what must be one of: access, audit, errorlog, users' } };
+      return { status: 400, jsonBody: { ok: false, error: 'what must be one of: access, audit, pageviews, errorlog, users' } };
     } catch (e) { context.error('cron-diag error', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   }
 });
