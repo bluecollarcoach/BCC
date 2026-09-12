@@ -8459,6 +8459,51 @@ function linesByGroupRx(flat, rx, limit) {
 }
 
 
+/* Shared by qbo-job-costs (life-of-job WIP) and qbo-job-costs-real (periodic, overhead-
+ * loaded): parses a ProfitAndLoss report summarized by Customer into per-job income/cost
+ * plus the report's OWN grand-total row values (used by qbo-job-costs-real to derive the
+ * overhead pool — see the comment there). Extracted verbatim from what qbo-job-costs
+ * already did; behavior for that endpoint is unchanged. */
+function parsePlByCustomer(rep) {
+  const cols = rep.columns || [];
+  // columns = [ '' (account label), Customer1, Job1, Job2, 'Total Customer1', ..., 'TOTAL' ].
+  // Drop the grand total + every per-parent "Total <customer>" subtotal column — keeping
+  // them alongside their own job columns double-counts every job under a parent that has
+  // sub-jobs. The previous version only dropped a "Total X" column when a BARE "X" column
+  // was also present, on the theory that's how you tell a subtotal apart from a customer
+  // literally named "Total X" — but in the standard job-costing setup, a parent whose
+  // activity is entirely on its sub-jobs has NO bare column of its own (QBO omits
+  // all-zero columns), so that check silently let the subtotal through and doubled every
+  // job's income/cost under it. That's the common case, not an edge case. QBO's report
+  // JSON gives no reliable signal to disambiguate a real "Total X"-named customer from a
+  // subtotal — both render as ColTitle "Total X" — so always dropping "Total "-prefixed
+  // columns trades a vanishingly rare customer being omitted from the view for never
+  // silently doubling real dollar amounts, which is the safer failure mode for numbers
+  // clients make decisions from.
+  const custCols = cols.map((c, i) => ({ name: String(c || '').trim(), i })).filter(x => {
+    if (x.i <= 0 || !x.name) return false;
+    if (/^total\b/i.test(x.name)) return false; // grand total ("TOTAL") + every per-parent subtotal ("Total <Customer>")
+    return true;
+  });
+  const num = s => parseFloat(String(s == null ? '' : s).replace(/[$,]/g, '').replace(/^\((.*)\)$/, '-$1')) || 0;
+  const rowByLabel = (rx) => (rep.rows || []).find(r => rx.test(String(r.label || '')));
+  const incRow = rowByLabel(/^total income$/i) || rowByLabel(/total income/i);
+  const cogsRow = rowByLabel(/^total cost of goods sold$/i) || rowByLabel(/total cogs|cost of goods/i);
+  const expRow = rowByLabel(/^total expenses$/i) || rowByLabel(/total expenses/i);
+  const cellFor = (row, colIdx) => row ? num((row.cells || [])[colIdx - 1]) : 0; // cells align to columns[1..]
+  const jobs = custCols.map(c => ({
+    name: c.name,
+    income: cellFor(incRow, c.i),
+    cost: cellFor(cogsRow, c.i) + cellFor(expRow, c.i)
+  })).filter(j => j.income || j.cost);
+  // The report's OWN grand-total row values — its LAST cell regardless of how many
+  // columns it has, same convention findByGroup/findByLabel use elsewhere in this file.
+  // Read from the row directly rather than re-summing the per-job columns: it is what
+  // QBO itself calls the true total, so it can never silently drift from a naive sum.
+  const lastCell = row => row && row.cells && row.cells.length ? num(row.cells[row.cells.length - 1]) : 0;
+  return { jobs, grandTotalIncome: lastCell(incRow), grandTotalCost: lastCell(cogsRow) + lastCell(expRow) };
+}
+
 /**
  * GET /api/integrations/qbo/companies/{realmId}/job-costs?from=&to=
  * Cost-to-date and revenue (billed/recognized) per customer/job — from the P&L
@@ -8475,39 +8520,173 @@ app.http('qbo-job-costs', {
       const from = u.searchParams.get('from') || (to.slice(0, 4) + '-01-01');
       const method = (u.searchParams.get('method') || 'accrual').toLowerCase() === 'cash' ? 'Cash' : 'Accrual';
       const rep = flattenQboReport(await ctx.apiGet('/reports/ProfitAndLoss?summarize_column_by=Customers&start_date=' + from + '&end_date=' + to + '&accounting_method=' + method));
-      const cols = rep.columns || [];
-      // columns = [ '' (account label), Customer1, Job1, Job2, 'Total Customer1', ..., 'TOTAL' ].
-      // Drop the grand total + every per-parent "Total <customer>" subtotal column — keeping
-      // them alongside their own job columns double-counts every job under a parent that has
-      // sub-jobs. The previous version only dropped a "Total X" column when a BARE "X" column
-      // was also present, on the theory that's how you tell a subtotal apart from a customer
-      // literally named "Total X" — but in the standard job-costing setup, a parent whose
-      // activity is entirely on its sub-jobs has NO bare column of its own (QBO omits
-      // all-zero columns), so that check silently let the subtotal through and doubled every
-      // job's income/cost under it. That's the common case, not an edge case. QBO's report
-      // JSON gives no reliable signal to disambiguate a real "Total X"-named customer from a
-      // subtotal — both render as ColTitle "Total X" — so always dropping "Total "-prefixed
-      // columns trades a vanishingly rare customer being omitted from the view for never
-      // silently doubling real dollar amounts, which is the safer failure mode for numbers
-      // clients make decisions from.
-      const custCols = cols.map((c, i) => ({ name: String(c || '').trim(), i })).filter(x => {
-        if (x.i <= 0 || !x.name) return false;
-        if (/^total\b/i.test(x.name)) return false; // grand total ("TOTAL") + every per-parent subtotal ("Total <Customer>")
-        return true;
-      });
-      const num = s => parseFloat(String(s == null ? '' : s).replace(/[$,]/g, '').replace(/^\((.*)\)$/, '-$1')) || 0;
-      const rowByLabel = (rx) => (rep.rows || []).find(r => rx.test(String(r.label || '')));
-      const incRow = rowByLabel(/^total income$/i) || rowByLabel(/total income/i);
-      const cogsRow = rowByLabel(/^total cost of goods sold$/i) || rowByLabel(/total cogs|cost of goods/i);
-      const expRow = rowByLabel(/^total expenses$/i) || rowByLabel(/total expenses/i);
-      const cellFor = (row, colIdx) => row ? num((row.cells || [])[colIdx - 1]) : 0; // cells align to columns[1..]
-      const jobs = custCols.map(c => ({
-        name: c.name,
-        income: cellFor(incRow, c.i),
-        cost: cellFor(cogsRow, c.i) + cellFor(expRow, c.i)
-      })).filter(j => j.income || j.cost);
+      const { jobs } = parsePlByCustomer(rep);
       return { jsonBody: { ok: true, from, to, jobs } };
     } catch (e) { context.error('qbo-job-costs', e); return { status: 502, jsonBody: { ok: false, error: String(e.message || e) } }; }
+  })
+});
+
+/* =====================================================================================
+ * REAL JOB COSTING — direct cost plus an ALLOCATED SHARE OF OVERHEAD, for one period at
+ * a time (a week, a month — the bookkeeper picks the range; this is not a life-of-job
+ * total the way qbo-job-costs is).
+ *
+ * qbo-job-costs already shows each job's DIRECT cost (whatever QBO itself has tagged to
+ * that Customer:Job) — but overhead (rent, insurance, office salaries, anything not
+ * tagged to a job) never shows up there at all, so a job can look profitable while
+ * quietly not carrying its share of what it actually costs to keep the lights on. This
+ * endpoint answers "what did this job really cost, overhead included" by:
+ *
+ *   1. overhead pool for the period = the SAME P&L-by-Customer report's own grand-total
+ *      cost row, minus the sum of every job column's cost. Whatever QBO could not
+ *      attribute to a specific job IS the overhead — no separate account list to
+ *      maintain, no new QBO scope beyond what qbo-job-costs already uses.
+ *   2. each job's SHARE of that pool = its NON-OVERTIME direct labor hours ÷ the total
+ *      non-overtime direct labor hours across all jobs that period. Hours come from
+ *      QBO's own TimeActivity records (Employee-type only — 1099 subcontractor time is
+ *      excluded, since FLSA overtime is not a thing for them and the OT-based logic
+ *      below has no meaning applied to it).
+ *   3. overtime is judged per EMPLOYEE per Mon-Sun WEEK (the standard 40-hour FLSA
+ *      threshold), not per job and not per the requested period — an employee who works
+ *      50 hours in one week is over 40 REGARDLESS of how many different jobs (or
+ *      non-job "shop" time) those hours were split across, and the resulting
+ *      regular/overtime split is prorated across whatever they worked on that week in
+ *      the same proportions. A period (e.g. a calendar month) that does not fall on
+ *      week boundaries still gets this right: TimeActivity is fetched with a 6-day
+ *      buffer on each side so every week touching the period is complete for the OT
+ *      judgement, while only the days actually inside [from,to] are counted toward the
+ *      output (see computeRegularHoursByJob).
+ *
+ * computeRegularHoursByJob/allocateOverhead are covered by
+ * scratchpad/jobcost_overhead_test.js (19 assertions: simple/no-OT, single-job OT,
+ * multi-job OT proration, a week straddling a month boundary, no-hours-at-all,
+ * zero-hours-job, and non-job "shop time" both with and without pushing someone over
+ * 40) — keep that file's copy of these two functions in sync if either changes here.
+ * ===================================================================================== */
+function mondayOf(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  const day = d.getUTCDay(); // 0=Sun..6=Sat
+  const diff = (day === 0 ? -6 : 1 - day); // days back to Monday
+  d.setUTCDate(d.getUTCDate() + diff);
+  return d.toISOString().slice(0, 10);
+}
+function computeRegularHoursByJob(entries, rangeFrom, rangeTo) {
+  const byEmpWeek = Object.create(null);
+  entries.forEach(e => {
+    const wk = mondayOf(e.date);
+    const key = e.employeeKey + '|' + wk;
+    if (!byEmpWeek[key]) byEmpWeek[key] = { total: 0, rows: [] };
+    byEmpWeek[key].total += e.hours;
+    byEmpWeek[key].rows.push(e);
+  });
+  const hoursByJob = Object.create(null);
+  let totalRegularHours = 0;
+  Object.keys(byEmpWeek).forEach(key => {
+    const grp = byEmpWeek[key];
+    const regularFraction = grp.total > 40 ? (40 / grp.total) : 1;
+    grp.rows.forEach(e => {
+      if (e.date < rangeFrom || e.date > rangeTo) return; // buffer row — only used to judge the week's OT
+      if (!e.customerName) return; // shop/admin time — counts toward the OT threshold above; no job to allocate it to
+      const contribution = e.hours * regularFraction;
+      hoursByJob[e.customerName] = (hoursByJob[e.customerName] || 0) + contribution;
+      totalRegularHours += contribution;
+    });
+  });
+  return { hoursByJob, totalRegularHours };
+}
+function allocateOverhead(jobNames, hoursByJob, totalRegularHours, overheadPool) {
+  const out = {};
+  jobNames.forEach(name => {
+    const hrs = hoursByJob[name] || 0;
+    out[name] = (totalRegularHours > 0) ? overheadPool * (hrs / totalRegularHours) : 0;
+  });
+  return out;
+}
+const JOBCOST_REAL_MAX_DAYS = 370; // a bit over a year — generous for "week/month", not "life of job"
+app.http('qbo-job-costs-real', {
+  methods: ['GET'], authLevel: 'anonymous', route: 'integrations/qbo/companies/{realmId}/job-costs-real',
+  handler: withAccessLog(async (request, context) => {
+    try {
+      const ctx = await qboResolveAccess(request, request.params.realmId);
+      if (ctx.err) return ctx.err;
+      const u = new URL(request.url);
+      const to = u.searchParams.get('to') || new Date().toISOString().slice(0, 10);
+      const from = u.searchParams.get('from') || to;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) {
+        return badRequest('from/to must be YYYY-MM-DD, with from on or before to');
+      }
+      const spanDays = Math.round((Date.parse(to) - Date.parse(from)) / 86400000) + 1;
+      if (spanDays > JOBCOST_REAL_MAX_DAYS) {
+        return badRequest('that range is too wide for a period-based view (max ' + JOBCOST_REAL_MAX_DAYS + ' days) — use Job costing / WIP for a life-of-job total instead');
+      }
+      const method = (u.searchParams.get('method') || 'accrual').toLowerCase() === 'cash' ? 'Cash' : 'Accrual';
+      const notes = [];
+
+      const rep = flattenQboReport(await ctx.apiGet('/reports/ProfitAndLoss?summarize_column_by=Customers&start_date=' + from + '&end_date=' + to + '&accounting_method=' + method));
+      const { jobs: plJobs, grandTotalCost } = parsePlByCustomer(rep);
+      const directCostByJob = Object.create(null);
+      const incomeByJob = Object.create(null);
+      plJobs.forEach(j => { directCostByJob[j.name] = j.cost; incomeByJob[j.name] = j.income; });
+      const attributedCost = plJobs.reduce((s, j) => s + j.cost, 0);
+      // Never negative: a report timing quirk (e.g. accrual vs cash, or a job column that
+      // nets to a small credit) could in principle push the naive subtraction below zero,
+      // and a NEGATIVE "overhead pool" would flow through allocateOverhead as negative
+      // dollars added back to every job's cost — silently improving everyone's numbers
+      // for a reason nobody could see on this screen. Floor it at zero and say so.
+      let overheadPool = grandTotalCost - attributedCost;
+      if (overheadPool < 0) {
+        notes.push('QuickBooks’ total cost for this period was less than the sum of what’s tagged to jobs (by $' + Math.abs(Math.round(overheadPool)) + ') — likely a timing or rounding difference between the report’s total and its own columns. Overhead shown as $0 rather than a negative figure.');
+        overheadPool = 0;
+      }
+
+      // TimeActivity, buffered 6 days on each side so every Mon-Sun week touching the
+      // period is complete for the overtime judgement (see the block comment above).
+      const bufFrom = new Date(Date.parse(from) - 6 * 86400000).toISOString().slice(0, 10);
+      const bufTo = new Date(Date.parse(to) + 6 * 86400000).toISOString().slice(0, 10);
+      let timeRows = [];
+      try {
+        timeRows = await ctx.queryAll("SELECT Id, TxnDate, NameOf, EmployeeRef, CustomerRef, Hours, Minutes FROM TimeActivity WHERE TxnDate >= '" + bufFrom + "' AND TxnDate <= '" + bufTo + "'");
+      } catch (e) {
+        notes.push('Could not read time activity from QuickBooks, so no overhead could be allocated to any job this period — direct costs above are unaffected.');
+      }
+      const entries = timeRows
+        .filter(r => String(r.NameOf || 'Employee') === 'Employee') // 1099 subcontractor time has no FLSA overtime concept — excluded from the labor-hours base
+        .map(r => ({
+          employeeKey: String((r.EmployeeRef && r.EmployeeRef.value) || 'unknown'),
+          customerName: (r.CustomerRef && (r.CustomerRef.name || r.CustomerRef.value)) ? String(r.CustomerRef.name || r.CustomerRef.value) : null,
+          date: String(r.TxnDate || '').slice(0, 10),
+          hours: (Number(r.Hours) || 0) + (Number(r.Minutes) || 0) / 60
+        }))
+        .filter(e => /^\d{4}-\d{2}-\d{2}$/.test(e.date) && e.hours > 0);
+
+      const { hoursByJob, totalRegularHours } = computeRegularHoursByJob(entries, from, to);
+      if (timeRows.length && !totalRegularHours) {
+        notes.push('QuickBooks time activity was read, but none of it is tagged to a job (Customer:Job), so overhead could not be allocated to any specific job this period.');
+      } else if (!timeRows.length && !notes.length) {
+        notes.push('No time activity found in QuickBooks for this period, so overhead could not be allocated to any job.');
+      }
+
+      // Union of every job named in EITHER source — a job with hours but no billing yet,
+      // or one with cost/income but no logged hours, must still appear rather than being
+      // silently dropped by only iterating one side.
+      const allNames = new Set([...plJobs.map(j => j.name), ...Object.keys(hoursByJob)]);
+      const allocated = allocateOverhead([...allNames], hoursByJob, totalRegularHours, overheadPool);
+      const round2 = n => Math.round(n * 100) / 100;
+      const jobs = [...allNames].map(name => {
+        const directCost = directCostByJob[name] || 0;
+        const overheadShare = allocated[name] || 0;
+        return {
+          name,
+          income: incomeByJob[name] || 0,
+          directCost,
+          regularHours: round2(hoursByJob[name] || 0),
+          allocatedOverhead: round2(overheadShare),
+          realCost: round2(directCost + overheadShare)
+        };
+      }).filter(j => j.income || j.directCost || j.regularHours);
+
+      return { jsonBody: { ok: true, from, to, overheadPool: round2(overheadPool), totalRegularHours: round2(totalRegularHours), jobs, notes } };
+    } catch (e) { context.error('qbo-job-costs-real', e); return { status: 502, jsonBody: { ok: false, error: String(e.message || e) } }; }
   })
 });
 

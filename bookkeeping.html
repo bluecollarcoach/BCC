@@ -661,6 +661,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   </div>
   <div class="card" id="tab-wip" style="display:none; margin-top:14px;">
     <div id="wip-body"></div>
+    <div id="realcost-body" style="margin-top:22px;border-top:1px solid var(--chrome-mute);padding-top:18px;"></div>
   </div>
   <div class="card" id="tab-access" style="display:none; margin-top:14px;">
     <h3 style="font-family:'Source Serif 4',Georgia,serif; font-size:16px; margin:0 0 12px;">Team &amp; access</h3>
@@ -4944,7 +4945,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     else if (sec === 'mur') renderMur();
     else if (sec === 'payapp') renderPayApp();
     else if (sec === 'close') renderClose();
-    else if (sec === 'wip') renderWip();
+    else if (sec === 'wip') { renderWip(); renderRealCost(); }
     else if (sec === 'access') renderAccess();
   }
 
@@ -12754,6 +12755,133 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     });
     var searchEl = document.getElementById('wip_search');
     if (searchEl) searchEl.oninput = function () { _wipSearch = searchEl.value; recalcAll(); };
+    recalcAll();
+  }
+
+  /* Real job cost: direct cost + a share of overhead allocated by each job's share of
+     non-overtime direct labor hours in a selectable period (week/month/custom) — a
+     separate, period-scoped view alongside the life-of-job WIP schedule above, since
+     overhead allocation over a multi-year range would need far more QBO API calls than
+     a period view (the server enforces a 370-day cap for the same reason). */
+  function rcIso(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  function rcMonday(d) { var day = d.getDay(); var diff = (day === 0 ? -6 : 1 - day); var m = new Date(d); m.setDate(m.getDate() + diff); return m; }
+  function rcRange() {
+    var now = new Date();
+    var per = (document.getElementById('rc_period') || {}).value || 'thisweek';
+    var from, to;
+    if (per === 'custom') {
+      from = (document.getElementById('rc_from') || {}).value || rcIso(rcMonday(now));
+      to = (document.getElementById('rc_to') || {}).value || rcIso(now);
+    } else if (per === 'lastweek') {
+      var lw = new Date(now); lw.setDate(lw.getDate() - 7);
+      var mon = rcMonday(lw), sun = new Date(mon); sun.setDate(sun.getDate() + 6);
+      from = rcIso(mon); to = rcIso(sun);
+    } else if (per === 'thismonth') {
+      from = rcIso(new Date(now.getFullYear(), now.getMonth(), 1)); to = rcIso(now);
+    } else if (per === 'lastmonth') {
+      from = rcIso(new Date(now.getFullYear(), now.getMonth() - 1, 1)); to = rcIso(new Date(now.getFullYear(), now.getMonth(), 0));
+    } else { // 'thisweek' default — Monday of this week through today
+      from = rcIso(rcMonday(now)); to = rcIso(now);
+    }
+    return { from: from, to: to };
+  }
+  function renderRealCost() {
+    var host = document.getElementById('realcost-body'); if (!host) return;
+    var realmAt = currentRealm;
+    host.innerHTML =
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px;">' +
+        '<h3 style="font-family:\'Source Serif 4\',Georgia,serif;font-size:16px;margin:0;">Real job cost <span style="color:var(--muted);font-weight:400;font-size:12px;">· direct cost + allocated overhead, by period</span></h3>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">' +
+          '<select id="rc_period" title="Period" style="background:var(--chrome);border:1px solid var(--chrome-mute);border-radius:8px;padding:7px 9px;font:inherit;font-size:13px;min-height:36px;">' +
+            '<option value="thisweek" selected>This week</option>' +
+            '<option value="lastweek">Last week</option>' +
+            '<option value="thismonth">This month</option>' +
+            '<option value="lastmonth">Last month</option>' +
+            '<option value="custom">Custom…</option>' +
+          '</select>' +
+          '<input type="date" id="rc_from" title="From" style="display:none;border:1px solid var(--chrome-mute);border-radius:8px;padding:6px 8px;font:inherit;font-size:13px;min-height:36px;" />' +
+          '<input type="date" id="rc_to" title="To" style="display:none;border:1px solid var(--chrome-mute);border-radius:8px;padding:6px 8px;font:inherit;font-size:13px;min-height:36px;" />' +
+        '</div></div>' +
+      '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Each job’s <strong>real cost</strong> is its direct cost from QuickBooks plus a share of overhead, allocated by that job’s share of <strong>non-overtime</strong> direct labor hours (QuickBooks time activity, over-40-hrs/week per employee excluded) in the period picked above.</div>' +
+      '<div id="rc_out" style="color:var(--muted);padding:10px 0;">Loading…</div>';
+    var perSel = document.getElementById('rc_period'), fromEl = document.getElementById('rc_from'), toEl = document.getElementById('rc_to');
+    function syncCustomVisibility() {
+      var cust = perSel.value === 'custom';
+      fromEl.style.display = cust ? '' : 'none';
+      toEl.style.display = cust ? '' : 'none';
+    }
+    function load() {
+      if (currentRealm !== realmAt) return;
+      syncCustomVisibility();
+      var r = rcRange();
+      if (perSel.value === 'custom' && (!fromEl.value || !toEl.value)) {
+        var pending = document.getElementById('rc_out');
+        if (pending) pending.innerHTML = '<div style="color:var(--muted);padding:10px 0;">Pick both a from and to date.</div>';
+        return;
+      }
+      var out = document.getElementById('rc_out');
+      if (out) out.innerHTML = '<div style="color:var(--muted);padding:10px 0;">Loading…</div>';
+      fetch('/api/integrations/qbo/companies/' + encodeURIComponent(realmAt) + '/job-costs-real?from=' + encodeURIComponent(r.from) + '&to=' + encodeURIComponent(r.to), { credentials: 'include' })
+        .then(function (resp) { return resp.json(); })
+        .then(function (j) {
+          if (currentRealm !== realmAt) return;
+          var out2 = document.getElementById('rc_out'); if (!out2) return;
+          if (!j || !j.ok) { out2.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:10px;">' + esc(qboFriendly(j && j.error)) + '</div>'; return; }
+          renderRealCostTable(j);
+        })
+        .catch(function (e) { if (currentRealm !== realmAt) return; var out2 = document.getElementById('rc_out'); if (out2) out2.innerHTML = '<div style="background:#f3e0e0;color:#6a1c1c;border-radius:8px;padding:10px;">' + esc(e.message) + '</div>'; });
+    }
+    perSel.onchange = function () { syncCustomVisibility(); load(); };
+    fromEl.onchange = load;
+    toEl.onchange = load;
+    load();
+  }
+  var _rcSearch = '';             // survives across renders of THIS client's tab
+  var _rcRealmForSearch = null;   // which client _rcSearch belongs to
+  function renderRealCostTable(j) {
+    var out = document.getElementById('rc_out'); if (!out) return;
+    var m = mrMoney0;
+    var jobs = j.jobs || [];
+    if (!jobs.length) { out.innerHTML = '<div style="color:var(--muted);padding:12px 0;">No customer/job activity found for this period.</div>'; return; }
+    if (_rcRealmForSearch !== currentRealm) { _rcSearch = ''; _rcRealmForSearch = currentRealm; }
+    var rows = jobs.map(function (job, i) {
+      return '<tr data-rcrow="' + i + '" data-job="' + esc(job.name) + '">' +
+        '<td style="padding:3px 5px;">' + esc(job.name) + '</td>' +
+        '<td class="num" style="text-align:right;padding:3px 5px;">' + m(job.income || 0) + '</td>' +
+        '<td class="num" style="text-align:right;padding:3px 5px;">' + m(job.directCost || 0) + '</td>' +
+        '<td class="num" style="text-align:right;padding:3px 5px;">' + (Math.round((job.regularHours || 0) * 10) / 10) + '</td>' +
+        '<td class="num" style="text-align:right;padding:3px 5px;">' + m(job.allocatedOverhead || 0) + '</td>' +
+        '<td class="num" style="text-align:right;padding:3px 5px;font-weight:600;">' + m((job.directCost || 0) + (job.allocatedOverhead || 0)) + '</td></tr>';
+    }).join('');
+    out.innerHTML = '<div style="margin-bottom:8px;"><input type="search" id="rc_search" placeholder="Search jobs…" value="' + esc(_rcSearch || '') + '" style="width:100%;max-width:280px;padding:6px 10px;border:1px solid var(--chrome-mute);border-radius:6px;font-size:12.5px;"></div>' +
+      '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:640px;"><thead><tr style="background:#f7f1e3;">' +
+      ['Job', 'Income', 'Direct cost', 'Reg. hours', 'Alloc. overhead', 'Real cost'].map(function (h, i) { return '<th style="text-align:' + (i === 0 ? 'left' : 'right') + ';padding:5px;font-size:10.5px;text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid #c5a55a;">' + h + '</th>'; }).join('') +
+      '</tr></thead><tbody>' + rows + '</tbody><tfoot id="rc_totals"></tfoot></table></div>' +
+      '<div style="font-size:11px;color:#8a6d2f;margin-top:8px;">Overhead pool for ' + esc(j.from) + ' – ' + esc(j.to) + ': ' + m(j.overheadPool || 0) + ', allocated across ' + (Math.round((j.totalRegularHours || 0) * 10) / 10) + ' non-overtime direct labor hour' + ((Math.round((j.totalRegularHours || 0) * 10) / 10) === 1 ? '' : 's') + '.' + ((j.notes && j.notes.length) ? ' ' + j.notes.map(esc).join(' ') : '') + '</div>' +
+      '<div style="font-size:11px;color:var(--muted);margin-top:8px;">Reg. hours = each job’s share of non-overtime (≤40/week per employee) direct labor hours from QuickBooks time activity; shop/admin time with no job counts toward that employee’s 40-hour threshold but is never allocated to a job. Alloc. overhead = overhead pool × (job’s reg. hours ÷ total reg. hours). Real cost = direct cost + allocated overhead.</div>';
+    function recalcAll() {
+      var tot = { income: 0, directCost: 0, hours: 0, overhead: 0, real: 0 };
+      var q = String(_rcSearch || '').trim().toLowerCase();
+      var anyVisible = false;
+      out.querySelectorAll('[data-rcrow]').forEach(function (row) {
+        var name = row.getAttribute('data-job');
+        var hit = !q || String(name || '').toLowerCase().indexOf(q) >= 0;
+        row.hidden = !hit;
+        if (!row.hidden) { anyVisible = true; } else { return; }
+        var job = jobs[+row.getAttribute('data-rcrow')];
+        tot.income += job.income || 0; tot.directCost += job.directCost || 0; tot.hours += job.regularHours || 0;
+        tot.overhead += job.allocatedOverhead || 0; tot.real += (job.directCost || 0) + (job.allocatedOverhead || 0);
+      });
+      var noneRow = out.querySelector('.rc-noresults');
+      if (!anyVisible && !noneRow) {
+        var tb = out.querySelector('tbody');
+        if (tb) tb.insertAdjacentHTML('beforeend', '<tr class="rc-noresults"><td colspan="6" style="padding:14px 5px;color:var(--muted);">No job matches “' + esc(_rcSearch) + '”.</td></tr>');
+      } else if (anyVisible && noneRow) { noneRow.remove(); }
+      var tf = document.getElementById('rc_totals');
+      if (tf) tf.innerHTML = '<tr style="font-weight:700;border-top:2px solid #c5a55a;"><td style="padding:5px;">Total</td><td class="num" style="text-align:right;padding:5px;">' + m(tot.income) + '</td><td class="num" style="text-align:right;padding:5px;">' + m(tot.directCost) + '</td><td class="num" style="text-align:right;padding:5px;">' + (Math.round(tot.hours * 10) / 10) + '</td><td class="num" style="text-align:right;padding:5px;">' + m(tot.overhead) + '</td><td class="num" style="text-align:right;padding:5px;">' + m(tot.real) + '</td></tr>';
+    }
+    var searchEl = document.getElementById('rc_search');
+    if (searchEl) searchEl.oninput = function () { _rcSearch = searchEl.value; recalcAll(); };
     recalcAll();
   }
 
