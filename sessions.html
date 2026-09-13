@@ -99,14 +99,18 @@
   .modal-bg.open { display:flex; }
   .modal {
     background:#fff; border-radius:14px; padding:22px; max-width:540px; width:100%;
-    max-height:90vh; overflow-y:auto;
+    max-height:90vh; overflow-y:auto; overflow-x:hidden; box-sizing:border-box;
   }
   .modal h3 { font-family:'Source Serif 4', Georgia, serif; font-size:18px; margin:0 0 14px; }
-  .modal .form-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
-  .modal label { display:flex; flex-direction:column; gap:4px; font-size:12px; font-weight:600; color:var(--muted); }
+  /* minmax(0,1fr), not 1fr: a bare 1fr track will not shrink below its item's min-content
+     width, and a native datetime-local input's min-content is wide enough (varies by
+     browser/locale) to push the grid itself wider than the modal — the horizontal scrollbar
+     this produced. minmax(0,1fr) lets the track (and the input inside it) shrink to fit. */
+  .modal .form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+  .modal label { display:flex; flex-direction:column; gap:4px; font-size:12px; font-weight:600; color:var(--muted); min-width:0; }
   .modal input, .modal select, .modal textarea {
     border:1px solid var(--chrome-mute); border-radius:8px; padding:9px 11px; font:inherit; font-size:14px;
-    min-height:38px; color:var(--ink); background:#fff;
+    min-height:38px; color:var(--ink); background:#fff; width:100%; min-width:0; box-sizing:border-box;
   }
   .modal textarea { min-height:60px; resize:vertical; }
   .modal .full { grid-column:1 / -1; }

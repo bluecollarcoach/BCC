@@ -3026,20 +3026,30 @@
         // shared top-left corner, on purpose: the toggle button lives there and must stay
         // clickable, and the topbar has nothing left to show in that corner anyway once
         // its own logo is hidden and its content is padded clear of it (below).
+        // overflow-x stays hidden (labels must not spill out sideways during the width
+        // transition); overflow-y is set per-state just below — collapsed content always
+        // fits (icons only), but the expanded, unfiltered, full-groups list can be taller
+        // than the viewport, and this box is position:fixed so the page's own scroll can
+        // never reach it. Without its own vertical scroll, anything past the fold (e.g. a
+        // "Training" or later group) was simply unreachable.
         '.bcc-mobile-menu{display:block;transform:none;left:0;right:auto;top:0;width:48px;overflow:hidden;box-shadow:1px 0 0 #e6e5e1,10px 0 26px rgba(15,23,42,0.05);transition:width 0.16s ease;}' +
-        '.bcc-mobile-menu.bcc-mm-expanded{width:250px;box-shadow:1px 0 0 #e6e5e1,18px 0 36px rgba(15,23,42,0.14);}' +
+        '.bcc-mobile-menu.bcc-mm-expanded{width:250px;overflow-y:auto;box-shadow:1px 0 0 #e6e5e1,18px 0 36px rgba(15,23,42,0.14);}' +
         '.bcc-mobile-menu .bcc-mm-user{display:none;}' +
         '.bcc-mobile-menu .bcc-mm-close{display:none;}' +
-        '.bcc-mm-toggle{display:flex;align-items:center;width:100%;height:52px;background:none;border:none;border-bottom:1px solid #f0ede3;cursor:pointer;padding:0 10px;flex-shrink:0;gap:10px;}' +
-        '.bcc-mm-toggle:hover{background:#faf4e8;}' +
+        '.bcc-mm-toggle{display:flex;align-items:center;width:100%;height:52px;border-bottom:1px solid #f0ede3;padding:0 10px;flex-shrink:0;gap:8px;position:sticky;top:0;background:#fff;z-index:1;}' +
         '.bcc-mobile-menu:not(.bcc-mm-expanded) .bcc-mm-toggle{justify-content:center;padding:0;}' +
+        '.bcc-mm-logo{display:flex;align-items:center;flex-shrink:0;border-radius:50%;}' +
+        '.bcc-mm-logo:hover, .bcc-mm-logo:focus-visible{outline:2px solid #e8dcc0;outline-offset:2px;}' +
         '.bcc-mm-toggle img{width:28px;height:28px;border-radius:50%;display:block;flex-shrink:0;}' +
         // Only shown when expanded — matches the topbar's own wordmark (Source Serif 4 is
         // already loaded by every page for that reason) so it reads as the same brand
         // mark, just relocated onto the rail.
-        '.bcc-mm-brand{display:none;font-family:"Source Serif 4",Georgia,serif;font-size:15px;font-weight:600;color:#1a1a1a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+        '.bcc-mm-brand{display:none;font-family:"Source Serif 4",Georgia,serif;font-size:15px;font-weight:600;color:#1a1a1a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0;}' +
         '.bcc-mm-brand em{color:#a8884a;font-style:normal;}' +
         '.bcc-mm-expanded .bcc-mm-brand{display:block;}' +
+        '.bcc-mm-collapse{display:none;}' +
+        '.bcc-mm-expanded .bcc-mm-collapse{display:flex;align-items:center;justify-content:center;width:24px;height:24px;flex-shrink:0;background:none;border:none;border-radius:6px;color:#8a877e;cursor:pointer;font-size:18px;line-height:1;}' +
+        '.bcc-mm-collapse:hover{background:#faf4e8;color:#a8884a;}' +
         '.bcc-mobile-menu:not(.bcc-mm-expanded) .bcc-mm-grouplabel{display:none;}' +
         '.bcc-mobile-menu:not(.bcc-mm-expanded) .bcc-mm-group{padding:0;border-bottom:none;}' +
         '.bcc-mobile-menu:not(.bcc-mm-expanded) a.bcc-mm-link{justify-content:center;padding:8px 0;gap:0;height:36px;box-sizing:border-box;}' +
@@ -3215,12 +3225,19 @@
             ? '<span style="display:block;font-size:11px;color:rgba(255,255,255,0.55);font-weight:500;margin-top:2px;">' + escapeHtml(emailRaw) + '</span>'
             : '')
         : '<strong>Not signed in</strong>';
-      // Expand/collapse toggle — desktop/tablet only (CSS-hidden below 701px, where the
-      // drawer is the full mobile overlay instead and this button would have nothing
-      // sensible to do). The BCC emblem doubles as the control, same as it doubles as
-      // "home" in the topbar everywhere else. Sits ahead of the user header so it is the
-      // first thing in the rail whichever state it's in.
-      var html = '<button class="bcc-mm-toggle" aria-label="Expand menu" aria-expanded="false"><img src="/bcc-logo.png" alt="" /><span class="bcc-mm-brand">Blue Collar <em>Coach</em></span></button>' +
+      // Header row — desktop/tablet only (CSS-hidden below 701px, where the drawer is the
+      // full mobile overlay instead and this row would have nothing sensible to do). Sits
+      // ahead of the user header so it is the first thing in the rail whichever state it's
+      // in. The emblem is a plain "home" link, same as every other logo in the app — it is
+      // NOT the expand/collapse control (that used to double up on the same click, which
+      // meant expanding the rail cost you the one click that gets you home from it). Expand
+      // is the "⋯" button below (bcc-mm-more); collapse is bcc-mm-collapse, shown only once
+      // expanded, right of the brand text.
+      var html = '<div class="bcc-mm-toggle">' +
+                   '<a class="bcc-mm-logo" href="/index.html" aria-label="Blue Collar Coach — home"><img src="/bcc-logo.png" alt="" /></a>' +
+                   '<span class="bcc-mm-brand">Blue Collar <em>Coach</em></span>' +
+                   '<button type="button" class="bcc-mm-collapse" aria-label="Minimize menu">&#8249;</button>' +
+                 '</div>' +
                  '<div class="bcc-mm-user"><div>' + whoLine + '</div>' +
                  '<button class="bcc-mm-close" aria-label="Close menu">&times;</button></div>';
 
@@ -3272,17 +3289,16 @@
       drawer.innerHTML = html;
       document.body.appendChild(drawer);
 
-      // ---- Desktop/tablet expand/collapse (no-op on mobile — the toggle button is
+      // ---- Desktop/tablet expand/collapse (no-op on mobile — these controls are
       // CSS-hidden there, so this only ever runs from a click that could not have
       // happened on a phone). Remembered per-browser so it does not reset every page
       // load; defaults to collapsed (icons only) — the smaller, steadier footprint —
       // rather than defaulting open and asking every page to make room for it.
+      // The logo (bcc-mm-logo) is a plain link, not part of this — it always navigates
+      // home regardless of expand state, same as every other logo in the app.
       var NAV_EXPANDED_KEY = 'bcc-nav-expanded';
-      var toggleBtn = drawer.querySelector('.bcc-mm-toggle');
       function applyExpanded(expanded) {
         drawer.classList.toggle('bcc-mm-expanded', expanded);
-        toggleBtn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-        toggleBtn.setAttribute('aria-label', expanded ? 'Minimize menu' : 'Expand menu');
         // The wordmark lives in exactly one place at a time — the topbar's own copy
         // (image already CSS-hidden on desktop/tablet) when the rail is collapsed, the
         // rail's own copy when it's expanded. Never both, never neither.
@@ -3295,14 +3311,15 @@
         applyExpanded(next);
         try { localStorage.setItem(NAV_EXPANDED_KEY, next ? '1' : '0'); } catch (err) {}
       }
-      toggleBtn.addEventListener('click', function (e) {
-        e.stopPropagation();
-        setExpanded(!drawer.classList.contains('bcc-mm-expanded'));
-      });
       var moreBtn = drawer.querySelector('.bcc-mm-more');
       if (moreBtn) moreBtn.addEventListener('click', function (e) {
         e.stopPropagation();
         setExpanded(true);
+      });
+      var collapseBtn = drawer.querySelector('.bcc-mm-collapse');
+      if (collapseBtn) collapseBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        setExpanded(false);
       });
 
       function closeMenu() {
