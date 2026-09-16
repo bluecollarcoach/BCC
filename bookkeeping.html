@@ -3977,7 +3977,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             return '<option value="' + esc(t.id) + '"' + sel + '>' + esc(t.name) + '</option>';
           }).join('');
           extraRow =
-            '<label>' + (entity === 'bill' ? 'PO / Bill no.' : 'PO / Ref no.') + '<input id="tx_docnum" value="' + esc(pre.DocNumber || '') + '" placeholder="optional" /></label>' +
+            '<label>' + (entity === 'bill' ? 'PO / Bill no.' : 'PO / Ref no.') + '<input id="tx_docnum" value="' + esc(pre.DocNumber || (seed && seed.docNumber) || '') + '" placeholder="optional" /></label>' +
             '<label>Terms<select id="tx_terms" data-orig="' + esc((pre.SalesTermRef && pre.SalesTermRef.value) || '') + '">' + termOpts + '</select></label>';
         }
         var jobLinesHaveMixedJobs = false, jobLinesHaveMixedBillable = false;
@@ -4662,7 +4662,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             if (accountId && !(refs.accounts || []).some(function (a) { return String(a.id) === String(accountId); })) accountId = '';
             if (!accountId) { var exp = (refs.accounts || []).filter(isExpenseAcct); if (exp.length) accountId = exp[0].id; }
             var lines = receiptLines(d, accountId);
-            var seedBase = { date: d.date || '', lines: lines, preview: dataUrl, previewType: previewType, file: file };
+            var seedBase = { date: d.date || '', docNumber: d.docNumber || '', lines: lines, preview: dataUrl, previewType: previewType, file: file };
             var tot = (d.total != null ? (' · $' + Number(d.total).toLocaleString()) : '');
             // A "receipt" is paid at the point of sale (cash/card) → post as a Purchase
             // (expense, no A/P). An "invoice" is billed with terms → post as a Bill (A/P).
@@ -12078,6 +12078,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         fresh.recon[id] = fresh.recon[id] || {};
         if (String(fresh.recon[id].statementBalance == null ? '' : fresh.recon[id].statementBalance) !== typed) { fresh.recon[id].statementBalance = typed; mergedBack = true; }
       });
+      pane.querySelectorAll('[data-stmtdate]').forEach(function (inp) {
+        var id = inp.getAttribute('data-stmtdate');
+        var typed = String(inp.value == null ? '' : inp.value);
+        if (!typed.trim()) return;
+        fresh.recon = fresh.recon || {};
+        fresh.recon[id] = fresh.recon[id] || {};
+        if (String(fresh.recon[id].statementDate == null ? '' : fresh.recon[id].statementDate) !== typed) { fresh.recon[id].statementDate = typed; mergedBack = true; }
+      });
     }
     // Never rebuild the table under someone's cursor — a statement balance being typed lives
     // only in that input until it blurs.
@@ -12500,12 +12508,22 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   function reconPanel(accts) {
     if (!accts.length) return '<span style="color:var(--muted);">no accounts of this type.</span>';
-    return '<div style="font-size:11px;color:var(--muted);margin-bottom:3px;">Book balance is as of month-end — enter each statement’s ending balance to confirm it ties out.</div>' +
-      '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;min-width:420px;"><thead><tr style="color:var(--muted);"><th style="text-align:left;padding:2px 4px;">Account</th><th style="text-align:right;padding:2px 4px;">Book</th><th style="text-align:right;padding:2px 4px;">Statement</th><th style="text-align:right;padding:2px 4px;">Diff</th></tr></thead><tbody>' +
+    // Renee's feedback: every card ends on its own statement date, so it's easy to miss one —
+    // a per-account "statement ending" date sits right next to its own checkbox and balance,
+    // as a quick reference, rather than one shared note for the whole reconcile-bank/cc step.
+    return '<div style="font-size:11px;color:var(--muted);margin-bottom:3px;">Book balance is as of month-end — enter each statement’s ending balance and date, then check it off once it ties out.</div>' +
+      '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;min-width:560px;"><thead><tr style="color:var(--muted);"><th style="text-align:center;padding:2px 4px;">Done</th><th style="text-align:left;padding:2px 4px;">Account</th><th style="text-align:right;padding:2px 4px;">Book</th><th style="text-align:right;padding:2px 4px;">Statement</th><th style="text-align:center;padding:2px 4px;">Statement ending</th><th style="text-align:right;padding:2px 4px;">Diff</th></tr></thead><tbody>' +
       accts.map(function (a) {
-        var stmt = (_close.recon[a.id] || {}).statementBalance || '';
-        return '<tr data-recon="' + esc(a.id) + '" data-book="' + a.bookBalance + '"><td style="padding:3px 4px;">' + esc(a.name) + '</td><td style="text-align:right;padding:3px 4px;font-variant-numeric:tabular-nums;">' + mrMoney(a.bookBalance) + '</td>' +
+        var r = _close.recon[a.id] || {};
+        var stmt = r.statementBalance || '';
+        var stmtDate = r.statementDate || '';
+        var done = !!r.done;
+        return '<tr data-recon="' + esc(a.id) + '" data-book="' + a.bookBalance + '">' +
+          '<td style="text-align:center;padding:3px 4px;"><input type="checkbox" data-rdone="' + esc(a.id) + '"' + (done ? ' checked' : '') + ' style="width:16px;height:16px;" /></td>' +
+          '<td style="padding:3px 4px;' + (done ? 'text-decoration:line-through;color:var(--muted);' : '') + '">' + esc(a.name) + '</td>' +
+          '<td style="text-align:right;padding:3px 4px;font-variant-numeric:tabular-nums;">' + mrMoney(a.bookBalance) + '</td>' +
           '<td style="text-align:right;padding:3px 4px;"><input data-stmt="' + esc(a.id) + '" inputmode="decimal" value="' + esc(stmt) + '" placeholder="0.00" style="width:96px;text-align:right;border:1px solid var(--chrome-mute);border-radius:6px;padding:4px 6px;" /></td>' +
+          '<td style="text-align:center;padding:3px 4px;"><input type="date" data-stmtdate="' + esc(a.id) + '" value="' + esc(stmtDate) + '" style="border:1px solid var(--chrome-mute);border-radius:6px;padding:4px 6px;" /></td>' +
           '<td class="recon-diff" style="text-align:right;padding:3px 4px;font-variant-numeric:tabular-nums;"></td></tr>';
       }).join('') + '</tbody></table></div>';
   }
@@ -12514,6 +12532,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     host.querySelectorAll('[data-recon]').forEach(function (row) { updateReconRow(row); });
     host.querySelectorAll('[data-stmt]').forEach(function (inp) {
       inp.oninput = function () { var id = inp.getAttribute('data-stmt'), v = inp.value; closeApply(function (d) { d.recon[id] = d.recon[id] || {}; d.recon[id].statementBalance = v; }); var row = host.querySelector('[data-recon="' + id + '"]'); if (row) updateReconRow(row); };
+    });
+    host.querySelectorAll('[data-stmtdate]').forEach(function (inp) {
+      inp.oninput = function () { var id = inp.getAttribute('data-stmtdate'), v = inp.value; closeApply(function (d) { d.recon[id] = d.recon[id] || {}; d.recon[id].statementDate = v; }); };
+    });
+    // Full renderClose(), same as the step checkboxes (data-cstep) elsewhere on this tab —
+    // repaints the line-through on the account name and stays consistent with that existing
+    // convention rather than inventing a second, narrower update path just for this row.
+    host.querySelectorAll('[data-rdone]').forEach(function (chk) {
+      chk.onchange = function () { var id = chk.getAttribute('data-rdone'), v = chk.checked; closeApply(function (d) { d.recon[id] = d.recon[id] || {}; d.recon[id].done = v; }); renderClose(); };
     });
   }
   function updateReconRow(row) {

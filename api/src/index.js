@@ -9537,6 +9537,7 @@ app.http('ai-extract-receipt', {
             docType: { type: 'string', enum: ['receipt', 'invoice', 'other'] },
             vendorName: { type: 'string', description: 'Merchant / vendor / supplier name' },
             date: { type: 'string', description: 'Transaction date as YYYY-MM-DD' },
+            docNumber: { type: 'string', description: 'The invoice number, bill number, or PO number printed on the document (e.g. "Invoice #", "Bill No.", "PO #"). Omit if the document has none printed on it — never invent one.' },
             currency: { type: 'string' },
             subtotal: { type: 'number' },
             tax: { type: 'number' },
@@ -9552,7 +9553,7 @@ app.http('ai-extract-receipt', {
       const model = process.env.AI_MODEL || 'claude-sonnet-4-6';
       const r = await aiFetch(JSON.stringify({
           model: model, max_tokens: 4096, tools: [tool], tool_choice: { type: 'tool', name: 'record_document' },
-          messages: [{ role: 'user', content: [srcBlock, { type: 'text', text: 'Extract the vendor, date (YYYY-MM-DD), subtotal, tax, total, currency, and individual line items from this document. Call record_document with the data.' + matchHint }] }]
+          messages: [{ role: 'user', content: [srcBlock, { type: 'text', text: 'Extract the vendor, date (YYYY-MM-DD), the invoice/bill/PO number if one is printed on the document, subtotal, tax, total, currency, and individual line items from this document. Call record_document with the data.' + matchHint }] }]
         }), key);
       if (!r.ok) { const t = (await r.text().catch(() => '')).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'AI error ' + r.status, detail: t } }; }
       const j = await r.json();
