@@ -9059,13 +9059,16 @@ app.http('qbo-refs', {
         ctx.queryAll('SELECT Id, Name, UnitPrice FROM Item WHERE Active = true'),
         ctx.queryAll('SELECT Id, Name, AccountType, Classification FROM Account WHERE Active = true'),
         // Payment terms (Net 30 etc.) so a bill can carry its terms like it does in QBO.
-        ctx.queryAll('SELECT Id, Name FROM Term WHERE Active = true').catch(() => [])
+        // DueDays covers STANDARD terms ("Net 30"); DayOfMonthDue/DueNextMonthDays cover
+        // DATE_DRIVEN terms ("due the 10th of next month") — carried through so the client
+        // can fill in a due date from the term picked, the same way QBO itself would.
+        ctx.queryAll('SELECT Id, Name, DueDays, DayOfMonthDue, DueNextMonthDays FROM Term WHERE Active = true').catch(() => [])
       ]);
       const customers = customersR.map(x => ({ id: x.Id, name: x.DisplayName }));
       const vendors   = vendorsR.map(x => ({ id: x.Id, name: x.DisplayName }));
       const items     = itemsR.map(x => ({ id: x.Id, name: x.Name, price: x.UnitPrice }));
       const accounts  = accountsR.map(x => ({ id: x.Id, name: x.Name, type: x.AccountType, classification: x.Classification }));
-      const terms     = termsR.map(x => ({ id: x.Id, name: x.Name }));
+      const terms     = termsR.map(x => ({ id: x.Id, name: x.Name, dueDays: x.DueDays, dayOfMonthDue: x.DayOfMonthDue, dueNextMonthDays: x.DueNextMonthDays }));
       return { jsonBody: { ok: true, customers, vendors, items, accounts, terms } };
     } catch (e) { context.error('qbo-refs', e); return { status: 502, jsonBody: { ok: false, error: String(e.message || e) } }; }
   })

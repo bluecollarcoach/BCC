@@ -3844,6 +3844,29 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // the write was in flight, and that draft's #qboWriteForm must NOT be wiped out
   // from under them by the earlier write's late-arriving success.
   var _txnFormGen = 0;
+  /* The due date a payment term implies for a transaction dated baseDateStr ('YYYY-MM-DD').
+     term: {dueDays, dayOfMonthDue, dueNextMonthDays} as returned by /refs (straight from
+     QBO's own Term fields). STANDARD terms ("Net 30", "Due on receipt") carry dueDays;
+     DATE_DRIVEN terms ("due the 10th of next month") carry dayOfMonthDue/dueNextMonthDays
+     instead — QBO's own rule: dueNextMonthDays is a per-month CUTOFF DAY, not an offset —
+     a txn dated on/after that cutoff is due the FOLLOWING month's dayOfMonthDue, not this
+     month's. Returns null (leave the field alone) for a term shape this can't compute,
+     rather than guessing at a due date on a live invoice/bill. */
+  function txDueDateFromTerm(term, baseDateStr) {
+    var parts = String(baseDateStr || '').split('-').map(Number);
+    if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) return null;
+    var base = new Date(parts[0], parts[1] - 1, parts[2]);
+    if (term.dueDays != null && term.dueDays !== '') {
+      base.setDate(base.getDate() + Number(term.dueDays));
+    } else if (term.dayOfMonthDue != null && term.dayOfMonthDue !== '') {
+      var cutoff = (term.dueNextMonthDays != null && term.dueNextMonthDays !== '') ? Number(term.dueNextMonthDays) : null;
+      var targetMonth = base.getMonth() + ((cutoff != null && base.getDate() >= cutoff) ? 1 : 0);
+      base = new Date(base.getFullYear(), targetMonth, Number(term.dayOfMonthDue));
+    } else {
+      return null;
+    }
+    return base.getFullYear() + '-' + String(base.getMonth() + 1).padStart(2, '0') + '-' + String(base.getDate()).padStart(2, '0');
+  }
   function loadQboRefs(cb) {
     if (_qboRefs && _qboRefsRealm === currentRealm) { cb(_qboRefs); return; }
     // Capture the realm this fetch is FOR, not whatever currentRealm is by the time it
@@ -4110,6 +4133,23 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         var txFile = document.getElementById('tx_file'); var fnameEl = document.getElementById('tx_fname');
         if (_txnFile && fnameEl) fnameEl.textContent = _txnFile.name + ' (will attach)';
         if (txFile) { txFile.addEventListener('click', function () { this.value = ''; }); txFile.addEventListener('change', function () { var f = txFile.files && txFile.files[0]; if (f) { if (f.size > 25 * 1024 * 1024) { (window.bccNotify || alert)('File too large (max 25 MB).', 'warn'); txFile.value = ''; return; } _txnFile = f; if (fnameEl) fnameEl.textContent = f.name + ' (will attach)'; } }); }
+        // Auto-fill the due date from the picked payment term (Lana's feedback) — e.g.
+        // choosing Net 30 fills in a due date 30 days after the transaction date. Never
+        // overwrites a due date the bookkeeper has typed themselves, same "don't clobber a
+        // typed value" rule tx_party/tx_job already follow.
+        (function () {
+          var termsSel = document.getElementById('tx_terms'), dueEl = document.getElementById('tx_due'), dateEl = document.getElementById('tx_date');
+          if (!termsSel || !dueEl) return;
+          var dueUserEdited = false;
+          dueEl.addEventListener('input', function () { dueUserEdited = true; });
+          termsSel.addEventListener('change', function () {
+            if (dueUserEdited) return;
+            var t = (refs.terms || []).find(function (x) { return String(x.id) === String(termsSel.value); });
+            if (!t) return;
+            var d = txDueDateFromTerm(t, dateEl ? dateEl.value : '');
+            if (d) dueEl.value = d;
+          });
+        })();
         // tx_party/tx_job are searchable text inputs (the datalist only offers suggestions,
         // it doesn't force a match). If the field is untouched since it was rendered, keep
         // its ORIGINAL id even if that record is now inactive and so missing from the active

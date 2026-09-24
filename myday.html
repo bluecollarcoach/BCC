@@ -116,7 +116,18 @@
   .mt-move button:not(:disabled):hover { border-color:var(--gold); color:var(--gold-deep); }
   .mt-del { border:none; background:none; color:var(--muted); cursor:pointer; font-size:18px; line-height:1; width:26px; flex-shrink:0; }
   .mt-del:hover { color:var(--burgundy); }
+  .mt-edit-btn { border:none; background:none; color:var(--muted); cursor:pointer; font-size:13px; line-height:1; width:24px; flex-shrink:0; }
+  .mt-edit-btn:hover { color:var(--gold-deep); }
+  .mt-edit-input { flex:1; min-width:0; border:1px solid var(--gold); border-radius:8px; padding:6px 9px; font:inherit; font-size:14px; }
+  .mt-edit-save, .mt-edit-cancel { border:none; border-radius:6px; cursor:pointer; font:inherit; font-size:12px; font-weight:700; padding:6px 10px; flex-shrink:0; }
+  .mt-edit-save { background:var(--gold, #c5a55a); color:#fff; }
+  .mt-edit-save:hover { background:var(--gold-deep, #a8884a); }
+  .mt-edit-cancel { background:none; color:var(--muted); }
+  .mt-edit-cancel:hover { color:var(--ink); }
   .mt-empty { color:var(--muted); font-size:13px; padding:8px 2px; }
+  .mt-donetoggle { display:flex; align-items:center; gap:8px; width:100%; text-align:left; background:none; border:0; border-top:1px solid var(--chrome-mute); margin:10px 0 0; padding:10px 2px 6px; font:inherit; font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; cursor:pointer; }
+  .mt-donetoggle .mt-caret { display:inline-block; transition:transform .15s; }
+  .mt-donetoggle .mt-doneshow { flex:1; text-align:right; font-weight:600; text-transform:none; letter-spacing:0; font-size:11.5px; color:var(--gold-deep); }
   /* Add button uses .btn.btn-primary (from Bookkeeping); style it to match My Day. */
   .mt-add .btn { appearance:none; -webkit-appearance:none; min-height:38px; padding:0 16px; border-radius:8px; border:0; cursor:pointer; font:inherit; font-weight:700; font-size:13px; line-height:1; background:var(--gold, #c5a55a); color:#fff; transition:background 0.15s; }
   .mt-add .btn:hover { background:var(--gold-deep, #a8884a); }
@@ -738,6 +749,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      free text from the client — the same predicate sessions.html uses. */
   function isCanceledSession(s) { return /^cancell?ed$/i.test(String((s && s.status) || '').trim()); }
   var _myTasksOpen = true;
+  // Closed by default (Karla's feedback: a long done list pushed the bottom items out of
+  // reach) — the count is always on the heading, so a task ticked by mistake is still
+  // reachable and untickable, one click away. Not per-client like the bookkeeping.html
+  // Tasks tab version (this list has no client), just one flag for the whole panel.
+  var _myTasksDoneOpen = false;
+  // The one task (by id) currently showing an inline edit box instead of its plain text,
+  // or null. Only one at a time — opening a second edit while one is already open just
+  // moves it, same as the bookkeeping.html task editor's _taskEdit.
+  var _myTasksEditId = null;
   function myTasksKey() { return 'bcc-mytasks-' + sani(meUpn()); }
   function loadMyTasks() {
     try { var d = JSON.parse(localStorage.getItem(myTasksKey()) || 'null'); if (d && Array.isArray(d.items)) return d; } catch (e) {}
@@ -774,41 +794,96 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // Guarded on identity, like addFn: with no upn the key is the orphan 'bcc-mytasks-',
     // which the server refuses — a backfill there would be a write that can never land.
     if (needIds.length && meUpn()) { needIds.forEach(function (t) { t.id = uid2(); }); saveMyTasks(d); }
-    var openCount = items.filter(function (t) { return !t.done; }).length;
+    // Position of a task in the CURRENT document, or -1 if it is no longer there (another
+    // device deleted it while this render was on screen) — in which case the operation is
+    // dropped and the card repainted, rather than applied to whatever moved into that slot.
+    var mtIndexOf = function (dd, id) {
+      var list = (dd && dd.items) || [];
+      for (var n = 0; n < list.length; n++) { if (list[n] && String(list[n].id) === String(id)) return n; }
+      return -1;
+    };
+    // Reordering only applies among OPEN tasks — a completed one is an archive entry now,
+    // not something with a "priority order" to set (see the Completed section below, which
+    // has no move buttons at all). Walks past any done tasks so "move up/down" always swaps
+    // with the next OPEN neighbor, not whatever happens to sit next to it in storage.
+    var openNeighborIndex = function (i, dir) {
+      var j = i + dir;
+      while (j >= 0 && j < items.length) { if (!items[j].done) return j; j += dir; }
+      return -1;
+    };
+    var openItems = items.filter(function (t) { return !t.done; });
+    var doneItems = items.filter(function (t) { return t.done; });
+    var openCount = openItems.length;
     // LOCAL today, not UTC. toISOString rolls over at 7pm Central, so every evening the
     // to-dos due TODAY were marked Overdue. ymd() is what renderMyTime already uses.
     var today = ymd(new Date());
-    var rows = items.map(function (t, i) {
-      var overdue = !t.done && t.due && t.due < today;
+    var rowHtml = function (t, reorderable) {
       var tid = esc(t.id || '');
+      // Karla's feedback: let a task's own text be corrected instead of delete-and-retype.
+      // Swaps the plain text for an inline box, same shape as bookkeeping.html's task
+      // editor's edit-in-place, just lighter — this list has only text+due+done to edit.
+      if (_myTasksEditId === t.id) {
+        return '<div class="mt-row mt-row-editing">' +
+          '<input type="checkbox" disabled aria-hidden="true" />' +
+          '<input class="mt-edit-input" data-mt-editinput="' + tid + '" value="' + esc(t.text) + '" maxlength="300" />' +
+          '<button class="mt-edit-save" data-mt-save="' + tid + '" type="button">Save</button>' +
+          '<button class="mt-edit-cancel" data-mt-canceledit="' + tid + '" type="button">Cancel</button></div>';
+      }
+      var overdue = !t.done && t.due && t.due < today;
+      var i = mtIndexOf(d, t.id);
+      var moveHtml = reorderable
+        ? ('<span class="mt-move"><button data-mt-up="' + tid + '" type="button" aria-label="Move up"' + (openNeighborIndex(i, -1) < 0 ? ' disabled' : '') + '>▲</button>' +
+           '<button data-mt-down="' + tid + '" type="button" aria-label="Move down"' + (openNeighborIndex(i, 1) < 0 ? ' disabled' : '') + '>▼</button></span>')
+        : '';
       return '<div class="mt-row' + (t.done ? ' done' : '') + '">' +
         '<input type="checkbox" data-mt-done="' + tid + '"' + (t.done ? ' checked' : '') + ' aria-label="Mark done" />' +
         '<span class="mt-text">' + esc(t.text) + '</span>' +
         (t.due ? '<span class="mt-due' + (overdue ? ' over' : '') + '">' + (overdue ? 'Overdue · ' : 'Due ') + esc(t.due) + '</span>' : '') +
-        '<span class="mt-move"><button data-mt-up="' + tid + '" type="button" aria-label="Move up"' + (i === 0 ? ' disabled' : '') + '>▲</button>' +
-        '<button data-mt-down="' + tid + '" type="button" aria-label="Move down"' + (i === items.length - 1 ? ' disabled' : '') + '>▼</button></span>' +
+        moveHtml +
+        '<button class="mt-edit-btn" data-mt-edit="' + tid + '" type="button" aria-label="Edit">✏️</button>' +
         '<button class="mt-del" data-mt-del="' + tid + '" type="button" aria-label="Delete">×</button></div>';
-    }).join('');
+    };
+    var openRows = openItems.map(function (t) { return rowHtml(t, true); }).join('');
+    /* Completed, collapsed — same reasoning bookkeeping.html's own Tasks tab already uses for
+       this exact ask: NOT hidden and not paged away (a task ticked by mistake must stay
+       reachable and untickable, so the heading always states the count and one click opens
+       the full list), closed by default. */
+    var doneSection = '';
+    if (doneItems.length) {
+      var doneRows = doneItems.map(function (t) { return rowHtml(t, false); }).join('');
+      doneSection = '<button type="button" id="mt_donetoggle" class="mt-donetoggle" aria-expanded="' + (_myTasksDoneOpen ? 'true' : 'false') + '">' +
+        '<span class="mt-caret" style="transform:rotate(' + (_myTasksDoneOpen ? '90' : '0') + 'deg);">▶</span>' +
+        '<span>Completed (' + doneItems.length + ')</span>' +
+        '<span class="mt-doneshow">' + (_myTasksDoneOpen ? 'Hide' : 'Show') + '</span></button>' +
+        '<div id="mt_donelist"' + (_myTasksDoneOpen ? '' : ' hidden') + '>' + doneRows + '</div>';
+    }
     /* The add box holds text that exists NOWHERE else. Every tick, delete and reorder rebuilds
        this card, so a half-typed to-do was silently binned by any other click. Snapshot before
        the rebuild, restore after — the same carry the CRM detail pane does for the same
        reason. */
     var keepTxt = (document.getElementById('mt_new') || {}).value || '';
     var keepDue = (document.getElementById('mt_due') || {}).value || '';
+    var keepEditTxt = (_myTasksEditId && document.querySelector('[data-mt-editinput]') || {}).value;
     var keepFocus = document.activeElement && document.activeElement.id;
+    var keepFocusEditing = document.activeElement && document.activeElement.hasAttribute && document.activeElement.hasAttribute('data-mt-editinput');
     wrap.innerHTML = '<div class="card mt-card">' +
       '<div class="mt-head"><button class="mt-toggle" id="mt_toggle" type="button" aria-label="Toggle">' + (_myTasksOpen ? '▾' : '▸') + '</button>' +
       '<strong>📌 My tasks</strong><span class="mt-count">' + (openCount ? openCount + ' open' : 'all clear') + '</span>' +
       '<span class="mt-priv">Personal — only you see this</span></div>' +
       '<div id="mt_body"' + (_myTasksOpen ? '' : ' style="display:none;"') + '>' +
         '<div class="mt-add"><input id="mt_new" autocomplete="off" placeholder="Add a personal to-do…" /><input type="date" id="mt_due" title="Due date (optional)" /><button class="btn btn-primary" id="mt_add" type="button">Add</button></div>' +
-        (rows || '<div class="mt-empty">No personal tasks yet. Add one above; use ▲▼ to set your priority order.</div>') +
+        (openRows || '<div class="mt-empty">' + (doneItems.length
+          ? 'All caught up — ' + doneItems.length + ' completed task' + (doneItems.length === 1 ? '' : 's') + ' below.'
+          : 'No personal tasks yet. Add one above; use ▲▼ to set your priority order.') + '</div>') +
+        doneSection +
       '</div></div>';
     var reNew = document.getElementById('mt_new'), reDue = document.getElementById('mt_due');
     if (reNew && keepTxt) reNew.value = keepTxt;
     if (reDue && keepDue) reDue.value = keepDue;
+    if (keepEditTxt != null) { var reEdit = document.querySelector('[data-mt-editinput]'); if (reEdit) reEdit.value = keepEditTxt; }
     if (keepFocus === 'mt_new' && reNew) reNew.focus();
     else if (keepFocus === 'mt_due' && reDue) reDue.focus();
+    else if (keepFocusEditing) { var fe = document.querySelector('[data-mt-editinput]'); if (fe) fe.focus(); }
     document.getElementById('mt_toggle').onclick = function () { _myTasksOpen = !_myTasksOpen; renderMyTasks(); };
     var addFn = function () {
       var inp = document.getElementById('mt_new'); var txt = (inp.value || '').trim(); if (!txt) return;
@@ -836,18 +911,28 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     };
     document.getElementById('mt_add').onclick = addFn;
     var ni = document.getElementById('mt_new'); if (ni) ni.addEventListener('keydown', function (e) { if (e.key === 'Enter') addFn(); });
-    // Position of a task in the CURRENT document, or -1 if it is no longer there (another
-    // device deleted it while this render was on screen) — in which case the operation is
-    // dropped and the card repainted, rather than applied to whatever moved into that slot.
-    var mtIndexOf = function (dd, id) {
-      var list = (dd && dd.items) || [];
-      for (var n = 0; n < list.length; n++) { if (list[n] && String(list[n].id) === String(id)) return n; }
-      return -1;
-    };
     var swap = function (id, dir) {
+      // Re-derive the OPEN neighbor against the just-reloaded document, not the outer
+      // openNeighborIndex/items closure captured at the last render — those can be a
+      // device-sync behind by the time this click lands, and swapping against a stale
+      // index could pick the wrong neighbor (or silently do nothing) even though the
+      // button the bookkeeper actually clicked was enabled for a reason.
       var dd = loadMyTasks(); var i = mtIndexOf(dd, id); if (i < 0) { renderMyTasks(); return; }
-      var j = i + dir; if (j < 0 || j >= dd.items.length) return;
+      var j = i + dir;
+      while (j >= 0 && j < dd.items.length && dd.items[j].done) j += dir;
+      if (j < 0 || j >= dd.items.length) return;
       var t = dd.items[i]; dd.items[i] = dd.items[j]; dd.items[j] = t; saveMyTasks(dd); renderMyTasks();   // repaints from storage on a refusal
+    };
+    var startEdit = function (id) { _myTasksEditId = id; renderMyTasks(); var inp = document.querySelector('[data-mt-editinput]'); if (inp) { inp.focus(); inp.select(); } };
+    var cancelEdit = function () { _myTasksEditId = null; renderMyTasks(); };
+    var saveEdit = function (id) {
+      var inp = document.querySelector('[data-mt-editinput="' + id + '"]'); if (!inp) return;
+      var txt = (inp.value || '').trim();
+      if (!txt) { cancelEdit(); return; }   // blanked -> just cancel, never delete a task via an empty save
+      var dd = loadMyTasks(); var i = mtIndexOf(dd, id); if (i < 0) { cancelEdit(); return; }
+      dd.items[i].text = txt.slice(0, 300);
+      if (!saveMyTasks(dd)) { renderMyTasks(); return; }
+      _myTasksEditId = null; renderMyTasks();
     };
     // renderMyTasks() repaints from the STORED document either way, so a refused write puts
     // the screen back to what is really saved rather than leaving the change showing.
@@ -855,14 +940,37 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     wrap.querySelectorAll('[data-mt-del]').forEach(function (b) { b.onclick = function () { var dd = loadMyTasks(); var i = mtIndexOf(dd, b.getAttribute('data-mt-del')); if (i < 0) { renderMyTasks(); return; } dd.items.splice(i, 1); saveMyTasks(dd); renderMyTasks(); }; });
     wrap.querySelectorAll('[data-mt-up]').forEach(function (b) { b.onclick = function () { swap(b.getAttribute('data-mt-up'), -1); }; });
     wrap.querySelectorAll('[data-mt-down]').forEach(function (b) { b.onclick = function () { swap(b.getAttribute('data-mt-down'), 1); }; });
-    /* Track typing so a live sync cannot wipe a half-written to-do. Checking activeElement
-       alone was not enough: type a task, click away to check something, and the 8s poll
-       repaints the card and throws the text away. Reset AFTER wiring, because this repaint
-       is what just made the boxes authoritative again. */
+    wrap.querySelectorAll('[data-mt-edit]').forEach(function (b) { b.onclick = function () { startEdit(b.getAttribute('data-mt-edit')); }; });
+    wrap.querySelectorAll('[data-mt-canceledit]').forEach(function (b) { b.onclick = cancelEdit; });
+    wrap.querySelectorAll('[data-mt-save]').forEach(function (b) { b.onclick = function () { saveEdit(b.getAttribute('data-mt-save')); }; });
+    wrap.querySelectorAll('[data-mt-editinput]').forEach(function (inp) {
+      inp.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); saveEdit(inp.getAttribute('data-mt-editinput')); }
+        else if (e.key === 'Escape') { e.preventDefault(); cancelEdit(); }
+      });
+    });
+    // Toggled WITHOUT a re-render, same reason bookkeeping.html's own done-toggle avoids
+    // one: a full renderMyTasks() here would blow away a half-typed new to-do or an
+    // in-progress text edit elsewhere on the card.
+    var doneToggle = document.getElementById('mt_donetoggle');
+    if (doneToggle) doneToggle.onclick = function () {
+      var box = document.getElementById('mt_donelist'); if (!box) return;
+      var nowOpen = box.hidden;
+      box.hidden = !nowOpen;
+      _myTasksDoneOpen = nowOpen;
+      doneToggle.setAttribute('aria-expanded', nowOpen ? 'true' : 'false');
+      var caret = doneToggle.querySelector('.mt-caret'); if (caret) caret.style.transform = 'rotate(' + (nowOpen ? '90' : '0') + 'deg)';
+      var lbl = doneToggle.querySelector('.mt-doneshow'); if (lbl) lbl.textContent = nowOpen ? 'Hide' : 'Show';
+    };
+    /* Track typing so a live sync cannot wipe a half-written to-do OR an in-progress text
+       edit. Checking activeElement alone was not enough: type a task, click away to check
+       something, and the 8s poll repaints the card and throws the text away. Reset AFTER
+       wiring, because this repaint is what just made the boxes authoritative again. */
     ['mt_new', 'mt_due'].forEach(function (id) {
       var el = document.getElementById(id);
       if (el) el.addEventListener('input', function () { _mtDirty = true; });
     });
+    wrap.querySelectorAll('[data-mt-editinput]').forEach(function (inp) { inp.addEventListener('input', function () { _mtDirty = true; }); });
     _mtDirty = false;
   }
 
@@ -884,7 +992,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     renderHero(); renderKpis(); renderSessions(); renderClock();
     if (!_editDay) renderMyTime();
     var ae = document.activeElement;
-    if (!_mtDirty && !(ae && (ae.id === 'mt_new' || ae.id === 'mt_due'))) renderMyTasks();
+    var editingTaskText = ae && ae.hasAttribute && ae.hasAttribute('data-mt-editinput');
+    if (!_mtDirty && !(ae && (ae.id === 'mt_new' || ae.id === 'mt_due')) && !editingTaskText) renderMyTasks();
     if (!_logDirty && !(ae && (ae.id === 'logWins' || ae.id === 'logBlockers' || ae.id === 'logTomorrow'))) renderLog();
   }
   window.addEventListener('bcc-data-ready', liveRefresh);
