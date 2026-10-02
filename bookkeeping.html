@@ -8650,12 +8650,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      attachments with it. */
   function emReplyDirty() {
     var b = document.getElementById('em_r_body');
+    var f = document.getElementById('em_f_to');   // a forward's recipient box
     var atts = window._emReplyAttsInProgress || [];
-    return !!((b && b.value.trim()) || atts.length);
+    return !!((b && b.value.trim()) || (f && f.value.trim()) || atts.length);
   }
   function emConfirmDiscardReply() {
     var atts = window._emReplyAttsInProgress || [];
-    return confirm('Discard your unsent reply' + (atts.length ? ' and ' + atts.length + ' attached file' + (atts.length === 1 ? '' : 's') : '') + '?');
+    return confirm('Discard your unsent message' + (atts.length ? ' and ' + atts.length + ' attached file' + (atts.length === 1 ? '' : 's') : '') + '?');
   }
   // force = the reply has just been SENT (or the reader is being replaced by the same
   // message), so there is nothing to protect and asking would be nonsense.
@@ -8921,6 +8922,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     bar.innerHTML =
       '<button class="btn btn-primary" id="em_a_reply" type="button">↩ Reply</button>' +
       '<button class="btn btn-ghost" id="em_a_replyall" type="button">↩ Reply all</button>' +
+      '<button class="btn btn-ghost" id="em_a_forward" type="button">↪ Forward</button>' +
       '<select id="em_a_assign" class="em-mini-sel">' + assignOpts + '</select>' +
       '<button class="btn btn-ghost" id="em_a_tag" type="button">🏷 Tag</button>' +
       '<button class="btn btn-ghost" id="em_a_archive" type="button">' + (mt.archived ? '📂 Unarchive' : '🗄 Archive') + '</button>' +
@@ -8928,6 +8930,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       (mt.tags && mt.tags.length ? '<div style="flex-basis:100%;margin-top:4px;">' + mt.tags.map(function (t) { return '<span class="fl-chip" style="cursor:pointer;" data-untag="' + esc(t) + '" title="Remove tag">' + esc(t) + ' ✕</span>'; }).join(' ') + '</div>' : '');
     document.getElementById('em_a_reply').onclick = function () { openReply(id, false); };
     document.getElementById('em_a_replyall').onclick = function () { openReply(id, true); };
+    document.getElementById('em_a_forward').onclick = function () { openForward(id); };
     document.getElementById('em_a_assign').onchange = function () { emMetaOp(id, 'assign', this.value).then(function () { renderEmailActions(id); }).catch(function () {}); };
     document.getElementById('em_a_tag').onclick = function () { var t = prompt('Add a tag / category:'); if (t && t.trim()) emMetaOp(id, 'tagAdd', t.trim()).then(function () { renderEmailActions(id); }).catch(function () {}); };
     document.getElementById('em_a_archive').onclick = function () { emMetaOp(id, 'archive', !mt.archived).then(function () { renderEmailActions(id); }).catch(function () {}); };
@@ -9018,6 +9021,72 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           }
           (window.bccNotify || alert)('Reply not sent: ' + ((e && e.message) || 'network error') + ' — nothing went out.', 'error', 9000);
         });
+    };
+  }
+
+  /* Forward (Renee's feedback: "we can only reply"). Shares the reply box's ids (em_r_body /
+     em_r_files / _emReplyAttsInProgress) on purpose — the discard-confirm, the Escape/backdrop
+     guard and the signature editor's re-seed all key off those, so a half-written forward is
+     protected exactly like a half-written reply with no second copy of that logic. The
+     original message's own attachments are NOT re-uploaded: Graph copies them server-side,
+     so "Attach files" here only adds extras. */
+  var EM_FWD_EMAIL_RX = /^[^\s@<>(),;:"]+@[^\s@<>(),;:"]+\.[^\s@<>(),;:"]+$/;
+  function openForward(id) {
+    var box = document.getElementById('em_m_reply'); if (!box) return;
+    if (emReplyDirty() && !emConfirmDiscardReply()) return;
+    box.innerHTML = '<div class="em-reply"><div style="font-weight:700;font-size:12.5px;margin-bottom:6px;">Forward</div>' +
+      '<input id="em_f_to" type="text" autocomplete="off" placeholder="To — one or more email addresses, separated by commas" style="width:100%;box-sizing:border-box;border:1px solid var(--chrome-mute);border-radius:8px;padding:9px 10px;font:inherit;font-size:14px;margin-bottom:8px;" />' +
+      '<textarea id="em_r_body" rows="5" placeholder="Add a note (optional) — the original message and its attachments are included below it."></textarea>' +
+      '<div style="margin-top:6px;">' +
+        '<label class="btn btn-ghost" for="em_r_files" style="display:inline-flex;cursor:pointer;font-size:12.5px;">📎 Attach more files</label>' +
+        '<input type="file" id="em_r_files" multiple style="display:none;" />' +
+        '<div id="em_r_file_list" style="margin-top:6px;font-size:12px;color:var(--muted);"></div>' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;align-items:center;margin-top:8px;"><button class="btn btn-primary" id="em_r_send" type="button">Send forward</button><button class="btn btn-ghost" id="em_r_cancel" type="button">Cancel</button><span id="em_r_status" style="font-size:12px;color:var(--muted);"></span></div></div>';
+    document.getElementById('em_r_cancel').onclick = function () { box.innerHTML = ''; window._emReplyAttsInProgress = null; };
+    var ta = document.getElementById('em_r_body'); seedSig(ta);
+    var toEl = document.getElementById('em_f_to'); toEl.focus();
+    var fwdAtts = wireAttachmentPicker('em_r_files', 'em_r_file_list');
+    window._emReplyAttsInProgress = fwdAtts;
+    var fwdFilesBtn = document.querySelector('label[for="em_r_files"]');
+    document.getElementById('em_r_send').onclick = function () {
+      var btn = this, txt = ta.value, st = document.getElementById('em_r_status');
+      var to = Array.from(new Set(String(toEl.value || '').split(/[,;\s]+/).map(function (s) { return s.trim(); }).filter(Boolean)));
+      if (!to.length) { st.textContent = 'Add at least one recipient.'; toEl.focus(); return; }
+      var badAddr = to.filter(function (a) { return !EM_FWD_EMAIL_RX.test(a); })[0];
+      if (badAddr) { st.textContent = '“' + badAddr + '” doesn’t look like an email address.'; toEl.focus(); return; }
+      if (to.length > 20) { st.textContent = 'At most 20 recipients per forward.'; return; }
+      if (emAttTotalBytes(fwdAtts) > EM_ATT_MAX_TOTAL) { st.textContent = 'Attachments are over the ~3 MB limit — remove something first.'; return; }
+      // Same refusal as reply/compose: with the mailbox config unread, the fallback would
+      // forward the client's mail from the bookkeeper's own address.
+      if (mailboxUnknown()) {
+        (window.bccNotify || alert)(_mailboxErr
+          ? 'Couldn’t check which mailbox this should be forwarded from, so nothing was sent — it would have gone out from your own address. Reload the client and try again.'
+          : 'This client’s mailbox settings are still loading, so nothing was sent yet — sending now could go out from your own address. Try again in a moment.', 'error', 11000);
+        return;
+      }
+      btn.disabled = true; st.textContent = 'Sending…';
+      document.getElementById('em_r_files').disabled = true; if (fwdFilesBtn) fwdFilesBtn.style.pointerEvents = 'none';
+      var realmAt = mailboxActive() ? currentRealm : undefined;   // pinned at click time, like reply
+      var html = esc(txt).replace(/\n/g, '<br>');
+      Promise.all(fwdAtts.map(emFileToAttachment)).then(function (attachments) {
+        var payload = { realmId: realmAt, messageId: id, to: to, body: html };
+        if (attachments.length) payload.attachments = attachments;
+        return fetch('/api/integrations/msgraph/forward', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+          .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); });
+      }).then(function (resp) {
+        if (resp && resp.ok === false) throw new Error(resp.error || 'forward failed');
+        if (window.bccNotifySaved) window.bccNotifySaved('Forwarded to ' + to.length + ' recipient' + (to.length === 1 ? '' : 's') + '.');
+        window._emReplyAttsInProgress = null;
+        emCloseModal(true);
+      }).catch(function (e) {
+        if (document.getElementById('em_modal')) {
+          btn.disabled = false; st.textContent = 'Failed: ' + e.message;
+          var fi = document.getElementById('em_r_files'); if (fi) fi.disabled = false;
+          if (fwdFilesBtn) fwdFilesBtn.style.pointerEvents = '';
+        }
+        (window.bccNotify || alert)('Not forwarded: ' + ((e && e.message) || 'network error') + ' — nothing went out.', 'error', 9000);
+      });
     };
   }
 

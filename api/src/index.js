@@ -7689,6 +7689,100 @@ app.http('msgraph-reply', {
 });
 
 /**
+ * POST /api/integrations/msgraph/forward  { realmId, messageId, to[], body, attachments? }
+ * Forwards a message from the client mailbox with its ORIGINAL attachments intact (Graph
+ * copies them), plus an optional note above the quoted original and optional extra files.
+ * Same access gating and draft/attach/send shape as msgraph-reply. Recipients are validated
+ * here — unlike a reply (which can only go back to people already on the thread), a forward
+ * sends a client's mail to ANY address, so a malformed or runaway list is refused up front
+ * rather than left for Graph to reject (or worse, to accept).
+ */
+const FWD_MAX_RECIPIENTS = 20;
+const FWD_EMAIL_RX = /^[^\s@<>(),;:"]+@[^\s@<>(),;:"]+\.[^\s@<>(),;:"]+$/;
+app.http('msgraph-forward', {
+  methods: ['POST'], authLevel: 'anonymous', route: 'integrations/msgraph/forward',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request); if (!p) return unauthorized(); if (!domainAllowed(p)) return domainBlocked();
+    let draftUrl = null;
+    try {
+      const b = await request.json().catch(() => ({}));
+      const messageId = String(b.messageId || ''); if (!messageId) return badRequest('messageId required');
+      const toRaw = Array.isArray(b.to) ? b.to : (b.to ? [b.to] : []);
+      const to = Array.from(new Set(toRaw.map(e => String(e || '').trim()).filter(Boolean)));
+      if (!to.length) return badRequest('at least one recipient is required');
+      if (to.length > FWD_MAX_RECIPIENTS) return badRequest('too many recipients (max ' + FWD_MAX_RECIPIENTS + ')');
+      const bad = to.filter(e => !FWD_EMAIL_RX.test(e) || e.length > 200);
+      if (bad.length) return badRequest('not a valid email address: ' + bad[0].slice(0, 80));
+      let upn;
+      if (b.realmId) {
+        const rc = await resolveClientMailbox(p, String(b.realmId), { mutating: true }); if (rc.err) return rc.err;
+        if (!rc.cfg || !rc.cfg.mailbox || rc.cfg.enabled === false) return badRequest('no client mailbox configured');
+        upn = encodeURIComponent(rc.cfg.mailbox);
+      } else { upn = encodeURIComponent(p.userDetails || p.userId); }
+      const access = await getGraphToken();
+      const base = 'https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + encodeURIComponent(messageId);
+      const gfetch = (url, opts) => {
+        const merged = Object.assign({ Authorization: 'Bearer ' + access }, (opts && opts.headers) || {});
+        return fetch(url, Object.assign({}, opts, { headers: merged }));
+      };
+      const cleanupDraft = async (url) => {
+        try { const tok = await getGraphToken(); await fetch(url, { method: 'DELETE', headers: { Authorization: 'Bearer ' + tok } }); }
+        catch (_) { /* best-effort only */ }
+      };
+      const fwdBody = { comment: String(b.body || ''), toRecipients: to.map(a => ({ emailAddress: { address: a } })) };
+      const audit = (extra) => logAudit('client-email-send', { user: auditUser(request), path: '/api/integrations/msgraph/forward',
+        meta: Object.assign({ realmId: b.realmId ? String(b.realmId) : undefined, kind: 'forward', to: to.slice(0, 5).map(e => e.slice(0, 120)) }, extra || {}) });
+
+      const atts = Array.isArray(b.attachments) ? b.attachments : [];
+      if (!atts.length) {
+        const r = await gfetch(base + '/forward', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fwdBody) });
+        if (!r.ok && r.status !== 202) { const detail = (await r.text()).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'Graph rejected (' + r.status + ')', detail } }; }
+        audit();
+        return { jsonBody: { ok: true } };
+      }
+
+      let totalB = 0;
+      const attPayloads = atts.map(a => {
+        const b64 = String(a.contentBytes || '');
+        totalB += Math.ceil(b64.length * 0.75);
+        return {
+          '@odata.type': '#microsoft.graph.fileAttachment',
+          name: String(a.name || 'attachment').replace(/[\r\n"]/g, '').slice(0, 150),
+          contentType: String(a.contentType || 'application/octet-stream'),
+          contentBytes: b64
+        };
+      });
+      if (totalB > 3 * 1024 * 1024) return { status: 400, jsonBody: { ok: false, error: 'Attachments total ' + Math.round(totalB / 1048576) + ' MB — Outlook caps this at about 3 MB. Send fewer or smaller files.' } };
+
+      const createR = await gfetch(base + '/createForward', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fwdBody) });
+      if (!createR.ok) { const detail = (await createR.text()).slice(0, 300); return { status: 502, jsonBody: { ok: false, error: 'Graph rejected draft creation (' + createR.status + ')', detail } }; }
+      const draft = await createR.json();
+      draftUrl = 'https://graph.microsoft.com/v1.0/users/' + upn + '/messages/' + encodeURIComponent(draft.id);
+      for (const att of attPayloads) {
+        const ar = await gfetch(draftUrl + '/attachments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(att) });
+        if (!ar.ok) {
+          const detail = (await ar.text()).slice(0, 300);
+          await cleanupDraft(draftUrl);
+          return { status: 502, jsonBody: { ok: false, error: 'Graph rejected attachment "' + att.name + '" (' + ar.status + ')', detail } };
+        }
+      }
+      const sendR = await gfetch(draftUrl + '/send', { method: 'POST' });
+      if (!sendR.ok && sendR.status !== 202) {
+        const detail = (await sendR.text()).slice(0, 300);
+        await cleanupDraft(draftUrl);
+        return { status: 502, jsonBody: { ok: false, error: 'Graph rejected send (' + sendR.status + ')', detail } };
+      }
+      audit({ attachments: attPayloads.length });
+      return { jsonBody: { ok: true } };
+    } catch (e) {
+      context.error('msgraph-forward', e);
+      if (draftUrl) await (async () => { try { const tok = await getGraphToken(); await fetch(draftUrl, { method: 'DELETE', headers: { Authorization: 'Bearer ' + tok } }); } catch (_) {} })();
+      return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } };
+    }
+  })
+});
+
+/**
  * Per-client email COLLABORATION metadata (who-read / who-replied / tags /
  * assignment / archive), keyed by Graph message id. Stored server-side as
  * bcc-emailmeta-<realm> (a map). Access-gated; optimistic-concurrency on write.
