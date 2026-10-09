@@ -361,6 +361,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         <label style="font-size:11px;font-weight:700;color:var(--muted);display:flex;flex-direction:column;gap:4px;text-transform:uppercase;letter-spacing:.5px;">From<input type="date" id="bkFrom" style="min-height:36px;padding:6px 8px;border:1px solid var(--chrome-mute);border-radius:6px;font:inherit;" /></label>
         <label style="font-size:11px;font-weight:700;color:var(--muted);display:flex;flex-direction:column;gap:4px;text-transform:uppercase;letter-spacing:.5px;">To<input type="date" id="bkTo" style="min-height:36px;padding:6px 8px;border:1px solid var(--chrome-mute);border-radius:6px;font:inherit;" /></label>
         <button class="btn btn-primary" id="bkRefresh" type="button">Refresh</button>
+        <span style="display:inline-flex;gap:6px;flex-wrap:wrap;" id="bkPresets">
+          <button class="btn btn-ghost" type="button" data-bkpreset="thisweek">This week</button>
+          <button class="btn btn-ghost" type="button" data-bkpreset="lastweek">Last week</button>
+          <button class="btn btn-ghost" type="button" data-bkpreset="thismonth">This month</button>
+          <button class="btn btn-ghost" type="button" data-bkpreset="lastmonth">Last month</button>
+        </span>
         <span id="bkStatus" style="font-size:12px;color:var(--muted);"></span>
       </div>
       <div id="bkTimeOut"></div>
@@ -989,11 +995,36 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (f && !f.value) f.value = ymdLocal(from);
     if (t && !t.value) t.value = ymdLocal(to);
   }
+  /* One-click ranges. The screen used to open on month-to-date with only two date boxes, so on
+     the 6th of a month "last week" (which straddles the 1st) silently lost its first days —
+     Renee saw 1h53m for Janice when she had clocked 2h38m. Weeks run Monday–Sunday, the same
+     week the overtime math elsewhere in this app uses. Local dates throughout (never
+     toISOString, which is UTC and rolls to tomorrow in the evening). */
+  function bkPresetRange(kind) {
+    var ymd = function (d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+    var now = new Date(), today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    var mon = new Date(today); mon.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+    if (kind === 'thisweek') return { from: ymd(mon), to: ymd(today) };
+    if (kind === 'lastweek') { var lm = new Date(mon); lm.setDate(mon.getDate() - 7); var ls = new Date(mon); ls.setDate(mon.getDate() - 1); return { from: ymd(lm), to: ymd(ls) }; }
+    if (kind === 'thismonth') return { from: ymd(new Date(today.getFullYear(), today.getMonth(), 1)), to: ymd(today) };
+    if (kind === 'lastmonth') return { from: ymd(new Date(today.getFullYear(), today.getMonth() - 1, 1)), to: ymd(new Date(today.getFullYear(), today.getMonth(), 0)) };
+    return null;
+  }
   var _bkLoaded = false;
   function renderBkTime() {
     bkDefaultRange();
     var rb = document.getElementById('bkRefresh');
     if (rb && !rb._wired) { rb._wired = true; rb.addEventListener('click', loadBkTime); }
+    var pr = document.getElementById('bkPresets');
+    if (pr && !pr._wired) {
+      pr._wired = true;
+      pr.addEventListener('click', function (e) {
+        var b = e.target.closest ? e.target.closest('[data-bkpreset]') : null; if (!b) return;
+        var r = bkPresetRange(b.getAttribute('data-bkpreset')); if (!r) return;
+        document.getElementById('bkFrom').value = r.from; document.getElementById('bkTo').value = r.to;
+        loadBkTime();
+      });
+    }
     if (!_bkLoaded) { _bkLoaded = true; loadBkTime(); }
   }
   var _bkGen = 0;
@@ -1011,7 +1042,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         if (myGen !== _bkGen) return; // a newer range was requested while this was in flight
         if (!resp.ok) throw new Error(resp.error || 'failed');
         var companies = resp.companies || [], users = resp.users || [];
-        if (!companies.length) { out.innerHTML = '<div style="color:var(--muted);padding:14px;">No bookkeeping time recorded in this range.</div>'; return; }
+        if (!companies.length) { out.innerHTML = '<div style="color:var(--muted);padding:14px;">No per-client bookkeeping time recorded in this range. <strong>Employee clocked hours (My Day clock in/out) are in the section below.</strong></div>'; return; }
         var grandLog = users.reduce(function (s, u) { return s + (u.loggedSeconds || 0); }, 0);
         var grandAct = users.reduce(function (s, u) { return s + (u.seconds || 0); }, 0);
         var nm = function (upn) { return (window.bccDisplayName && window.bccDisplayName(upn)) || upn; };
@@ -1071,7 +1102,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   function renderBkPush(extraHtml) {
     var out = document.getElementById('bkPushOut'), d = _bkPush; if (!out || !d) return;
-    var head = '<h4 style="margin:0 0 6px;font-family:\'Source Serif 4\',Georgia,serif;font-size:14px;">Send clocked time to QuickBooks</h4>';
+    var head = '<h4 style="margin:0 0 6px;font-family:\'Source Serif 4\',Georgia,serif;font-size:14px;">Employee clocked hours &amp; sending to QuickBooks</h4>';
     if (!d.available) {
       out.innerHTML = head + '<div style="font-size:12.5px;color:var(--muted);">' + esc(d.why || 'Not available.') + '</div>';
       return;
@@ -1092,7 +1123,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     } else {
       body = '<table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr>' +
         '<th style="text-align:left;">Bookkeeper</th><th style="text-align:left;">In QuickBooks as</th>' +
-        '<th style="text-align:right;">Already sent</th><th style="text-align:right;">To send</th></tr></thead><tbody>' +
+        '<th style="text-align:right;">Clocked</th><th style="text-align:right;">Already sent</th><th style="text-align:right;">To send</th></tr></thead><tbody>' +
         people.map(function (u) {
           var sent = (u.minutes || 0) - (u.unposted || 0);
           var warn = u.mappingBroken ? '<div style="font-size:11.5px;color:#6a1c1c;">The employee this was set to no longer exists — pick again.</div>' : '';
@@ -1100,6 +1131,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             ? '<div style="font-size:11.5px;color:#6a1c1c;">Pick who this is in QuickBooks before sending.</div>' : '';
           return '<tr><td style="padding:4px 0;">' + esc(bkWho(u)) + (u.open ? ' <span style="font-size:11px;color:var(--muted);">(still on the clock)</span>' : '') + '</td>' +
             '<td><select data-upn="' + esc(u.userUpn) + '" class="bkEmpSel" style="min-height:32px;padding:4px 6px;border:1px solid var(--chrome-mute);border-radius:6px;font:inherit;max-width:240px;">' + opts(u.employeeId) + '</select>' + warn + miss + '</td>' +
+            '<td style="text-align:right;"><strong>' + (u.minutes > 0 ? esc(bkMins(u.minutes)) : '—') + '</strong></td>' +
             '<td style="text-align:right;color:var(--muted);">' + (sent > 0 ? esc(bkMins(sent)) : '—') + '</td>' +
             '<td style="text-align:right;"><strong>' + (u.unposted > 0 ? esc(bkMins(u.unposted)) : '—') + '</strong></td></tr>';
         }).join('') + '</tbody></table>' +
