@@ -5775,6 +5775,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var openTasks = active.filter(function (t) { return t.status !== 'done' || t.id === _taskEdit; });
     var doneTasks = active.filter(function (t) { return t.status === 'done' && t.id !== _taskEdit; });
     var upcoming = todoMineFilter(all.filter(isUpcoming)).sort(function (a, b) { return (a.dueDate || '').localeCompare(b.dueDate || ''); });
+    /* ONE list, in due-date order: the current tasks and the upcoming (rolled-forward) ones
+       interleaved by date, so the board reads as a calendar of what is coming, not a work list
+       with a footnote. Same comparator the open list already used. The "Tasks (N)" count and
+       the nav badge deliberately stay the number that is READY to do — see taskIsUpcoming — and
+       the heading says how many more are scheduled. */
+    var dueOrder = function (a, b) { return ((a.status === 'done') - (b.status === 'done')) || (a.dueDate || '9999').localeCompare(b.dueDate || '9999') || (b.createdAt || '').localeCompare(a.createdAt || ''); };
+    var openList = openTasks.concat(upcoming).sort(dueOrder);
     var add = '<div class="ws-form" style="margin-bottom:14px;">' +
       '<label class="full">New task<input id="tk_title" placeholder="What needs doing for this client?" /></label>' +
       '<label>Due<input type="date" id="tk_due" /></label>' +
@@ -5816,7 +5823,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
          been completed, and rendering it ticked-and-disabled told the bookkeeper it was
          already done and gave her no way to tick it. */
       var rolled = upc && (t.timesDone > 0 || !!t.lastDoneAt);
-      return '<div class="ws-row"' + (upc ? ' style="opacity:.6;"' : '') + '><input type="checkbox" data-tdone="' + esc(t.id) + '" ' + ((t.status === 'done' || rolled) ? 'checked' : '') + (rolled ? ' disabled title="Done for this period — next due ' + esc(t.dueDate || '') + '"' : (upc ? ' title="Not due yet"' : '')) + ' style="width:18px;height:18px;flex-shrink:0;" />' +
+      /* Drawn UNTICKED. It is locked (a second tick would advance the schedule past a period
+         that has not happened yet), but locked and finished are different statements, and a
+         ticked box on a task that is still coming read as already done. Its date says "Next",
+         and the tooltip says why it is locked and when it unlocks. */
+      return '<div class="ws-row"><input type="checkbox" data-tdone="' + esc(t.id) + '" ' + (t.status === 'done' ? 'checked' : '') + (rolled ? ' disabled title="Already handled for this period — it can be ticked from its next due date (' + esc(t.dueDate || '') + ')"' : (upc ? ' title="Not due yet"' : '')) + ' style="width:18px;height:18px;flex-shrink:0;" />' +
         '<div style="flex:1;min-width:0;">' + taskTitleHtml(t, isOpen, t.status === 'done' ? 'task-done' : '') +
         (meta ? '<div style="font-size:12px;color:' + (overdue ? 'var(--burgundy)' : 'var(--muted)') + ';padding-left:12px;">' + esc(meta) + '</div>' : '') +
         (isOpen ? taskDetailHtml(t, false) : '') + '</div>' +
@@ -5824,17 +5835,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         '<button class="btn btn-ghost" data-tdel="' + esc(t.id) + '" type="button" style="font-size:11px;min-height:30px;">Delete</button></div>';
     };
     var filterBar = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">' +
-      '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;">Tasks' + (openTasks.length ? ' (' + openTasks.length + ')' : '') + '</div>' +
+      '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;">Tasks' + (openTasks.length ? ' (' + openTasks.length + ')' : '') + (upcoming.length ? ' · ' + upcoming.length + ' upcoming' : '') + '</div>' +
       todoMineToggleHtml('tk_mine') + '</div>';
     /* The empty state now describes the OPEN list. Saying "no active tasks" while a hundred
        completed ones sit in the section below would be its own small lie. */
-    var list = openTasks.length ? openTasks.map(function (t) { return taskRow(t, false); }).join('') : (bootDataOk()
+    var list = openList.length ? openList.map(function (t) { return taskRow(t, isUpcoming(t)); }).join('') : (bootDataOk()
       ? '<div style="color:var(--muted);padding:10px 0;">' + (_todoMine
           ? 'No open tasks assigned to you for ' + esc(companyName(currentRealm)) + '.'
           : 'No open tasks for ' + esc(companyName(currentRealm)) + '.')
         + (doneTasks.length ? ' ' + doneTasks.length + ' completed ' + (doneTasks.length === 1 ? 'task is' : 'tasks are') + ' below.' : '') + '</div>'
       : '<div style="color:var(--burgundy);padding:10px 0;font-size:12.5px;">This device hasn’t finished loading ' + esc(companyName(currentRealm)) + '’s tasks — that is not "none". Reload to try again.</div>');
-    if (upcoming.length) list += '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 6px;">Upcoming (recurring)</div>' + upcoming.map(function (t) { return taskRow(t, true); }).join('');
     /* Completed, collapsed. NOT hidden and not paged away: a task ticked by mistake has to be
        reachable and untickable, so the heading always states the count and one click opens the
        full list. Closed by default because that is the ask; the choice is remembered per
@@ -13212,6 +13222,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         var saved = ''; try { saved = localStorage.getItem('bcc-last-realm') || ''; } catch (_) {}
         if (saved && companies.some(function (c) { return String(c.realmId) === String(saved); })) currentRealm = saved;
       }
+      var tq = ''; try { tq = (dq && dq.get('tasks')) || ''; } catch (_) {}
+      if (tq && (rid || !companies.some(function (c) { return String(c.realmId) === String(tq); }))) tq = '';
+      if (tq) currentRealm = tq;
       renderAll();
       // The landing-page "BCC Billing & Cashflow" tile links here with ?firmcf=1 — jump
       // straight to the modal rather than making the three people it's for find the
@@ -13220,6 +13233,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       // being there for them.
       if (dq && dq.get('firmcf') === '1' && firmCashflowVisible()) openFirmCashflow();
       if (rid) { try { setSection('files'); } catch (_) {} }
+      else if (tq) { try { setSection('tasks'); } catch (_) {} }
       if (dr === 'connected' && window.bccNotifySaved) window.bccNotifySaved('Shared drive connected.');
       else if (dr && dr !== 'connected' && window.bccNotify) window.bccNotify('Drive connect failed: ' + ((dq && dq.get('detail')) || ''), 'warn', 7000);
       // Refresh periods from the cloud (nightly-synced) after companies load.

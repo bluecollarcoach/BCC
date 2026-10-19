@@ -124,6 +124,10 @@
   .mt-edit-save:hover { background:var(--gold-deep, #a8884a); }
   .mt-edit-cancel { background:none; color:var(--muted); }
   .mt-edit-cancel:hover { color:var(--ink); }
+  .mt-edit-due { border:1px solid var(--gold); border-radius:8px; padding:5px 8px; font:inherit; font-size:13px; flex-shrink:0; }
+  .ct-sub { display:block; font-weight:400; font-size:12px; color:var(--muted); margin-top:1px; }
+  .ct-open { flex-shrink:0; text-decoration:none; color:var(--muted); font-size:15px; line-height:1; width:24px; text-align:center; }
+  .ct-open:hover { color:var(--gold-deep); }
   .mt-empty { color:var(--muted); font-size:13px; padding:8px 2px; }
   .mt-donetoggle { display:flex; align-items:center; gap:8px; width:100%; text-align:left; background:none; border:0; border-top:1px solid var(--chrome-mute); margin:10px 0 0; padding:10px 2px 6px; font:inherit; font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; cursor:pointer; }
   .mt-donetoggle .mt-caret { display:inline-block; transition:transform .15s; }
@@ -199,6 +203,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
 
   <!-- Personal "My tasks" (moved from Bookkeeping) -->
   <div id="myTasksWrap"></div>
+
+  <!-- Client tasks assigned to me (Renee: see and tick them here instead of opening each client) -->
+  <div id="clientTasksWrap"></div>
 
   <!-- Sessions today / tomorrow / quick actions -->
   <div class="grid">
@@ -780,6 +787,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     return true;
   }
+  /* Display order for OPEN personal tasks — Karla: "align my tasks by date once they are
+     entered so the closest to today's date is at the top of the list". Due date ascending
+     (overdue first, being the earliest), undated last. Ties keep their STORED order, which is
+     the order the up/down buttons set — so the sort never fights a manual choice made
+     between two tasks that share a date. */
+  function mtDueKey(t) { return (t && t.due) || '9999-12-31'; }
+  function mtOrderedOpen(list) {
+    return (list || [])
+      .map(function (t, n) { return { t: t, n: n }; })
+      .filter(function (x) { return x.t && !x.t.done; })
+      .sort(function (a, b) { var ka = mtDueKey(a.t), kb = mtDueKey(b.t); return ka < kb ? -1 : ka > kb ? 1 : a.n - b.n; })
+      .map(function (x) { return x.t; });
+  }
   function renderMyTasks() {
     var wrap = document.getElementById('myTasksWrap'); if (!wrap) return;
     wrap.style.display = '';
@@ -802,16 +822,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       for (var n = 0; n < list.length; n++) { if (list[n] && String(list[n].id) === String(id)) return n; }
       return -1;
     };
-    // Reordering only applies among OPEN tasks — a completed one is an archive entry now,
-    // not something with a "priority order" to set (see the Completed section below, which
-    // has no move buttons at all). Walks past any done tasks so "move up/down" always swaps
-    // with the next OPEN neighbor, not whatever happens to sit next to it in storage.
-    var openNeighborIndex = function (i, dir) {
-      var j = i + dir;
-      while (j >= 0 && j < items.length) { if (!items[j].done) return j; j += dir; }
-      return -1;
+    /* The ▲▼ buttons survive for what a date cannot decide: tasks that share the SAME due
+       date (or none). They only ever move a task past a neighbor with that same date — a
+       button that reordered across dates would be undone by the sort on the very next paint,
+       and look broken. Completed tasks have no order at all (see the Completed section). */
+    var ordered = mtOrderedOpen(items);
+    var sameDateNeighbor = function (id, dir) {
+      for (var n = 0; n < ordered.length; n++) {
+        if (String(ordered[n].id) !== String(id)) continue;
+        var o = ordered[n + dir];
+        return (o && mtDueKey(o) === mtDueKey(ordered[n])) ? o : null;
+      }
+      return null;
     };
-    var openItems = items.filter(function (t) { return !t.done; });
+    var openItems = ordered;
     var doneItems = items.filter(function (t) { return t.done; });
     var openCount = openItems.length;
     // LOCAL today, not UTC. toISOString rolls over at 7pm Central, so every evening the
@@ -826,14 +850,16 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         return '<div class="mt-row mt-row-editing">' +
           '<input type="checkbox" disabled aria-hidden="true" />' +
           '<input class="mt-edit-input" data-mt-editinput="' + tid + '" value="' + esc(t.text) + '" maxlength="300" />' +
+          '<input type="date" class="mt-edit-due" data-mt-editdue="' + tid + '" value="' + esc(t.due || '') + '" title="Due date (optional)" />' +
           '<button class="mt-edit-save" data-mt-save="' + tid + '" type="button">Save</button>' +
           '<button class="mt-edit-cancel" data-mt-canceledit="' + tid + '" type="button">Cancel</button></div>';
       }
       var overdue = !t.done && t.due && t.due < today;
-      var i = mtIndexOf(d, t.id);
+      var upN = reorderable ? sameDateNeighbor(t.id, -1) : null, downN = reorderable ? sameDateNeighbor(t.id, 1) : null;
       var moveHtml = reorderable
-        ? ('<span class="mt-move"><button data-mt-up="' + tid + '" type="button" aria-label="Move up"' + (openNeighborIndex(i, -1) < 0 ? ' disabled' : '') + '>▲</button>' +
-           '<button data-mt-down="' + tid + '" type="button" aria-label="Move down"' + (openNeighborIndex(i, 1) < 0 ? ' disabled' : '') + '>▼</button></span>')
+        ? ('<span class="mt-move" title="Tasks are listed by due date. ▲▼ order tasks that share a date; change the date to move one further.">' +
+           '<button data-mt-up="' + tid + '" type="button" aria-label="Move up"' + (upN ? '' : ' disabled') + '>▲</button>' +
+           '<button data-mt-down="' + tid + '" type="button" aria-label="Move down"' + (downN ? '' : ' disabled') + '>▼</button></span>')
         : '';
       return '<div class="mt-row' + (t.done ? ' done' : '') + '">' +
         '<input type="checkbox" data-mt-done="' + tid + '"' + (t.done ? ' checked' : '') + ' aria-label="Mark done" />' +
@@ -864,8 +890,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var keepTxt = (document.getElementById('mt_new') || {}).value || '';
     var keepDue = (document.getElementById('mt_due') || {}).value || '';
     var keepEditTxt = (_myTasksEditId && document.querySelector('[data-mt-editinput]') || {}).value;
+    var keepEditDue = (_myTasksEditId && document.querySelector('[data-mt-editdue]') || {}).value;
     var keepFocus = document.activeElement && document.activeElement.id;
-    var keepFocusEditing = document.activeElement && document.activeElement.hasAttribute && document.activeElement.hasAttribute('data-mt-editinput');
+    var ae0 = document.activeElement;
+    var keepFocusEditing = (ae0 && ae0.hasAttribute && ae0.hasAttribute('data-mt-editinput')) ? 'text'
+      : ((ae0 && ae0.hasAttribute && ae0.hasAttribute('data-mt-editdue')) ? 'due' : '');
     wrap.innerHTML = '<div class="card mt-card">' +
       '<div class="mt-head"><button class="mt-toggle" id="mt_toggle" type="button" aria-label="Toggle">' + (_myTasksOpen ? '▾' : '▸') + '</button>' +
       '<strong>📌 My tasks</strong><span class="mt-count">' + (openCount ? openCount + ' open' : 'all clear') + '</span>' +
@@ -874,16 +903,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         '<div class="mt-add"><input id="mt_new" autocomplete="off" placeholder="Add a personal to-do…" /><input type="date" id="mt_due" title="Due date (optional)" /><button class="btn btn-primary" id="mt_add" type="button">Add</button></div>' +
         (openRows || '<div class="mt-empty">' + (doneItems.length
           ? 'All caught up — ' + doneItems.length + ' completed task' + (doneItems.length === 1 ? '' : 's') + ' below.'
-          : 'No personal tasks yet. Add one above; use ▲▼ to set your priority order.') + '</div>') +
+          : 'No personal tasks yet. Add one above — they list by due date, soonest first.') + '</div>') +
         doneSection +
       '</div></div>';
     var reNew = document.getElementById('mt_new'), reDue = document.getElementById('mt_due');
     if (reNew && keepTxt) reNew.value = keepTxt;
     if (reDue && keepDue) reDue.value = keepDue;
     if (keepEditTxt != null) { var reEdit = document.querySelector('[data-mt-editinput]'); if (reEdit) reEdit.value = keepEditTxt; }
+    if (keepEditDue != null) { var reEditDue = document.querySelector('[data-mt-editdue]'); if (reEditDue) reEditDue.value = keepEditDue; }
     if (keepFocus === 'mt_new' && reNew) reNew.focus();
     else if (keepFocus === 'mt_due' && reDue) reDue.focus();
-    else if (keepFocusEditing) { var fe = document.querySelector('[data-mt-editinput]'); if (fe) fe.focus(); }
+    else if (keepFocusEditing) { var fe = document.querySelector(keepFocusEditing === 'due' ? '[data-mt-editdue]' : '[data-mt-editinput]'); if (fe) fe.focus(); }
     document.getElementById('mt_toggle').onclick = function () { _myTasksOpen = !_myTasksOpen; renderMyTasks(); };
     var addFn = function () {
       var inp = document.getElementById('mt_new'); var txt = (inp.value || '').trim(); if (!txt) return;
@@ -912,25 +942,31 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     document.getElementById('mt_add').onclick = addFn;
     var ni = document.getElementById('mt_new'); if (ni) ni.addEventListener('keydown', function (e) { if (e.key === 'Enter') addFn(); });
     var swap = function (id, dir) {
-      // Re-derive the OPEN neighbor against the just-reloaded document, not the outer
-      // openNeighborIndex/items closure captured at the last render — those can be a
-      // device-sync behind by the time this click lands, and swapping against a stale
-      // index could pick the wrong neighbor (or silently do nothing) even though the
-      // button the bookkeeper actually clicked was enabled for a reason.
-      var dd = loadMyTasks(); var i = mtIndexOf(dd, id); if (i < 0) { renderMyTasks(); return; }
-      var j = i + dir;
-      while (j >= 0 && j < dd.items.length && dd.items[j].done) j += dir;
-      if (j < 0 || j >= dd.items.length) return;
+      /* Re-derived against the just-reloaded document, never the render-time closure — that
+         can be a device-sync behind by the time the click lands. Only ever swaps with the
+         adjacent task in DISPLAY order that shares this task's date; across a date the sort
+         would simply undo it. Done tasks are never neighbors (mtOrderedOpen drops them). */
+      var dd = loadMyTasks(); if (mtIndexOf(dd, id) < 0) { renderMyTasks(); return; }
+      var ord = mtOrderedOpen(dd.items), p = -1;
+      for (var n = 0; n < ord.length; n++) { if (String(ord[n].id) === String(id)) { p = n; break; } }
+      var o = p < 0 ? null : ord[p + dir];
+      if (!o || mtDueKey(o) !== mtDueKey(ord[p])) { renderMyTasks(); return; }
+      var i = mtIndexOf(dd, ord[p].id), j = mtIndexOf(dd, o.id);
+      if (i < 0 || j < 0) { renderMyTasks(); return; }
       var t = dd.items[i]; dd.items[i] = dd.items[j]; dd.items[j] = t; saveMyTasks(dd); renderMyTasks();   // repaints from storage on a refusal
     };
     var startEdit = function (id) { _myTasksEditId = id; renderMyTasks(); var inp = document.querySelector('[data-mt-editinput]'); if (inp) { inp.focus(); inp.select(); } };
     var cancelEdit = function () { _myTasksEditId = null; renderMyTasks(); };
     var saveEdit = function (id) {
       var inp = document.querySelector('[data-mt-editinput="' + id + '"]'); if (!inp) return;
+      var dueEl = document.querySelector('[data-mt-editdue="' + id + '"]');
       var txt = (inp.value || '').trim();
       if (!txt) { cancelEdit(); return; }   // blanked -> just cancel, never delete a task via an empty save
       var dd = loadMyTasks(); var i = mtIndexOf(dd, id); if (i < 0) { cancelEdit(); return; }
       dd.items[i].text = txt.slice(0, 300);
+      // The date is what the list is ordered by — without a way to change it here, fixing a
+      // wrong one meant deleting the task and retyping it.
+      if (dueEl) dd.items[i].due = dueEl.value || '';
       if (!saveMyTasks(dd)) { renderMyTasks(); return; }
       _myTasksEditId = null; renderMyTasks();
     };
@@ -943,9 +979,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     wrap.querySelectorAll('[data-mt-edit]').forEach(function (b) { b.onclick = function () { startEdit(b.getAttribute('data-mt-edit')); }; });
     wrap.querySelectorAll('[data-mt-canceledit]').forEach(function (b) { b.onclick = cancelEdit; });
     wrap.querySelectorAll('[data-mt-save]').forEach(function (b) { b.onclick = function () { saveEdit(b.getAttribute('data-mt-save')); }; });
-    wrap.querySelectorAll('[data-mt-editinput]').forEach(function (inp) {
+    wrap.querySelectorAll('[data-mt-editinput], [data-mt-editdue]').forEach(function (inp) {
       inp.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') { e.preventDefault(); saveEdit(inp.getAttribute('data-mt-editinput')); }
+        if (e.key === 'Enter') { e.preventDefault(); saveEdit(inp.getAttribute('data-mt-editinput') || inp.getAttribute('data-mt-editdue')); }
         else if (e.key === 'Escape') { e.preventDefault(); cancelEdit(); }
       });
     });
@@ -970,8 +1006,179 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var el = document.getElementById(id);
       if (el) el.addEventListener('input', function () { _mtDirty = true; });
     });
-    wrap.querySelectorAll('[data-mt-editinput]').forEach(function (inp) { inp.addEventListener('input', function () { _mtDirty = true; }); });
+    wrap.querySelectorAll('[data-mt-editinput], [data-mt-editdue]').forEach(function (inp) { inp.addEventListener('input', function () { _mtDirty = true; }); });
     _mtDirty = false;
+  }
+
+  /* ===== Client tasks assigned to me =====
+     Renee: "can we get all of the tasks assigned to us in My Day so I don't have to click into
+     each client to see them and to check them off?" These are the SAME records as each
+     client's Tasks tab (bcc-task-<realm>-<id>) — read from what this device already holds, so
+     nothing new is fetched or stored, and what you tick here is what the client's own board
+     shows. The sync layer only delivers clients you can access, so no client is exposed here
+     that the Bookkeeping page would not show you.
+     ctIsUpcoming / ctNextDue / ctApplyDone are COPIES of bookkeeping.html's taskIsUpcoming /
+     taskNextDue / the tick in toggleTask (that tab is daily-used and was left untouched); an
+     equivalence test runs both against the same inputs so the two cannot drift apart. */
+  var _ctOpen = true, _ctDoneOpen = false;
+  var _ctNames = {}, _ctNamesOk = false, _ctNamesAt = 0;
+  var _ctLastHtml = null;   // repaint (and rebind) only when something actually changed
+  function ctIsUpcoming(t, today) { return !!(t.status !== 'done' && t.recurrence && t.recurrence !== 'none' && t.dueDate && t.dueDate > today); }
+  function ctNextDue(dateStr, rec) {
+    var d = new Date((dateStr || ymd(new Date())) + 'T00:00:00'); if (isNaN(d)) d = new Date();
+    var today = new Date(); today.setHours(0, 0, 0, 0);
+    var dom = d.getDate(), guard = 0;
+    do {
+      if (rec === 'weekly') d.setDate(d.getDate() + 7);
+      else { var n = rec === 'quarterly' ? 3 : rec === 'yearly' ? 12 : 1; d.setDate(1); d.setMonth(d.getMonth() + n); var last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate(); d.setDate(Math.min(dom, last)); }
+    } while (d <= today && ++guard < 120);
+    return d.toISOString().slice(0, 10);
+  }
+  // Completing a RECURRING task rolls it to its next due date and reopens it; anything else
+  // is simply done / not done.
+  function ctApplyDone(t, done) {
+    if (done && t.recurrence && t.recurrence !== 'none' && t.dueDate) {
+      t.dueDate = ctNextDue(t.dueDate, t.recurrence); t.status = 'open';
+      t.lastDoneAt = nowIso(); t.timesDone = (t.timesDone || 0) + 1;
+    } else {
+      t.status = done ? 'done' : 'open'; t.doneAt = done ? nowIso() : null;
+    }
+    t.updatedAt = nowIso();
+    return t;
+  }
+  // "Month end complete" is a workflow hand-off — ticking it notifies the meeting scheduler,
+  // and that notification is built from the client open in bookkeeping.html. It is therefore
+  // ticked THERE, never here, or the hand-off would silently not happen.
+  function ctMonthEnd(t) { return /month[\s-]*end\s*complete/i.test(String((t && t.title) || '')); }
+  // Same test, same reason, as bookkeeping.html's canWriteTasks: until identity lands the
+  // permission lookup answers 'none' for everyone, so let the server (the real gate) decide.
+  function ctCanWrite() {
+    if (!window.bccGetAppPermission || !(window.bccUser && window.bccUser.userDetails)) return true;
+    var lvl = window.bccGetAppPermission('bookkeeping');
+    return lvl === 'tasks' || lvl === 'edit' || lvl === 'admin';
+  }
+  function ctName(realm) {
+    if (_ctNames[realm]) return _ctNames[realm];
+    try { var inf = JSON.parse(localStorage.getItem('bcc-client-info-' + realm) || 'null'); if (inf && inf.legalName) return String(inf.legalName); } catch (e) {}
+    return 'Client ' + realm;
+  }
+  function ctLoadNames() {
+    _ctNamesAt = Date.now();
+    fetch('/api/integrations/qbo/companies', { credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j || !Array.isArray(j.companies)) return;   // tried again later; names fall back meanwhile
+        j.companies.forEach(function (c) { if (c && c.realmId) _ctNames[String(c.realmId)] = c.companyName || ''; });
+        _ctNamesOk = true; _ctLastHtml = null; renderClientTasks();
+      })
+      .catch(function () {});
+  }
+  // Every client task assigned to `me`. The KEY is the identity (see bookkeeping.html's
+  // allTasks): _key / _realm are read off it, and are never written back.
+  function ctScan(me) {
+    var out = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i); if (!k || k.indexOf('bcc-task-') !== 0) continue;
+      var rest = k.slice(9), dash = rest.indexOf('-'); if (dash < 0) continue;
+      var t; try { t = JSON.parse(localStorage.getItem(k)); } catch (e) { continue; }
+      if (!t || typeof t !== 'object') continue;
+      if (String(t.assigneeUpn || '').toLowerCase() !== me) continue;
+      t._key = k; t._realm = rest.slice(0, dash); out.push(t);
+    }
+    return out;
+  }
+  // A repaint that is FORCED: used after any click, because a refused change leaves the data
+  // — and so the HTML — exactly as it was, while the box the person just clicked has already
+  // flipped on screen. Skipping the repaint there would leave a tick showing that was never saved.
+  function ctRepaint() { _ctLastHtml = null; renderClientTasks(); }
+  function ctToggle(key, done) {
+    var say = function (m) { (window.bccNotify || alert)(m, 'warn', 8000); ctRepaint(); };
+    if (String(key).indexOf('bcc-task-') !== 0) { ctRepaint(); return; }
+    if (!ctCanWrite()) { say('Your Bookkeeping access is view-only, so tasks can’t be changed here.'); return; }
+    // Re-read FRESH: the row on screen can be a device-sync behind, and everything below is
+    // decided about the record as it is now, not as it was painted.
+    var t; try { t = JSON.parse(localStorage.getItem(key)); } catch (e) {}
+    if (!t) { say('That task is no longer available — it may have been deleted or changed on another device.'); return; }
+    var me = meUpn();
+    if (!me || String(t.assigneeUpn || '').toLowerCase() !== me) { say('That task was reassigned to someone else, so it was not changed here.'); return; }
+    if (done && ctMonthEnd(t)) { say('Completing “Month end complete” notifies the meeting scheduler, so tick it in the client’s Tasks tab.'); return; }
+    ctApplyDone(t, done);
+    try { localStorage.setItem(key, JSON.stringify(t)); }
+    catch (e) { (window.bccNotify || alert)('That was NOT saved — this browser has run out of local storage space. The task is unchanged. Close some tabs or ask an admin to clear an old chat channel, then try again.', 'error', 15000); ctRepaint(); return; }
+    ctRepaint();
+  }
+  function ctRow(t, today, canWrite) {
+    var done = t.status === 'done';
+    var upc = ctIsUpcoming(t, today);
+    var rolled = upc && (t.timesDone > 0 || !!t.lastDoneAt);
+    var overdue = !done && !upc && t.dueDate && t.dueDate < today;
+    var monthEnd = !done && ctMonthEnd(t);
+    var locked = !canWrite || rolled || monthEnd;
+    var why = !canWrite ? 'Your Bookkeeping access can’t change tasks'
+      : rolled ? ('Already done for this period — it unlocks on its next due date (' + t.dueDate + ')')
+      : monthEnd ? 'Completing this one notifies the meeting scheduler — tick it in the client’s Tasks tab'
+      : upc ? 'Not due yet' : '';
+    var rec = (t.recurrence && t.recurrence !== 'none') ? ({ weekly: '🔁 Weekly', monthly: '🔁 Monthly', quarterly: '🔁 Quarterly', yearly: '🔁 Yearly' }[t.recurrence] || '') : '';
+    var dueChip = t.dueDate ? '<span class="mt-due' + (overdue ? ' over' : '') + '">' + (upc ? 'Next ' : overdue ? 'Overdue · ' : 'Due ') + esc(t.dueDate) + '</span>' : '';
+    return '<div class="mt-row ct-row' + (done ? ' done' : '') + '">' +
+      '<input type="checkbox" data-ct-done="' + esc(t._key) + '"' + (done ? ' checked' : '') + (locked ? ' disabled' : '') + (why ? ' title="' + esc(why) + '"' : '') + ' aria-label="Mark done" />' +
+      '<span class="mt-text">' + esc(t.title || '(untitled task)') + '<span class="ct-sub">' + esc(ctName(t._realm)) + (rec ? ' · ' + rec : '') + '</span></span>' +
+      dueChip +
+      '<a class="ct-open" href="bookkeeping.html?tasks=' + encodeURIComponent(t._realm) + '" title="Open this client’s Tasks tab">↗</a></div>';
+  }
+  function renderClientTasks() {
+    var wrap = document.getElementById('clientTasksWrap'); if (!wrap) return;
+    var me = meUpn();
+    var mine = me ? ctScan(me) : [];
+    // Nothing assigned to this person at all (a coach, say) — no card, rather than an empty
+    // one asking to be explained.
+    if (!mine.length) { if (wrap.innerHTML) wrap.innerHTML = ''; _ctLastHtml = null; return; }
+    if (!_ctNamesOk && Date.now() - _ctNamesAt > 30000) ctLoadNames();
+    var today = ymd(new Date());
+    var canWrite = ctCanWrite();
+    // Current AND upcoming together, in date order (the same shape the client's own Tasks tab
+    // now has): a recurring task already rolled forward is listed at its next date, not hidden.
+    var openList = mine.filter(function (t) { return t.status !== 'done'; })
+      .sort(function (a, b) { return String(a.dueDate || '9999').localeCompare(String(b.dueDate || '9999')) || String(b.createdAt || '').localeCompare(String(a.createdAt || '')); });
+    // Newest ten only: enough to un-tick a mistake, without a year of finished work.
+    var doneList = mine.filter(function (t) { return t.status === 'done'; })
+      .sort(function (a, b) { return String(b.doneAt || '').localeCompare(String(a.doneAt || '')); }).slice(0, 10);
+    var later = openList.filter(function (t) { return ctIsUpcoming(t, today); }).length;
+    var ready = openList.length - later;
+    var rows = openList.map(function (t) { return ctRow(t, today, canWrite); }).join('');
+    var doneSection = '';
+    if (doneList.length) {
+      doneSection = '<button type="button" id="ct_donetoggle" class="mt-donetoggle" aria-expanded="' + (_ctDoneOpen ? 'true' : 'false') + '">' +
+        '<span class="mt-caret" style="transform:rotate(' + (_ctDoneOpen ? '90' : '0') + 'deg);">▶</span>' +
+        '<span>Recently completed (' + doneList.length + ')</span>' +
+        '<span class="mt-doneshow">' + (_ctDoneOpen ? 'Hide' : 'Show') + '</span></button>' +
+        '<div id="ct_donelist"' + (_ctDoneOpen ? '' : ' hidden') + '>' + doneList.map(function (t) { return ctRow(t, today, canWrite); }).join('') + '</div>';
+    }
+    var html = '<div class="card mt-card">' +
+      '<div class="mt-head"><button class="mt-toggle" id="ct_toggle" type="button" aria-label="Toggle">' + (_ctOpen ? '▾' : '▸') + '</button>' +
+      '<strong>📋 Client tasks assigned to me</strong><span class="mt-count">' + (ready ? ready + ' open' : 'all clear') + (later ? ' · ' + later + ' upcoming' : '') + '</span>' +
+      '<span class="mt-priv">The same tasks as each client’s Tasks tab</span></div>' +
+      '<div id="ct_body"' + (_ctOpen ? '' : ' style="display:none;"') + '>' +
+        (rows || '<div class="mt-empty">All clear — nothing assigned to you is waiting.</div>') + doneSection +
+      '</div></div>';
+    if (html === _ctLastHtml && wrap.firstChild) return;
+    _ctLastHtml = html; wrap.innerHTML = html;
+    var tg = document.getElementById('ct_toggle'); if (tg) tg.onclick = function () { _ctOpen = !_ctOpen; _ctLastHtml = null; renderClientTasks(); };
+    wrap.querySelectorAll('[data-ct-done]').forEach(function (b) { b.onchange = function () { ctToggle(b.getAttribute('data-ct-done'), b.checked); }; });
+    var dtg = document.getElementById('ct_donetoggle');
+    if (dtg) dtg.onclick = function () {
+      var box = document.getElementById('ct_donelist'); if (!box) return;
+      var nowOpen = box.hidden; box.hidden = !nowOpen; _ctDoneOpen = nowOpen;
+      dtg.setAttribute('aria-expanded', nowOpen ? 'true' : 'false');
+      var caret = dtg.querySelector('.mt-caret'); if (caret) caret.style.transform = 'rotate(' + (nowOpen ? '90' : '0') + 'deg)';
+      var lbl = dtg.querySelector('.mt-doneshow'); if (lbl) lbl.textContent = nowOpen ? 'Hide' : 'Show';
+    };
+  }
+
+  // Isolated: see the note at the call sites.
+  function safeClientTasks() {
+    try { renderClientTasks(); }
+    catch (e) { try { console.error('Client tasks card failed to draw:', e); } catch (_) {} }
   }
 
   /* ===== Init ===== */
@@ -982,6 +1189,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     renderClock();
     renderMyTime();
     renderMyTasks();
+    // Isolated: a failure drawing THIS card must never stop the daily log (next) from drawing.
+    safeClientTasks();
     renderLog();
   }
   // Live sync (every ~8s, plus on focus) fires bcc-data-ready. A full init() rebuilds the
@@ -992,8 +1201,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     renderHero(); renderKpis(); renderSessions(); renderClock();
     if (!_editDay) renderMyTime();
     var ae = document.activeElement;
-    var editingTaskText = ae && ae.hasAttribute && ae.hasAttribute('data-mt-editinput');
+    var editingTaskText = ae && ae.hasAttribute && (ae.hasAttribute('data-mt-editinput') || ae.hasAttribute('data-mt-editdue'));
     if (!_mtDirty && !(ae && (ae.id === 'mt_new' || ae.id === 'mt_due')) && !editingTaskText) renderMyTasks();
+    safeClientTasks();   // isolated, same reason as in init()
     if (!_logDirty && !(ae && (ae.id === 'logWins' || ae.id === 'logBlockers' || ae.id === 'logTomorrow'))) renderLog();
   }
   window.addEventListener('bcc-data-ready', liveRefresh);
