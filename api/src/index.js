@@ -2819,6 +2819,53 @@ app.http('nav-popular', {
   })
 });
 
+/* ==== TEMPORARY feedback READ route — REMOVED in the same session ==== */
+app.http('tmp-feedback', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'tmp/feedback',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    const given = request.headers.get('x-bcc-cron-secret') || '';
+    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    try {
+      const c = container();
+      const att = new URL(request.url).searchParams.get('att') || '';
+      if (att) {
+        // ?att=<feedbackId>/<attachmentId> — one attachment, base64.
+        const [fid, aid] = att.split('/');
+        if (!/^bcc-feedback-[A-Za-z0-9-]{1,64}$/.test(String(fid || ''))) return { status: 400, jsonBody: { ok: false, error: 'bad id' } };
+        const doc = await c.item(fid, BCC_TENANT_ID).read().then(r => r.resource)
+          .catch(e => { if (e && (e.code === 404 || e.statusCode === 404)) return null; throw e; });
+        if (!doc || doc.docType !== 'feedback') return { status: 404, jsonBody: { ok: false, error: 'not found' } };
+        // Standing rule: feedback from janice@ is never touched.
+        if (/^janice@/i.test(String(doc.userUpn || ''))) return { status: 403, jsonBody: { ok: false, error: 'janice@ feedback is never touched' } };
+        const a = (doc.attachments || []).find(x => x && x.id === String(aid));
+        if (!a) return { status: 404, jsonBody: { ok: false, error: 'no such attachment' } };
+        const dl = await getBlobContainer().getBlockBlobClient(a.storageKey).download();
+        const chunks = [];
+        for await (const ch of dl.readableStreamBody) chunks.push(ch);
+        return { jsonBody: { ok: true, name: a.name, mimeType: a.mimeType, b64: Buffer.concat(chunks).toString('base64') } };
+      }
+      const { resources } = await c.items.query({
+        query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="feedback" ORDER BY c.createdAt DESC',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+      }).fetchAll();
+      const all = resources || [];
+      const by = {};
+      all.forEach(d => { by[d.status] = (by[d.status] || 0) + 1; });
+      // Standing rule: janice@ feedback is never touched — counted, never shown.
+      const janice = all.filter(d => /^janice@/i.test(String(d.userUpn || ''))).length;
+      const open = all.filter(d => d.status !== 'resolved' && !/^janice@/i.test(String(d.userUpn || '')))
+        .map(d => ({ id: d.id, status: d.status, type: d.type, from: d.userUpn, page: d.page, at: d.createdAt, message: d.message,
+          attachments: (d.attachments || []).map(a => ({ id: a.id, name: a.name, mimeType: a.mimeType, sizeBytes: a.sizeBytes })) }));
+      return { jsonBody: { ok: true, total: all.length, by, janiceNotShown: janice, open } };
+    } catch (e) {
+      return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } };
+    }
+  }
+});
+
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
