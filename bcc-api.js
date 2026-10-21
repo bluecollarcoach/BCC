@@ -836,6 +836,24 @@
       .catch(function (e) { _primedDocs[key] = ((e && e.status) === 403) ? 'denied' : 'fail'; fin(); });
   };
 
+  /* ---------- shared-calendar privacy (client half) ----------
+     The server now sends a colleague's coaching session as a BUSY BLOCK ({busy:true, coachUpn, startAt, endAt, status}) and refuses any
+     write to a session that is not yours. So nothing here may ever queue one: a refused key rejects the WHOLE push batch, and that
+     would stop an unrelated edit from saving. Both the hook below and the bootstrap sweep use these two. */
+  function bccSessionNotMine(value) {
+    var d; try { d = JSON.parse(value); } catch (e) { return false; }
+    if (!d || typeof d !== 'object') return false;
+    if (d.busy === true) return true;                                   // a placeholder is never ours to publish
+    var c = String(d.coachUpn || '').toLowerCase().trim();
+    var me = String((user && user.userDetails) || '').toLowerCase();
+    return !!(c && me && c !== me);
+  }
+  function bccBusyBlockOf(d, owner) {
+    return { id: d.id, tenantId: d.tenantId, docType: 'session', busy: true, coachUpn: owner, startAt: d.startAt, endAt: d.endAt,
+      allDay: d.allDay === true ? true : undefined,
+      status: /^cancell?ed$/i.test(String(d.status || '').trim()) ? 'canceled' : 'scheduled', updatedAt: d.updatedAt, createdAt: d.createdAt };
+  }
+
   /* ---------- hooks ---------- */
   Storage.prototype.setItem = function (key, value) {
     _origSetItem.call(this, key, value);
@@ -859,7 +877,8 @@
         && DEVICE_LOCAL_KEYS.indexOf(key) < 0
         && key.indexOf('bcc-financial-period-') !== 0
         && key.indexOf('bcc-cpr-sends-') !== 0
-        && key.indexOf('bcc-email-') !== 0) {
+        && key.indexOf('bcc-email-') !== 0
+        && !(key.indexOf('bcc-session-') === 0 && bccSessionNotMine(value))) {
       outboxPut(key, value, false);
     }
     if (this === window.localStorage && (signedIn || _authUnknown) && typeof key === 'string' && key.indexOf(KEY_PREFIX) === 0) {
@@ -885,6 +904,8 @@
       // guarantee than an access check on data that IS stored. Do not "enable sync"
       // for these on the grounds that the gate now exists.
       if (key.indexOf('bcc-email-') === 0) return;
+      // A colleague's busy block, or a stale full copy of their session: never ours to publish (see "shared-calendar privacy" above).
+      if (key.indexOf('bcc-session-') === 0 && bccSessionNotMine(value)) return;
       pending.set(key, value); _rehydrated.delete(key); // typed here: ours, not a snapshot
       /* `signedIn`, not a literal true. Under _authUnknown this write cannot be attributed to
          anyone yet, and outboxRehydrate's trusted flag is precisely what decides whether an
@@ -2239,6 +2260,29 @@
           stale.forEach(function (k) { _origRemoveItem.call(localStorage, k); });
           if (stale.length) console.info('[bcc-api] cleared ' + stale.length + " cached signature(s) belonging to other users");
           _origSetItem.call(localStorage, 'bcc-sigpurge-v1', String(Date.now()));
+        }
+      } catch (e) {}
+
+      // 2c) Calendar privacy: this device may already hold FULL copies of colleagues' sessions, from before the server started sending
+      // them as busy blocks. The forced full pull overwrites them, but if that pull cannot complete (offline, an error) the details
+      // would stay readable in this browser's storage, so replace them here too. Idempotent and cheap (a key scan). _origSetItem, NOT
+      // setItem: nothing is to be published. Anything with an unsent local write is left alone, and an unowned session is never touched.
+      try {
+        if (user && user.userDetails) {
+          var meCal = String(user.userDetails).toLowerCase(), calKeys = [];
+          for (var ci = 0; ci < localStorage.length; ci++) {
+            var ck = localStorage.key(ci);
+            if (ck && ck.indexOf('bcc-session-') === 0 && !pending.has(ck) && !outboxHas(ck)) calKeys.push(ck);
+          }
+          var calSwept = 0;
+          calKeys.forEach(function (k) {
+            var cd; try { cd = JSON.parse(localStorage.getItem(k)); } catch (e) { return; }
+            if (!cd || typeof cd !== 'object' || cd.busy === true) return;
+            var owner = String(cd.coachUpn || cd.msGraphOwner || '').toLowerCase().trim();
+            if (!owner || owner === meCal) return;
+            try { _origSetItem.call(localStorage, k, JSON.stringify(bccBusyBlockOf(cd, owner))); calSwept++; } catch (e) {}
+          });
+          if (calSwept) console.info('[bcc-api] replaced ' + calSwept + " cached session(s) belonging to colleagues with busy blocks");
         }
       } catch (e) {}
 
@@ -4603,6 +4647,7 @@
       if (!isSession && !isEvent) continue;
       var doc; try { doc = JSON.parse(localStorage.getItem(key)); } catch (e) { continue; }
       if (!doc || !doc.startAt) continue;
+      if (doc.busy === true) continue;          // a colleague's busy block: nothing of theirs to remind anyone about
       // A CANCELED session must not still page people. The server-side reminders cron
       // already skips these; the in-app bell did not, so the 24h and 15-minute reminders
       // kept firing for a session everyone had been told was off.

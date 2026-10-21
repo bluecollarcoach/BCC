@@ -87,6 +87,10 @@
   .day .events .ev .time { font-weight:700; color:var(--ink); font-size:11.5px; }
   .day .events .ev .title { font-size:12.5px; color:var(--ink); margin-top:2px; line-height:1.3; }
   .day .events .ev .who { font-size:11px; color:var(--muted); margin-top:2px; }
+  /* A colleague's time: when, never what. Not clickable — there is nothing of theirs to open. */
+  .day .events .ev.busy { background:repeating-linear-gradient(135deg,#f4f4f2,#f4f4f2 6px,#ececea 6px,#ececea 12px); border-left-color:#9aa0a6; cursor:default; }
+  .day .events .ev.busy:hover { background:repeating-linear-gradient(135deg,#f4f4f2,#f4f4f2 6px,#ececea 6px,#ececea 12px); }
+  .day .events .ev.busy .title { color:var(--muted); font-style:italic; }
   .day .empty-day { color:var(--muted); font-size:11.5px; text-align:center; padding-top:10px; font-style:italic; }
   .day button.addday {
     margin-top:auto; padding:6px 8px; font-size:11.5px; color:var(--gold);
@@ -152,6 +156,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     <div>
       <h1>Coaching Calendar</h1>
       <div class="sub" id="subline">Week of —</div>
+      <div class="sub" style="margin-top:2px;">Your sessions show in full. A colleague&rsquo;s time shows only as a busy block.</div>
     </div>
   </div>
 
@@ -163,7 +168,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     </div>
     <span class="label" id="weekLabel"></span>
     <button class="btn btn-primary" id="newBtn" type="button">+ New session</button>
-    <button class="btn btn-ghost" id="pullBtn" type="button" title="Import your Outlook calendar into the SHARED firm sessions calendar. Private/Confidential events are skipped and descriptions are not imported.">Pull from Outlook</button>
+    <button class="btn btn-ghost" id="pullBtn" type="button" title="Import your Outlook calendar. You see the events in full; everyone else sees only that you are busy. Private/Confidential events are skipped and descriptions are not imported.">Pull from Outlook</button>
     <button class="btn btn-ghost" id="printBtn" type="button">Print week</button>
   </div>
 
@@ -238,6 +243,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     return out;
   }
+  /* Shared-calendar privacy. A colleague's session reaches this browser as a BUSY BLOCK ({busy:true, coachUpn, startAt, endAt}) — the server
+     withholds the rest — and only the person it belongs to can change or delete it. These two questions guard every place a session is
+     opened, saved or deleted, so nothing here ever tries to publish a block (the server refuses it, and one refused key rejects the whole
+     batch of saves). */
+  function myUpn() { return String((window.bccUser && window.bccUser.userDetails) || '').toLowerCase(); }
+  function isBusyBlock(s) { return !!(s && s.busy === true); }
+  function notMine(s) { var c = String((s && s.coachUpn) || '').toLowerCase().trim(), me = myUpn(); return !!(c && me && c !== me); }
+  function whoseTime(s) { var u = String((s && s.coachUpn) || ''); return (window.bccFirstName ? window.bccFirstName(u) : '') || u.split('@')[0] || 'A colleague'; }
+  function sayNotYours() { (window.bccNotify || alert)('That is a colleague’s time — you can see that they are busy, and only they can see or change what it is.', 'warn', 6000); }
   // A session doc's `id` field is attacker-writable: these records sync through the
   // shared store, so anyone can plant one whose id names a DIFFERENT doc (e.g.
   // bcc-admin-config-v1). Since that id is used directly as the localStorage key,
@@ -249,6 +263,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // NULL on refusal, not the object — callers treat a returned record as proof it was
     // written (they close the modal, toast "Session saved." and re-render from it).
     if (window.bccRefuseIfNoEdit && window.bccRefuseIfNoEdit('sessions', 'session')) return null;
+    if (isBusyBlock(s) || notMine(s)) { sayNotYours(); return null; }
     s.updatedAt = nowIso();
     if (!s.createdAt) s.createdAt = s.updatedAt;
     if (!isSessionKey(s.id)) s.id = SESSION_PREFIX + uid();
@@ -270,6 +285,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function deleteSession(id) {
     if (!isSessionKey(id)) return false;
     if (window.bccRefuseIfNoEdit && window.bccRefuseIfNoEdit('sessions', 'deletion')) return false;
+    var cur = getSession(id);
+    if (isBusyBlock(cur) || notMine(cur)) { sayNotYours(); return false; }
     localStorage.removeItem(id);
     return true;
   }
@@ -314,6 +331,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var dayEnd = next.getTime();
       var dayEvents = sessions
         .filter(function (s) {
+          // A colleague's block that has been called off frees the time: nothing to show (your own are still MARKED, never hidden).
+          if ((isBusyBlock(s) || notMine(s)) && /^cancell?ed$/i.test(String(s.status || '').trim())) return false;
           var t = new Date(s.startAt).getTime();
           return !isNaN(t) && t >= dayStart && t < dayEnd;
         })
@@ -330,6 +349,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         dayEvents.forEach(function (s) {
           var t = new Date(s.startAt);
           var time = t.toLocaleTimeString([], { hour:'numeric', minute:'2-digit' });
+          // Someone else's time: when and whose — never what. No data-id, so nothing opens.
+          if (isBusyBlock(s) || notMine(s)) {
+            events += '<div class="ev busy" title="' + esc(whoseTime(s)) + ' is busy"><div class="time">' + esc(s.allDay ? 'All day' : time) + '</div>' +
+              '<div class="title">' + esc(whoseTime(s)) + ' &mdash; busy</div></div>';
+            return;
+          }
           var contact = s.contactId ? contactName(contactById(s.contactId)) : '';
           var canceled = /^cancell?ed$/i.test(String(s.status || '').trim());
           events += '<div class="ev ' + (s.source === 'msgraph' ? 'msgraph ' : '') + (canceled ? 'canceled' : '') + '" data-id="' + esc(s.id) + '">' +
@@ -391,7 +416,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       (window.bccNotify || alert)('Can’t import yet: this device hasn’t finished loading the existing calendar, and importing now would duplicate every session already on it. Try again in a moment.', 'warn', 10000);
       return;
     }
-    if (!confirm('Import your Outlook calendar into the shared Sessions calendar?\n\nImported events become visible to everyone at the firm. Appointments you marked Private or Confidential are skipped, and event descriptions are not imported.')) return;
+    if (!confirm('Import your Outlook calendar into the Sessions calendar?\n\nYou see these events in full. Everyone else at the firm sees only that you are busy at those times — not the title, place or notes. Appointments you marked Private or Confidential are skipped, and event descriptions are not imported.')) return;
     var btn = this; btn.disabled = true; btn.textContent = 'Pulling…';
     // Default range = the current week +/- a couple weeks, so the pull
     // populates whatever the user is looking at without dragging in
@@ -515,6 +540,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (id) {
       var s = getSession(id);
       if (!s) { (window.bccNotify || alert)('Session not found.', 'error'); return; }
+      if (isBusyBlock(s) || notMine(s)) { sayNotYours(); return; }
       titleEl.textContent = 'Edit session';
       delBtn.style.display = '';
       document.getElementById('m-title').value = s.title || '';

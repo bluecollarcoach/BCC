@@ -90,6 +90,9 @@
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   }
   .day .ev:hover { background:rgba(168,136,74,0.22); }
+  /* A colleague's time: when and whose, never what — and nothing to open. */
+  .day .ev.busy { background:repeating-linear-gradient(135deg,#f4f4f2,#f4f4f2 6px,#ececea 6px,#ececea 12px); border-left-color:#9aa0a6; cursor:default; color:var(--muted); font-style:italic; }
+  .day .ev.busy:hover { background:repeating-linear-gradient(135deg,#f4f4f2,#f4f4f2 6px,#ececea 6px,#ececea 12px); }
   .day .ev .t { font-weight:700; color:var(--ink); }
   .day .more { font-size:10.5px; color:var(--muted); font-weight:600; cursor:pointer; padding:2px 4px; }
   .day .more:hover { color:var(--gold-deep); }
@@ -209,6 +212,15 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   /* Both spellings — the value is free text from the client. Cancelled items are MARKED, never
      dropped: a meeting that simply disappears from the calendar reads as lost, not called off. */
   function isCanceledItem(it) { return /^cancell?ed$/i.test(String((it && it.status) || '').trim()); }
+  /* Someone else's time. `busy` is what the server sends; the owner comparison also catches a full copy of a colleague's session that was
+     cached on this device before the server stopped sending them. No identity yet (offline, still signing in) means nothing is hidden on a guess. */
+  function isOthersTime(s) {
+    if (!s) return false;
+    if (s.busy === true) return true;
+    var c = String(s.coachUpn || '').toLowerCase().trim(), me = String((window.bccUser && window.bccUser.userDetails) || '').toLowerCase();
+    return !!(c && me && c !== me);
+  }
+  function busyWho(it) { var u = String((it && it.coachUpn) || ''); return (window.bccFirstName ? window.bccFirstName(u) : '') || u.split('@')[0] || 'A colleague'; }
   function liveCount(items) { return (items || []).filter(function (it) { return !isCanceledItem(it); }).length; }
 
   function allItems() {
@@ -219,7 +231,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         // status rides along: without it nothing downstream could tell a CANCELLED session
         // from a live one, so the grid, its day-count badge and the day modal all counted
         // meetings that had been called off.
-        try { var s = JSON.parse(localStorage.getItem(k)); if (s && s.startAt) out.push({ kind:'session', startAt:s.startAt, title:s.title, location:s.location, contactId:s.contactId, id:s.id, status:s.status, href:'sessions.html' }); } catch (_) {}
+        try {
+          var s = JSON.parse(localStorage.getItem(k));
+          if (s && s.startAt) {
+            /* Shared-calendar privacy: a colleague's session reaches this browser as a busy block (when and whose, never what), and a stale
+               full copy from before that is treated the same. It is carried as `busy` with NOTHING else of theirs — and a block that has been
+               called off frees the time, so it is not carried at all. */
+            if (isOthersTime(s)) {
+              if (isCanceledItem(s)) continue;
+              out.push({ kind:'session', startAt:s.startAt, endAt:s.endAt, allDay:s.allDay === true, id:s.id, status:s.status, busy:true, coachUpn:s.coachUpn });
+            } else {
+              out.push({ kind:'session', startAt:s.startAt, title:s.title, location:s.location, contactId:s.contactId, id:s.id, status:s.status, href:'sessions.html' });
+            }
+          }
+        } catch (_) {}
       } else if (k.indexOf(EVENT_PREFIX) === 0) {
         try { var e = JSON.parse(localStorage.getItem(k)); if (e && e.startAt) out.push({ kind:'event', startAt:e.startAt, title:e.title, location:e.location, id:e.id, href:'events.html' }); } catch (_) {}
       }
@@ -287,6 +312,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           var t = new Date(it.startAt);
           var time = t.toLocaleTimeString([], { hour:'numeric', minute:'2-digit' });
           var cx = isCanceledItem(it);
+          // A colleague's time: when and whose, nothing else, and nothing to open.
+          if (it.busy) {
+            html += '<div class="ev busy" title="' + esc(busyWho(it)) + ' is busy"><span class="t">' + esc(it.allDay ? 'All day' : time) + '</span> ' + esc(busyWho(it)) + ' &mdash; busy</div>';
+            return;
+          }
           html += '<div class="ev" data-id="' + esc(it.id) + '"' + (cx ? ' style="opacity:.55;text-decoration:line-through;" title="Canceled"' : '') + '><span class="t">' + esc(time) + '</span> ' + esc(it.title || '(untitled)') + '</div>';
         });
         if (dayItems.length > 3) html += '<div class="more" data-more="' + ymd(d) + '">+' + (dayItems.length - 3) + ' more</div>';
@@ -378,13 +408,20 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
              months from what was clicked — and this modal is the ONLY way to reach items past
              the first three on a day. */
           var href = it.href + (it.id ? ('?id=' + encodeURIComponent(it.id)) : '');
+          // A colleague's time: when and whose, nothing else, and not a link.
+          if (it.busy) {
+            return '<div class="day-ev" style="cursor:default;opacity:.8;">' +
+              '<div class="t">' + esc(it.allDay ? 'All day' : time) + ' &middot; ' + esc(busyWho(it)) + ' &mdash; busy</div>' +
+              '<div class="meta">Only they can see what this is</div></div>';
+          }
           return '<div class="day-ev" data-href="' + esc(href) + '">' +
             '<div class="t"' + (cxd ? ' style="text-decoration:line-through;"' : '') + '>' + esc(time) + ' &middot; ' + esc(it.title || '(untitled)') + '</div>' +
             '<div class="meta">' + (cxd ? '<span style="color:var(--burgundy);font-weight:700;">Canceled</span> &middot; ' : '') + esc(it.kind === 'session' ? 'Coaching session' : 'Event') + (who ? ' &middot; ' + esc(who) : '') + (it.location ? ' &middot; ' + esc(it.location) : '') + '</div>' +
           '</div>';
         }).join('');
     document.getElementById('dayEvs').querySelectorAll('.day-ev').forEach(function (el) {
-      el.addEventListener('click', function () { location.href = el.dataset.href; });
+      // A colleague's busy row has no link (nothing of theirs to open): without this it navigated to "undefined".
+      el.addEventListener('click', function () { if (el.dataset.href) location.href = el.dataset.href; });
     });
     document.getElementById('m-newOnDay').onclick = function () {
       // Drop a hint via sessionStorage so sessions.html can pre-fill the modal

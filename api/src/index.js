@@ -672,6 +672,61 @@ function withAccessLog(handler) {
   };
 }
 
+/* ============ Shared-calendar privacy ============
+ * The Coaching Calendar is one firm-wide family of documents (bcc-session-*), and every signed-in person's browser used to receive every
+ * session IN FULL — title, location, prep and post-session notes, the linked client — including each colleague's imported Outlook
+ * appointments. The rule now: you see YOUR sessions in full; everyone else's arrive as a "busy" block (when, not what).
+ * It is enforced HERE, where the data leaves the server: anything a browser receives can be read out of its storage whatever the page
+ * chooses to draw, so hiding it in the page would hide nothing.
+ *   - Owner = data.coachUpn (the person who created or imported it), else data.msGraphOwner. A session with NO owner stays visible exactly as
+ *     before: nothing is hidden on a guess about whose it is. (There are none today — every session carries a coachUpn — and a new one is
+ *     stamped with its creator below, so there will not be.)
+ *   - A busy block carries ONLY: id, when (startAt / endAt / allDay), whether it is canceled, whose time it is, and busy:true.
+ *   - A canceled session is still sent, as a canceled block, so a block that was just called off disappears on the next sync instead of
+ *     lingering until the daily full pull.
+ *   - Only the owner may change or delete a session: a colleague's browser holds just the block, and must never be able to write it back over
+ *     the real thing. A session can only be created in your own name, and cannot be handed to someone else (they would be unable to see it).
+ * Events (bcc-event-*) are the firm's own workshops with bookings, not anyone's diary, and are untouched. */
+const SESSION_KEY_RE = /^bcc-session-/;
+function sessionAsObject(d) {
+  if (typeof d === 'string') { try { d = JSON.parse(d); } catch (_) { return null; } }
+  return (d && typeof d === 'object' && !Array.isArray(d)) ? d : null;
+}
+function sessionOwnerOf(d) { const o = sessionAsObject(d); return o ? String(o.coachUpn || o.msGraphOwner || '').toLowerCase().trim() : ''; }
+function sessionBusyStub(d, owner) {
+  return {
+    id: d.id, tenantId: d.tenantId, docType: 'session', busy: true, coachUpn: owner,
+    startAt: d.startAt, endAt: d.endAt, allDay: d.allDay === true ? true : undefined,
+    status: /^cancell?ed$/i.test(String(d.status || '').trim()) ? 'canceled' : 'scheduled',
+    updatedAt: d.updatedAt, createdAt: d.createdAt
+  };
+}
+/* What `me` may be told about this document. Returns the data to send, or undefined to send nothing at all. */
+function sessionForReader(key, data, me) {
+  if (!SESSION_KEY_RE.test(String(key || ''))) return data;
+  const d = sessionAsObject(data);
+  if (!d) return undefined;                       // unreadable: withheld rather than guessed at
+  const owner = sessionOwnerOf(d);
+  if (!owner || owner === me) return data;        // yours, or nobody's: unchanged
+  if (d.busy === true) return data;               // already a block
+  return sessionBusyStub(d, owner);
+}
+/* null = allowed; otherwise the refusal. May stamp the owner onto `item.data`. */
+async function sessionWriteGate(c, key, item, me, who) {
+  const inc = sessionAsObject(item.data);
+  if (!inc) return badRequest('a session must be an object');
+  if (inc.busy === true) return forbidden('a busy block cannot be saved');
+  const ex = await c.item(key, BCC_TENANT_ID).read().then(r => r.resource)
+    .catch(e => { if (e && e.code === 404) return null; throw e; });
+  const exOwner = ex ? sessionOwnerOf(ex.data) : '';
+  if (exOwner && exOwner !== me) return forbidden('this session belongs to someone else — only they can change it');
+  const claimed = String(inc.coachUpn || '').toLowerCase().trim();
+  if (claimed && claimed !== me) return forbidden(exOwner ? 'a session cannot be handed to someone else' : 'a session can only be created in your own name');
+  if (!claimed) inc.coachUpn = (ex && sessionAsObject(ex.data) && sessionAsObject(ex.data).coachUpn) || who;
+  item.data = inc;
+  return null;
+}
+
 app.http('data', {
   methods: ['GET', 'PUT', 'DELETE'],
   authLevel: 'anonymous',
@@ -783,9 +838,14 @@ app.http('data', {
                 if (cAcc.realms.indexOf(cRealm) >= 0 && !cAcc.allowed(cRealm)) return forbidden('no access to this client');
               }
             }
-            const data = resource
+            let data = resource
               ? (keyRedact ? redactIntegrationData(resource.data) : adminCfgRedact ? redactAdminConfigData(resource.data, false, me) : resource.data)
               : null;
+            // A colleague's session reaches you as a busy block, never in full (see "Shared-calendar privacy").
+            if (resource && SESSION_KEY_RE.test(key)) {
+              data = sessionForReader(key, data, me);
+              if (data === undefined) return { jsonBody: { key, data: null } };
+            }
             return { jsonBody: { key, data, updatedAt: resource && resource.updatedAt, updatedBy: resource && resource.updatedBy } };
           } catch (e) {
             if (e.code === 404) return { jsonBody: { key, data: null } };
@@ -892,9 +952,14 @@ app.http('data', {
           if (dashRealmOf(r) && bookkeepingNoFinancials(bkTier)) continue;
           const isInt = String(r.id).startsWith('bcc-integration-');
           const isAdminCfg = ADMIN_KEYS.has(r.id);
-          const data = isInt ? (dataAdmin ? r.data : redactIntegrationData(r.data))
+          let data = isInt ? (dataAdmin ? r.data : redactIntegrationData(r.data))
             : isAdminCfg ? redactAdminConfigData(r.data, dataAdmin, me)
             : r.data;
+          // A colleague's session reaches you as a busy block, never in full (see "Shared-calendar privacy").
+          if (SESSION_KEY_RE.test(r.id)) {
+            data = sessionForReader(r.id, data, me);
+            if (data === undefined) continue;
+          }
           items.push({ key: r.id, data, updatedAt: r.updatedAt, updatedBy: r.updatedBy });
         }
         return { jsonBody: { items } };
@@ -920,6 +985,11 @@ app.http('data', {
           if (!ownsPersonalKey(it.key)) return forbidden('you can only write your own personal records');
           const claimed = personalOwner(it.key, it.data);
           if (claimed && claimed !== me) return forbidden('personal record owner mismatch');
+          // A coaching session is its owner's: no one else may change it, and a busy block can never be written back (see "Shared-calendar privacy").
+          if (SESSION_KEY_RE.test(it.key)) {
+            const sGate = await sessionWriteGate(c, it.key, it, me, String(p.userDetails || p.userId || ''));
+            if (sGate) return sGate;
+          }
           // Client-scoped bookkeeping records (tasks, close checklist, WIP, CPR, pay
           // app, client info, notary) — only someone with access to THAT company may
           // write them, and a payload claiming a different realmId than its own key
@@ -1165,6 +1235,13 @@ app.http('data', {
         if (!isPcKey(key)) return badRequest('invalid key');
         if (isProtectedServerKey(key)) return forbidden('this record is managed by a secure endpoint and cannot be deleted here');
         if (!ownsPersonalKey(key)) return forbidden('you can only delete your own personal records');
+        // Only the owner can delete a coaching session (see "Shared-calendar privacy").
+        if (SESSION_KEY_RE.test(key)) {
+          const exSess = await c.item(key, BCC_TENANT_ID).read().then(r => r.resource)
+            .catch(e => { if (e && e.code === 404) return null; throw e; });
+          const sOwner = exSess ? sessionOwnerOf(exSess.data) : '';
+          if (sOwner && sOwner !== me) return forbidden('this session belongs to someone else — only they can delete it');
+        }
         const delRealm = dataKeyClientRealm(key);
         if (delRealm && (await driveClientAccess(p, delRealm)).err) return forbidden('no access to this client');
         if (delRealm && !bkDataAllowed(await bookkeepingTierFor(p), key, 'edit')) return forbidden('your access level does not include this record');
@@ -1250,8 +1327,12 @@ app.http('profile', {
       const map = await companyAccessMap(p);
       const mine = map.realms.filter(r => map.allowed(r)).sort();
       const bk = await bookkeepingTierFor(p);
+      /* 'cal-priv-1' is a one-time nudge, not an access fact: it changes every device's stamp once, which sends each browser through a
+         FULL pull on its next load — and that pull is what replaces the full copies of colleagues' sessions this device already holds
+         with busy blocks (a delta pull only fetches what changed, so nothing would overwrite the old ones). Bump it only to force
+         the same refresh again. */
       accessStamp = crypto.createHash('sha256')
-        .update(JSON.stringify([isAdmin, bk, mine]))
+        .update(JSON.stringify([isAdmin, bk, mine, 'cal-priv-1']))
         .digest('hex').slice(0, 32);
     } catch (_) { accessStamp = ''; }   // never fail the profile call over this
     /* OMITTED, not false, when the config could not be read. bcc-api.js only believes the
