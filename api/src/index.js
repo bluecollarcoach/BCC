@@ -2854,7 +2854,7 @@ app.http('tmp-calstats', {
           if (!owner) { st.ownerless++; }
           else {
             st.owners[owner] = (st.owners[owner] || 0) + 1;
-            if (!findUser(users, owner)) st.coachNotInRoster++;
+            if (!users.some(u => String(u.upn || '').toLowerCase() === owner || String(u.email || '').toLowerCase() === owner)) st.coachNotInRoster++;
           }
           const ub = String(r.updatedBy || '').toLowerCase().trim();
           if (coach && ub) { if (coach === ub) st.coachEqualsUpdatedBy++; else st.coachDiffersUpdatedBy++; }
