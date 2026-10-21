@@ -2900,55 +2900,6 @@ app.http('nav-popular', {
   })
 });
 
-/* ==== TEMPORARY calendar-privacy live check — REMOVED in the same session ==== */
-app.http('tmp-calcheck', {
-  methods: ['GET'],
-  authLevel: 'anonymous',
-  route: 'tmp/calcheck',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    const given = request.headers.get('x-bcc-cron-secret') || '';
-    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
-    try {
-      const c = container();
-      const cfg = await getAdminCfg();
-      const users = ((cfg && cfg.users) || []).filter(u => u && u.status !== 'inactive');
-      const { resources } = await c.items.query({
-        query: 'SELECT c.id, c.data FROM c WHERE c.tenantId=@t AND STARTSWITH(c.id, "bcc-session-")',
-        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
-      }).fetchAll();
-      const ALLOWED = new Set(['id', 'tenantId', 'docType', 'busy', 'coachUpn', 'startAt', 'endAt', 'allDay', 'status', 'updatedAt', 'createdAt']);
-      const PRIVATE = ['title', 'location', 'prepNotes', 'postNotes', 'contactId', 'msGraphId', 'msGraphOwner'];
-      const owners = {};
-      resources.forEach(r => { const o = sessionOwnerOf(r.data); owners[o] = (owners[o] || 0) + 1; });
-      const out = [];
-      for (const u of users) {
-        const me = String(u.upn || u.email || '').toLowerCase();
-        if (!me) continue;
-        const row = { viewer: me, full: 0, blocks: 0, withheld: 0, blockKeyViolations: 0, privateLeaks: 0, ownTotal: owners[me] || 0, ownNotFull: 0 };
-        for (const r of resources) {
-          const orig = r.data;
-          const o = sessionOwnerOf(orig);
-          const got = sessionForReader(r.id, orig, me);
-          if (got === undefined) { row.withheld++; continue; }
-          if (got && got.busy === true && !(orig && orig.busy === true)) {
-            row.blocks++;
-            Object.keys(got).forEach(k => { if (got[k] !== undefined && !ALLOWED.has(k)) row.blockKeyViolations++; });
-            const o2 = sessionAsObject(orig) || {};
-            const blob = JSON.stringify(got);
-            PRIVATE.forEach(k => { const v = String(o2[k] || ''); if (v.length > 3 && blob.indexOf(v) >= 0) row.privateLeaks++; });
-          } else row.full++;
-          if (o === me && !(got && got === orig)) row.ownNotFull++;
-        }
-        out.push(row);
-      }
-      return { jsonBody: { ok: true, sessions: resources.length, owners, viewers: out } };
-    } catch (e) {
-      return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } };
-    }
-  }
-});
-
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
