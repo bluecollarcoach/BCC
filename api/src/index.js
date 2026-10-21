@@ -2819,61 +2819,6 @@ app.http('nav-popular', {
   })
 });
 
-/* ==== TEMPORARY calendar-ownership stats route — REMOVED in the same session ==== */
-app.http('tmp-calstats', {
-  methods: ['GET'],
-  authLevel: 'anonymous',
-  route: 'tmp/calstats',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    const given = request.headers.get('x-bcc-cron-secret') || '';
-    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
-    try {
-      const c = container();
-      const cfg = await getAdminCfg();
-      const users = (cfg && cfg.users) || [];
-      const out = {};
-      for (const [label, prefix] of [['sessions', 'bcc-session-'], ['events', 'bcc-event-']]) {
-        const { resources } = await c.items.query({
-          query: 'SELECT c.id, c.updatedBy, c.data FROM c WHERE c.tenantId=@t AND STARTSWITH(c.id, @p)',
-          parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@p', value: prefix }]
-        }).fetchAll();
-        const st = { total: 0, withCoachUpn: 0, withGraphOwner: 0, ownerless: 0, coachNotInRoster: 0, coachEqualsUpdatedBy: 0, coachDiffersUpdatedBy: 0,
-                     bySource: {}, byStatus: {}, upcoming: 0, upcomingOwnerless: 0, owners: {}, keyUnion: {}, wrapped: 0, flat: 0, hasEndAt: 0, hasDuration: 0 };
-        const now = new Date().toISOString();
-        for (const r of resources) {
-          const d = r.data || {};
-          st.total++;
-          if (r.data) st.wrapped++; else st.flat++;
-          Object.keys(d).forEach(k => { st.keyUnion[k] = (st.keyUnion[k] || 0) + 1; });
-          const coach = String(d.coachUpn || '').toLowerCase().trim();
-          const go = String(d.msGraphOwner || '').toLowerCase().trim();
-          const owner = coach || go;
-          if (coach) st.withCoachUpn++;
-          if (go) st.withGraphOwner++;
-          if (!owner) { st.ownerless++; }
-          else {
-            st.owners[owner] = (st.owners[owner] || 0) + 1;
-            if (!users.some(u => String(u.upn || '').toLowerCase() === owner || String(u.email || '').toLowerCase() === owner)) st.coachNotInRoster++;
-          }
-          const ub = String(r.updatedBy || '').toLowerCase().trim();
-          if (coach && ub) { if (coach === ub) st.coachEqualsUpdatedBy++; else st.coachDiffersUpdatedBy++; }
-          st.bySource[d.source || '(none)'] = (st.bySource[d.source || '(none)'] || 0) + 1;
-          st.byStatus[d.status || '(none)'] = (st.byStatus[d.status || '(none)'] || 0) + 1;
-          if (d.startAt && d.startAt > now) { st.upcoming++; if (!owner) st.upcomingOwnerless++; }
-          if (d.endAt) st.hasEndAt++;
-          if (d.durationMin || d.duration || d.durationMinutes) st.hasDuration++;
-        }
-        out[label] = st;
-      }
-      out.rosterUsers = users.map(u => ({ email: u.email || u.upn || '', status: u.status || '', role: u.role || '' }));
-      return { jsonBody: Object.assign({ ok: true }, out) };
-    } catch (e) {
-      return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } };
-    }
-  }
-});
-
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
