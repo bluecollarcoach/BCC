@@ -1,0 +1,15 @@
+name: TEMP calendar stats
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read
+        env:
+          SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -sS --max-time 60 -H "x-bcc-cron-secret: $SECRET" 'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/tmp/calstats' -o /tmp/out.json
+          cat /tmp/out.json
