@@ -2960,11 +2960,11 @@ app.http('tmp-bbmtasks', {
       const c = container();
       const nameQ = new URL(request.url).searchParams.get('name') || 'brother built';
       const { resources: cos } = await c.items.query({
-        query: 'SELECT c.id, c.data FROM c WHERE c.tenantId=@t AND STARTSWITH(c.id, "bcc-qbo-company-")',
+        query: 'SELECT c.id, c.realmId, c.companyName, c.enabled, c.allowedUserUpns, c.privateToUpn FROM c WHERE c.tenantId=@t AND c.docType="qbo-company"',
         parameters: [{ name: '@t', value: BCC_TENANT_ID }]
       }).fetchAll();
       // Deliberately only names/flags — never the tokens that live in these documents.
-      const matched = cos.map(r => { const d = r.data || {}; return { id: r.id, realm: r.id.replace('bcc-qbo-company-', ''), name: d.companyName || d.name || '', enabled: d.enabled !== false, privateTo: d.privateToUpn || null, allowed: Array.isArray(d.allowedUserUpns) ? d.allowedUserUpns.length : 0 }; })
+      const matched = cos.map(r => ({ id: r.id, realm: String(r.realmId || ''), name: r.companyName || '', enabled: r.enabled !== false, privateTo: r.privateToUpn || null, allowed: Array.isArray(r.allowedUserUpns) ? r.allowedUserUpns.length : 0 }))
         .filter(x => String(x.name).toLowerCase().indexOf(nameQ.toLowerCase()) >= 0);
       const realms = new Set(matched.map(x => x.realm));
       const { resources: docs } = await c.items.query({
@@ -2986,7 +2986,7 @@ app.http('tmp-bbmtasks', {
         k.total++; if (d.status === 'done') k.done++; else k.open++; if (ready) k.ready++; if (upcoming) k.upcoming++; if (ready && d.dueDate && d.dueDate < today) k.overdue++;
         if (rows.length < 80) rows.push({ id: r.id.slice(0, 60), keyRealm, dataRealm, title: String(d.title || '').slice(0, 60), status: d.status, due: d.dueDate || '', rec: d.recurrence || 'none', who: d.assigneeUpn || '', done: d.timesDone || 0, lastDoneAt: d.lastDoneAt || '', upd: r.updatedAt, by: r.updatedBy, ready, upcoming: !!upcoming });
       }
-      return { jsonBody: { ok: true, today, companies: matched, perKeyRealm: per, rows, totalTaskDocs: docs.length } };
+      return { jsonBody: { ok: true, today, companyDocs: cos.length, companies: matched, perKeyRealm: per, rows, totalTaskDocs: docs.length } };
     } catch (e) {
       return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } };
     }
