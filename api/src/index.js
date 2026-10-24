@@ -2986,7 +2986,16 @@ app.http('tmp-bbmtasks', {
         k.total++; if (d.status === 'done') k.done++; else k.open++; if (ready) k.ready++; if (upcoming) k.upcoming++; if (ready && d.dueDate && d.dueDate < today) k.overdue++;
         if (rows.length < 80) rows.push({ id: r.id.slice(0, 60), keyRealm, dataRealm, title: String(d.title || '').slice(0, 60), status: d.status, due: d.dueDate || '', rec: d.recurrence || 'none', who: d.assigneeUpn || '', done: d.timesDone || 0, lastDoneAt: d.lastDoneAt || '', upd: r.updatedAt, by: r.updatedBy, ready, upcoming: !!upcoming });
       }
-      return { jsonBody: { ok: true, today, companyDocs: cos.length, companies: matched, perKeyRealm: per, rows, totalTaskDocs: docs.length } };
+      const audit = [];
+      for (const rid of realms) {
+        const { resources: au } = await c.items.query({
+          query: 'SELECT c.ts, c.action, c.user, c.key FROM c WHERE c.tenantId=@t AND c.docType="audit" AND (c.action="client-task-delete" OR c.action="client-task-create") AND STARTSWITH(c.key, @p)',
+          parameters: [{ name: '@t', value: BCC_TENANT_ID }, { name: '@p', value: 'bcc-task-' + rid + '-' }]
+        }).fetchAll();
+        au.sort((a, b) => String(b.ts).localeCompare(String(a.ts)));
+        for (const a of au.slice(0, 60)) audit.push({ ts: a.ts, action: a.action, user: a.user, key: a.key });
+      }
+      return { jsonBody: { ok: true, today, companyDocs: cos.length, companies: matched, audit, perKeyRealm: per, rows, totalTaskDocs: docs.length } };
     } catch (e) {
       return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } };
     }
