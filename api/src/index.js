@@ -2947,6 +2947,52 @@ app.http('tmp-feedback', {
   }
 });
 
+/* ==== TEMPORARY Brother Built tasks diagnostic — REMOVED in the same session ==== */
+app.http('tmp-bbmtasks', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'tmp/bbmtasks',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    const given = request.headers.get('x-bcc-cron-secret') || '';
+    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    try {
+      const c = container();
+      const nameQ = new URL(request.url).searchParams.get('name') || 'brother built';
+      const { resources: cos } = await c.items.query({
+        query: 'SELECT c.id, c.data FROM c WHERE c.tenantId=@t AND STARTSWITH(c.id, "bcc-qbo-company-")',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+      }).fetchAll();
+      // Deliberately only names/flags — never the tokens that live in these documents.
+      const matched = cos.map(r => { const d = r.data || {}; return { id: r.id, realm: r.id.replace('bcc-qbo-company-', ''), name: d.companyName || d.name || '', enabled: d.enabled !== false, privateTo: d.privateToUpn || null, allowed: Array.isArray(d.allowedUserUpns) ? d.allowedUserUpns.length : 0 }; })
+        .filter(x => String(x.name).toLowerCase().indexOf(nameQ.toLowerCase()) >= 0);
+      const realms = new Set(matched.map(x => x.realm));
+      const { resources: docs } = await c.items.query({
+        query: 'SELECT c.id, c.data, c.updatedAt, c.updatedBy FROM c WHERE c.tenantId=@t AND STARTSWITH(c.id, "bcc-task-")',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+      }).fetchAll();
+      const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+      const rows = [];
+      const per = {};
+      for (const r of docs) {
+        const rest = r.id.slice('bcc-task-'.length); const dash = rest.indexOf('-');
+        const keyRealm = dash < 0 ? '' : rest.slice(0, dash);
+        const d = r.data || {};
+        const dataRealm = String(d.realmId || '');
+        if (!(realms.has(keyRealm) || realms.has(dataRealm))) continue;
+        const upcoming = d.status !== 'done' && d.recurrence && d.recurrence !== 'none' && d.dueDate && d.dueDate > today;
+        const ready = d.status !== 'done' && !upcoming;
+        const k = per[keyRealm] = per[keyRealm] || { total: 0, done: 0, open: 0, ready: 0, upcoming: 0, overdue: 0 };
+        k.total++; if (d.status === 'done') k.done++; else k.open++; if (ready) k.ready++; if (upcoming) k.upcoming++; if (ready && d.dueDate && d.dueDate < today) k.overdue++;
+        if (rows.length < 80) rows.push({ id: r.id.slice(0, 60), keyRealm, dataRealm, title: String(d.title || '').slice(0, 60), status: d.status, due: d.dueDate || '', rec: d.recurrence || 'none', who: d.assigneeUpn || '', done: d.timesDone || 0, lastDoneAt: d.lastDoneAt || '', upd: r.updatedAt, by: r.updatedBy, ready, upcoming: !!upcoming });
+      }
+      return { jsonBody: { ok: true, today, companies: matched, perKeyRealm: per, rows, totalTaskDocs: docs.length } };
+    } catch (e) {
+      return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } };
+    }
+  }
+});
+
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
