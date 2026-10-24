@@ -2900,6 +2900,51 @@ app.http('nav-popular', {
   })
 });
 
+/* ==== TEMPORARY feedback update endpoint — REMOVED in the same session ==== */
+app.http('tmp-feedback-update', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'tmp/feedback-update',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    const given = request.headers.get('x-bcc-cron-secret') || '';
+    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    try {
+      const body = await request.json().catch(() => ({}));
+      const items = Array.isArray(body.items) ? body.items.slice(0, 20) : [];
+      if (!items.length) return { status: 400, jsonBody: { ok: false, error: 'items[] required' } };
+      const c = container();
+      const who = 'lyle@bluecollarcoach.us';
+      const out = [];
+      for (const it of items) {
+        const id = String((it && it.id) || '');
+        const st = String((it && it.status) || '').toLowerCase();
+        const note = String((it && it.note) || '').trim().slice(0, 2000);
+        if (!/^bcc-feedback-[A-Za-z0-9-]{1,64}$/.test(id) || ['reviewed', 'resolved'].indexOf(st) < 0) { out.push({ id, ok: false, why: 'bad id or status' }); continue; }
+        if (st === 'resolved' && !note) { out.push({ id, ok: false, why: 'a resolved item needs a reply note' }); continue; }
+        const doc = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource)
+          .catch(e => { if (e && (e.code === 404 || e.statusCode === 404)) return null; throw e; });
+        if (!doc || doc.docType !== 'feedback') { out.push({ id, ok: false, why: 'not found' }); continue; }
+        // Standing rule: feedback from janice@ is never touched.
+        if (/^janice@/i.test(String(doc.userUpn || ''))) { out.push({ id, ok: false, why: 'janice@ feedback is never touched' }); continue; }
+        const wasResolved = doc.status === 'resolved';
+        doc.status = st; doc.reviewedBy = who; doc.updatedAt = new Date().toISOString();
+        if (note) { doc.resolutionNote = note; doc.resolutionBy = who; doc.resolutionAt = doc.updatedAt; }
+        await c.items.upsert(doc);
+        // Same rule as the real handler: tell the submitter on a FRESH resolve.
+        let notified = null;
+        if (doc.userUpn && st === 'resolved' && !wasResolved) {
+          notified = !!(await notifyUser(c, doc.userUpn, { title: '✅ Your feedback was addressed', body: note, url: safeNotifyPath(doc.page), tag: 'fbdone-' + doc.id }));
+        }
+        out.push({ id, ok: true, status: doc.status, notified, upn: doc.userUpn || null, noteStored: !!doc.resolutionNote });
+      }
+      return { jsonBody: { ok: true, results: out } };
+    } catch (e) {
+      return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } };
+    }
+  }
+});
+
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
