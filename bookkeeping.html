@@ -1196,7 +1196,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         // A rolled-forward recurring task whose next occurrence is in the FUTURE isn't
         // "ready" yet — don't count it (avoids the Planner "next one already assigned" problem).
         var notYetDue = taskIsUpcoming(t, today);
-        if (!notYetDue) { var info = map[realm] || (map[realm] = { count: 0, overdue: false }); info.count++; if (t.dueDate && t.dueDate < today) info.overdue = true; }
+        if (!notYetDue) {
+          var info = map[realm] || (map[realm] = { count: 0, overdue: false, overdueCount: 0 });
+          info.count++;
+          if (t.dueDate && t.dueDate < today) { info.overdue = true; info.overdueCount++; }
+        }
       }
     }
     return map;
@@ -1234,7 +1238,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     emptyEl.hidden = true;
     var taskMap = buildTaskMap();
-    var ti = function (realm) { return taskMap[realm] || { count: 0, overdue: false }; };
+    var ti = function (realm) { return taskMap[realm] || { count: 0, overdue: false, overdueCount: 0 }; };
     var sorted = companies.slice().sort(function (a, b) {
       var ta = ti(a.realmId), tb = ti(b.realmId);
       var sa = ta.overdue ? 2 : (ta.count > 0 ? 1 : 0), sb = tb.overdue ? 2 : (tb.count > 0 ? 1 : 0);
@@ -1247,8 +1251,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       /* "—" is a claim that this client has nothing outstanding. The counts come from a
          localStorage enumeration, so on a device that never finished loading they are all
          zero and the whole queue reads as a clear day. Say which of the two it is. */
+      /* Renee: "Why does it say there are 6 tasks due...? I only see one." The number is every
+         open to-do that is ready to work — including ones with no due date and one-time ones
+         dated months out — and a bare "overdue" beside it read as "all of these are due".
+         Say HOW MANY are past due, and what the total does and does not include. */
       var bell = t.count > 0
-        ? '<span style="display:inline-flex;align-items:center;gap:5px;font-weight:700;font-size:12.5px;color:' + (t.overdue ? 'var(--burgundy)' : 'var(--gold-deep)') + ';">🔔 ' + t.count + ' to-do' + (t.count === 1 ? '' : 's') + (t.overdue ? ' · overdue' : '') + '</span>'
+        ? '<span title="' + t.count + ' open to-do' + (t.count === 1 ? '' : 's') + ' ready to work, including any with no due date or a date still ahead. '
+            + (t.overdueCount ? t.overdueCount + ' past due. ' : 'None past due. ')
+            + 'Recurring tasks scheduled for later are not counted." style="display:inline-flex;align-items:center;gap:5px;font-weight:700;font-size:12.5px;color:' + (t.overdue ? 'var(--burgundy)' : 'var(--gold-deep)') + ';">🔔 ' + t.count + ' to-do' + (t.count === 1 ? '' : 's') + (t.overdueCount ? ' · ' + t.overdueCount + ' overdue' : '') + '</span>'
         : (bootDataOk()
             ? '<span style="color:var(--muted);font-size:12.5px;">—</span>'
             : '<span style="color:var(--burgundy);font-size:12.5px;" title="This device has not finished loading the firm\u2019s to-dos from the server — this is not a count of zero.">not loaded</span>');
@@ -9266,6 +9276,22 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     return { stH: stH, otH: otH, totalHrs: totalHrs, grossJob: grossJob, ded: ded, grossPeriod: grossPeriod, net: grossPeriod - ded };
   }
   function blankEmp() { return { name:'', address:'', idNumber:'', exemptions:'', laborCode:'', classification:'', apprentice:false, st:['','','','','','',''], ot:['','','','','','',''], stRate:'', otRate:'', grossThisPeriod:'', dedFica:'', dedFed:'', dedState:'', dedOther1Label:'', dedOther1:'', dedOther2Label:'', dedOther2:'' }; }
+  /* "Copy employee" (Karla, feedback-mvl6tcrb-1i4hv9): an employee who worked two jobs, or two classifications, needs a SECOND row on the same
+     report, and every field about them had to be typed again. This is that second row: everything about the PERSON and their pay period is
+     carried over — name, address, ID number, exemptions, labor code, classification, apprentice, rates, gross this period, every deduction —
+     and ONLY the day-by-day hours are left blank, because the hours belong to the job/classification the new row is for. Built from
+     blankEmp()'s own field list, so a stray field on the source can never ride along, and the hour arrays are fresh (never shared with the
+     source: editing one row's Monday must not change the other's). A copy left without hours is caught by the existing "pay for the period
+     but no hours on this job" confirmation (cprZeroHourRows) before anything is printed, filed or emailed. */
+  function cprCopyEmployee(src) {
+    var c = blankEmp();
+    if (!src) return c;
+    Object.keys(c).forEach(function (k) {
+      if (k === 'st' || k === 'ot') return;
+      if (src[k] != null) c[k] = src[k];
+    });
+    return c;
+  }
   function weekDates(weekStart) {
     var out = []; if (!weekStart) return ['','','','','','',''];
     var d = new Date(weekStart + 'T00:00:00');
@@ -10759,7 +10785,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         '<span>Gross this job: <strong data-calc="job">$' + money(c.grossJob) + '</strong></span>' +
         '<span>Total deductions: <strong data-calc="ded">$' + money(c.ded) + '</strong></span>' +
         '<span>Net wages: <strong data-calc="net">$' + money(c.net) + '</strong></span>' +
-        '<span style="flex:1;"></span><button class="btn btn-ghost" data-empdel="' + i + '" type="button" style="font-size:11px;min-height:26px;">Remove employee</button>' +
+        '<span style="flex:1;"></span>' +
+        '<button class="btn btn-ghost" data-empcopy="' + i + '" type="button" style="font-size:11px;min-height:26px;" title="Add another row for this person — e.g. a second job or classification — with everything copied except the hours">Copy employee</button>' +
+        '<button class="btn btn-ghost" data-empdel="' + i + '" type="button" style="font-size:11px;min-height:26px;">Remove employee</button>' +
       '</div></div>';
   }
 
@@ -10784,6 +10812,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   // delegated remove-employee (cards are re-rendered, so bind on body each render)
   document.getElementById('payroll-body') && document.getElementById('payroll-body').addEventListener('click', function (ev) {
+    // Copy employee: the new row goes straight UNDER the one it was copied from, and the cursor lands on its first hours box.
+    var cb = ev.target.closest && ev.target.closest('[data-empcopy]');
+    if (cb) {
+      var ci = +cb.getAttribute('data-empcopy');
+      if (!cprDraft || !cprDraft.employees || !cprDraft.employees[ci]) return;
+      var who = String(cprDraft.employees[ci].name || '').trim();
+      cprDraft.employees.splice(ci + 1, 0, cprCopyEmployee(cprDraft.employees[ci]));
+      renderPayroll();
+      var firstHrs = document.querySelector('[data-emp="' + (ci + 1) + '"][data-arr="st"][data-d="0"]');
+      if (firstHrs) { try { firstHrs.scrollIntoView({ block: 'center' }); firstHrs.focus(); } catch (e) {} }
+      (window.bccNotify || function () {})('Copied ' + (who || 'the employee') + ' — enter the hours for this job, and change the classification, labor code or rates if they differ.', 'info', 7000);
+      return;
+    }
     var b = ev.target.closest && ev.target.closest('[data-empdel]'); if (!b) return;
     var i = +b.getAttribute('data-empdel'); if (!cprDraft || !cprDraft.employees) return;
     if (cprDraft.employees.length <= 1) { (window.bccNotify || alert)('At least one employee row is required.', 'warn'); return; }
