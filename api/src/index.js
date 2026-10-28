@@ -9176,6 +9176,10 @@ app.http('qbo-report', {
           const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
           data = { kind: 'list', editable: 'bill', items: (await queryAll("SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, VendorRef, PrivateNote FROM Bill WHERE TxnDate >= '" + from + "' AND TxnDate <= '" + to + "' ORDERBY TxnDate DESC")).map(x => ({ id: x.Id, doc: x.DocNumber, name: x.VendorRef && x.VendorRef.name, date: x.TxnDate, due: x.DueDate, total: x.TotalAmt, balance: x.Balance, status: qboVoidStatus(x) })) }; break;
         }
+        case 'all-vendorcredits': {
+          const from = url.searchParams.get('from') || yStart, to = url.searchParams.get('to') || today;
+          data = { kind: 'list', editable: 'vendorcredit', items: (await queryAll("SELECT Id, DocNumber, TxnDate, TotalAmt, VendorRef FROM VendorCredit WHERE TxnDate >= '" + from + "' AND TxnDate <= '" + to + "' ORDERBY TxnDate DESC")).map(x => ({ id: x.Id, doc: x.DocNumber, name: x.VendorRef && x.VendorRef.name, date: x.TxnDate, total: x.TotalAmt })) }; break;
+        }
         default: return { status: 400, jsonBody: { error: 'unknown report type "' + type + '"' } };
       }
       return { jsonBody: { type, realmId, companyName: comp.companyName, data } };
@@ -9306,8 +9310,8 @@ app.http('qbo-entity', {
       const u = new URL(request.url);
       const type = (u.searchParams.get('type') || '').toLowerCase();
       const id = u.searchParams.get('id');
-      const cap = { invoice: 'Invoice', bill: 'Bill', payment: 'Payment', purchase: 'Purchase' }[type];
-      if (!cap || !id) return badRequest('type (invoice|bill|payment|purchase) and id required');
+      const cap = { invoice: 'Invoice', bill: 'Bill', payment: 'Payment', purchase: 'Purchase', vendorcredit: 'VendorCredit' }[type];
+      if (!cap || !id) return badRequest('type (invoice|bill|payment|purchase|vendorcredit) and id required');
       const j = await ctx.apiGet('/' + type + '/' + encodeURIComponent(id));
       return { jsonBody: { ok: true, entity: j[cap] || null } };
     } catch (e) { context.error('qbo-entity', e); return { status: 502, jsonBody: { ok: false, error: String(e.message || e) } }; }
@@ -9403,7 +9407,7 @@ app.http('qbo-write', {
       // A compact description of WHAT was pushed, built from the request only — no
       // extra QBO lookups, so auditing can never slow down or fail the write.
       auditSummary = qboWriteSummary(entity, f, b);
-      const cap = { invoice: 'Invoice', bill: 'Bill', purchase: 'Purchase', payment: 'Payment', customer: 'Customer', vendor: 'Vendor', item: 'Item', account: 'Account', journalentry: 'JournalEntry', project: 'Customer' }[entity];
+      const cap = { invoice: 'Invoice', bill: 'Bill', vendorcredit: 'VendorCredit', purchase: 'Purchase', payment: 'Payment', customer: 'Customer', vendor: 'Vendor', item: 'Item', account: 'Account', journalentry: 'JournalEntry', project: 'Customer' }[entity];
       if (!cap) return badRequest('unsupported entity: ' + entity);
 
       if (b.op === 'void') {
@@ -9488,7 +9492,12 @@ app.http('qbo-write', {
         if (!f.customerId || !(lines.length + keep.length)) return badRequest('customer and at least one line required');
         payload = { CustomerRef: { value: String(f.customerId) }, Line: lines };
         if (f.txnDate) payload.TxnDate = f.txnDate; if (f.dueDate) payload.DueDate = f.dueDate;
-      } else if (entity === 'bill') {
+      } else if (entity === 'bill' || entity === 'vendorcredit') {
+        /* A VENDOR CREDIT is its own QuickBooks record, the mirror of a Bill: the vendor owes the
+           client money, which comes off what is owed (A/P). Keyed in as a Bill with a negative
+           amount it posts as a "negative bill" in every list and report — which is what this
+           exists to stop. Same expense-account lines, job costing and reference number as a bill;
+           no due date and no terms, because nothing falls due. */
         const lines = (f.lines || []).filter(l => l && (l.amount || l.accountId)).map(l => ({
           DetailType: 'AccountBasedExpenseLineDetail', Amount: qboAmount(l.amount), Description: l.desc || undefined,
           // A job/customer on the line books the cost to that job (and makes it billable).
@@ -9503,8 +9512,12 @@ app.http('qbo-write', {
           )
         }));
         if (!f.vendorId || !(lines.length + keep.length)) return badRequest('vendor and at least one line required');
+        /* Every line of a credit is a POSITIVE amount; the credit itself is what reduces the
+           balance. A negative one would credit the vendor twice over, and a zero one is an
+           account picked with nothing typed — either way, refuse it rather than post it. */
+        if (entity === 'vendorcredit' && lines.some(l => !(l.Amount > 0))) return badRequest('every line of a vendor credit needs a positive amount — the credit itself is what reduces what you owe the vendor');
         payload = { VendorRef: { value: String(f.vendorId) }, Line: lines };
-        if (f.txnDate) payload.TxnDate = f.txnDate; if (f.dueDate) payload.DueDate = f.dueDate;
+        if (f.txnDate) payload.TxnDate = f.txnDate; if (f.dueDate && entity === 'bill') payload.DueDate = f.dueDate;
       } else if (entity === 'purchase') {
         // A Purchase is money ALREADY SPENT (cash/check/card) — booked straight to an
         // expense, paid FROM a bank/credit-card account. Unlike a Bill it creates no
@@ -9580,7 +9593,7 @@ app.http('qbo-write', {
       }
       // Reference number (PO / bill no.) and payment terms — both live on the
       // document header for bills and invoices.
-      if ((entity === 'bill' || entity === 'invoice') && payload) {
+      if ((entity === 'bill' || entity === 'invoice' || entity === 'vendorcredit') && payload) {
         /* On an UPDATE: absent means "leave it alone", an empty string means "clear it".
            The old truthy test collapsed the two, so a bookkeeper could SET a PO number but
            never remove one — blanking the box sent nothing and the UI still claimed success.
@@ -9594,7 +9607,7 @@ app.http('qbo-write', {
         /* Terms are set-only on purpose. The picker falls back to "- none -" whenever the
            transaction's real term is inactive (or that one Term query failed), so treating a
            blank as "clear it" would quietly strip Net 30 off a bill nobody meant to touch. */
-        if (f.termId) payload.SalesTermRef = { value: String(f.termId) };
+        if (f.termId && entity !== 'vendorcredit') payload.SalesTermRef = { value: String(f.termId) };
       }
       // On edit, a sparse update with Line REPLACES all lines — re-append any existing line
       // types the editor didn't render (item-based lines, discounts) verbatim so nothing is lost.

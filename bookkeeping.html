@@ -543,6 +543,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           <button type="button" data-new="tx:invoice"><span class="ic">🧾</span><span><span class="t">Invoice</span><span class="d">bill a customer</span></span></button>
           <button type="button" data-new="tx:purchase"><span class="ic">💳</span><span><span class="t">Expense / purchase</span><span class="d">already paid — cash or card</span></span></button>
           <button type="button" data-new="tx:bill"><span class="ic">📄</span><span><span class="t">Bill</span><span class="d">unpaid — you owe it (A/P)</span></span></button>
+          <button type="button" data-new="tx:vendorcredit"><span class="ic">↩️</span><span><span class="t">Vendor credit</span><span class="d">vendor owes you — lowers A/P</span></span></button>
           <button type="button" data-new="tx:payment"><span class="ic">💵</span><span><span class="t">Receive payment</span><span class="d">customer paid you</span></span></button>
           <button type="button" data-new="tx:journalentry"><span class="ic">📓</span><span><span class="t">Journal entry</span><span class="d">adjusting / reclass</span></span></button>
         </div>
@@ -603,6 +604,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           <option value="all-invoices">All invoices</option>
           <option value="bills">Open bills</option>
           <option value="all-bills">All bills</option>
+          <option value="all-vendorcredits">Vendor credits</option>
         </optgroup>
         <optgroup label="Lists">
           <option value="customers">Customers</option>
@@ -1751,6 +1753,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     return ((g && g.lines) || []).reduce(function (s, l) { return s + qbonum(l && l.amount); }, 0) + keepSum;
   }
   function txnMoney(n) { return (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  // What the person reading the form / confirmation / toast should see for an entity key. Without it
+  // a vendor credit would read "New vendorcredit" and "Post this vendorcredit to ...".
+  function txnLabel(entity) { return entity === 'vendorcredit' ? 'vendor credit' : entity; }
+  // The entities this form builds from line items (as opposed to payment's single amount).
+  function txnHasLines(entity) { return entity === 'invoice' || entity === 'bill' || entity === 'purchase' || entity === 'vendorcredit'; }
   function qbonum(v) {
     if (typeof v === 'number') return isFinite(v) ? v : 0;
     var str = String(v == null ? '' : v).trim();
@@ -3089,7 +3096,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var rg = qboRange();
     var q = 'type=' + encodeURIComponent(type) + '&method=' + rg.method;
     if (type === 'vendors-1099') q += '&year=' + encodeURIComponent(_report1099Year);
-    var RANGE_TYPES = { pl:1, transactions:1, payments:1, expenses:1, 'all-invoices':1, 'all-bills':1, 'trial-balance':1, 'general-ledger':1, 'cash-flow':1, 'sales-by-customer':1, 'sales-by-item':1 };
+    var RANGE_TYPES = { pl:1, transactions:1, payments:1, expenses:1, 'all-invoices':1, 'all-bills':1, 'all-vendorcredits':1, 'trial-balance':1, 'general-ledger':1, 'cash-flow':1, 'sales-by-customer':1, 'sales-by-item':1 };
     if (RANGE_TYPES[type]) q += '&from=' + rg.from + '&to=' + rg.to;
     else if (type === 'balancesheet') q += '&asOf=' + rg.to;
     var out = document.getElementById('qboReportOut');
@@ -3973,8 +3980,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         : entity === 'purchase' ? (pre.EntityRef && pre.EntityRef.name)
         : (pre.VendorRef && pre.VendorRef.name)) || '';
       var html = '<div style="border:1px solid var(--chrome-mute);border-radius:10px;padding:14px;">' +
-        '<div style="font-weight:700;margin-bottom:10px;">' + (edit ? 'Edit ' : 'New ') + esc(entity) + (edit && edit.docNumber ? (' #' + esc(edit.docNumber)) : '') + '</div>';
-      if (entity === 'invoice' || entity === 'bill' || entity === 'purchase') {
+        '<div style="font-weight:700;margin-bottom:10px;">' + (edit ? 'Edit ' : 'New ') + esc(txnLabel(entity)) + (edit && edit.docNumber ? (' #' + esc(edit.docNumber)) : '') + '</div>';
+      if (txnHasLines(entity)) {
         var partyList = entity === 'invoice' ? refs.customers : refs.vendors;
         // A purchase can be paid to an Employee or a Customer, and neither is in refs.vendors.
         // Say so on the label, and show the stored name rather than the same-numbered vendor.
@@ -3995,6 +4002,9 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         // existing Purchase to categorise it silently re-dated the transaction to today in
         // the client's live books — moving it into the wrong accounting period.
         '<label>Date<input type="date" id="tx_date" value="' + esc(pre.TxnDate || (seed && seed.date) || today) + '" /></label>';
+        } else if (entity === 'vendorcredit') {
+          // A credit falls due on nothing, so no due date and no terms (see extraRow below).
+          dateRow = '<label>Date<input type="date" id="tx_date" value="' + esc(pre.TxnDate || (seed && seed.date) || today) + '" /></label>';
         } else {
           dateRow = '<label>Date<input type="date" id="tx_date" value="' + esc(pre.TxnDate || (seed && seed.date) || today) + '" /></label>' +
             '<label>Due date<input type="date" id="tx_due" value="' + esc(pre.DueDate || '') + '" /></label>';
@@ -4013,8 +4023,12 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             '<label>' + (entity === 'bill' ? 'PO / Bill no.' : 'PO / Ref no.') + '<input id="tx_docnum" value="' + esc(pre.DocNumber || (seed && seed.docNumber) || '') + '" placeholder="optional" /></label>' +
             '<label>Terms<select id="tx_terms" data-orig="' + esc((pre.SalesTermRef && pre.SalesTermRef.value) || '') + '">' + termOpts + '</select></label>';
         }
+        // The vendor's own credit / reference number, typed off the paper credit memo. No terms.
+        if (entity === 'vendorcredit') {
+          extraRow = '<label>Credit memo no.<input id="tx_docnum" value="' + esc(pre.DocNumber || (seed && seed.docNumber) || '') + '" placeholder="optional" /></label>';
+        }
         var jobLinesHaveMixedJobs = false, jobLinesHaveMixedBillable = false;
-        if (entity === 'bill' || entity === 'purchase') {
+        if (entity === 'bill' || entity === 'purchase' || entity === 'vendorcredit') {
           // The first line that actually carries an AccountBasedExpenseLineDetail, not
           // literally Line[0] — a bill whose first line is a discount, tax or item line has
           // none, so the Project/job field rendered blank and saving then stripped the job
@@ -4049,7 +4063,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             seenBillable[l.AccountBasedExpenseLineDetail.BillableStatus || '(none)'] = 1;
           });
           jobLinesHaveMixedBillable = Object.keys(seenBillable).length > 1;
-          extraRow += '<label class="full">Project / job (optional — bills the cost to a job)' + txSearchInput('tx_job', refs.customers, jobSel, jobSelName) + '</label>';
+          extraRow += '<label class="full">Project / job (optional — ' + (entity === 'vendorcredit' ? 'takes the credit off that job’s cost' : 'bills the cost to a job') + ')' + txSearchInput('tx_job', refs.customers, jobSel, jobSelName) + '</label>';
           if (jobLinesHaveMixedJobs) {
             extraRow += '<div class="full" style="color:var(--burgundy);font-size:12px;">⚠️ This transaction’s lines currently have DIFFERENT jobs. Saving here applies ONE job to every line — to keep the per-line split, edit it in QuickBooks directly.</div>';
           }
@@ -4081,7 +4095,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         host.innerHTML = '<div class="scan-split"><div class="scan-pane">' + html + '</div>' +
           '<div class="scan-pane scan-preview"><div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Scanned document</div>' + previewHtml(seed) + '</div></div>';
       } else { host.innerHTML = html; }
-      if (entity === 'invoice' || entity === 'bill' || entity === 'purchase') {
+      if (txnHasLines(entity)) {
         var linesEl = document.getElementById('tx_lines');
         var draft = [];
         if (pre.Line && pre.Line.length) pre.Line.forEach(function (l) {
@@ -4106,7 +4120,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             // re-save stripped them off every line in the client's live books.
             extra: l.SalesItemLineDetail || null
           });
-          else if ((entity === 'bill' || entity === 'purchase') && l.DetailType === 'AccountBasedExpenseLineDetail') draft.push({ accountId: (l.AccountBasedExpenseLineDetail && l.AccountBasedExpenseLineDetail.AccountRef && l.AccountBasedExpenseLineDetail.AccountRef.value) || '', desc: l.Description || '', amount: l.Amount || '', extra: l.AccountBasedExpenseLineDetail || null });
+          else if ((entity === 'bill' || entity === 'purchase' || entity === 'vendorcredit') && l.DetailType === 'AccountBasedExpenseLineDetail') draft.push({ accountId: (l.AccountBasedExpenseLineDetail && l.AccountBasedExpenseLineDetail.AccountRef && l.AccountBasedExpenseLineDetail.AccountRef.value) || '', desc: l.Description || '', amount: l.Amount || '', extra: l.AccountBasedExpenseLineDetail || null });
         });
         if (!draft.length && seed && seed.lines && seed.lines.length) draft = seed.lines.map(function (l) { return { desc: l.desc || '', amount: l.amount || '', accountId: l.accountId || '', itemId: l.itemId || '' }; });
         if (!draft.length) draft.push({});
@@ -4186,7 +4200,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
             // On EDIT, keep the transaction's original payment type (e.g. Check) — don't silently
             // downgrade a Check to Cash just because the paid-from account isn't a credit card.
             g.paymentType = (edit && pre.PaymentType) ? pre.PaymentType : ((acct && /credit card/i.test(acct.type || '')) ? 'CreditCard' : 'Cash');
-          } else { g.due = document.getElementById('tx_due').value; }
+          } else { var dueEl2 = document.getElementById('tx_due'); g.due = dueEl2 ? dueEl2.value : ''; }   // a vendor credit has no due date field
           // PO/ref no., payment terms, and the job the cost belongs to.
           // Send whenever the control exists, so clearing the box actually clears the field.
           var dn = document.getElementById('tx_docnum'); if (dn) g.docNumber = dn.value.trim();
@@ -4232,7 +4246,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        exactly the case here (a filled row plus a stray amount-only row). Blank rows with no
        amount are ignored - adding a line and not using it is normal. */
     var lineKey = entity === 'invoice' ? 'itemId' : 'accountId';
-    if (entity === 'invoice' || entity === 'bill' || entity === 'purchase') {
+    if (txnHasLines(entity)) {
       /* ANY amount, not just a positive one. qbonum returns the signed value, so a credit or
          a refund line ("-500") read as <= 0 and slipped through — and the server keeps any
          line with a truthy amount, then stringifies the missing ref as the literal
@@ -4260,12 +4274,23 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         return out;
       }) };
     }
+    else if (entity === 'vendorcredit') {
+      if (!g.party) { (window.bccNotify || alert)('Pick a vendor.', 'warn'); return; }
+      /* Entered the way the vendor's credit memo reads: every line a POSITIVE amount. A minus sign is
+         what makes QuickBooks show a "negative bill" — and a credit typed as -500 would be posted as a
+         credit against the vendor TWICE over. Say so rather than guess which was meant. */
+      var creditLines = (g.lines || []).filter(function (l) { return (l.amount !== '' && l.amount != null) || l.accountId; });
+      if (creditLines.some(function (l) { return !(qbonum(l.amount) > 0); })) {
+        (window.bccNotify || alert)('Enter each line of a vendor credit as a positive amount (no minus sign) — the credit itself is what takes it off what you owe the vendor.', 'warn', 8000); return;
+      }
+      fields = { vendorId: g.party, txnDate: g.date, lines: g.lines.map(function (l) { return { accountId: l.accountId, desc: l.desc, amount: l.amount, extra: l.extra || undefined }; }) };
+    }
     else if (entity === 'bill') { if (!g.party) { (window.bccNotify || alert)('Pick a vendor.', 'warn'); return; } fields = { vendorId: g.party, txnDate: g.date, dueDate: g.due, lines: g.lines.map(function (l) { return { accountId: l.accountId, desc: l.desc, amount: l.amount, extra: l.extra || undefined }; }) }; }
     else if (entity === 'purchase') { if (!g.paymentAccountId) { (window.bccNotify || alert)('Pick the bank / credit-card account it was paid from.', 'warn'); return; } if (!(g.lines || []).some(function (l) { return qbonum(l.amount) > 0 && l.accountId; })) { (window.bccNotify || alert)('Add at least one expense line (amount + account).', 'warn'); return; } fields = { vendorId: g.party || '', paymentAccountId: g.paymentAccountId, paymentType: g.paymentType || 'Cash', txnDate: g.date, lines: g.lines.map(function (l) { return { accountId: l.accountId, desc: l.desc, amount: l.amount, extra: l.extra || undefined }; }) }; }
     else { if (!g.party || !g.amount) { (window.bccNotify || alert)('Customer and amount required.', 'warn'); return; } fields = { customerId: g.party, totalAmt: g.amount, txnDate: g.date, depositAccountId: g.deposit, invoiceId: g.invoiceId }; }
     // Was being collected from the form but never actually sent — bills/purchases
     // silently never got job-costed even when a job was picked. Fixed 2026-08-06.
-    if (g.jobCustomerId && (entity === 'bill' || entity === 'purchase')) {
+    if (g.jobCustomerId && (entity === 'bill' || entity === 'purchase' || entity === 'vendorcredit')) {
       fields.jobCustomerId = g.jobCustomerId;
       // Carry the EXISTING billable status through on an edit, so re-saving cannot flip a
       // NotBillable (or already-billed) line back to Billable in the client's live books.
@@ -4274,7 +4299,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     if (g.entityType && entity === 'purchase') fields.entityType = g.entityType;
     // PO / Bill no. and Terms were collected by the form and never put on the wire, so both
     // silently did nothing — the server has always accepted and validated them.
-    if (entity === 'bill' || entity === 'invoice') {
+    if (entity === 'bill' || entity === 'invoice' || entity === 'vendorcredit') {
       if (g.docNumber != null) fields.docNumber = g.docNumber;   // '' clears it
       if (g.termId) fields.termId = g.termId;
     }
@@ -4290,7 +4315,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
        arithmetic living here, which is how the confirmation and the form would eventually
        have shown a bookkeeper two different totals for one bill. */
     var total = txnPostedTotal(entity, g);
-    if (!confirm('Post this ' + entity + ' to ' + companyName(currentRealm) + '’s live QuickBooks?\n\nTotal: $' + txnMoney(total))) return;
+    if (!confirm('Post this ' + txnLabel(entity) + ' to ' + companyName(currentRealm) + '’s live QuickBooks?\n\nTotal: $' + txnMoney(total))) return;
     // confirm() is a blocking modal — nothing can switch clients while it's open, so
     // currentRealm read right after it resolves is still the client the user meant.
     // Capture it now: the network round trip below is NOT blocking, and everything
@@ -4307,8 +4332,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .then(function (resp) {
         if (!resp.ok) throw new Error(resp.error || 'write failed');
         if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: realmAt, entity: entity, op: verb, id: resp.id } });
-        if (window.bccNotifySaved) window.bccNotifySaved(entity.charAt(0).toUpperCase() + entity.slice(1) + (verb === 'update' ? ' updated' : ' created') + (resp.docNumber ? (' #' + resp.docNumber) : '') + ' in QuickBooks.');
-        var attachCap = { invoice: 'Invoice', bill: 'Bill', purchase: 'Purchase' }[entity];
+        if (window.bccNotifySaved) window.bccNotifySaved(txnLabel(entity).charAt(0).toUpperCase() + txnLabel(entity).slice(1) + (verb === 'update' ? ' updated' : ' created') + (resp.docNumber ? (' #' + resp.docNumber) : '') + ' in QuickBooks.');
+        var attachCap = { invoice: 'Invoice', bill: 'Bill', purchase: 'Purchase', vendorcredit: 'VendorCredit' }[entity];
         if (attachFileAt && attachCap && resp.id) attachToEntity(attachCap, resp.id, attachFileAt, resp.docNumber, realmAt);
         if (_txnFormGen === formGenAt) { document.getElementById('qboWriteForm').innerHTML = ''; _txnEdit = null; _txnFile = null; _txnFormRealm = null; }
         if (currentRealm === realmAt) { loadQboKpis(); if (qboActiveReport) loadQboReport(qboActiveReport, null); }
@@ -4652,7 +4677,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
       .then(function (resp) {
         if (!resp.ok) throw new Error(resp.error || 'attach failed');
-        if (window.bccNotifySaved) window.bccNotifySaved('Receipt attached to ' + cap + (docNumber ? (' #' + docNumber) : '') + '.');
+        if (window.bccNotifySaved) window.bccNotifySaved('Receipt attached to ' + (cap === 'VendorCredit' ? 'vendor credit' : cap) + (docNumber ? (' #' + docNumber) : '') + '.');
         if (window.bccAudit) window.bccAudit('qbo-attach', { path: '/bookkeeping.html', meta: { realmId: realm, entity: cap, id: id } });
       })
       .catch(function (e) { if (window.bccNotify) window.bccNotify('Posted, but attaching the file to QuickBooks failed: ' + e.message, 'warn', 7000); });
