@@ -7368,6 +7368,24 @@ app.http('msgraph-client-mailbox', {
  * filtered by $search. With ?realmId it reads that client's dedicated shared
  * mailbox; otherwise it reads the signed-in user's mailbox. Read-only.
  */
+/* One Graph message as the Email tab lists it. Shared by the folder list and the by-id fetch
+   below, so the two can never disagree about a field. */
+function graphMessageSummary(m, folder) {
+  return {
+    id: m.id,
+    subject: m.subject || '(no subject)',
+    from: (m.from && m.from.emailAddress && m.from.emailAddress.address) || '',
+    fromName: (m.from && m.from.emailAddress && m.from.emailAddress.name) || '',
+    to: (m.toRecipients || []).map(x => x.emailAddress && x.emailAddress.address).filter(Boolean),
+    // Sent Items carries sentDateTime; receivedDateTime is absent there, so every sent
+    // message would have sorted and dated as blank.
+    received: (folder === 'sentitems' ? (m.sentDateTime || m.receivedDateTime) : m.receivedDateTime) || '',
+    preview: m.bodyPreview || '',
+    isRead: !!m.isRead,
+    webLink: m.webLink || '',
+    hasAttachments: !!m.hasAttachments
+  };
+}
 app.http('msgraph-messages', {
   methods: ['GET'],
   authLevel: 'anonymous',
@@ -7421,22 +7439,80 @@ app.http('msgraph-messages', {
         return { status: 502, jsonBody: { ok: false, error: 'Client email is temporarily unavailable — an admin needs to check the Microsoft 365 connection in Admin → Integrations.' } };
       }
       const data = await r.json();
-      const messages = (Array.isArray(data.value) ? data.value : []).map(m => ({
-        id: m.id,
-        subject: m.subject || '(no subject)',
-        from: (m.from && m.from.emailAddress && m.from.emailAddress.address) || '',
-        fromName: (m.from && m.from.emailAddress && m.from.emailAddress.name) || '',
-        to: (m.toRecipients || []).map(x => x.emailAddress && x.emailAddress.address).filter(Boolean),
-        // Sent Items carries sentDateTime; receivedDateTime is absent there, so every sent
-        // message would have sorted and dated as blank.
-        received: (folder === 'sentitems' ? (m.sentDateTime || m.receivedDateTime) : m.receivedDateTime) || '',
-        preview: m.bodyPreview || '',
-        isRead: !!m.isRead,
-        webLink: m.webLink || '',
-        hasAttachments: !!m.hasAttachments
-      }));
+      const messages = (Array.isArray(data.value) ? data.value : []).map(m => graphMessageSummary(m, folder));
       return { jsonBody: { ok: true, messages: messages, folder: folder } };
     } catch (e) {
+      return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } };
+    }
+  })
+});
+
+/**
+ * POST /api/integrations/msgraph/messages-by-id  { realmId, folder, ids: [...] }
+ * Specific messages of a CLIENT mailbox, by Graph id — what the Email tab's "Archived" view needs.
+ * "Archived" lives in the app (a per-client map keyed by message id), not in Microsoft 365, so the
+ * folder list above — the 50 most recent — can only ever show the archived mail that happens to
+ * be recent; an archived message older than that looked like it had vanished. The app knows
+ * exactly WHICH ids are archived, so it asks for those.
+ * Same access as the list (resolveClientMailbox, client mailboxes only — never the caller's own),
+ * and it only ever reads the ids it is handed from that one mailbox. Returns what it could
+ * read and counts for what it could not: `missing` (no longer in the mailbox), `otherFolder`
+ * (moved out of the folder being viewed) and `failed` (Graph refused or throttled — worth a retry).
+ */
+app.http('msgraph-messages-by-id', {
+  methods: ['POST'], authLevel: 'anonymous', route: 'integrations/msgraph/messages-by-id',
+  handler: withAccessLog(async (request, context) => {
+    const p = principal(request);
+    if (!p) return unauthorized();
+    if (!domainAllowed(p)) return domainBlocked();
+    try {
+      const b = await request.json().catch(() => ({}));
+      const realmId = String(b.realmId || '');
+      if (!realmId) return badRequest('realmId required');
+      const rc = await resolveClientMailbox(p, realmId);
+      if (rc.err) return rc.err;
+      if (!rc.cfg || !rc.cfg.mailbox || rc.cfg.enabled === false) return { jsonBody: { ok: true, messages: [], missing: 0, otherFolder: 0, failed: 0, note: 'no client mailbox configured' } };
+      const folder = String(b.folder || 'inbox').toLowerCase() === 'sentitems' ? 'sentitems' : 'inbox';
+      // Bounded: ids are opaque strings from the caller, so cap both their number and their length.
+      const ids = (Array.isArray(b.ids) ? b.ids : []).filter(x => typeof x === 'string' && x.length > 0 && x.length <= 512).slice(0, 100);
+      if (!ids.length) return { jsonBody: { ok: true, messages: [], missing: 0, otherFolder: 0, failed: 0, folder } };
+      const access = await getGraphToken();
+      const upn = encodeURIComponent(rc.cfg.mailbox);
+      const auth = { Authorization: 'Bearer ' + access };
+      // Which folder is "this" folder, so a message moved elsewhere in Outlook is not listed here.
+      const fr = await fetch('https://graph.microsoft.com/v1.0/users/' + upn + '/mailFolders/' + folder + '?$select=id', { headers: auth });
+      if (!fr.ok) {
+        const detail = (await fr.text()).slice(0, 300);
+        if (graphMailboxMissing(fr.status, detail)) return { jsonBody: { ok: true, messages: [], missing: 0, otherFolder: 0, failed: 0, pendingMailbox: true, note: 'mailbox not created yet' } };
+        context.error('msgraph-messages-by-id folder lookup rejected', { status: fr.status, detail });
+        return { status: 502, jsonBody: { ok: false, error: 'Client email is temporarily unavailable — an admin needs to check the Microsoft 365 connection in Admin → Integrations.' } };
+      }
+      const folderId = (await fr.json()).id;
+      const select = 'id,subject,from,toRecipients,receivedDateTime,sentDateTime,bodyPreview,isRead,webLink,hasAttachments,parentFolderId';
+      const messages = []; let missing = 0, otherFolder = 0, failed = 0;
+      // Graph's JSON batch takes at most 20 sub-requests.
+      for (let i = 0; i < ids.length; i += 20) {
+        const chunk = ids.slice(i, i + 20);
+        const br = await fetch('https://graph.microsoft.com/v1.0/$batch', {
+          method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, auth),
+          body: JSON.stringify({ requests: chunk.map((id, k) => ({ id: String(k), method: 'GET', url: '/users/' + upn + '/messages/' + encodeURIComponent(id) + '?$select=' + select })) })
+        });
+        if (!br.ok) { failed += chunk.length; continue; }
+        const bj = await br.json().catch(() => ({}));
+        const answered = new Set();
+        for (const rsp of (bj.responses || [])) {
+          answered.add(String(rsp.id));
+          if (rsp.status === 200 && rsp.body && rsp.body.id) {
+            if (folderId && rsp.body.parentFolderId !== folderId) otherFolder++;
+            else messages.push(graphMessageSummary(rsp.body, folder));
+          } else if (rsp.status === 404) missing++;
+          else failed++;
+        }
+        failed += chunk.length - answered.size;   // a sub-request Graph never answered
+      }
+      return { jsonBody: { ok: true, folder, messages, missing, otherFolder, failed } };
+    } catch (e) {
+      context.error('msgraph-messages-by-id', e);
       return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } };
     }
   })

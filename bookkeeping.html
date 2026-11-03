@@ -8242,6 +8242,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   var _emMeta = {};          // { msgId: {tags,assignedTo,archived,readBy,repliedBy} }
   var _emMsgs = [];          // loaded mailbox messages
   var _emFilter = 'all';     // all | unread | mine | tagged | archived
+  /* ARCHIVED mail older than the list. "Archived" lives in the app (_emMeta, keyed by Graph message
+     id), not in Microsoft 365, and the list loads only the 50 most recent messages — so the Archived
+     view used to be just the archived messages among those 50, and anything older looked like it had
+     vanished (Lana: "let me see all of the archived mail instead of only the most recent 50"). The app
+     knows exactly which ids are archived, so the Archived view asks the server for those by id and
+     keeps them here, per client AND folder.
+     _emMetaRealm says which client _emMeta belongs to: it is deliberately kept across a failed
+     reload, so without it the previous client's archived ids could be requested from this mailbox. */
+  var _emMetaRealm = '';
+  function emArchFresh(key) { return { key: key, msgs: [], have: {}, tried: {}, loading: false, missing: 0, otherFolder: 0, failed: 0, err: '' }; }
+  var _emArch = emArchFresh('');
   /* Which mail FOLDER is showing. Renee reported she could not go back into an email she had
      sent to view its certified-payroll attachment - the list route is inbox-only, so a sent
      message was not reachable in the app at all. Sent is its own view rather than being mixed
@@ -8520,7 +8531,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
            the answer is real) and remember that we could not check. */
         if (!(resp && resp.ok && resp.msgs)) { _emMetaErr = true; renderEmailList(); return; }
         _emMetaErr = false;
-        _emMeta = resp.msgs;
+        _emMeta = resp.msgs; _emMetaRealm = realmAt;
         renderEmailList(); recomputeUnreadBadge();
       })
       .catch(function () { if (currentRealm === realmAt) { _emMetaErr = true; renderEmailList(); } });
@@ -8551,8 +8562,72 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       });
   }
 
+  /* Messages for the folder on screen: the loaded list plus any older ARCHIVED ones fetched by id
+     (see _emArch), newest first. The extras are included for every filter, not just Archived — an
+     old message that is un-archived from the Archived view must land in All mail, not vanish. */
+  function emAllMsgs() {
+    var extra = (_emArch.key === currentRealm + '|' + _emFolder) ? _emArch.msgs : [];
+    if (!extra.length) return _emMsgs;
+    var have = {}; _emMsgs.forEach(function (m) { have[m.id] = 1; });
+    return _emMsgs.concat(extra.filter(function (m) { return !have[m.id]; }))
+      .sort(function (a, b) { return String(b.received || '').localeCompare(String(a.received || '')); });
+  }
+  function emFindMsg(id) { return emAllMsgs().filter(function (x) { return x.id === id; })[0] || null; }
+  /* Fetch the archived messages that are not in the list, by id, 100 at a time. Idempotent — it is
+     called from every repaint of the Archived view — and it asks for each id once: a failed request
+     parks in _emArch.err and waits for Refresh rather than retrying on every repaint. */
+  function emLoadArchived() {
+    var realmAt = currentRealm, folderAt = _emFolder, key = realmAt + '|' + folderAt;
+    // Both halves must be KNOWN: this client's archived flags, and this folder's list.
+    if (_emMetaErr || _emMetaRealm !== realmAt || _emListReadFor !== key || !mailboxActive()) return;
+    if (_emArch.key !== key) _emArch = emArchFresh(key);
+    var arch = _emArch;
+    if (arch.loading || arch.err) return;
+    var inList = {}; _emMsgs.forEach(function (m) { inList[m.id] = 1; });
+    var want = Object.keys(_emMeta).filter(function (id) { var mm = _emMeta[id]; return mm && mm.archived && !inList[id] && !arch.tried[id]; });
+    if (!want.length) return;
+    arch.loading = true;
+    var i = 0;
+    (function next() {
+      var stale = function () { return currentRealm !== realmAt || _emFolder !== folderAt || _emArch !== arch; };
+      if (stale()) return;
+      if (i >= want.length) { arch.loading = false; renderEmailList(); return; }
+      var chunk = want.slice(i, i + 100);
+      fetch('/api/integrations/msgraph/messages-by-id', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ realmId: realmAt, folder: folderAt, ids: chunk }) })
+        .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+        .then(function (resp) {
+          if (stale()) return;
+          if (!resp || !resp.ok) throw new Error('refused');
+          (resp.messages || []).forEach(function (m) { if (!arch.have[m.id]) { arch.have[m.id] = 1; arch.msgs.push(m); } });
+          arch.missing += resp.missing || 0; arch.otherFolder += resp.otherFolder || 0; arch.failed += resp.failed || 0;
+          chunk.forEach(function (id) { arch.tried[id] = 1; });
+          i += chunk.length; renderEmailList(); next();
+        })
+        .catch(function () {
+          if (stale()) return;
+          arch.loading = false; arch.err = 'Could not load the older archived mail — press Refresh to try again.';
+          renderEmailList();
+        });
+    })();
+  }
+  // What to say after the count in the Archived view: complete, still loading, or what is missing and why.
+  function emArchivedNote() {
+    // Without this client's archived flags there is no way to know which older messages are archived.
+    if (_emMetaErr) return ' — older archived mail could not be checked';
+    var a = _emArch; if (a.key !== currentRealm + '|' + _emFolder) return '';
+    var bits = [];
+    if (a.loading) bits.push('loading older archived mail…');
+    if (a.err) bits.push(a.err);
+    if (a.missing) bits.push(a.missing + ' archived ' + (a.missing === 1 ? 'message is' : 'messages are') + ' no longer in this mailbox');
+    if (a.otherFolder) bits.push(a.otherFolder + ' archived ' + (a.otherFolder === 1 ? 'message is' : 'messages are') + ' in another folder (Sent, or moved in Outlook)');
+    if (a.failed) bits.push(a.failed + ' could not be read just now — press Refresh to try again');
+    if (!bits.length) return ' — all archived mail, however old';
+    return ' — ' + bits.join('; ');
+  }
+
   function loadInbox(force) {
     var list = document.getElementById('em_list'); if (!list) return;
+    if (force) _emArch = emArchFresh('');   // Refresh starts the archived mail over too (clears a parked error)
     // Realm AND folder: without the folder in the test, switching Inbox->Sent re-rendered
     // the inbox's cached messages under the Sent heading.
     if (!force && _emLoadedFor === currentRealm && _emLoadedFolder === _emFolder && _emMsgs.length) { renderEmailList(); return; }
@@ -8631,7 +8706,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var list = document.getElementById('em_list'); if (!list) return;
     var cnt = document.getElementById('em_count');
     var q = (_emSearch || '').trim().toLowerCase();
-    var rows = _emMsgs.filter(function (m) {
+    // The Archived view needs the archived mail that is older than the list: ask for it (a no-op once
+    // asked) BEFORE drawing, so the count below can say "loading…" rather than claim a short total.
+    if (_emFilter === 'archived') emLoadArchived();
+    var rows = emAllMsgs().filter(function (m) {
       var mt = metaFor(m.id);
       if (_emFilter === 'archived') { if (!mt.archived) return false; }
       else if (mt.archived) return false;
@@ -8644,8 +8722,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // The list is the 50 most recent the server returned, and the search box filters only
     // those — so "no results" could mean "not in the last 50" and read as the email being
     // missing entirely. Say so when the cap was hit.
+    /* The Archived view is NOT limited to the 50: it also loads archived mail by id (emLoadArchived),
+       so it says whether that is complete rather than repeating the 50-message caveat. */
     if (cnt) cnt.textContent = rows.length + (rows.length === 1 ? ' message' : ' messages')
-      + (_emMsgs.length >= 50 ? ' (of the 50 most recent — older mail isn’t loaded, so search only covers these)' : '');
+      + (_emFilter === 'archived' ? emArchivedNote()
+        : (_emMsgs.length >= 50 ? ' (of the 50 most recent — older mail isn’t loaded, so search only covers these)' : ''));
     /* Computed ABOVE the branch, and appended to BOTH renders. This is the one-of-two-branches
        shape again: the warning only existed on the empty one. */
     var metaWarn = _emMetaErr
@@ -8664,6 +8745,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
          overwrote that explanation with a claim about a mailbox nobody had opened. Leaving
          the panel as it is keeps whatever the last real render put there. */
       if (_emListReadFor !== (currentRealm + '|' + _emFolder)) return;
+      // Archived view, nothing to show YET: still fetching, or the fetch failed — neither is "no archived mail".
+      if (_emFilter === 'archived' && _emArch.key === currentRealm + '|' + _emFolder && (_emArch.loading || _emArch.err)) {
+        list.innerHTML = _emArch.err
+          ? '<div style="color:var(--burgundy);padding:10px 0;">' + esc(_emArch.err) + '</div>' + metaWarn
+          : '<div style="color:var(--muted);padding:10px 0;">Loading archived mail…</div>' + metaWarn;
+        return;
+      }
       list.innerHTML = '<div style="color:var(--muted);padding:10px 0;">No messages' + (q || _emFilter !== 'all' ? ' match this view' : ' yet') + '.</div>' + metaWarn; return;
     }
     list.innerHTML = rows.map(function (m) {
@@ -8736,7 +8824,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // do NOT go on to open the other message over the top of it.
     if (emCloseModal() === false) return;
     var realmAt = currentRealm;
-    var msg = _emMsgs.filter(function (x) { return x.id === id; })[0] || { id: id, subject: '' };
+    var msg = emFindMsg(id) || { id: id, subject: '' };
     var ov = document.createElement('div'); ov.id = 'em_modal'; ov.className = 'em-modal-ov'; ov.setAttribute('data-open-msg', id);
     ov.innerHTML = '<div class="em-modal"><div class="em-modal-head"><div style="flex:1;min-width:0;"><div class="em-modal-subj">' + esc(msg.subject) + '</div><div class="em-modal-from" id="em_m_from">' + esc(msg.fromName || msg.from || '') + '</div></div><button class="btn btn-ghost" id="em_m_close" type="button" style="font-size:18px;min-height:34px;width:38px;">×</button></div>' +
       '<div class="em-modal-actions" id="em_m_actions"></div>' +
@@ -10505,6 +10593,22 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
      local write. Keyed to the realm as well as the time, so opening a DIFFERENT client
      inside the window still refreshes normally. */
   var _cprSigLocalAt = 0, _cprSigLocalKey = '';
+  /* The Statement of Compliance is dated the day it is SIGNED. Signing used to set only signedAt —
+     the little "signed 11/2/2026" under the signature — while the date that PRINTS beside the
+     signature (DLI form, MnDOT PDF, the PDF) is the separate Statement date field. A correction is
+     the original report opened again and re-signed, so it kept printing the ORIGINAL date even
+     though the panel said it was signed today (Karla: "it keeps printing the original date from the
+     old copy"). Re-signing now carries the Statement date to today, in the form too, and says so
+     when it changed — the date is still editable above if the statement should carry another. */
+  function cprDateOnSigning() {
+    var today = bizToday(), prev = String(cprDraft.socDate || '');
+    cprDraft.socDate = today;
+    var el = document.querySelector('[data-cf="socDate"]'); if (el) el.value = today;
+    if (prev && prev !== today) {
+      var mdy = function (d) { var p = String(d).split('-'); return p.length === 3 ? (+p[1] + '/' + +p[2] + '/' + p[0]) : d; };
+      (window.bccNotify || function () {})('Statement date changed from ' + mdy(prev) + ' to ' + mdy(today) + ' to match the new signature. Change it under Statement of compliance if it should carry another date.', 'info', 9000);
+    }
+  }
   function cprGetCompanySig() { try { var s = JSON.parse(localStorage.getItem(cprSigKey()) || 'null'); return (s && s.src) ? s : null; } catch (e) { return null; } }
   function cprRenderSig() {
     var wrap = document.getElementById('cpr_sigwrap'); if (!wrap || !cprDraft) return;
@@ -10532,12 +10636,14 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       window.bccPdfEditor.signaturePad(function (res) {
         if (!res || !res.dataUrl) return;
         cprDraft.signatureSrc = res.dataUrl; cprDraft.signedAt = nowIso(); cprDraft.signedBy = myUpn();
+        cprDateOnSigning();
         cprRenderSig();
       });
     };
     b = document.getElementById('cpr_siginsert'); if (b) b.onclick = function () {
       var s = cprGetCompanySig(); if (!s) { cprRenderSig(); return; }
       cprDraft.signatureSrc = s.src; cprDraft.signedAt = nowIso(); cprDraft.signedBy = myUpn();
+      cprDateOnSigning();
       // Prefill signer name/title from the saved signature if the form is blank.
       if (!String(cprDraft.socName || '').trim() && s.name) { cprDraft.socName = s.name; var el = document.querySelector('[data-cf="socName"]'); if (el) el.value = s.name; }
       if (!String(cprDraft.socTitle || '').trim() && s.title) { cprDraft.socTitle = s.title; var el2 = document.querySelector('[data-cf="socTitle"]'); if (el2) el2.value = s.title; }
