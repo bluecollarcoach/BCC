@@ -2962,6 +2962,16 @@
         'button, .btn, [role="button"], input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), select, textarea{min-height:44px;}' +
         'a.nav-link, a.stile, .bcc-mm-link, .tabs-bar .tab, .toolbar .tab{min-height:44px;}' +
       '}' +
+      /* iPhone / iPad Safari zooms the whole page when a form control with text under 16px takes focus, and
+         does not zoom back — on a phone that throws the layout off screen mid-entry. Many controls here are
+         12.5-14px (search boxes, filters, task and time entry). 16px on iOS ONLY: @supports (-webkit-touch-callout)
+         is true for iOS WebKit and false for desktop browsers and Android, so nothing else changes size.
+         !important because several controls set their size inline. Checkboxes, radios and buttons are untouched. */
+      '@supports (-webkit-touch-callout: none){' +
+        'input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="image"]):not([type="hidden"]), select, textarea{font-size:16px !important;}' +
+      '}' +
+      /* The topbar logo link is a bare 30px image — under the 44px minimum the rule above gives every other control. */
+      '@media (pointer: coarse) and (max-width:700px){header.topbar a.home{min-width:44px;min-height:44px;display:inline-flex;align-items:center;justify-content:center;}}' +
       // Light-topbar auth chip: dark text on a subtle gold-tinted pill.
       '.bcc-auth-chip{display:inline-flex;align-items:center;gap:6px;color:#6b7077;font-size:12.5px;font-weight:600;padding:5px 11px;border-radius:999px;background:#f6f6f4;border:1px solid #e6e5e1;}' +
       '.bcc-auth-chip .bcc-dot{width:8px;height:8px;border-radius:50%;background:#10b981;flex-shrink:0;}' +
