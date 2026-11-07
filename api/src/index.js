@@ -109,30 +109,35 @@ function isProtectedServerKey(k) { return PROTECTED_KEY_PREFIXES.some(pre => Str
 // that's an unrelated, intentional "device-local, never re-synced" design, not a
 // gap this array is meant to change. bcc-notary-firm- (deliberately firm-wide) is
 // excluded here on purpose.
+/* The TAIL of a key is NOT part of the test. Every pattern here used to demand a lowercase-alphanumeric tail
+   ([0-9a-z]+$), so a key like bcc-task-<realm>-ABC, bcc-wip-<realm>-x or bcc-cpr-<realm>-a_b matched NOTHING —
+   dataKeyClientRealm() then said "not client-scoped" and read, write and delete all skipped the client-access
+   AND bookkeeping-tier gates (the browser lists these families by PREFIX, so a planted record showed up in the
+   client's workspace). The family prefix + realm decides; whatever follows the realm is irrelevant. */
 const CLIENT_SCOPED_ID_RE = [
-  /^bcc-task-([^-]+)-[0-9a-z]+$/,
-  /^bcc-close-([^-]+)-\d{4}-\d{2}$/,
+  /^bcc-task-([^-]+)(?:-.*)?$/,
+  /^bcc-close-([^-]+)(?:-.*)?$/,
   // A bookkeeper's MANUAL correction to a month's figures. Deliberately not under
   // bcc-financial-period- (which is server-owned and never syncs) so it reaches Cosmos and
   // the rest of the firm; gated per client like every other client-scoped record.
-  /^bcc-period-manual-([^-]+)-\d{4}-\d{2}$/,
-  /^bcc-wip-([^-]+)$/,
-  /^bcc-cpr-(?!sends-)([^-]+)-[0-9a-z]+$/,
-  /^bcc-payapp-([^-]+)-[0-9a-z]+$/,
-  /^bcc-client-info-([^-]+)$/,
+  /^bcc-period-manual-([^-]+)(?:-.*)?$/,
+  /^bcc-wip-([^-]+)(?:-.*)?$/,
+  /^bcc-cpr-(?!sends-)([^-]+)(?:-.*)?$/,
+  /^bcc-payapp-([^-]+)(?:-.*)?$/,
+  /^bcc-client-info-([^-]+)(?:-.*)?$/,
   // NOT bcc-notary-contact-v1 — that is a FIRM-WIDE setting (who gets alerted about
   // new notary requests), and the naive pattern read "contact" as a client realm,
   // so no such client existed and every read/write of the setting was denied.
-  /^bcc-notary-(?!contact-v1$)([^-]+)-[0-9a-z]+$/,
-  /^bcc-email-([^-]+)-[0-9a-z]+$/,
-  /^bcc-cpr-sends-([^-]+)$/,
+  /^bcc-notary-(?!contact-v1$)([^-]+)(?:-.*)?$/,
+  /^bcc-email-([^-]+)(?:-.*)?$/,
+  /^bcc-cpr-sends-([^-]+)(?:-.*)?$/,
   // The company's saved Statement-of-Compliance signature. Per-client, and BOTH the
   // browser and /api/cpr/sign write it, so it must stay readable/writable here —
   // gated by client access rather than blocked outright.
-  /^bcc-cprsig-([^-]+)$/,
+  /^bcc-cprsig-([^-]+)(?:-.*)?$/,
   // Postal-mail log for a client: what arrived in the physical mail, who scanned it,
   // and whether it has been dealt with. Per-client, so gate it by client access.
-  /^bcc-clientmail-([^-]+)$/,
+  /^bcc-clientmail-([^-]+)(?:-.*)?$/,
   /* Certified-payroll reference notes (Karla, 2026-08-20: "where to send reports" was living
      on another page). ONE DOCUMENT PER NOTE — `bcc-cprnote-<realm>-<jobhash|general>` — so a
      write can only ever touch the note it is for; the per-client map this first shipped as
@@ -140,8 +145,8 @@ const CLIENT_SCOPED_ID_RE = [
      that had not synced. Both spellings stay matched: the old one so the document written
      during that window is still gated per client (it is read-only now, never written again).
      Gated by client access and the bookkeeping tier, like the reports it sits beside. */
-  /^bcc-cprnote-([^-]+)-[0-9a-z]+$/,
-  /^bcc-cprnotes-([^-]+)$/,
+  /^bcc-cprnote-([^-]+)(?:-.*)?$/,
+  /^bcc-cprnotes-([^-]+)(?:-.*)?$/,
   // MUR (state subcontractor workforce-utilization) reports, per client — one document per
   // report period, plus the client-level reference note beside it (same "where do these go"
   // notes pattern as certified payroll, its own separate keys). Registered here, not just
@@ -149,8 +154,8 @@ const CLIENT_SCOPED_ID_RE = [
   // which skips the client-access AND bookkeeping-tier gate entirely on read, write and
   // delete — every signed-in member could then reach every client's MUR data regardless of
   // which clients they are actually granted.
-  /^bcc-mur-([^-]+)-[0-9a-z]+$/,
-  /^bcc-murnote-([^-]+)-[0-9a-z]+$/,
+  /^bcc-mur-([^-]+)(?:-.*)?$/,
+  /^bcc-murnote-([^-]+)(?:-.*)?$/,
 ];
 function dataKeyClientRealm(id) {
   id = String(id || '');
