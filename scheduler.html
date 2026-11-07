@@ -65,7 +65,9 @@
 
   /* Month grid */
   .month-grid {
-    display:grid; grid-template-columns:repeat(7, 1fr); gap:6px;
+    /* minmax(0, 1fr), not 1fr: a plain 1fr cannot shrink below its content, and the event rows are nowrap, so ONE long title made its day column
+       hundreds of pixels wide and pushed the other weekdays out of sight (measured: 452px / 50px / 45px ... on a phone). */
+    display:grid; grid-template-columns:repeat(7, minmax(0, 1fr)); gap:6px;
     background:var(--chrome-mute); border:1px solid var(--chrome-mute);
     border-radius:12px; overflow:hidden;
   }
@@ -134,6 +136,7 @@
     .page-head h1 { font-size:22px; }
     .day { min-height:64px; padding:5px; }
     .day .ev { font-size:10px; padding:2px 4px; }
+    .dow-head { padding:6px 0; letter-spacing:.4px; font-size:10px; }
     .day .num { font-size:12px; }
     .toolbar .label { font-size:15px; }
   }

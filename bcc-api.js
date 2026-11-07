@@ -2389,7 +2389,9 @@
           var meUpn = ((user && user.userDetails) || '').toLowerCase();
           var rec = cfg && cfg.users && cfg.users.find(function (x) { return (x.upn || '').toLowerCase() === meUpn; });
           var dest = rec && rec.landingPage;
-          if (dest && dest !== 'index.html' && dest !== '/' && dest !== here.replace(/^\//, '')) {
+          // Only a plain page name ("myday.html", optionally with one leading slash) is ever followed. The value is pasted after a "/", so "/host" or
+          // "\host" would otherwise have become "//host" — another site. Everything the Admin screen offers matches.
+          if (dest && /^\/?[A-Za-z0-9_-]+\.html$/.test(dest) && dest !== 'index.html' && dest !== '/' && dest !== here.replace(/^\//, '')) {
             location.replace('/' + dest.replace(/^\//, ''));
             return; // stop bootstrap — the next page will run its own
           }
@@ -4535,7 +4537,9 @@
   // Only allow same-origin relative paths or http(s) URLs as a notification target
   // (blocks javascript:/data: and attribute-breakout, since url is user-derived).
   function ncSafeUrl(u) {
-    u = String(u || '');
+    /* Browsers drop tabs/newlines inside a URL and read "\" as "/", so "/\evil.example" and "/<tab>/evil.example" both mean
+       "//evil.example" — a link to another site that the check below would have waved through as a local path. Normalise first. */
+    u = String(u || '').replace(/[\u0000-\u001f\u007f]/g, '').replace(/\\/g, '/');
     if (/^\/(?!\/)/.test(u)) return u;        // "/path" but not "//host"
     if (/^https?:\/\//i.test(u)) return u;
     return '';
