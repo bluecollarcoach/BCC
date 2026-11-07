@@ -12,6 +12,17 @@
   },
 
   "routes": [
+    { "route": "/.auth/login/github",  "statusCode": 404 },
+    { "route": "/.auth/login/twitter", "statusCode": 404 },
+    { "route": "/docs/*",        "statusCode": 404 },
+    { "route": "/infra/*",       "statusCode": 404 },
+    { "route": "/.github/*",     "statusCode": 404 },
+    { "route": "/.claude/*",     "statusCode": 404 },
+    { "route": "/.env.example",  "statusCode": 404 },
+    { "route": "/.gitignore",    "statusCode": 404 },
+    { "route": "/DEPLOY.md",     "statusCode": 404 },
+    { "route": "/README.md",     "statusCode": 404 },
+
     { "route": "/login",       "rewrite": "/.auth/login/aad" },
     { "route": "/logout",      "redirect": "/.auth/logout" },
 
@@ -69,7 +80,9 @@
     "X-Frame-Options": "SAMEORIGIN",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
-    "Permissions-Policy": "geolocation=(self), camera=(self)"
+    "Permissions-Policy": "geolocation=(self), camera=(self)",
+    "Strict-Transport-Security": "max-age=31536000",
+    "Content-Security-Policy": "frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
   },
 
   "mimeTypes": {

@@ -4331,7 +4331,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
       .then(function (resp) {
         if (!resp.ok) throw new Error(resp.error || 'write failed');
-        if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: realmAt, entity: entity, op: verb, id: resp.id } });
+        /* the server records this push itself (qbo-write) — a browser copy is refused and would only duplicate it */
         if (window.bccNotifySaved) window.bccNotifySaved(txnLabel(entity).charAt(0).toUpperCase() + txnLabel(entity).slice(1) + (verb === 'update' ? ' updated' : ' created') + (resp.docNumber ? (' #' + resp.docNumber) : '') + ' in QuickBooks.');
         var attachCap = { invoice: 'Invoice', bill: 'Bill', purchase: 'Purchase', vendorcredit: 'VendorCredit' }[entity];
         if (attachFileAt && attachCap && resp.id) attachToEntity(attachCap, resp.id, attachFileAt, resp.docNumber, realmAt);
@@ -4440,7 +4440,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
       .then(function (resp) {
         if (!resp.ok) throw new Error(resp.error || 'write failed');
-        if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: realmAt, entity: 'journalentry', op: verb, id: resp.id } });
+        /* the server records this push itself (qbo-write) */
         if (window.bccNotifySaved) window.bccNotifySaved('Journal entry ' + (verb === 'update' ? 'updated' : 'created') + (resp.docNumber ? (' #' + resp.docNumber) : '') + ' in QuickBooks.');
         if (_txnFormGen === formGenAt) { document.getElementById('qboWriteForm').innerHTML = ''; _txnEdit = null; _txnFormRealm = null; }
         if (currentRealm === realmAt) { loadQboKpis(); if (qboActiveReport) loadQboReport(qboActiveReport, null); }
@@ -4506,7 +4506,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
           .then(function (resp) {
             if (!resp.ok) throw new Error(resp.error || 'void failed');
-            if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: realmAt, entity: entity, op: 'void', id: resp.id } });
+            /* the server records this void itself (qbo-write) */
             // Realm-gated like every other toast this form raises — a bookkeeper who has
             // already moved on to a different client should not see a bare "voided" or an
             // error toast with no company name while looking at someone else's screen.
@@ -4600,7 +4600,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad response' }; }); })
       .then(function (resp) {
         if (!resp.ok) throw new Error(resp.error || 'create failed');
-        if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: realmAt, entity: entity, op: 'create', id: resp.id } });
+        /* the server records this push itself (qbo-write) */
         if (window.bccNotifySaved) window.bccNotifySaved(entity.charAt(0).toUpperCase() + entity.slice(1) + ' added to QuickBooks.');
         _qboRefs = null; // refresh dropdown cache so new record appears
         if (_txnFormGen === formGenAt) {
@@ -4665,7 +4665,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   function createVendorAuto(name, ok, fail) {
     fetch('/api/integrations/qbo/companies/' + encodeURIComponent(currentRealm) + '/write', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ entity: 'vendor', op: 'create', fields: { displayName: name } }) })
       .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
-      .then(function (resp) { if (!resp.ok) throw new Error(resp.error || 'failed'); if (window.bccAudit) window.bccAudit('qbo-write', { path: '/bookkeeping.html', meta: { realmId: currentRealm, entity: 'vendor', op: 'create', id: resp.id, auto: true } }); _qboRefs = null; loadQboRefs(function () { ok(resp.id); }); })
+      .then(function (resp) { if (!resp.ok) throw new Error(resp.error || 'failed'); _qboRefs = null; loadQboRefs(function () { ok(resp.id); }); })
       .catch(function (e) { fail(e.message); });
   }
   // Attach a file to a posted QBO transaction (best-effort) + keep a copy in the
@@ -4678,7 +4678,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       .then(function (resp) {
         if (!resp.ok) throw new Error(resp.error || 'attach failed');
         if (window.bccNotifySaved) window.bccNotifySaved('Receipt attached to ' + (cap === 'VendorCredit' ? 'vendor credit' : cap) + (docNumber ? (' #' + docNumber) : '') + '.');
-        if (window.bccAudit) window.bccAudit('qbo-attach', { path: '/bookkeeping.html', meta: { realmId: realm, entity: cap, id: id } });
+        /* the server records this attachment itself (qbo-attach) */
       })
       .catch(function (e) { if (window.bccNotify) window.bccNotify('Posted, but attaching the file to QuickBooks failed: ' + e.message, 'warn', 7000); });
     // Keep a copy in the client's Files tab (Blob), best-effort, non-blocking.

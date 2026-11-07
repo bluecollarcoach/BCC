@@ -248,6 +248,37 @@ function effectiveContentType(ct, filename) {
 const ALLOWED_DOMAINS = (process.env.BCC_ALLOWED_DOMAINS || 'bluecollarcoach.us,bluecollarcoach.onmicrosoft.com')
   .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 
+/* ---- small shared guards (security pass 2026-11-07) ---- */
+/* An address-shaped string, checked in LINEAR time. The pattern alone is quadratic on input like
+   'a@' + 'a.'.repeat(n): 32 KB cost ~0.6 s and a megabyte stalls the (single-threaded) function for
+   minutes — and the callers ran it on raw request bodies. A real address is at most 254 characters. */
+const EMAIL_SHAPE_RX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+function looksLikeEmail(s) { s = String(s == null ? '' : s); return s.length <= 254 && EMAIL_SHAPE_RX.test(s); }
+/* Who the app may email ON ITS OWN ACCOUNT (task-assignment mail goes out through the owner's mailbox
+   with app-only Graph rights). Staff only: an address on an allowed domain, or one that has an active
+   roster row. Without this any signed-in user could have the server send mail with a subject and body of
+   their choosing to ANY outside address, in the owner's name, with no copy in Sent Items. */
+async function emailRecipientAllowed(addr) {
+  const to = String(addr || '').trim().toLowerCase();
+  if (!looksLikeEmail(to)) return false;
+  if (ALLOWED_DOMAINS.indexOf(to.split('@')[1]) >= 0) return true;
+  const cfg = await getAdminCfg();
+  const row = (cfg && Array.isArray(cfg.users) ? cfg.users : []).find(u => String((u && (u.upn || u.email)) || '').toLowerCase() === to);
+  return !!row && row.status !== 'inactive' && row.status !== 'hidden';
+}
+/* Compare the cron secret without leaking how much of it matched (hash both sides to equal length first). */
+function cronSecretMatches(given, secret) {
+  if (!secret || typeof given !== 'string') return false;
+  const a = crypto.createHash('sha256').update(given).digest(), b = crypto.createHash('sha256').update(String(secret)).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+/* Dates and years that are about to be pasted into a QuickBooks report URL / query string must be exactly that. */
+function badReportParams(url) {
+  for (const k of ['from', 'to', 'asOf']) { const v = url.searchParams.get(k); if (v != null && v !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(v)) return k + ' must be a date like 2026-12-31'; }
+  const y = url.searchParams.get('year'); if (y != null && y !== '' && !/^\d{4}$/.test(y)) return 'year must be four digits';
+  return null;
+}
+
 let _container = null;
 function container() {
   if (!_container) {
@@ -573,6 +604,16 @@ function shouldLogAccess(ip, path) {
   }
   return true;
 }
+const POLL_LOG_PATHS = new Set(['/api/data', '/api/notifications', '/api/users', '/api/nav/popular', '/api/profile']);
+const POLL_LOG_THROTTLE_MS = 5 * 60 * 1000;
+const _pollLogThrottle = new Map();
+function shouldLogPoll(key) {
+  const now = Date.now(), last = _pollLogThrottle.get(key);
+  if (last && now - last < POLL_LOG_THROTTLE_MS) return false;
+  _pollLogThrottle.set(key, now);
+  if (_pollLogThrottle.size > 5000) { for (const [k, t] of _pollLogThrottle) if (now - t >= POLL_LOG_THROTTLE_MS) _pollLogThrottle.delete(k); }
+  return true;
+}
 const ACCESS_LOG_TTL_SECONDS = 30 * 24 * 3600;   // the 30-day policy cron/cleanup states
 function logAccess(request, response, p) {
   try {
@@ -581,7 +622,13 @@ function logAccess(request, response, p) {
     if (request.method === 'GET' && path === '/api/audit') return; // don't log the log
     const status = (response && response.status) || (response && response.jsonBody ? 200 : 200);
     const ip = getClientIp(request);
-    if (!p && status < 400 && !shouldLogAccess(ip, path)) return;
+    // Anonymous hits are throttled per ip+path whatever the status: failed ones used to be written every time, so anyone could
+    // flood the container (and every user's RU budget) with 4xx requests. The first of each burst is still recorded.
+    if (!p && !shouldLogAccess(ip, path)) return;
+    // The app's own background polls (data every 8 s per open tab, notifications every 60 s) wrote one row EACH: tens of thousands a
+    // day that bury real activity in the Activity Log's newest-1000 window and fatten every nightly backup. One row per user+path
+    // per 5 minutes is plenty to show someone is active; errors and every non-GET are always recorded.
+    if (p && status < 400 && request.method === 'GET' && POLL_LOG_PATHS.has(path) && !shouldLogPoll(String(p.userDetails || p.userId || '') + '|' + path)) return;
     const c = container();
     const ts = new Date().toISOString();
     const id = 'access-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
@@ -1479,10 +1526,10 @@ const ALLOWED_AUDIT_ACTIONS = new Set([
   // Issues / inbox
   'issue-report',
   // Bookkeeping client workspace (were being rejected → not recorded)
-  'qbo-write', 'qbo-attach', 'qbo-sync',
-  // Refused pushes are audited too (server-side), so the QuickBooks log shows an
-  // attempt that was rejected rather than silently showing nothing.
-  'qbo-write-failed', 'qbo-attach-failed',
+  /* qbo-write / qbo-attach and their -failed twins are written ONLY by the server (logAudit, at the moment a push
+     reaches QuickBooks, refused ones included). They were also accepted from any signed-in browser with any meta,
+     so a member could forge rows in the firm's QuickBooks push log. Browsers no longer send them. */
+  'qbo-sync',
   'client-info-update', 'client-mailbox-set',
   'client-task-create', 'client-task-delete',
   'time-punch-in', 'time-punch-out', 'time-entry-add', 'time-entry-delete',
@@ -1760,6 +1807,12 @@ app.http('push-subscribe', {
         const body = await request.json().catch(() => ({}));
         const sub = body && body.subscription;
         if (!sub || !sub.endpoint) return badRequest('expected { subscription: { endpoint, keys } }');
+        /* The server later POSTs to this URL (web-push). Browsers always hand out an https endpoint on their push
+           service's public host; anything else (http, an IP literal, localhost, an internal name, a huge string) would
+           turn this into a request from our network to a destination the caller picked. */
+        let epUrl = null; try { epUrl = new URL(String(sub.endpoint)); } catch (_) {}
+        if (!epUrl || epUrl.protocol !== 'https:' || String(sub.endpoint).length > 1000 || epUrl.username || epUrl.password || isBlockedHost(epUrl.hostname) || (epUrl.port && epUrl.port !== '443')) return badRequest('invalid push subscription endpoint');
+        if (JSON.stringify(sub).length > 4000) return badRequest('push subscription too large');
         const id = 'push-sub-' + userKey + '-' + shortHash(sub.endpoint);
         const doc = {
           id,
@@ -2030,7 +2083,7 @@ function taskEmailFromUpn() {
 async function emailNotifyUser(toUpn, subject, bodyText, url) {
   try {
     const to = String(toUpn || '').trim().toLowerCase();
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return false;
+    if (!(await emailRecipientAllowed(to))) return false;   // staff only, and a bounded, linear shape check
     const from = taskEmailFromUpn();
     if (!from) return false;
     const access = await getGraphToken();
@@ -2213,7 +2266,7 @@ app.http('feedback-attach', {
       const added = [], refused = [];
       for (const f of files) {
         const rawType = String(f.type || '').split(';')[0].trim().toLowerCase();
-        const ext = FB_ATTACH_TYPES[rawType];
+        const ext = Object.prototype.hasOwnProperty.call(FB_ATTACH_TYPES, rawType) ? FB_ATTACH_TYPES[rawType] : undefined;   // 'constructor' / 'valueOf' are not types
         if (!ext) { refused.push({ name: String(f.name || 'file'), why: 'only images and PDFs can be attached' }); continue; }
         const buf = Buffer.from(await f.arrayBuffer());
         if (!buf.length) { refused.push({ name: String(f.name || 'file'), why: 'the file was empty' }); continue; }
@@ -2490,7 +2543,7 @@ app.http('notify-user', {
       // the same way the browser will, decide on THAT, and pass the normalized
       // value on so what we authorize is exactly what sw.js opens.
       const url = safeNotifyPath(body.url);
-      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(toUpn)) return badRequest('toUpn must be an email address');
+      if (!looksLikeEmail(toUpn)) return badRequest('toUpn must be an email address');
       if (!title) return badRequest('title required');
       // Target must be an ACTIVE user of this app — no notifications to arbitrary
       // outside addresses, no doc garbage for users that don't exist.
@@ -2501,6 +2554,8 @@ app.http('notify-user', {
      row here silently dropped every task-assignment notification to ordinary staff who had
      never been edited in Admin. Reject only an EXPLICIT deactivation. */
   if (recN && (recN.status === 'inactive' || recN.status === 'hidden')) return badRequest('recipient is not an active user');
+      // ...and, as the comment above always said, NOT an arbitrary outside address: no row is fine (the documented default), but then the address must be on an allowed domain.
+      if (!recN && ALLOWED_DOMAINS.indexOf(toUpn.split('@')[1]) < 0) return badRequest('recipient is not a user of this app');
       /* A notification ABOUT a client carries that client's name and the task text, and this
          route only ever checked that the recipient is an active user. Assigning a client task
          therefore pushed the company name and the task straight to anyone in the firm —
@@ -2740,7 +2795,7 @@ app.http('cron-backup', {
     const T0 = Date.now();
     const secret = process.env.CRON_SECRET || '';
     const given = request.headers.get('x-bcc-cron-secret') || '';
-    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    if (!cronSecretMatches(given, secret)) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
     try {
       const b = await request.json().catch(() => ({}));
       const day = /^\d{4}-\d{2}-\d{2}$/.test(String(b.day || '')) ? String(b.day) : backupDayStr();
@@ -2912,7 +2967,7 @@ app.http('cron-reminders', {
   handler: async (request, context) => {
     const secret = process.env.CRON_SECRET || '';
     const given = request.headers.get('x-bcc-cron-secret') || '';
-    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    if (!cronSecretMatches(given, secret)) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
 
     const wp = getWebPush();
     if (!wp) return { status: 200, jsonBody: { ok: true, skipped: 'VAPID not configured' } };
@@ -5816,7 +5871,10 @@ app.http('audit-qbo', {
 
       if (String(u.searchParams.get('format') || '').toLowerCase() === 'csv') {
         const esc = (v) => {
-          const s = v == null ? '' : String(v);
+          let s = v == null ? '' : String(v);
+          // A cell that begins = + - @ (or tab/CR) is a FORMULA when an admin opens the export in Excel; free-text fields such as the memo
+          // come from users. Plain numbers (including negatives) are left alone so amounts stay numeric.
+          if (/^[=+\-@\t\r]/.test(s) && !/^-?\d+(\.\d+)?$/.test(s)) s = "'" + s;
           return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
         };
         const head = ['When (UTC)', 'Client', 'Outcome', 'Entity', 'Operation', 'Doc #', 'QBO Id', 'Amount', 'Txn date', 'Lines', 'Memo', 'By', 'Error'];
@@ -6588,7 +6646,7 @@ app.http('cron-qbo-sync', {
   handler: async (request, context) => {
     const secret = process.env.CRON_SECRET || '';
     const given = request.headers.get('x-bcc-cron-secret') || '';
-    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    if (!cronSecretMatches(given, secret)) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
     try {
       const fields = await getIntegrationFields('qbo');
       // Do NOT report a read failure as "not configured" — the cron would answer 200 and
@@ -6685,7 +6743,7 @@ app.http('cron-cleanup', {
   handler: async (request, context) => {
     const secret = process.env.CRON_SECRET || '';
     const given = request.headers.get('x-bcc-cron-secret') || '';
-    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    if (!cronSecretMatches(given, secret)) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
     const CLEAN_T0 = Date.now();
     const RETENTION_DAYS = 30;
     const OAUTHSTATE_RETENTION_DAYS = 1;
@@ -7164,6 +7222,8 @@ app.http('msgraph-send-mail', {
 
       const ccList  = Array.isArray(body.cc)  ? body.cc  : (body.cc  ? [body.cc]  : []);
       const bccList = Array.isArray(body.bcc) ? body.bcc : (body.bcc ? [body.bcc] : []);
+      // Same ceiling the forward route already applies: this sends AS the client's mailbox, and Graph itself would allow 500.
+      if (toList.length + ccList.length + bccList.length > 50) return badRequest('too many recipients (at most 50 per message)');
       const recip = e => ({ emailAddress: { address: String(e) } });
       const msg = {
         subject: subject,
@@ -7432,8 +7492,11 @@ app.http('msgraph-messages-by-id', {
       if (!rc.cfg || !rc.cfg.mailbox || rc.cfg.enabled === false) return { jsonBody: { ok: true, messages: [], missing: 0, otherFolder: 0, failed: 0, note: 'no client mailbox configured' } };
       const folder = String(b.folder || 'inbox').toLowerCase() === 'sentitems' ? 'sentitems' : 'inbox';
       // Bounded: ids are opaque strings from the caller, so cap both their number and their length.
-      const ids = (Array.isArray(b.ids) ? b.ids : []).filter(x => typeof x === 'string' && x.length > 0 && x.length <= 512).slice(0, 100);
-      if (!ids.length) return { jsonBody: { ok: true, messages: [], missing: 0, otherFolder: 0, failed: 0, folder } };
+      const idsIn = (Array.isArray(b.ids) ? b.ids : []).slice(0, 100);
+      // Graph message ids are URL-safe base64 (A-Z a-z 0-9 - _ =). Anything else is never a real id; it is counted, not sent.
+      const ids = idsIn.filter(x => typeof x === 'string' && x.length > 0 && x.length <= 512 && /^[A-Za-z0-9_=-]+$/.test(x));
+      const badIds = idsIn.filter(x => typeof x === 'string' && x.length > 0 && !(x.length <= 512 && /^[A-Za-z0-9_=-]+$/.test(x))).length;
+      if (!ids.length) return { jsonBody: { ok: true, messages: [], missing: 0, otherFolder: 0, failed: badIds, folder } };
       const access = await getGraphToken();
       const upn = encodeURIComponent(rc.cfg.mailbox);
       const auth = { Authorization: 'Bearer ' + access };
@@ -7447,7 +7510,7 @@ app.http('msgraph-messages-by-id', {
       }
       const folderId = (await fr.json()).id;
       const select = 'id,subject,from,toRecipients,receivedDateTime,sentDateTime,bodyPreview,isRead,webLink,hasAttachments,parentFolderId';
-      const messages = []; let missing = 0, otherFolder = 0, failed = 0;
+      const messages = []; let missing = 0, otherFolder = 0, failed = badIds;
       // Graph's JSON batch takes at most 20 sub-requests.
       for (let i = 0; i < ids.length; i += 20) {
         const chunk = ids.slice(i, i + 20);
@@ -7873,7 +7936,7 @@ app.http('msgraph-forward', {
       const to = Array.from(new Set(toRaw.map(e => String(e || '').trim()).filter(Boolean)));
       if (!to.length) return badRequest('at least one recipient is required');
       if (to.length > FWD_MAX_RECIPIENTS) return badRequest('too many recipients (max ' + FWD_MAX_RECIPIENTS + ')');
-      const bad = to.filter(e => !FWD_EMAIL_RX.test(e) || e.length > 200);
+      const bad = to.filter(e => e.length > 200 || !FWD_EMAIL_RX.test(e));   // length FIRST: the pattern is quadratic
       if (bad.length) return badRequest('not a valid email address: ' + bad[0].slice(0, 80));
       let upn;
       if (b.realmId) {
@@ -7974,19 +8037,21 @@ app.http('email-meta', {
       return { jsonBody: { ok: true, msgs: (doc && doc.msgs) || {} } };
     }
     if (!messageId || !op) return badRequest('messageId and op required');
+    // The id becomes a KEY in a plain object: '__proto__' would hand back Object.prototype and the ops below would then write onto it, process-wide.
+    if (messageId.length > 512 || /^(__proto__|constructor|prototype)$/.test(messageId)) return badRequest('invalid messageId');
     const now = new Date().toISOString();
     // read-modify-write with one optimistic retry on a concurrent change.
     for (let attempt = 0; attempt < 2; attempt++) {
       const existing = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
       const doc = existing || { id, tenantId: BCC_TENANT_ID, docType: 'email-meta', realmId, msgs: {} };
       if (!doc.msgs) doc.msgs = {};
-      const m = doc.msgs[messageId] || (doc.msgs[messageId] = { tags: [], assignedTo: '', archived: false, readBy: {}, repliedBy: [] });
+      const m = (Object.prototype.hasOwnProperty.call(doc.msgs, messageId) && doc.msgs[messageId]) || (doc.msgs[messageId] = { tags: [], assignedTo: '', archived: false, readBy: {}, repliedBy: [] });
       if (op === 'read') { m.readBy = m.readBy || {}; if (!m.readBy[who]) m.readBy[who] = now; }
       else if (op === 'unread') { if (m.readBy) delete m.readBy[who]; }
       else if (op === 'replied') { m.repliedBy = m.repliedBy || []; m.repliedBy.push({ upn: who, at: now }); }
-      else if (op === 'tagAdd') { const t = String(b.value || '').trim(); if (t) { m.tags = m.tags || []; if (m.tags.map(x => x.toLowerCase()).indexOf(t.toLowerCase()) < 0) m.tags.push(t); } }
+      else if (op === 'tagAdd') { const t = String(b.value || '').trim().slice(0, 60); if (t && (m.tags || []).length < 40) { m.tags = m.tags || []; if (m.tags.map(x => x.toLowerCase()).indexOf(t.toLowerCase()) < 0) m.tags.push(t); } }
       else if (op === 'tagRemove') { const t = String(b.value || '').toLowerCase(); m.tags = (m.tags || []).filter(x => x.toLowerCase() !== t); }
-      else if (op === 'assign') { m.assignedTo = String(b.value || '').toLowerCase(); }
+      else if (op === 'assign') { m.assignedTo = String(b.value || '').toLowerCase().slice(0, 254); }
       else if (op === 'archive') { m.archived = !!b.value; }
       else return badRequest('unknown op');
       doc.updatedAt = now;
@@ -8772,6 +8837,7 @@ app.http('qbo-job-costs', {
       const ctx = await qboResolveAccess(request, request.params.realmId);
       if (ctx.err) return ctx.err;
       const u = new URL(request.url);
+      { const badP = badReportParams(u); if (badP) return badRequest(badP); }
       const to = u.searchParams.get('to') || new Date().toISOString().slice(0, 10);
       const from = u.searchParams.get('from') || (to.slice(0, 4) + '-01-01');
       const method = (u.searchParams.get('method') || 'accrual').toLowerCase() === 'cash' ? 'Cash' : 'Accrual';
@@ -8866,6 +8932,7 @@ app.http('qbo-job-costs-real', {
       const ctx = await qboResolveAccess(request, request.params.realmId);
       if (ctx.err) return ctx.err;
       const u = new URL(request.url);
+      { const badP = badReportParams(u); if (badP) return badRequest(badP); }
       const to = u.searchParams.get('to') || new Date().toISOString().slice(0, 10);
       const from = u.searchParams.get('from') || to;
       if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) {
@@ -8957,6 +9024,7 @@ app.http('qbo-reconcile-accounts', {
     try {
       const ctx = await qboResolveAccess(request, request.params.realmId);
       if (ctx.err) return ctx.err;
+      { const badP = badReportParams(new URL(request.url)); if (badP) return badRequest(badP); }
       const asOf = new URL(request.url).searchParams.get('asOf') || new Date().toISOString().slice(0, 10);
       const accts = await ctx.queryAll("SELECT Id, Name, AccountType FROM Account WHERE Active = true AND AccountType IN ('Bank','Credit Card')");
       const idset = {}; accts.forEach(a => { idset[String(a.Id)] = { id: String(a.Id), name: a.Name, type: a.AccountType }; });
@@ -8990,6 +9058,7 @@ app.http('qbo-report', {
     const realmId = request.params.realmId;
     const url = new URL(request.url);
     const type = (url.searchParams.get('type') || 'pl').toLowerCase();
+    { const badP = badReportParams(url); if (badP) return badRequest(badP); }   // dates/years go straight into QuickBooks query strings
     try {
       const c = container();
       const comp = await c.item('bcc-qbo-company-' + realmId, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && e.code === 404) return null; throw e; });
@@ -10046,12 +10115,34 @@ app.http('ai-scan-card', {
 });
 
 // --- Website enrichment helpers (SSRF-guarded fetch + HTML→text) ---------------
+/* Plain text from a fetched web page. LINEAR: the old chain of lazy regexes (<script[\s\S]*?</script> and
+   <[^>]+>) re-scanned to the end of the page for every unterminated tag, so a 160 KB page of '<script ' repeated
+   held the function for ~10 s and the 2 MB fetch cap allowed minutes. Same output for ordinary pages; input is
+   capped at 500 KB (the caller trims what it keeps far below that anyway). */
 function htmlToText(html) {
-  return String(html || '')
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/<[^>]+>/g, ' ')
+  let s = String(html || '').slice(0, 500000);
+  const cut = (src, open, close) => {                        // drop <open ... close> blocks, case-insensitively, in one pass
+    // ASCII-only lowercase: String.toLowerCase() can CHANGE the length ('İ' becomes two characters), which would shift every later index off the original text.
+    const low = src.replace(/[A-Z]/g, c => String.fromCharCode(c.charCodeAt(0) + 32)); let out = '', i = 0;
+    for (;;) {
+      const a = low.indexOf(open, i);
+      if (a < 0) return out + src.slice(i);
+      const b = low.indexOf(close, a + open.length);
+      if (b < 0) return out + src.slice(i);                  // unterminated: leave the rest as it was (no later open can find a close either)
+      out += src.slice(i, a) + ' '; i = b + close.length;
+    }
+  };
+  s = cut(cut(cut(s, '<script', '</script>'), '<style', '</style>'), '<!--', '-->');
+  let out = '', i = 0;                                       // <[^>]+> -> ' ' (at least one character between)
+  for (;;) {
+    const a = s.indexOf('<', i);
+    if (a < 0) { out += s.slice(i); break; }
+    const b = s.indexOf('>', a + 1);
+    if (b < 0) { out += s.slice(i); break; }
+    if (b === a + 1) { out += s.slice(i, a + 1); i = a + 1; continue; }   // '<>' is not a tag
+    out += s.slice(i, a) + ' '; i = b + 1;
+  }
+  return out
     .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
     .replace(/&#39;|&apos;/gi, "'").replace(/&quot;/gi, '"')
     .replace(/\s+/g, ' ').trim();
@@ -10059,20 +10150,31 @@ function htmlToText(html) {
 // Is this IP literal (v4, v6, or IPv4-mapped IPv6) a private/loopback/link-local/
 // metadata/multicast address we must never connect to? Normalizes mapped forms.
 function ipBlocked(ipRaw) {
-  let ip = String(ipRaw || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/%.*$/, '').replace(/^::ffff:/, '');
-  // IPv4-mapped IPv6 in hex form, e.g. a9fe:a9fe -> 169.254.169.254
+  let ip = String(ipRaw || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/%.*$/, '');
+  const mapped = /^::ffff:/.test(ip);
+  ip = ip.replace(/^::ffff:/, '');
+  // IPv4-mapped IPv6 in hex form, e.g. a9fe:a9fe -> 169.254.169.254 — whether or not the groups happen to contain a letter
+  // (::ffff:7f00:1 is 127.0.0.1 and ::ffff:0:0 is 0.0.0.0).
   const hex = ip.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-  if (hex && /[a-f]/.test(ip)) { const a = parseInt(hex[1], 16), b = parseInt(hex[2], 16); ip = ((a >> 8) & 255) + '.' + (a & 255) + '.' + ((b >> 8) & 255) + '.' + (b & 255); }
+  if (hex && (mapped || /[a-f]/.test(ip))) { const a = parseInt(hex[1], 16), b = parseInt(hex[2], 16); ip = ((a >> 8) & 255) + '.' + (a & 255) + '.' + ((b >> 8) & 255) + '.' + (b & 255); }
+  // IPv4-compatible form ::127.0.0.1
+  const compat = ip.match(/^::(\d{1,3}(?:\.\d{1,3}){3})$/);
+  if (compat) ip = compat[1];
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
     const o = ip.split('.').map(Number);
     if (o.some(x => x > 255)) return true;
-    const a = o[0], b = o[1];
-    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || a >= 224;
+    const a = o[0], b = o[1], c3 = o[2];
+    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || a >= 224
+      || (a === 100 && b >= 64 && b <= 127)                       // carrier-grade NAT 100.64.0.0/10
+      || (a === 198 && (b === 18 || b === 19))                    // benchmarking 198.18.0.0/15
+      || (a === 192 && b === 0 && c3 === 0)                       // IETF protocol assignments 192.0.0.0/24
+      || (a === 168 && b === 63 && c3 === 129 && o[3] === 16);    // Azure's platform wire server 168.63.129.16
   }
   if (ip.indexOf(':') >= 0) { // IPv6
     if (ip === '::1' || ip === '::') return true;
     if (/^(::1|0*:0*:0*:0*:0*:0*:0*:0*1)$/.test(ip)) return true;
     if (/^(fe[89ab]|f[cd]|ff)/.test(ip)) return true; // link-local, ULA, multicast
+    if (/^64:ff9b:/.test(ip)) return true;            // NAT64 translation prefix (reaches IPv4 hosts)
     return false;
   }
   return false;
@@ -10246,6 +10348,7 @@ app.http('qbo-kpis', {
         return r.json();
       };
       const method = (url.searchParams.get('method') || 'accrual').toLowerCase() === 'cash' ? 'Cash' : 'Accrual';
+      { const badP = badReportParams(url); if (badP) return badRequest(badP); }
       const asOf = url.searchParams.get('asOf') || new Date().toISOString().slice(0, 10);
       const burnMonths = Math.max(1, Math.min(12, parseInt(url.searchParams.get('burnMonths') || '3', 10) || 3));
 
