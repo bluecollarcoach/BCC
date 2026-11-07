@@ -2710,7 +2710,8 @@
     }
     function onKey(e) { if (e.key === 'Escape') close(); }
     document.addEventListener('keydown', onKey);
-    ov.addEventListener('click', function (e) { if (e.target === ov) close(); });
+    // A tap beside the box must not throw away a typed message or the screenshots already added.
+    window.bccGuardBackdrop(ov, close, function () { var m = document.getElementById('bcc-fb-msg'); return !!(atts.length || (m && String(m.value || '').trim())); });
     document.getElementById('bcc-fb-cancel').onclick = close;
     document.getElementById('bcc-fb-send').onclick = function () {
       var msg = (document.getElementById('bcc-fb-msg').value || '').trim();
@@ -3126,7 +3127,7 @@
       // New-job modal (shared by tm, scheduler, jobs, trucking, myday)
       '.bcc-modal-overlay{position:fixed;inset:0;background:rgba(15,23,42,0.55);display:none;align-items:center;justify-content:center;z-index:200;padding:20px;}' +
       '.bcc-modal-overlay.open{display:flex;}' +
-      '.bcc-modal-card{background:#fff;border-radius:14px;padding:24px;max-width:520px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 20px 50px rgba(15,23,42,0.25);font-family:inherit;color:#1a1a1a;}' +
+      '.bcc-modal-card{background:#fff;border-radius:14px;padding:24px;max-width:520px;width:100%;max-height:90vh;max-height:90dvh;overflow-y:auto;box-shadow:0 20px 50px rgba(15,23,42,0.25);font-family:inherit;color:#1a1a1a;}' +
       '.bcc-modal-card h3{color:#2b2b2b;font-size:20px;margin-bottom:4px;font-weight:800;}' +
       '.bcc-modal-card .bcc-modal-sub{color:#6b685f;font-size:12.5px;margin-bottom:16px;}' +
       '.bcc-modal-card label{display:block;font-size:11px;font-weight:700;color:#6b685f;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:5px;margin-top:10px;}' +
@@ -3511,6 +3512,46 @@
       try { refreshRefusedBar(); } catch (e) {}
     }
   });
+
+  /* ---------- Dialog backdrop that never throws typing away ----------
+   * Every dialog whose dim backdrop has class "modal-bg" (or the attribute data-bcc-backdrop) is covered with NO per-page code:
+   * one capture-phase listener on the document swallows a backdrop click before the page's own close handler sees it when
+   *   - the press STARTED inside the dialog (selecting text in a field and drifting past the edge) — that used to close it and
+   *     lose the edit; or
+   *   - the user has typed in it ("typed in" = a real input event since it was last shown; page code that fills the form
+   *     programmatically fires none) — it stays open and a short note says why.
+   * A dialog nobody has typed in closes on a backdrop tap exactly as before.
+   * window.bccGuardBackdrop(el, closeFn, isDirty) adds the same protection to a dialog built in script: it marks el, closes it
+   * on a clean backdrop tap, and treats isDirty() as typed when the caller has state the form fields do not show. */
+  (function () {
+    function st(bg) { return bg.__bccBd || (bg.__bccBd = { typed: false, inside: false, watched: false }); }
+    function backdropOf(t) { return t && t.closest ? t.closest('.modal-bg, [data-bcc-backdrop]') : null; }
+    function watch(bg) {
+      var s = st(bg); if (s.watched || !window.MutationObserver) return; s.watched = true;
+      new MutationObserver(function () {
+        try { var cs = getComputedStyle(bg); if (cs.display === 'none' || cs.visibility === 'hidden') s.typed = false; } catch (e) {}
+      }).observe(bg, { attributes: true, attributeFilter: ['class', 'style', 'hidden'] });
+    }
+    document.addEventListener('input', function (e) { var bg = backdropOf(e.target); if (bg) { st(bg).typed = true; watch(bg); } }, true);
+    function down(e) { var bg = backdropOf(e.target); if (bg) st(bg).inside = e.target !== bg; }
+    ['pointerdown', 'mousedown', 'touchstart'].forEach(function (n) { document.addEventListener(n, down, true); });
+    document.addEventListener('click', function (e) {
+      var bg = backdropOf(e.target); if (!bg) return;
+      var s = st(bg), inside = s.inside; s.inside = false;
+      if (e.target !== bg) return;
+      var dirty = s.typed;
+      if (!dirty && bg.__bccIsDirty) { try { dirty = !!bg.__bccIsDirty(); } catch (x) {} }
+      if (!inside && !dirty) return;
+      e.stopPropagation(); e.stopImmediatePropagation();
+      if (!inside && window.bccNotify) { try { window.bccNotify('You have unsaved changes. Use Cancel to close without saving.', 'info', 3500); } catch (x) {} }
+    }, true);
+    window.bccGuardBackdrop = function (el, closeFn, isDirty) {
+      if (!el) return;
+      el.setAttribute('data-bcc-backdrop', '');
+      el.__bccIsDirty = isDirty || null;
+      el.addEventListener('click', function (e) { if (e.target === el) closeFn(e); });
+    };
+  })();
 
   /* ---------- Offline-aware save toast ----------
    * window.bccNotifySaved(onlineMsg)

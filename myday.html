@@ -116,6 +116,8 @@
   .mt-move button:not(:disabled):hover { border-color:var(--gold); color:var(--gold-deep); }
   .mt-del { border:none; background:none; color:var(--muted); cursor:pointer; font-size:18px; line-height:1; width:26px; flex-shrink:0; }
   .mt-del:hover { color:var(--burgundy); }
+  .mt-undo { display:flex; align-items:center; gap:12px; margin:8px 0 2px; padding:8px 12px; border-radius:8px; background:#f4f4f1; border:1px solid var(--line,#e2e1dd); font-size:13px; color:var(--ink,#1a1a1a); }
+  .mt-undo button { margin-left:auto; padding:5px 14px; border-radius:6px; border:1px solid var(--line,#ccc); background:#fff; color:var(--ink,#0c1a4b); font:inherit; font-weight:600; cursor:pointer; }
   .mt-edit-btn { border:none; background:none; color:var(--muted); cursor:pointer; font-size:13px; line-height:1; width:24px; flex-shrink:0; }
   .mt-edit-btn:hover { color:var(--gold-deep); }
   .mt-edit-input { flex:1; min-width:0; border:1px solid var(--gold); border-radius:8px; padding:6px 9px; font:inherit; font-size:14px; }
@@ -774,6 +776,17 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   // or null. Only one at a time — opening a second edit while one is already open just
   // moves it, same as the bookkeeping.html task editor's _taskEdit.
   var _myTasksEditId = null;
+  /* A delete is one tap on a small ×, right beside the tick box, so a slip of the thumb used to lose the task with no way back.
+     The removed task is held here for a few seconds and the card shows "Task deleted — Undo"; Undo puts it back in its place. */
+  var _myTasksUndo = null, _myTasksUndoTimer = 0;
+  function mtUndoBar() {
+    return (_myTasksUndo && _myTasksUndo.length)
+      ? '<div class="mt-undo" role="status"><span>' + (_myTasksUndo.length === 1 ? 'Task deleted.' : _myTasksUndo.length + ' tasks deleted.') + '</span><button type="button" id="mt_undo">Undo</button></div>' : '';
+  }
+  function mtClearUndo() {
+    _myTasksUndo = null; clearTimeout(_myTasksUndoTimer);
+    var bar = document.querySelector('.mt-undo'); if (bar && bar.parentNode) bar.parentNode.removeChild(bar);
+  }
   function myTasksKey() { return 'bcc-mytasks-' + sani(meUpn()); }
   function loadMyTasks() {
     try { var d = JSON.parse(localStorage.getItem(myTasksKey()) || 'null'); if (d && Array.isArray(d.items)) return d; } catch (e) {}
@@ -913,6 +926,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         (openRows || '<div class="mt-empty">' + (doneItems.length
           ? 'All caught up — ' + doneItems.length + ' completed task' + (doneItems.length === 1 ? '' : 's') + ' below.'
           : 'No personal tasks yet. Add one above — they list by due date, soonest first.') + '</div>') +
+        mtUndoBar() +
         doneSection +
       '</div></div>';
     var reNew = document.getElementById('mt_new'), reDue = document.getElementById('mt_due');
@@ -982,7 +996,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     // renderMyTasks() repaints from the STORED document either way, so a refused write puts
     // the screen back to what is really saved rather than leaving the change showing.
     wrap.querySelectorAll('[data-mt-done]').forEach(function (b) { b.onchange = function () { var dd = loadMyTasks(); var i = mtIndexOf(dd, b.getAttribute('data-mt-done')); if (i < 0) { renderMyTasks(); return; } dd.items[i].done = b.checked; dd.items[i].doneAt = b.checked ? nowIso() : null; saveMyTasks(dd); renderMyTasks(); }; });
-    wrap.querySelectorAll('[data-mt-del]').forEach(function (b) { b.onclick = function () { var dd = loadMyTasks(); var i = mtIndexOf(dd, b.getAttribute('data-mt-del')); if (i < 0) { renderMyTasks(); return; } dd.items.splice(i, 1); saveMyTasks(dd); renderMyTasks(); }; });
+    wrap.querySelectorAll('[data-mt-del]').forEach(function (b) { b.onclick = function () { var dd = loadMyTasks(); var i = mtIndexOf(dd, b.getAttribute('data-mt-del')); if (i < 0) { renderMyTasks(); return; } var gone = dd.items[i]; dd.items.splice(i, 1); var saved = saveMyTasks(dd); if (saved) { clearTimeout(_myTasksUndoTimer); (_myTasksUndo = _myTasksUndo || []).push({ item: gone, index: i }); _myTasksUndoTimer = setTimeout(mtClearUndo, 8000); } renderMyTasks(); }; });
+    var undoBtn = wrap.querySelector('#mt_undo');
+    if (undoBtn) undoBtn.onclick = function () {
+      var u = _myTasksUndo; mtClearUndo();
+      if (!u || !u.length) { renderMyTasks(); return; }
+      var dd = loadMyTasks(), put = false;
+      // Newest deletion first, each back at the position it was taken from, so several deletions unwind to exactly the original order.
+      for (var k = u.length - 1; k >= 0; k--) {
+        if (u[k] && u[k].item && mtIndexOf(dd, u[k].item.id) < 0) { dd.items.splice(Math.min(u[k].index, dd.items.length), 0, u[k].item); put = true; }   // already back (synced from another device)? nothing to restore
+      }
+      if (put) saveMyTasks(dd);
+      renderMyTasks();
+    };
     wrap.querySelectorAll('[data-mt-up]').forEach(function (b) { b.onclick = function () { swap(b.getAttribute('data-mt-up'), -1); }; });
     wrap.querySelectorAll('[data-mt-down]').forEach(function (b) { b.onclick = function () { swap(b.getAttribute('data-mt-down'), 1); }; });
     wrap.querySelectorAll('[data-mt-edit]').forEach(function (b) { b.onclick = function () { startEdit(b.getAttribute('data-mt-edit')); }; });
