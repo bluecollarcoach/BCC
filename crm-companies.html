@@ -778,6 +778,32 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     }
     return out;
   }
+  /* The list needs a contact count and an engagement count for EVERY company shown. Asking contactsForCompany / engagementsForCompany once per company
+     scans all of localStorage and JSON.parses every contact and every engagement each time — companies × (contacts + engagements) parses on every
+     keystroke in the search box. This reads each contact and engagement ONCE and answers every company from that. Same rules as the two functions
+     above (which the detail pane still uses): a contact counts under the company it is linked to; only a contact with NO link, or a link to a company
+     that no longer exists, falls back to the free-text company name (and then under every company of that name); strings compare lower-cased. */
+  function companyCountIndex(all) {
+    var exists = new Set(all.map(function (c) { return c.id; }));
+    var linked = new Map(), legacy = new Map(), engs = new Map();
+    var bump = function (m, k) { m.set(k, (m.get(k) || 0) + 1); };
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i); if (!k) continue;
+      var isContact = k.indexOf(CONTACT_PREFIX) === 0, isEng = !isContact && k.indexOf(ENG_PREFIX) === 0;
+      if (!isContact && !isEng) continue;
+      try {
+        var d = JSON.parse(localStorage.getItem(k));
+        if (!d) continue;
+        if (isEng) { bump(engs, d.companyId); continue; }
+        bump(linked, d.companyId);
+        if (typeof d.company === 'string' && d.company && (!d.companyId || !exists.has(d.companyId))) bump(legacy, d.company.toLowerCase());
+      } catch (_) {}
+    }
+    return {
+      contacts: function (c) { return (linked.get(c.id) || 0) + (typeof c.name === 'string' && c.name ? (legacy.get(c.name.toLowerCase()) || 0) : 0); },
+      engagements: function (c) { return engs.get(c.id) || 0; }
+    };
+  }
 
   /* ===== Mode routing ===== */
   function getParam(k) { return new URLSearchParams(location.search).get(k); }
@@ -821,10 +847,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     emptyEl.hidden = true;
 
     var html = '';
+    var counts = companyCountIndex(all);   // one pass over the contacts and engagements, not one per company
     matched.forEach(function (c) {
       var loc = [c.city, c.state].filter(Boolean).join(', ');
-      var contactCount = contactsForCompany(c.id, c.name).length;
-      var engCount = engagementsForCompany(c.id).length;
+      var contactCount = counts.contacts(c);
+      var engCount = counts.engagements(c);
       html +=
         '<tr data-id="' + esc(c.id) + '">' +
           '<td data-label="Name">' +
