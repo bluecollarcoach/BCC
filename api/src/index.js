@@ -7319,6 +7319,15 @@ function graphMailboxMissing(status, detail) {
   if (status !== 404 && status !== 400) return false;
   return /Request_ResourceNotFound|ResourceNotFound|ErrorInvalidUser|MailboxNotEnabledForRESTAPI|ErrorNonExistentMailbox|ErrorInvalidMailbox|does not exist|user was not found/i.test(String(detail || ''));
 }
+/* What to tell a bookkeeper when Microsoft 365 will not give us the mailbox. A 429 or a 5xx from Graph is Microsoft's side (an outage or throttling) — on 2026-11-12 an
+   Exchange Online outage returned 502/503/504 for hours, and the screen said "an admin needs to check the Microsoft 365 connection in Admin → Integrations", sending people
+   to look for a fault in OUR setup that was not there. Anything else (401/403: the app's consent or credentials) really is for an admin. */
+function graphMailboxDownMessage(status) {
+  if (status === 429 || status >= 500) {
+    return 'Client email is temporarily unavailable — Microsoft 365 is not responding right now. This is a problem on Microsoft’s side, not your account or this app, and nothing is lost. Try again in a few minutes.';
+  }
+  return 'Client email is temporarily unavailable — an admin needs to check the Microsoft 365 connection in Admin → Integrations.';
+}
 /* Shared gate for EVERY client-mailbox endpoint (messages, message-get,
  * attachment-download, reply, send-mail, email-meta). Company access alone is not
  * enough here: the bookkeeping tier has to apply too, exactly as qboResolveAccess
@@ -7453,8 +7462,8 @@ app.http('msgraph-messages', {
         if (realmId && graphMailboxMissing(r.status, detail)) return { jsonBody: { ok: true, messages: [], pendingMailbox: true, note: 'mailbox not created yet' } };
         // `detail` is for the SERVER log only — a raw Azure AD / Graph error means nothing
         // to a bookkeeper and leaks internal detail straight into the Email tab.
-        context.error('msgraph-messages Graph rejected', { status: r.status, detail });
-        return { status: 502, jsonBody: { ok: false, error: 'Client email is temporarily unavailable — an admin needs to check the Microsoft 365 connection in Admin → Integrations.' } };
+        context.error('msgraph-messages Graph rejected', { status: r.status, detail }); const downMsg = graphMailboxDownMessage(r.status);
+        return { status: 502, jsonBody: { ok: false, error: downMsg } };
       }
       const data = await r.json();
       const messages = (Array.isArray(data.value) ? data.value : []).map(m => graphMessageSummary(m, folder));
@@ -7505,8 +7514,8 @@ app.http('msgraph-messages-by-id', {
       if (!fr.ok) {
         const detail = (await fr.text()).slice(0, 300);
         if (graphMailboxMissing(fr.status, detail)) return { jsonBody: { ok: true, messages: [], missing: 0, otherFolder: 0, failed: 0, pendingMailbox: true, note: 'mailbox not created yet' } };
-        context.error('msgraph-messages-by-id folder lookup rejected', { status: fr.status, detail });
-        return { status: 502, jsonBody: { ok: false, error: 'Client email is temporarily unavailable — an admin needs to check the Microsoft 365 connection in Admin → Integrations.' } };
+        context.error('msgraph-messages-by-id folder lookup rejected', { status: fr.status, detail }); const downMsg = graphMailboxDownMessage(fr.status);
+        return { status: 502, jsonBody: { ok: false, error: downMsg } };
       }
       const folderId = (await fr.json()).id;
       const select = 'id,subject,from,toRecipients,receivedDateTime,sentDateTime,bodyPreview,isRead,webLink,hasAttachments,parentFolderId';
