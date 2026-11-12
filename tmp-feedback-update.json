@@ -1,0 +1,1 @@
+{"items": [{"id": "bcc-feedback-mwdmbxmx-qdp90v", "status": "resolved", "note": "Only when Project / job is filled in. With a job, every line is sent to QuickBooks as Billable to that customer (re-saving keeps the status a line already had). With no job, nothing is marked billable. If a company has QuickBooks’ billable-expenses setting off, QuickBooks may ignore it."}]}

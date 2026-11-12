@@ -1,0 +1,19 @@
+name: TEMP feedback update
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply feedback updates
+        run: |
+          curl -sS --max-time 60 \
+            -H "x-bcc-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            -H 'Content-Type: application/json; charset=utf-8' \
+            --data-binary @tmp-feedback-update.json \
+            'https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/tmp/feedback-update' \
+            -o /tmp/out.json
+          cat /tmp/out.json
