@@ -4080,7 +4080,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
           '<div id="tx_total" style="display:flex;justify-content:flex-end;align-items:baseline;gap:10px;margin-top:10px;padding-top:8px;border-top:1px solid var(--chrome-mute);font-size:14px;"></div>' +
           '<div style="margin-top:14px;"><div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Attachment</div>' +
           '<label class="btn btn-ghost" for="tx_file" style="cursor:pointer;font-size:12px;">📎 Attach receipt / file</label> <span id="tx_fname" style="font-size:12px;color:var(--muted);"></span>' +
-          '<input type="file" id="tx_file" accept="image/*,application/pdf" style="display:none;" /></div>';
+          '<input type="file" id="tx_file" accept="image/*,application/pdf" style="display:none;" />' +
+          '<div style="font-size:11.5px;color:var(--muted);margin-top:5px;">Have a screenshot? Press <strong>Windows + Shift + S</strong>, drag over what you need, then press <strong>Ctrl + V</strong> here to attach it.</div></div>';
       } else {
         var bankAccts = (refs.accounts || []).filter(function (a) { return /bank|other current asset/i.test(a.type || ''); });
         html += '<div class="ws-form" style="margin-bottom:10px;">' +
@@ -4693,6 +4694,49 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         if (window.bccNotify) window.bccNotify('The receipt is on the QuickBooks transaction, but the copy for this client’s Files was not saved (' + ((e && e.message) || 'connection lost') + ') — upload it from the Files tab if you need it there.', 'warn', 9000);
       });
   }
+  /* Paste a screenshot straight onto a bill / expense / invoice / vendor-credit form (Lana, 2026-11-13: "why
+     can't I take a screenshot when I'm entering bills"). Windows + Shift + S puts the picture on the CLIPBOARD
+     and never on disk, so a file chooser can never take it - she had to save it somewhere and browse back.
+     It lands in the same slot the 📎 button fills (_txnFile), so what gets posted and attached is unchanged.
+     Installed once; every guard below is "is that form really what the person is looking at right now". */
+  (function () {
+    var PASTE_OK = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'application/pdf': 'pdf' };   // what QuickBooks accepts as an attachment
+    document.addEventListener('paste', function (e) {
+      try {
+        var fnameEl = document.getElementById('tx_fname');
+        if (!fnameEl || !document.getElementById('tx_file')) return;      // no transaction form is open
+        if (!fnameEl.getClientRects().length) return;                     // ...or it is on a tab that is hidden (hideAllSections leaves the DOM behind)
+        if (!_txnFormRealm || _txnFormRealm !== currentRealm) return;     // ...or it belongs to a different client
+        if (document.getElementById('bcc-fb-modal')) return;              // the feedback box takes its own screenshots
+        var cd = e.clipboardData; if (!cd || !cd.items) return;
+        /* A screenshot is on the clipboard as a bare picture. Cells copied out of Excel arrive as text AND a
+           picture - the text is what the person meant, so anything with text is left to the field it is going
+           into. */
+        var types = Array.prototype.slice.call(cd.types || []);
+        if (types.indexOf('text/plain') > -1 || types.indexOf('text/html') > -1) return;
+        var pic = null;
+        for (var i = 0; i < cd.items.length; i++) {
+          var it = cd.items[i];
+          if (it.kind === 'file' && PASTE_OK[String(it.type || '').toLowerCase()]) { pic = it.getAsFile(); if (pic) break; }
+        }
+        if (!pic) return;
+        e.preventDefault();
+        if (pic.size > 25 * 1024 * 1024) { (window.bccNotify || alert)('That picture is too large (max 25 MB).', 'warn'); return; }
+        var ty = String(pic.type || '').toLowerCase();
+        var name = pic.name;
+        if (/^image\//.test(ty)) {   // the clipboard calls every picture "image.png" - name it so it is recognisable on the QuickBooks transaction
+          var d = new Date(), z = function (n) { return (n < 10 ? '0' : '') + n; };
+          name = 'Screenshot ' + bizToday() + ' ' + z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds()) + '.' + (PASTE_OK[ty] || 'png');
+        }
+        /* The 📎 button replaces whatever was chosen, but that is a deliberate click. A stray Ctrl+V must not
+           quietly swap out the receipt a scan already put on this bill. */
+        if (_txnFile && !confirm('This bill already has “' + _txnFile.name + '” ready to attach.\n\nReplace it with the pasted picture?')) return;
+        _txnFile = new File([pic], name, { type: ty });
+        fnameEl.textContent = name + ' (will attach)';
+        if (window.bccNotify) window.bccNotify('Screenshot added — it is attached to the transaction and saved in Files when you post.', 'success', 5000);
+      } catch (err) { /* a paste must never throw into the page */ }
+    });
+  })();
   function scanReceipt(file) {
     // Covers the toolbar picker as well as the mail-attachment menu: this ends in a
     // QuickBooks write, so a view-only bookkeeper must not start it from either.
