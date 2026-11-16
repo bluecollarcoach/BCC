@@ -4730,7 +4730,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
         }
         /* The 📎 button replaces whatever was chosen, but that is a deliberate click. A stray Ctrl+V must not
            quietly swap out the receipt a scan already put on this bill. */
-        if (_txnFile && !confirm('This bill already has “' + _txnFile.name + '” ready to attach.\n\nReplace it with the pasted picture?')) return;
+        if (_txnFile && !confirm('This transaction already has “' + _txnFile.name + '” ready to attach.\n\nReplace it with the pasted picture?')) return;
         _txnFile = new File([pic], name, { type: ty });
         fnameEl.textContent = name + ' (will attach)';
         if (window.bccNotify) window.bccNotify('Screenshot added — it is attached to the transaction and saved in Files when you post.', 'success', 5000);
