@@ -1,0 +1,23 @@
+name: TEMP feedback read
+
+on:
+  workflow_dispatch:
+    inputs:
+      att:
+        description: 'optional: <feedbackId>/<attachmentId> to fetch one attachment'
+        required: false
+        default: ''
+
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read
+        env:
+          ATT: ${{ inputs.att }}
+          SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          BASE='https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/tmp/feedback'
+          if [ -n "$ATT" ]; then URL="$BASE?att=$ATT"; else URL="$BASE"; fi
+          curl -sS --max-time 60 -H "x-bcc-cron-secret: $SECRET" "$URL" -o /tmp/out.json
+          cat /tmp/out.json
