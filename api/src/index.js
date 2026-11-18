@@ -8705,21 +8705,9 @@ async function qboAccessForCompany(comp, fields) {
   const base = env === 'production' ? 'https://quickbooks.api.intuit.com' : 'https://sandbox-quickbooks.api.intuit.com';
   return { accessToken: tok.access_token, base };
 }
-// Flatten a QBO report (nested Header/Rows/Summary) into columns + indented rows.
-function flattenQboReport(rep) {
-  const columns = (((rep || {}).Columns || {}).Column || []).map(c => c.ColTitle || '');
-  const rows = [];
-  (function walk(rs, level, grp) {
-    for (const row of (rs || [])) {
-      const g = row.group || grp || null;
-      if (row.Header && row.Header.ColData) rows.push({ label: row.Header.ColData[0].value || '', cells: row.Header.ColData.slice(1).map(d => d.value), level, type: 'header', group: g, acctId: (row.Header.ColData[0] || {}).id || null });
-      if (row.Rows && row.Rows.Row) walk(row.Rows.Row, level + 1, g);
-      if (row.ColData) rows.push({ label: (row.ColData[0] || {}).value || '', cells: row.ColData.slice(1).map(d => d.value), level, type: 'data', group: g, acctId: (row.ColData[0] || {}).id || null });
-      if (row.Summary && row.Summary.ColData) rows.push({ label: (row.Summary.ColData[0] || {}).value || '', cells: row.Summary.ColData.slice(1).map(d => d.value), level, type: 'summary', group: row.group || g });
-    }
-  })(((rep || {}).Rows || {}).Row || [], 0, null);
-  return { title: ((rep || {}).Header || {}).ReportName || '', columns, rows };
-}
+// Flatten a QBO report (nested Header/Rows/Summary) into columns + indented rows: see qboReports.js (moved out so the report-analysis tests run the real code).
+const { flattenQboReport, flattenQboSeries } = require('./qboReports');
+const { buildReportAnalysis } = require('./reportAnalysis');
 // Build the QBO BalanceSheet report path for a point-in-time "as of" date.
 // CRITICAL (proven 2026-07-09): QBO's BalanceSheet report SILENTLY IGNORES `as_of` and
 // always returns its default (current) period — so two different `as_of=` requests come
@@ -10578,7 +10566,7 @@ async function periodSettled(realmId, period) {
 }
 // Build the full monthly-report dataset (KPIs + statements) for a company. Extracted so
 // both the access-scoped GET endpoint and the cron verification path share ONE code path.
-async function assembleMonthlyReport(apiGet, comp, per, method) {
+async function assembleMonthlyReport(apiGet, comp, per, method, opts) {
   const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
   const iso = (d) => d.toISOString().slice(0, 10);
   const realmId = comp.realmId || String(comp.id || '').replace('bcc-qbo-company-', '');
@@ -10608,10 +10596,11 @@ async function assembleMonthlyReport(apiGet, comp, per, method) {
   // Aging SUMMARY reports (raw) — for the 91+ days bucket total on A/R and A/P.
   // plBurn: trailing-3-month P&L ending this period, for "months of cash" (see below) —
   // matches the same trailing-window burn-rate the qbo-kpis dashboard endpoint already uses.
-  const [arSummary, apSummary, plBurn] = await Promise.all([
+  const [arSummary, apSummary, plBurn, series] = await Promise.all([
     apiGet('/reports/AgedReceivables?report_date=' + iso(mEnd)).catch(() => null),
     apiGet('/reports/AgedPayables?report_date=' + iso(mEnd)).catch(() => null),
-    apiGet(plUrl(new Date(per.y, per.mo - 2, 1), mEnd)).then(flattenQboReport).catch(() => null)
+    apiGet(plUrl(new Date(per.y, per.mo - 2, 1), mEnd)).then(flattenQboReport).catch(() => null),
+    fetchReportSeries(apiGet, per, method)
   ]);
   const arOver90 = agingOver90(arSummary), apOver90 = agingOver90(apSummary);
 
@@ -10692,7 +10681,7 @@ async function assembleMonthlyReport(apiGet, comp, per, method) {
   const monthsOfCash = monthlyBurn > 0 ? Math.round((cash / monthlyBurn) * 10) / 10 : null;
   const currentRatio = currentLiabilities > 0 ? Math.round((currentAssets / currentLiabilities) * 100) / 100 : null;
 
-  return {
+  const data = {
     ok: true, realmId, method, period, periodLabel, priorLabel,
     periodEnd: iso(mEnd), preparedOn: new Date().toISOString(),
     // True if a comparison-critical fetch came back null — prior-month P&L/BS (most
@@ -10727,6 +10716,64 @@ async function assembleMonthlyReport(apiGet, comp, per, method) {
     },
     statements: { pl: plCur, balanceSheet: bsCur, cashFlow, arAging, apAging }
   };
+  /* Comparisons (last month / same month last year / YTD / trailing 12), what moved, the cash story, collections with names,
+     and the ranked insights - built ONLY from figures that reconcile to the KPIs above (see reportAnalysis.js). A failure here
+     must never cost the client their report: it is simply left out. */
+  data.analysis = safeReportAnalysis({ period, periodEnd: data.periodEnd, method, kpis: data.kpis, goals: opts && opts.goals,
+    plSeries: series.plSeries, bsSeries: series.bsSeries, cashFlow, arSummary: safeFlatten(arSummary), apSummary: safeFlatten(apSummary) });
+  return data;
+}
+const _analysisMiss = new Map();   // realm|period|method -> { at, analysis } for locked-in months whose analysis could not be built (see the GET handler)
+const REPORT_SERIES_RETRY_MS = Number(process.env.BCC_REPORT_SERIES_RETRY_MS || 1500);
+/* The two 24-month series the analysis rests on: P&L by month and month-END balance sheets (verified against live books:
+   every column equals the single-period report to the cent). Either may come back null; the analysis then omits what needs it. */
+async function fetchReportSeries(apiGet, per, method) {
+  const d = (y, m, dd) => new Date(Date.UTC(y, m, dd)).toISOString().slice(0, 10);
+  const from = d(per.y, per.mo - 23, 1), to = d(per.y, per.mo + 1, 0), mth = method === 'Cash' ? 'Cash' : 'Accrual';
+  const q = '?start_date=' + from + '&end_date=' + to + '&summarize_column_by=Month&accounting_method=' + mth;
+  /* One retry after a pause: QuickBooks answers 429 "ThrottleExceeded" when a realm is busy (seen on live books while pulling a report), and the
+     report has just made a dozen calls to the same realm. A second try a moment later usually gets through; a second failure just means no analysis. */
+  const once = async (path) => { try { return await apiGet(path); } catch (e) { await new Promise(r => setTimeout(r, REPORT_SERIES_RETRY_MS)); return await apiGet(path); } };
+  const [plSeries, bsSeries] = await Promise.all([
+    once('/reports/ProfitAndLoss' + q).then(flattenQboSeries).catch(() => null),
+    once('/reports/BalanceSheet' + q).then(flattenQboSeries).catch(() => null)
+  ]);
+  return { plSeries, bsSeries };
+}
+/* A report body that is not the shape QuickBooks documents must cost the client the analysis, never the report: flatten defensively. */
+function safeFlatten(rep) { try { return rep ? flattenQboReport(rep) : null; } catch (_) { return null; } }
+function safeReportAnalysis(input) {
+  try { return buildReportAnalysis(input); } catch (e) { return { version: 1, ok: false, integrity: { checks: [], failed: ['analysis failed: ' + String((e && e.message) || e).slice(0, 160)] }, insights: [], errors: [] }; }
+}
+/* A month locked in BEFORE comparisons existed has no analysis. Build it from live books against the locked-in figures; it is
+   only ever published if it reconciles to them (books corrected after the lock-in simply fail the tie-out, and the report says so). */
+async function backfillReportAnalysis(apiGet, per, method, fd, goals) {
+  const series = await fetchReportSeries(apiGet, per, method);
+  const iso = (dt) => dt.toISOString().slice(0, 10);
+  const mEnd = new Date(Date.UTC(per.y, per.mo + 1, 0));
+  const [arS, apS] = await Promise.all([
+    apiGet('/reports/AgedReceivables?report_date=' + iso(mEnd)).catch(() => null),
+    apiGet('/reports/AgedPayables?report_date=' + iso(mEnd)).catch(() => null)
+  ]);
+  return safeReportAnalysis({ period: per.y + '-' + String(per.mo + 1).padStart(2, '0'), periodEnd: fd.periodEnd, method, kpis: fd.kpis, goals,
+    plSeries: series.plSeries, bsSeries: series.bsSeries, cashFlow: fd.statements && fd.statements.cashFlow,
+    arSummary: safeFlatten(arS), apSummary: safeFlatten(apS) });
+}
+/* Adds the analysis to an ALREADY locked-in snapshot, and only if nobody re-froze or filled it meanwhile. Conditional on the
+   document's etag so a notes save that lands during the QuickBooks calls cannot be overwritten. Never throws into the caller. */
+/* An analysis is stored on a locked-in snapshot only when it is COMPLETE: reconciled, with the balance-sheet series and both agings. One built while QuickBooks
+   was missing a report is still shown (and says what is left out) but is not frozen - the next view tries again, so a hiccup is never made permanent. */
+function analysisComplete(a) { return !!(a && a.ok && a.bsOk !== false && a.agingParsed && a.agingParsed.ar && a.agingParsed.ap); }
+async function persistFrozenAnalysis(c, id, method, analysis, who, realmId, period, lockedAt) {
+  try {
+    const cur = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && (e.code === 404 || e.statusCode === 404)) return null; throw e; });
+    const fz = cur && cur.frozenByMethod && cur.frozenByMethod[method];
+    if (!fz || fz.analysis || fz.frozenAt !== lockedAt) return false;   // re-locked (a Refresh) or filled by another request meanwhile: this analysis belongs to a different snapshot
+    fz.analysis = analysis;
+    await c.items.upsert(cur, cur._etag ? { accessCondition: { type: 'IfMatch', condition: cur._etag } } : undefined);
+    logAudit('report-analysis-added', { user: who, path: '/api/integrations/qbo/companies/' + realmId + '/monthly-report', meta: { realmId, period, method } });
+    return true;
+  } catch (_) { return false; }
 }
 app.http('qbo-monthly-report', {
   methods: ['GET', 'POST'],
@@ -10787,11 +10834,16 @@ app.http('qbo-monthly-report', {
                 ? { accrual: existingObs.observations } : {});
         const obsByMethod = Object.assign({}, priorByMethod);
         obsByMethod[obsMethod] = observations;
+        /* The coach's edits to the insights, keyed by basis like the notes. Only what she changed is stored (include / wording by
+           insight key, plus any insight she wrote herself) - the figures always come from the books. Absent = leave what is stored. */
+        const insByMethod = Object.assign({}, (existingObs && existingObs.insightsByMethod) || {});
+        const insSaved = Array.isArray(b.insights) ? sanitizeInsightEdits(b.insights) : null;
+        if (insSaved) insByMethod[obsMethod] = insSaved;
         /* The flat field tracks the ACCRUAL narrative only. Writing the just-saved basis into
            it meant a cash save left cash notes in the field an older client renders as the
            report's commentary, whatever basis it asked for. */
         const flatObs = obsMethod === 'accrual' ? observations : (obsByMethod.accrual || []);
-        const obsDoc = Object.assign({}, existingObs || {}, { id: docId(period), tenantId: BCC_TENANT_ID, docType: 'monthly-report', realmId, period, observations: flatObs, observationsByMethod: obsByMethod, updatedAt: new Date().toISOString(), updatedBy: who });
+        const obsDoc = Object.assign({}, existingObs || {}, { id: docId(period), tenantId: BCC_TENANT_ID, docType: 'monthly-report', realmId, period, observations: flatObs, observationsByMethod: obsByMethod, insightsByMethod: insByMethod, updatedAt: new Date().toISOString(), updatedBy: who });
         await c.items.upsert(obsDoc);
         logAudit('report-save', { user: who, path: '/api/integrations/qbo/companies/' + realmId + '/monthly-report', meta: { realmId, period } });
         /* What was actually STORED, plus whether anything was trimmed getting there. The
@@ -10803,7 +10855,7 @@ app.http('qbo-monthly-report', {
           const src = typeof o === 'string' ? o : String((o && o.text) || '');
           return i < 40 && src.length > 600;
         });
-        return { jsonBody: { ok: true, period, observations,
+        return { jsonBody: { ok: true, period, observations, insights: insSaved,
           droppedCount: Math.max(0, sentCount - observations.length), trimmedText } };
       }
 
@@ -10812,6 +10864,8 @@ app.http('qbo-monthly-report', {
       const per = resolvePeriod(url.searchParams.get('period'));
       const period = per.y + '-' + String(per.mo + 1).padStart(2, '0');
       const wantRefresh = url.searchParams.get('refresh') === '1';
+      /* A Refresh forgets any remembered analysis miss for this month at once (see the backfill below): the books may just have been corrected. */
+      if (wantRefresh) _analysisMiss.delete(realmId + '|' + period + '|' + method);
       const who = String((ctx.p && (ctx.p.userDetails || ctx.p.userId)) || '').toLowerCase();
       // A period is "past" once we're no longer inside its calendar month, checked in
       // BCC's own operating timezone (not the server's, which is UTC) — otherwise the
@@ -10848,10 +10902,10 @@ app.http('qbo-monthly-report', {
           periodLabel: MONTHS[per.mo] + ' ' + per.y,
           priorLabel: MONTHS[(per.mo + 11) % 12] + ' ' + (per.mo === 0 ? per.y - 1 : per.y),
           periodEnd: fd.periodEnd, preparedOn: fd.frozenAt, frozen: true, frozenAt: fd.frozenAt,
-          company: fd.company, kpis: fd.kpis, statements: fd.statements
+          company: fd.company, kpis: fd.kpis, statements: fd.statements, analysis: fd.analysis || null
         };
       } else {
-        data = await assembleMonthlyReport(ctx.apiGet, ctx.comp, per, method);
+        data = await assembleMonthlyReport(ctx.apiGet, ctx.comp, per, method, { goals });
         data.frozen = false;
         // Re-read right before touching the doc again — assembleMonthlyReport just spent
         // several seconds on live QBO calls, and building off the earlier, now-stale
@@ -10886,7 +10940,7 @@ app.http('qbo-monthly-report', {
           const toSave = Object.assign({}, saved || {}, {
             id: docId(period), tenantId: BCC_TENANT_ID, docType: 'monthly-report', realmId, period,
             frozenByMethod: Object.assign({}, priorFrozenByMethod, {
-              [method]: { periodEnd: data.periodEnd, company: data.company, kpis: data.kpis, statements: data.statements, frozenAt }
+              [method]: { periodEnd: data.periodEnd, company: data.company, kpis: data.kpis, statements: data.statements, analysis: analysisComplete(data.analysis) ? data.analysis : null, frozenAt }
             })
           });
           await c.items.upsert(toSave);
@@ -10896,6 +10950,22 @@ app.http('qbo-monthly-report', {
           // method switch, not just an explicit refresh, so there's always a trail of when
           // and why a "locked-in" report actually changed.
           logAudit('report-freeze', { user: who, path: '/api/integrations/qbo/companies/' + realmId + '/monthly-report', meta: { realmId, period, method, reason } });
+        }
+      }
+      if (data.frozen && !data.analysis) {
+        /* A failed backfill is not stored (it must be retried), but retrying on EVERY view costs four QuickBooks calls each time. Remember the
+           miss in memory: a transient QuickBooks failure is retried in 90 seconds, a "does not reconcile" in five minutes - short, because
+           a coach who has just corrected the books must not be told the fix did not work. A Refresh forgets the miss at once. */
+        const mk = realmId + '|' + period + '|' + method;
+        const miss = _analysisMiss.get(mk);
+        if (miss && Date.now() - miss.at < (miss.analysis && (miss.analysis.unavailable || miss.analysis.ok) ? 90 * 1000 : 5 * 60 * 1000)) data.analysis = miss.analysis;
+        else {
+          try {
+            const a = await backfillReportAnalysis(ctx.apiGet, per, method, fd, goals);
+            data.analysis = a;
+            if (analysisComplete(a)) { _analysisMiss.delete(mk); await persistFrozenAnalysis(c, docId(period), method, a, who, realmId, period, fd.frozenAt); }
+            else { if (_analysisMiss.size > 400) _analysisMiss.clear(); _analysisMiss.set(mk, { at: Date.now(), analysis: a }); }
+          } catch (e) { context.error('report analysis backfill', e); data.analysis = null; }
         }
       }
       // Default to bare-fact observations when none saved, so a report is never blank.
@@ -10925,10 +10995,11 @@ app.http('qbo-monthly-report', {
          this basis genuinely has no notes yet. */
       const hasKeyed = !!(saved && saved.observationsByMethod);
       const savedObs = byM[mLc] || ((!hasKeyed && mLc === 'accrual') ? legacyFlat : []);
-      data.observations = (savedObs && savedObs.length) ? savedObs : factObservations(data.kpis);
+      data.observations = (savedObs && savedObs.length) ? savedObs : factObservations(data.kpis, data.analysis);
       // Only claim "notes saved" when THIS basis actually has some.
       data.observationsUpdatedAt = (saved && savedObs.length) ? saved.updatedAt : null;
       data.observationsBy = saved ? saved.updatedBy : null;
+      data.insightEdits = (saved && saved.insightsByMethod && saved.insightsByMethod[mLc]) || [];
       data.goals = goals;
       // Publish the classification the handler already computed. Without it the client had
       // only frozenAt/frozen to go on, so a PAST month that failed to freeze (a degraded QBO
@@ -10954,14 +11025,41 @@ app.http('qbo-monthly-report', {
  * The client posts the KPIs it already fetched (no second QBO round-trip); the coach
  * reviews/edits the draft before saving. Requires ANTHROPIC_API_KEY.
  */
+function sanitizeInsightEdits(list) {
+  const str = (v, n) => String(v == null ? '' : v).slice(0, n);
+  return list.slice(0, 40).map(o => {
+    o = o || {};
+    const e = { key: str(o.key, 60).replace(/[^A-Za-z0-9_-]/g, ''), sig: str(o.sig, 24).replace(/[^A-Za-z0-9]/g, '') };
+    if (!e.key) return null;
+    if (o.include === true || o.include === false) e.include = o.include;
+    if (o.head != null) e.head = str(o.head, 300);
+    if (o.detail != null) e.detail = str(o.detail, 900);
+    if (o.tip != null) e.tip = str(o.tip, 600);
+    if (o.custom === true) { e.custom = true; e.sev = ['action', 'watch', 'win', 'info'].indexOf(o.sev) >= 0 ? o.sev : 'info'; }
+    return e;
+  }).filter(Boolean);
+}
 // Deterministic, KNOWN-ONLY observations straight from the numbers — bare facts,
 // no advice, no inference (never "maxed"/"risk"/"should"), guaranteed brief. The
 // trend arrow + color carry the sentiment; the text is just the figure + its change.
-function factObservations(k) {
+function factObservations(k, analysis) {
   k = k || {};
+  const A = (analysis && analysis.ok && analysis.pl) ? analysis.pl : null;
   const out = [];
   const m = (n) => (n < 0 ? '-$' : '$') + Math.round(Math.abs(n || 0)).toLocaleString();
   const pctFmt = (n) => Math.round(n * 100) + '%';
+  /* "; up 12% vs Oct 2025" - last year's context, only from an analysis that reconciled. A percent only when both sides are
+     positive (a percent off zero or across zero is not a number anyone should read); a big multiple is a multiple. */
+  const lyTxt = (cur, base, label) => {
+    if (cur == null || base == null) return '';
+    if (Math.abs(cur - base) < 0.5) return '; same as ' + label;
+    if (cur > 0 && base > 0) {
+      const p = Math.round(Math.abs(cur - base) / base * 100);
+      if (p >= 300) return '; ' + (Math.round(cur / base * 10) / 10) + 'x ' + label;
+      return p === 0 ? '; about the same as ' + label : '; ' + (cur > base ? 'up ' : 'down ') + p + '% vs ' + label;
+    }
+    return '; ' + m(base) + ' in ' + label;
+  };
   // opts.fromFmt formats the prior value; opts.fromOnly always shows "from <prior>"
   // (used for ratios/percents, where a relative % change reads confusingly).
   const add = (label, valTxt, cur, prior, pol, opts) => {
@@ -10982,13 +11080,15 @@ function factObservations(k) {
     out.push({ text: (label + ' ' + valTxt + chgTxt).slice(0, 120), dir, tone });
   };
   add('Revenue', m(k.revenue || 0), k.revenue, k.revenuePrior, 'up-good');
+  if (A && A.py) out[out.length - 1].text = (out[out.length - 1].text + lyTxt(k.revenue, A.py.rev, A.py.label)).slice(0, 160);
   // Compare gross margin on the WHOLE-percent value it displays, so it never reads
   // "30%, up from 30%" when the two rounded percents are identical.
   if (k.grossMargin != null) add('Gross margin', pctFmt(k.grossMargin), Math.round(k.grossMargin * 100) / 100, k.grossMarginPrior != null ? Math.round(k.grossMarginPrior * 100) / 100 : null, 'up-good', { fromFmt: pctFmt, fromOnly: true });
   add('Net income', m(k.netIncome || 0), k.netIncome, k.netIncomePrior, 'up-good');
+  if (A && A.py) out[out.length - 1].text = (out[out.length - 1].text + lyTxt(k.netIncome, A.py.net, A.py.label)).slice(0, 160);
   // YTD net is a static figure (not a month-over-month change), so no directional arrow —
   // color still flags a loss (red) vs profit (green).
-  if (k.netIncomeYtd != null) out.push({ text: 'YTD net ' + m(k.netIncomeYtd), dir: 'flat', tone: k.netIncomeYtd < 0 ? 'bad' : 'good' });
+  if (k.netIncomeYtd != null) out.push({ text: ('YTD net ' + m(k.netIncomeYtd) + (A && A.pytd ? lyTxt(k.netIncomeYtd, A.pytd.net, 'last year') : '')).slice(0, 160), dir: 'flat', tone: k.netIncomeYtd < 0 ? 'bad' : 'good' });
   add('Cash', m(k.cash || 0), k.cash, k.cashPrior, 'up-good');
   if (k.ar) add('A/R', m(k.ar) + (k.arOver90 > 0 ? ' (' + m(k.arOver90) + ' over 90d)' : ''), k.ar, k.arPrior, 'neutral');
   if (k.retainage) add('Retainage', m(k.retainage), k.retainage, k.retainagePrior, 'neutral');
@@ -11011,7 +11111,7 @@ app.http('qbo-monthly-report-ai', {
     if (ctx.err) return ctx.err;
     try {
       const b = await request.json().catch(() => ({}));
-      return { jsonBody: { ok: true, observations: factObservations(b.kpis || {}) } };
+      return { jsonBody: { ok: true, observations: factObservations(b.kpis || {}, b.analysis || null) } };
     } catch (e) { context.error('qbo-monthly-report-facts', e); return { status: 500, jsonBody: { ok: false, error: String(e && e.message || e) } }; }
   })
 });
@@ -11031,6 +11131,7 @@ function pdfPrinter() {
   return _pdfPrinter;
 }
 const PDF_TONE = { good: '#1f8a4c', bad: '#c0392b', neutral: '#b7791f' };
+const COVER_OBS_PTS = 400;   // estimated height (pt) of coach observations the one-page cover holds beside the bottom line AND the scorecard: about 450 fit, measured in report_pdf_test.js
 // Helvetica is WinAnsi/Latin-1 only — map smart punctuation + drop anything outside it.
 function pdfSani(s) {
   return String(s == null ? '' : s)
@@ -11155,8 +11256,26 @@ function buildReportDocDef(b) {
       paddingLeft: () => 12, paddingRight: () => 12, paddingTop: () => 4.5, paddingBottom: () => 4.5
     }, margin: [0, 0, 0, 2] }
   ];
-  if (fc) content.push({ text: '90-DAY CASH FLOW FORECAST', color: '#a8884a', bold: true, fontSize: 9, margin: [0, 13, 0, 5] }, pdfForecast(fc));
-  content.push({ text: 'Prepared ' + pdfSani(prepStr) + '   ·   ' + pdfSani(b.method || 'Accrual') + ' basis   ·   For management use only', alignment: 'center', color: '#8a8577', fontSize: 8.5, margin: [0, 14, 0, 0] });
+  /* The new pages (scorecard, our read, comparisons, cash and collections, outlook) come from an analysis that has already
+     reconciled to the figures above. Built defensively: if it is absent, did not reconcile, or anything about laying it out
+     fails, the report is exactly the report it always was - the forecast stays on the cover and nothing else changes. */
+  const an = (b.analysis && b.analysis.ok) ? b.analysis : null;
+  let ex = null;
+  if (an) {
+    /* The cover is ONE page and the coach's own observations are the one thing on it that has no fixed size. The bottom line and the
+       scorecard sit above them, so when the notes are long the scorecard moves to the top of "Our read" instead of pushing the KPI box
+       onto a second page. Height is estimated at ~105 characters per 9.5pt line plus the gap under each note. */
+    const obsPts = (obs || []).reduce((s, o) => s + Math.max(1, Math.ceil(String((o && o.text) || '').length / 105)) * 11.4 + 4, 0);
+    try { ex = require('./reportPdfSections').build(an, { S: pdfSani, rule: mkRule }, { forecast: fc ? pdfForecast(fc) : null, compactCover: obsPts > COVER_OBS_PTS }); } catch (e) { ex = null; }
+    if (ex && ex.coverTop && ex.coverTop.length) content.splice.apply(content, [4, 0].concat(ex.coverTop));
+  }
+  if (fc && !ex) content.push({ text: '90-DAY CASH FLOW FORECAST', color: '#a8884a', bold: true, fontSize: 9, margin: [0, 13, 0, 5] }, pdfForecast(fc));
+  const preparedNode = { text: 'Prepared ' + pdfSani(prepStr) + '   ·   ' + pdfSani(b.method || 'Accrual') + ' basis   ·   For management use only', alignment: 'center', color: '#8a8577', fontSize: 8.5, margin: [0, 14, 0, 0] };
+  /* With the new pages the KPI box, its heading and the "Prepared" line travel together: never a heading or a lone footer line left
+     on a page by itself when very long notes fill the cover (the box then moves whole to the next page). */
+  if (ex) { const kn = content.splice(content.length - 2, 2); content.push({ unbreakable: true, stack: kn.concat([preparedNode]) }); }
+  else content.push(preparedNode);
+  if (ex) content.push.apply(content, ex.body);
   const stmts = [
     ['Profit & Loss - ' + periodLabel, st.pl],
     ['Balance Sheet - as of ' + pdfSani(b.periodEnd || ''), st.balanceSheet],
@@ -12937,3 +13056,6 @@ app.http('document-download', {
     }
   })
 });
+
+// Test hook: lets the report tests render the real layout / observation code without standing up the HTTP handlers. Not used at runtime.
+module.exports.__report = { buildReportDocDef, pdfBytes, factObservations, renderReportPdf };
