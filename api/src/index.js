@@ -3008,6 +3008,7 @@ app.http('tmp-report-probe', {
       const num = (s) => { const n = parseFloat(String(s == null ? '' : s).replace(/,/g, '')); return isNaN(n) ? 0 : n; };
       const sumRow = (flat, group) => { const rows = flat.rows.filter(x => x.group === group && x.type === 'summary'); return rows.length ? rows[rows.length - 1] : null; };
       const leafSum = (flat, group, idx) => flat.rows.filter(x => x.group === group && x.type === 'data').reduce((s, x) => s + num(x.cells[idx]), 0);
+      const leafPlusHdr = (flat, group, idx) => flat.rows.filter(x => x.group === group && (x.type === 'data' || (x.type === 'header' && x.cells.some(cv => cv !== '' && cv != null)))).reduce((s, x) => s + num(x.cells[idx]), 0);
 
       let seriesFlat = null, seriesRaw = null;
       await timed('plSeries', async () => {
@@ -3022,8 +3023,11 @@ app.http('tmp-report-probe', {
           const monthsSum = vals.slice(0, nMonths).reduce((s, v) => s + v, 0);
           checks[g] = { cells: vals.length, totalColDiff: Math.round((monthsSum - vals[nMonths]) * 100) / 100 };
           if (['Income', 'COGS', 'Expenses', 'OtherIncome', 'OtherExpenses'].indexOf(g) >= 0) {
-            let worst = 0; for (let i = 0; i <= nMonths; i++) worst = Math.max(worst, Math.abs(leafSum(seriesFlat, g, i) - vals[i]));
+            let worst = 0, worst2 = 0; for (let i = 0; i <= nMonths; i++) { worst = Math.max(worst, Math.abs(leafSum(seriesFlat, g, i) - vals[i])); worst2 = Math.max(worst2, Math.abs(leafPlusHdr(seriesFlat, g, i) - vals[i])); }
             checks[g].leafSumWorstDiff = Math.round(worst * 100) / 100;
+            checks[g].leafPlusHeaderOwnWorstDiff = Math.round(worst2 * 100) / 100;
+            checks[g].headerRowsWithAmounts = seriesFlat.rows.filter(x => x.group === g && x.type === 'header' && x.cells.some(cv => cv !== '' && cv != null)).length;
+            checks[g].dataRows = seriesFlat.rows.filter(x => x.group === g && x.type === 'data').length;
           }
         });
         return { shape: sh, nMonths, checks };
@@ -3042,22 +3046,41 @@ app.http('tmp-report-probe', {
         });
         return res;
       });
+      let bsSingleCur = null;
       await timed('bsMonthly', async () => {
         const raw = await apiGet('/reports/BalanceSheet?start_date=' + s24 + '&end_date=' + mEnd + '&summarize_column_by=Month&accounting_method=Accrual');
         const f = flattenQboReport(raw);
-        const single = flattenQboReport(await apiGet(bsReportQuery(mEnd, 'Accrual')));
-        const cashRx = /total bank accounts?/i;
-        const rowS = f.rows.find(x => cashRx.test(x.label)), rowO = single.rows.find(x => cashRx.test(x.label));
-        const eqS = sumRow(f, 'TotalEquity') || sumRow(f, 'Equity'), eqO = sumRow(single, 'TotalEquity') || sumRow(single, 'Equity');
-        const dd = (a, b, k) => (a && b) ? Math.round((num(a.cells[a.cells.length - k]) - num(b.cells[b.cells.length - 1])) * 100) / 100 : 'n/a';
-        return { shape: shape(raw), ncolsFlat: f.columns.length, cashDiffLastCol: dd(rowS, rowO, 1), cashDiffSecondLast: dd(rowS, rowO, 2), cashCells: rowS ? rowS.cells.length : null, equityDiffLastCol: dd(eqS, eqO, 1), equityDiffSecondLast: dd(eqS, eqO, 2) };
+        const nC = f.columns.length - 1;   // month columns (no Total col on a balance sheet)
+        const colMeta = (((raw || {}).Columns || {}).Column || []).slice(1).map(cc => (cc.MetaData || []).filter(x => x.Name === 'EndDate').map(x => x.Value)[0]);
+        const idxOf = (endIso) => colMeta.indexOf(endIso);
+        const probes = { cur: mEnd, prior: pmEnd, py: d(y - 1, mo + 1, 0) };
+        const res = { ncolsFlat: f.columns.length, firstEnd: colMeta[0], lastEnd: colMeta[colMeta.length - 1] };
+        const get = (fl, code, rx) => { const r = sumRow(fl, code) || (rx ? fl.rows.find(x => rx.test(x.label)) : null); return r ? r : null; };
+        for (const k of Object.keys(probes)) {
+          const single = flattenQboReport(await apiGet(bsReportQuery(probes[k], 'Accrual')));
+          if (k === 'cur') bsSingleCur = single;
+          const ix = idxOf(probes[k]);
+          const cmp = {};
+          [['cash', null, /total bank accounts?/i], ['ar', 'AR', null], ['ap', 'AP', null], ['equity', 'TotalEquity', /^total equity$/i], ['assets', 'TotalAssets', null]].forEach(([nm, code, rx]) => {
+            const a = get(f, code || '__none__', rx), b = get(single, code || '__none__', rx);
+            cmp[nm] = (a && b && ix >= 0) ? Math.round((num(a.cells[ix]) - num(b.cells[b.cells.length - 1])) * 100) / 100 : 'n/a';
+          });
+          res[k] = { colIndex: ix, diffs: cmp };
+        }
+        res.shape = shape(raw);
+        return res;
       });
       await timed('cashFlow', async () => {
         const raw = await apiGet('/reports/CashFlow?start_date=' + mStart + '&end_date=' + mEnd + '&accounting_method=Accrual');
         const f = flattenQboReport(raw);
         const g = (code) => { const r = sumRow(f, code); return r ? num(r.cells[r.cells.length - 1]) : null; };
         const rowsBy = {}; f.rows.forEach(x => { if (x.group) rowsBy[x.group] = (rowsBy[x.group] || 0) + 1; });
-        return { shape: shape(raw), rowsByGroup: rowsBy, haveOps: g('OperatingActivities') != null, haveInv: g('InvestingActivities') != null, haveFin: g('FinancingActivities') != null, haveNet: g('CashIncrease') != null, haveEnd: g('EndingCash') != null || g('CashAtEndOfPeriod') != null, labelsLvl0: f.rows.filter(x => x.level === 0 && x.type !== 'data').map(x => x.label + '|' + x.group + '|' + x.type).slice(0, 14) };
+        const begRow = f.rows.find(x => x.group === 'BeginningCash');
+        const ident = { opsInvFin: (g('OperatingActivities') != null) ? Math.round(((g('OperatingActivities') || 0) + (g('InvestingActivities') || 0) + (g('FinancingActivities') || 0) - (g('CashIncrease') || 0)) * 100) / 100 : 'n/a',
+          begPlusNet: (begRow && g('CashIncrease') != null && g('EndingCash') != null) ? Math.round((num(begRow.cells[begRow.cells.length - 1]) + g('CashIncrease') - g('EndingCash')) * 100) / 100 : 'n/a',
+          endVsBsCash: (bsSingleCur && g('EndingCash') != null && bsSingleCur.rows.find(x => /total bank accounts?/i.test(x.label))) ? Math.round((g('EndingCash') - num(bsSingleCur.rows.find(x => /total bank accounts?/i.test(x.label)).cells.slice(-1)[0])) * 100) / 100 : 'n/a',
+          netIncomeRowVsPl: 'see plSeries' };
+        return { ident, begRowType: begRow ? begRow.type : null, shape: shape(raw), rowsByGroup: rowsBy, haveOps: g('OperatingActivities') != null, haveInv: g('InvestingActivities') != null, haveFin: g('FinancingActivities') != null, haveNet: g('CashIncrease') != null, haveEnd: g('EndingCash') != null || g('CashAtEndOfPeriod') != null, labelsLvl0: f.rows.filter(x => x.level === 0 && x.type !== 'data').map(x => x.label + '|' + x.group + '|' + x.type).slice(0, 14) };
       });
       for (const [k, rpt] of [['arSummary', 'AgedReceivables'], ['apSummary', 'AgedPayables']]) {
         await timed(k, async () => {
@@ -3066,7 +3089,9 @@ app.http('tmp-report-probe', {
           const gt = f.rows.filter(x => x.group === 'GrandTotal' || (x.type === 'summary' && x.level === 0)).slice(-1)[0];
           let bucketDiff = null;
           if (gt) { const v = gt.cells.map(num); bucketDiff = Math.round((v.slice(0, v.length - 1).reduce((q, z) => q + z, 0) - v[v.length - 1]) * 100) / 100; }
-          return { shape: shape(raw), dataRows: f.rows.filter(x => x.type === 'data').length, grandTotalFound: !!gt, bucketSumVsTotalDiff: bucketDiff };
+          const totalVal = gt ? num(gt.cells[gt.cells.length - 1]) : null;
+          const bsRow = bsSingleCur ? (sumRow(bsSingleCur, k === 'arSummary' ? 'AR' : 'AP')) : null;
+          return { shape: shape(raw), dataRows: f.rows.filter(x => x.type === 'data').length, grandTotalFound: !!gt, bucketSumVsTotalDiff: bucketDiff, agingTotalVsBsDiff: (bsRow && totalVal != null) ? Math.round((totalVal - num(bsRow.cells[bsRow.cells.length - 1])) * 100) / 100 : 'n/a' };
         });
       }
       return { jsonBody: { ok: true, out } };
