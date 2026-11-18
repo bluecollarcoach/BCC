@@ -223,12 +223,17 @@ function parseAging(flat) {
 }
 
 /* ------------------------------------------------------------------ the analysis */
-const GOAL_DEFAULTS = { monthsCash: 3, monthsCashMin: 1, currentRatio: 1.5, currentRatioMin: 1, grossMargin: 0.30, grossMarginMin: 0.15, netMargin: 0.05, netMarginMin: 0, ccHighBalance: 10000 };
+/* Firm-wide targets (Admin -> Report goals). monthsCash is the cash the firm wants a client to keep, in months of overhead; investMinAmount is the smallest amount of
+   cash above that target worth a suggestion (0 = never); slowSeasonDrop is the fall in revenue, last year, from the three months up to this point to the next three
+   that counts as a slower season (0 = off); taxFromMonth is the first report month that carries year-end tax planning (0 = off) and taxMinProfit the year-to-date
+   profit it needs. api/src/index.js REPORT_GOAL_DEFAULTS must hold the same values (a test compares them). */
+const GOAL_DEFAULTS = { monthsCash: 6, monthsCashMin: 1, currentRatio: 1.5, currentRatioMin: 1, grossMargin: 0.30, grossMarginMin: 0.15, netMargin: 0.05, netMarginMin: 0, ccHighBalance: 10000, investMinAmount: 10000, slowSeasonDrop: 0.25, taxFromMonth: 8, taxMinProfit: 25000 };
+const ANALYSIS_VERSION = 2;
 
 function buildReportAnalysis(input) {
   input = input || {};
   const K = input.kpis || {}, goals = Object.assign({}, GOAL_DEFAULTS, input.goals || {});
-  const A = { version: 1, ok: false, period: input.period || '', method: input.method || 'Accrual', integrity: { checks: [], failed: [] }, errors: [] };
+  const A = { version: ANALYSIS_VERSION, ok: false, period: input.period || '', method: input.method || 'Accrual', integrity: { checks: [], failed: [] }, errors: [] };
   const check = (name, diff, fatal, note) => { const ok = isNum(diff) ? Math.abs(diff) <= TOL : false; A.integrity.checks.push({ name, ok, diff: isNum(diff) ? r2(diff) : null, fatal: !!fatal }); if (!ok && fatal) A.integrity.failed.push(name + (note ? ' (' + note + ')' : '')); return ok; };
   const fail = (name) => { A.integrity.checks.push({ name, ok: false, diff: null, fatal: true }); A.integrity.failed.push(name); };
 
@@ -452,6 +457,21 @@ function buildReportAnalysis(input) {
     A.ahead = { nextLabel: monthLabel(addMonthsKey(keys[idx], 1)), nextName: monthName(addMonthsKey(keys[idx], 1)), thenLabel: monthLabel(keys[pyIdx + 1]), thisLabel: monthLabel(keys[pyIdx]), change: ch, thenRev: months[pyIdx + 1].rev, thisRev: months[pyIdx].rev };
   }
 
+  /* the seasonal pattern: what the three months AFTER this point did last year, against the three months up to it. Offered only when all six months are real (after the
+     business started, with revenue), so a start-up ramp is never read as a season. The insights decide whether it is a slower season (goals.slowSeasonDrop). */
+  A.season = null;
+  if (idx >= 14) {
+    const six = [idx - 14, idx - 13, idx - 12, idx - 11, idx - 10, idx - 9];
+    if (six.every(i => i > startIdx && months[i].active && months[i].rev > 0)) {
+      const bef = months.slice(idx - 14, idx - 11), aft = months.slice(idx - 11, idx - 8);
+      const beforeAvg = r2(mean(bef.map(m => m.rev))), afterAvg = r2(mean(aft.map(m => m.rev)));
+      A.season = { nextFrom: monthName(addMonthsKey(keys[idx], 1)), nextTo: monthName(addMonthsKey(keys[idx], 3)), lastYearFrom: monthLabel(aft[0].key), lastYearTo: monthLabel(aft[2].key),
+        beforeFrom: monthLabel(bef[0].key), beforeTo: monthLabel(bef[2].key), beforeAvg, afterAvg, beforeMin: Math.min.apply(null, bef.map(b => b.rev)), change: afterAvg / beforeAvg - 1, afterNet: r2(sum(aft.map(m => m.net))),
+        /* broad = at least two of the three months were each lower than the lowest of the three before: one large job in the earlier months is not a season */
+        broad: aft.filter(m => m.rev < Math.min.apply(null, bef.map(b => b.rev))).length >= 2 };
+    }
+  }
+
   /* ---- 6. books to check (coach-only): facts about the ledger, not opinions ---- */
   const books = [];
   if (bsS && bsOk) {
@@ -491,5 +511,5 @@ function buildReportAnalysis(input) {
 function worst2(arr, f) { let w = 0; arr.forEach((m, i) => { w = Math.max(w, Math.abs(f(m, i))); }); return w; }
 function finish(A) { if (!A.insights) A.insights = []; return A; }
 
-module.exports = { buildReportAnalysis, GOAL_DEFAULTS, SEV_WEIGHT,
+module.exports = { buildReportAnalysis, GOAL_DEFAULTS, ANALYSIS_VERSION, SEV_WEIGHT,
   helpers: { num, r2, rnd, usd, usdUnsigned, pct0, pctChange, chgText, ptsDiff, ptsText, plural, sigOf, monthLabel, monthName, addMonthsKey, monthColumns, leavesOf, sectionTotals, bsAt, parseCashFlow, parseAging, mean, sum, isNum } };

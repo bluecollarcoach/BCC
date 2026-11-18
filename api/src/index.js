@@ -8707,7 +8707,7 @@ async function qboAccessForCompany(comp, fields) {
 }
 // Flatten a QBO report (nested Header/Rows/Summary) into columns + indented rows: see qboReports.js (moved out so the report-analysis tests run the real code).
 const { flattenQboReport, flattenQboSeries } = require('./qboReports');
-const { buildReportAnalysis } = require('./reportAnalysis');
+const { buildReportAnalysis, ANALYSIS_VERSION } = require('./reportAnalysis');
 // Build the QBO BalanceSheet report path for a point-in-time "as of" date.
 // CRITICAL (proven 2026-07-09): QBO's BalanceSheet report SILENTLY IGNORES `as_of` and
 // always returns its default (current) period — so two different `as_of=` requests come
@@ -10472,7 +10472,14 @@ const REPORT_LOC_APR = 0.12; // line-of-credit interest estimate (annualized), a
 // ccHighBalance: the credit card balance (dollars) above which the "CC Interest
 // (annualized)" estimate is worth showing — below it, it's just monthly float a
 // client pays off in full, and the estimate is noise rather than a real cost signal.
-const REPORT_GOAL_DEFAULTS = { monthsCash: 3, monthsCashMin: 1, currentRatio: 1.5, currentRatioMin: 1, grossMargin: 0.30, grossMarginMin: 0.15, netMargin: 0.05, netMarginMin: 0, ccHighBalance: 10000 };
+// monthsCash: months of overhead in cash the firm wants a client to keep (the firm's number is 6). investMinAmount: the least cash above that target worth a suggestion (0 = never).
+// slowSeasonDrop: how far revenue fell, last year, from the three months up to this point to the next three for a slower season to be flagged (0 = off). taxFromMonth: the first
+// report month (1-11) that carries year-end tax planning (0 = off); taxMinProfit: the year-to-date profit it needs. Same values as GOAL_DEFAULTS in reportAnalysis.js (a test compares them).
+const REPORT_GOAL_DEFAULTS = { monthsCash: 6, monthsCashMin: 1, currentRatio: 1.5, currentRatioMin: 1, grossMargin: 0.30, grossMarginMin: 0.15, netMargin: 0.05, netMarginMin: 0, ccHighBalance: 10000, investMinAmount: 10000, slowSeasonDrop: 0.25, taxFromMonth: 8, taxMinProfit: 25000 };
+// What a saved value may be. Anything outside is refused with the default (a typo must not silently turn a report suggestion off or on for every client).
+const REPORT_GOAL_RULES = { monthsCash: 'Months of cash goal must be between 0.5 and 36.', monthsCashMin: 'Months of cash floor must be between 0 and 36.', investMinAmount: 'The cash-above-goal minimum must be 0 or more.',
+  slowSeasonDrop: 'The slower-season threshold must be 0 (off) or between 5% and 90%.', taxFromMonth: 'The year-end tax planning month must be 0 (off) or 1 to 11.', taxMinProfit: 'The year-end tax planning profit must be 0 or more.' };
+const REPORT_GOAL_BOUNDS = { monthsCash: [0.5, 36], monthsCashMin: [0, 36], investMinAmount: [0, 100000000], slowSeasonDrop: [0, 0.9], taxFromMonth: [0, 11], taxMinProfit: [0, 100000000] };
 /* NO outer catch. The inner one is deliberately 404-only — "there is no goals document yet"
    is a real answer and the defaults are right for it — but wrapping that in a catch-all made
    the rethrow dead code and turned any Cosmos blip into the same answer. These numbers colour
@@ -10495,8 +10502,18 @@ app.http('report-goals', {
       if (!(await isAppAdmin(p))) return forbidden('admin only');
       const b = await request.json().catch(() => ({}));
       const src = b.goals || {};
-      const goals = {};
-      Object.keys(REPORT_GOAL_DEFAULTS).forEach(k => { const v = Number(src[k]); goals[k] = isFinite(v) ? v : REPORT_GOAL_DEFAULTS[k]; });
+      const goals = {}, errs = [];
+      Object.keys(REPORT_GOAL_DEFAULTS).forEach(k => {
+        let v = src[k] === '' || src[k] == null ? NaN : Number(src[k]);
+        if (k === 'taxFromMonth' && isFinite(v)) v = Math.round(v);
+        const bd = REPORT_GOAL_BOUNDS[k];
+        if (!isFinite(v)) { goals[k] = REPORT_GOAL_DEFAULTS[k]; return; }          // blank or not a number: the default
+        if (bd && (v < bd[0] || v > bd[1] || (k === 'slowSeasonDrop' && v > 0 && v < 0.05))) { errs.push(REPORT_GOAL_RULES[k]); return; }
+        goals[k] = v;
+      });
+      [['monthsCash', 'monthsCashMin', 'Months of cash'], ['currentRatio', 'currentRatioMin', 'Current ratio'], ['grossMargin', 'grossMarginMin', 'Gross margin'], ['netMargin', 'netMarginMin', 'Net margin']]
+        .forEach(([g, f, label]) => { if (goals[f] != null && goals[g] != null && goals[f] > goals[g]) errs.push(label + ': the floor cannot be higher than the goal.'); });
+      if (errs.length) return { status: 400, jsonBody: { ok: false, error: 'Not saved. ' + errs.join(' ') } };
       await container().items.upsert({ id: 'bcc-report-goals', tenantId: BCC_TENANT_ID, docType: 'report-goals', goals, updatedAt: new Date().toISOString(), updatedBy: String(p.userDetails || '').toLowerCase() });
       logAudit('report-goals-save', { user: auditUser(request), meta: goals });
       return { jsonBody: { ok: true, goals } };
@@ -10763,12 +10780,19 @@ async function backfillReportAnalysis(apiGet, per, method, fd, goals) {
    document's etag so a notes save that lands during the QuickBooks calls cannot be overwritten. Never throws into the caller. */
 /* An analysis is stored on a locked-in snapshot only when it is COMPLETE: reconciled, with the balance-sheet series and both agings. One built while QuickBooks
    was missing a report is still shown (and says what is left out) but is not frozen - the next view tries again, so a hiccup is never made permanent. */
+/* An analysis stored by an older version of the rules is treated as absent, so the month is analysed again with the current rules and the firm's current targets. */
+/* The older analysis is kept as a fallback (with the new label on its suggestions) for the case where the month cannot be analysed again right now. */
+function modernAnalysisText(a) {
+  const fix = (t) => String(t == null ? '' : t).replace(/^Our tip:\s*/, 'Suggestion: ');
+  return Object.assign({}, a, { insights: (a.insights || []).map(x => Object.assign({}, x, { tip: fix(x.tip) })) });
+}
+function analysisCurrent(a) { return !!(a && (a.version || 1) >= ANALYSIS_VERSION); }
 function analysisComplete(a) { return !!(a && a.ok && a.bsOk !== false && a.agingParsed && a.agingParsed.ar && a.agingParsed.ap); }
 async function persistFrozenAnalysis(c, id, method, analysis, who, realmId, period, lockedAt) {
   try {
     const cur = await c.item(id, BCC_TENANT_ID).read().then(r => r.resource).catch(e => { if (e && (e.code === 404 || e.statusCode === 404)) return null; throw e; });
     const fz = cur && cur.frozenByMethod && cur.frozenByMethod[method];
-    if (!fz || fz.analysis || fz.frozenAt !== lockedAt) return false;   // re-locked (a Refresh) or filled by another request meanwhile: this analysis belongs to a different snapshot
+    if (!fz || analysisCurrent(fz.analysis) || fz.frozenAt !== lockedAt) return false;   // re-locked (a Refresh) or filled by another request meanwhile: this analysis belongs to a different snapshot
     fz.analysis = analysis;
     await c.items.upsert(cur, cur._etag ? { accessCondition: { type: 'IfMatch', condition: cur._etag } } : undefined);
     logAudit('report-analysis-added', { user: who, path: '/api/integrations/qbo/companies/' + realmId + '/monthly-report', meta: { realmId, period, method } });
@@ -10902,7 +10926,7 @@ app.http('qbo-monthly-report', {
           periodLabel: MONTHS[per.mo] + ' ' + per.y,
           priorLabel: MONTHS[(per.mo + 11) % 12] + ' ' + (per.mo === 0 ? per.y - 1 : per.y),
           periodEnd: fd.periodEnd, preparedOn: fd.frozenAt, frozen: true, frozenAt: fd.frozenAt,
-          company: fd.company, kpis: fd.kpis, statements: fd.statements, analysis: fd.analysis || null
+          company: fd.company, kpis: fd.kpis, statements: fd.statements, analysis: analysisCurrent(fd.analysis) ? fd.analysis : null
         };
       } else {
         data = await assembleMonthlyReport(ctx.apiGet, ctx.comp, per, method, { goals });
@@ -10962,9 +10986,9 @@ app.http('qbo-monthly-report', {
         else {
           try {
             const a = await backfillReportAnalysis(ctx.apiGet, per, method, fd, goals);
-            data.analysis = a;
-            if (analysisComplete(a)) { _analysisMiss.delete(mk); await persistFrozenAnalysis(c, docId(period), method, a, who, realmId, period, fd.frozenAt); }
-            else { if (_analysisMiss.size > 400) _analysisMiss.clear(); _analysisMiss.set(mk, { at: Date.now(), analysis: a }); }
+            const older = (fd.analysis && fd.analysis.ok && !analysisCurrent(fd.analysis)) ? modernAnalysisText(fd.analysis) : null;
+            if (analysisComplete(a)) { data.analysis = a; _analysisMiss.delete(mk); await persistFrozenAnalysis(c, docId(period), method, a, who, realmId, period, fd.frozenAt); }
+            else { data.analysis = older || a; if (_analysisMiss.size > 400) _analysisMiss.clear(); _analysisMiss.set(mk, { at: Date.now(), analysis: data.analysis }); }
           } catch (e) { context.error('report analysis backfill', e); data.analysis = null; }
         }
       }

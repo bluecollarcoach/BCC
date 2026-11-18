@@ -646,12 +646,19 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
 
   /* ===== Monthly report goals ===== */
   var GOAL_FIELDS = [
-    { grp: 'Months of cash', goal: 'monthsCash', floor: 'monthsCashMin', step: '0.5', fmt: 'x' },
+    { grp: 'Months of cash', goal: 'monthsCash', floor: 'monthsCashMin', step: '0.5', fmt: 'x', help: 'Months of overhead the firm wants a client to hold in cash. Below the goal is a Watch item on the report; below the floor is an Action. Heading into a slower season the same goal applies.' },
     { grp: 'Current ratio', goal: 'currentRatio', floor: 'currentRatioMin', step: '0.1', fmt: 'x' },
     // step 0.1, matching what the field can actually hold: these are stored as fractions and
     // now render to a tenth of a percent, so step 1 would mark a real saved value invalid.
     { grp: 'Gross margin', goal: 'grossMargin', floor: 'grossMarginMin', step: '0.1', fmt: '%' },
     { grp: 'Net margin', goal: 'netMargin', floor: 'netMarginMin', step: '0.1', fmt: '%' }
+  ];
+  /* single-value targets (not a goal/floor pair). pct = stored as a fraction, shown as a percent. */
+  var GOAL_SINGLES = [
+    { key: 'investMinAmount', title: 'Cash above the months-of-cash goal', label: 'Suggest putting it to work when the excess is at least', prefix: '$', step: '1000', help: 'Cash above the goal (and above the loss a slower season is expected to bring) is shown with a suggestion: pay down credit card and line of credit balances first, then hold the rest in an interest-bearing account. 0 = never suggest.' },
+    { key: 'slowSeasonDrop', title: 'Slower season ahead', label: 'Flag it when the next three months were down at least', suffix: '%', step: '1', pct: true, help: 'Compares last year with itself: revenue in the three months after this report month against the three months before them. Needs 15 months of history. 0 = off.' },
+    { key: 'taxFromMonth', title: 'Year-end tax planning: from', label: 'First report month that shows it (1 to 11)', step: '1', help: 'From this month through November, a report with enough year-to-date profit shows it with a suggestion to send it to the CPA. 0 = off.' },
+    { key: 'taxMinProfit', title: 'Year-end tax planning: profit', label: 'Only when year-to-date profit is at least', prefix: '$', step: '1000' }
   ];
   var _goalDefaults = {};
   /* Rounded for DISPLAY only where it is lossless. A percentage goal is stored as a fraction,
@@ -670,7 +677,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var suffix = function (f) { return f.fmt === '%' ? '%' : '×'; };
     var cards = GOAL_FIELDS.map(function (f) {
       return '<div style="border:1px solid var(--chrome-mute);border-radius:9px;padding:12px 14px;">' +
-        '<div style="font-weight:700;font-size:13.5px;margin-bottom:8px;">' + esc(f.grp) + '</div>' +
+        '<div style="font-weight:700;font-size:13.5px;margin-bottom:8px;">' + esc(f.grp) + '</div>' + (f.help ? '<div style="font-size:11.5px;color:var(--muted);margin-bottom:8px;">' + esc(f.help) + '</div>' : '') +
         '<label style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);margin-bottom:6px;">Goal (green at or above)<span><input type="number" step="' + f.step + '" id="goal_' + f.goal + '" value="' + goalToInput(f, f.goal, g) + '" style="width:80px;min-height:34px;padding:5px 7px;border:1px solid var(--chrome-mute);border-radius:6px;font:inherit;text-align:right;" /> ' + suffix(f) + '</span></label>' +
         '<label style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);">Floor (red below)<span><input type="number" step="' + f.step + '" id="goal_' + f.floor + '" value="' + goalToInput(f, f.floor, g) + '" style="width:80px;min-height:34px;padding:5px 7px;border:1px solid var(--chrome-mute);border-radius:6px;font:inherit;text-align:right;" /> ' + suffix(f) + '</span></label>' +
         '</div>';
@@ -682,6 +689,13 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       '<label style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);">Show CC interest estimate above<span>$<input type="number" step="500" id="goal_ccHighBalance" value="' + (g.ccHighBalance != null ? g.ccHighBalance : '') + '" style="width:80px;min-height:34px;padding:5px 7px;border:1px solid var(--chrome-mute);border-radius:6px;font:inherit;text-align:right;" /></span></label>' +
       '<div style="font-size:11.5px;color:var(--muted);margin-top:6px;">Below this, a card balance is treated as monthly float (paid off in full) and the interest estimate is hidden — it isn\'t a real GL number, just a balance × APR guess.</div>' +
       '</div>';
+    cards += GOAL_SINGLES.map(function (f) {
+      var v = g[f.key]; if (v != null && f.pct) { var pc = Math.round(v * 1000) / 10; v = (pc === Math.round(pc)) ? Math.round(pc) : pc; }
+      return '<div style="border:1px solid var(--chrome-mute);border-radius:9px;padding:12px 14px;">' +
+        '<div style="font-weight:700;font-size:13.5px;margin-bottom:8px;">' + esc(f.title) + '</div>' +
+        '<label style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);">' + esc(f.label) + '<span>' + (f.prefix || '') + '<input type="number" step="' + f.step + '" min="0" id="goal_' + f.key + '" value="' + (v != null ? v : '') + '" style="width:90px;" />' + (f.suffix || '') + '</span></label>' +
+        (f.help ? '<div style="font-size:11.5px;color:var(--muted);margin-top:6px;">' + esc(f.help) + '</div>' : '') + '</div>';
+    }).join('');
     document.getElementById('goalsForm').innerHTML = cards;
   }
   function collectGoals() {
@@ -694,6 +708,10 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     });
     var ccEl = document.getElementById('goal_ccHighBalance');
     if (ccEl) { var ccV = parseFloat(ccEl.value); if (isFinite(ccV)) out.ccHighBalance = ccV; }
+    GOAL_SINGLES.forEach(function (f) {
+      var el = document.getElementById('goal_' + f.key); if (!el) return;
+      var n = parseFloat(el.value); if (isFinite(n)) out[f.key] = f.pct ? n / 100 : n;
+    });
     return out;
   }
   function loadGoals() {

@@ -66,9 +66,9 @@ function build(ctx, H) {
     else if (dPm != null && dPm >= Math.max(1000, 0.10 * Math.abs(pm.net)) && (dPy == null || dPy >= 0)) sev = 'win';
     else if (dPy != null && dPy >= Math.max(1000, 0.10 * Math.abs(py.net)) && (dPm == null || dPm >= -0.1 * Math.abs(pm.net))) sev = 'win';
     let tip;
-    if (ni < 0) tip = 'Our tip: a loss month is a cue to look at pricing before cutting costs - check whether this month\'s work was quoted at today\'s material and labor costs.';
-    else if (sev === 'watch') tip = 'Our tip: when profit swings this much, find the one or two lines that moved (see "What moved") and settle whether each is one-time or the new normal before you change anything.';
-    else if (sev === 'win') tip = 'Our tip: write down what drove this month - the customers, the type of work, the pricing - so it is repeatable, and keep overhead from rising with it.';
+    if (ni < 0) tip = 'Suggestion: check whether the work billed this month was priced at current material and labor costs.';
+    else if (sev === 'watch') tip = 'Suggestion: review the lines that moved most (see "What moved") and determine whether each is one-time or ongoing.';
+    else if (sev === 'win') tip = 'Suggestion: identify what drove this month (customers, type of work, pricing) and compare the growth in overhead with the growth in revenue.';
     add({ key: 'net_income', cat: 'profit', sev, head, detail, tip, impact: Math.abs(dPm != null ? dPm : ni), facts: { ni, pm: pm && pm.net, py: py && py.net, ytd: ytd && ytd.net, pytd: pytd && pytd.net } });
   });
 
@@ -85,8 +85,8 @@ function build(ctx, H) {
     else if ((yoy != null && yoy <= -0.10) || (ytdg != null && ytdg <= -0.10) || (mom != null && mom <= -0.25 && cur.rev - pm.rev <= -5000)) sev = 'watch';
     else if (((yoy != null && yoy >= 0.05) || (ytdg != null && ytdg >= 0.05)) && !(mom != null && mom <= -0.20)) sev = 'win';
     let tip;
-    if (sev === 'action' || sev === 'watch') tip = 'Our tip: find where the gap is - "What moved" shows which customers or income lines changed. If the pipeline is thin, call past customers and get quotes out now; a revenue dip reaches cash a month or two later.';
-    else if (sev === 'win') tip = 'Our tip: put numbers on what is working (customer, type of work, season) so you can do more of it, and watch that costs do not climb as fast as sales.';
+    if (sev === 'action' || sev === 'watch') tip = 'Suggestion: see "What moved" for the customers or income lines that changed, and compare open quotes and scheduled work with the previous month.';
+    else if (sev === 'win') tip = 'Suggestion: identify which customers, types of work or seasons produced the increase, and compare the growth in costs with the growth in sales.';
     add({ key: 'revenue', cat: 'profit', sev, head, detail, tip, impact: Math.abs(pm ? cur.rev - pm.rev : cur.rev), facts: { rev: cur.rev, pm: pm && pm.rev, py: py && py.rev, ytd: ytd && ytd.rev, pytd: pytd && pytd.rev } });
   });
 
@@ -109,8 +109,8 @@ function build(ctx, H) {
     else if ((dPm != null && dPm <= -4) || (dPy != null && dPy <= -3) || (gm < goals.grossMargin && ((dPm != null && dPm < 0) || (dPy != null && dPy < 0)))) sev = 'watch';
     else if ((dPm != null && dPm >= 2 && (dPy == null || dPy >= 0)) || (dPy != null && dPy >= 3 && (dPm == null || dPm >= 0))) sev = 'win';
     const tip = (sev === 'action' || sev === 'watch')
-      ? 'Our tip: look at your biggest jobs, products or services and compare what you quoted with what it actually cost. If costs moved, reprice open quotes now - margin lost on finished work is hard to win back.'
-      : (sev === 'win' ? 'Our tip: find out why it improved - better pricing, cheaper materials, tighter labor - and lock it into your next quotes.' : '');
+      ? 'Suggestion: compare quoted cost with actual cost on the largest jobs, products or services. If costs have risen, update the pricing on open quotes.'
+      : (sev === 'win' ? 'Suggestion: identify the cause of the improvement (pricing, material cost, labor) and whether it will continue before reflecting it in new quotes.' : '');
     add({ key: 'gross_margin', cat: 'profit', sev, head, detail, tip, impact: Math.abs((gm - (pm && pm.gm != null ? pm.gm : gm)) * cur.rev), facts: { gm: Math.round(gm * 100), pm: pm && pm.gm != null ? Math.round(pm.gm * 100) : null, py: py && py.gm != null ? Math.round(py.gm * 100) : null } });
   });
 
@@ -127,7 +127,7 @@ function build(ctx, H) {
     let sev = 'info';
     if (d != null && d >= 4 && ytd.opex > pytd.opex * 1.05) sev = 'watch';
     else if (d != null && d <= -3 && (!pm || pm.opexPct == null || cur.opexPct <= pm.opexPct + 0.02)) sev = 'win';   // better year to date AND this month not worse than last
-    const tip = sev === 'watch' ? 'Our tip: go through recurring overhead line by line - insurance, software, vehicles, phones, subscriptions. The costs that crept up quietly are usually the easiest dollars to get back.' : '';
+    const tip = sev === 'watch' ? 'Suggestion: compare each recurring overhead line (insurance, software, vehicles, phones, subscriptions) with last month and with last year.' : '';
     add({ key: 'overhead', cat: 'profit', sev, head, detail, tip, impact: pm ? Math.abs(cur.opex - pm.opex) : 0, facts: { opex: cur.opex, pm: pm && pm.opex, ytdPct: ytd && ytd.opexPct != null ? Math.round(ytd.opexPct * 100) : null, pytdPct: pytd && pytd.opexPct != null ? Math.round(pytd.opexPct * 100) : null } });
   });
 
@@ -143,7 +143,7 @@ function build(ctx, H) {
     const top = cuP.length ? sumDelta(cuP.filter(m => !m.seasonal)) : sumDelta(cuY);
     const sev = top >= Math.max(2000, 0.03 * cur.rev) ? 'watch' : 'info';
     const lead = cuP.length ? cuP[0] : cuY[0];
-    add({ key: 'movers_cost', cat: 'profit', sev, head: 'Costs that rose the most: ' + short(lead.name) + ' ' + signedAmt(rdelta(lead)), detail: lines.join(' '), tip: sev === 'watch' ? 'Our tip: for each one ask "one-time, or the new normal?" A one-time item can be set aside when you compare months; a new normal has to be priced into your quotes.' : '', impact: top, facts });
+    add({ key: 'movers_cost', cat: 'profit', sev, head: 'Costs that rose the most: ' + short(lead.name) + ' ' + signedAmt(rdelta(lead)), detail: lines.join(' '), tip: sev === 'watch' ? 'Suggestion: for each increase, determine whether it is one-time or ongoing. A one-time item can be set aside when comparing months; an ongoing one belongs in pricing.' : '', impact: top, facts });
   });
   rule('movers_rev', () => {
     const mv = A.movers || {};
@@ -169,18 +169,18 @@ function build(ctx, H) {
 
   rule('unusual', () => {
     const u = A.unusual || []; if (!u.length) return;
-    const one = (x) => short(x.name) + ' ' + usd(x.cur) + (x.isNew ? ' (nothing like it in the previous ' + x.monthsSeen + ' months)' : ', against a typical ' + usd(x.typical) + ' a month') + (x.seasonal ? '; ' + py.label + ' was ' + usd(x.sameMonthLastYear) + ', so it may be annual or seasonal' : '');
+    const one = (x) => short(x.name) + ' ' + usd(x.cur) + (x.isNew ? ' (no comparable amount in the previous ' + x.monthsSeen + ' months)' : ', against a typical ' + usd(x.typical) + ' a month') + (x.seasonal ? '; ' + py.label + ' was ' + usd(x.sameMonthLastYear) + ', so it may be annual or seasonal' : '');
     const real = u.filter(x => !x.seasonal);
     const head = (real.length ? 'Unusual cost to confirm: ' : 'Large cost that looks seasonal: ') + short((real[0] || u[0]).name) + ' ' + usd((real[0] || u[0]).cur);
     add({ key: 'unusual', cat: 'profit', sev: real.length ? 'watch' : 'info', head, detail: u.map(one).join('. ') + '.',
-      tip: 'Our tip: confirm each is coded correctly and whether it will recur. A mis-coded or doubled entry is the cheapest problem to fix, and we would rather catch it now than at year-end.',
+      tip: 'Suggestion: confirm each item is coded to the correct account and whether it will recur. A miscoded or duplicated entry changes the figures in this report.',
       impact: Math.max.apply(null, u.map(x => x.cur - x.typical)), facts: u.map(x => [x.name, x.cur, x.typical, !!x.seasonal]) });
   });
 
   rule('breakeven', () => {
     const be = A.breakeven; if (!be) return;
     if (be.revenue == null) {
-      if (be.thin && be.curRev > 0) add({ key: 'breakeven', cat: 'profit', sev: 'action', head: 'Gross margin is too thin to cover overhead', detail: 'Over the last 3 months gross margin averaged ' + pct0(be.gm) + ' while overhead averaged ' + usd(be.overhead) + ' a month, so no level of sales at these prices covers overhead.', tip: 'Our tip: this is a pricing or job-cost problem before it is an overhead problem - start with what each type of work actually costs against what you charge.', impact: be.overhead, facts: { gm: Math.round(be.gm * 100), oh: be.overhead } });
+      if (be.thin && be.curRev > 0) add({ key: 'breakeven', cat: 'profit', sev: 'action', head: 'Gross margin is too thin to cover overhead', detail: 'Over the last 3 months gross margin averaged ' + pct0(be.gm) + ' while overhead averaged ' + usd(be.overhead) + ' a month, so no level of sales at these prices covers overhead.', tip: 'Suggestion: gross margin is below the level overhead requires. Review the cost of each type of work against what it is billed at.', impact: be.overhead, facts: { gm: Math.round(be.gm * 100), oh: be.overhead } });
       return;
     }
     const ratio = be.curRev / be.revenue;
@@ -194,7 +194,7 @@ function build(ctx, H) {
       else if (cur.opInc >= 0 && cur.other < 0) detail += ' Operating income was ' + usd(cur.opInc) + '; the loss came from other income/expense of ' + usd(cur.other) + '.';
     }
     add({ key: 'breakeven', cat: 'profit', sev, head: 'Break-even is about ' + usd(be.revenue) + ' of revenue a month', detail,
-      tip: 'Our tip: break-even is your floor, not your target. Decide the profit you want, add it to overhead and divide by gross margin - that is the monthly revenue to book.', impact: Math.abs(be.curRev - be.revenue), facts: { be: be.revenue, rev: be.curRev } });
+      tip: 'Suggestion: break-even is the minimum. For a profit target, add the target to overhead and divide by gross margin to get the monthly revenue required.', impact: Math.abs(be.curRev - be.revenue), facts: { be: be.revenue, rev: be.curRev } });
   });
 
   rule('streak', () => {
@@ -206,16 +206,16 @@ function build(ctx, H) {
     const prev11 = months.slice(idx - 11, idx);
     const bestRev = cur.rev > 0 && prev11.every(m => cur.rev > m.rev), bestNet = cur.net > 0 && prev11.every(m => cur.net > m.net);
     const whole = (run) => run >= idx + 1;                       // the run reaches the start of the 24 months we can see: it may be longer
-    if (lossRun >= 2) { const tot = months.slice(idx - lossRun + 1, idx + 1).reduce((s, m) => s + m.net, 0); head = (whole(lossRun) ? 'At least ' : '') + plural(lossRun, 'month') + ' in a row with a net loss'; sentences.push('Net income has been negative ' + (whole(lossRun) ? 'for every one of the ' + lossRun + ' months we can see' : 'since ' + monthLabel(keys[idx - lossRun + 1])) + ', a combined ' + usd(tot) + '.'); sev = 'watch'; }
+    if (lossRun >= 2) { const tot = months.slice(idx - lossRun + 1, idx + 1).reduce((s, m) => s + m.net, 0); head = (whole(lossRun) ? 'At least ' : '') + plural(lossRun, 'month') + ' in a row with a net loss'; sentences.push('Net income has been negative ' + (whole(lossRun) ? 'for every one of the ' + lossRun + ' months in the books' : 'since ' + monthLabel(keys[idx - lossRun + 1])) + ', a combined ' + usd(tot) + '.'); sev = 'watch'; }
     else if (bestRev || bestNet) {
       head = bestRev && bestNet ? 'Best month for revenue and profit in at least a year' : (bestRev ? 'Best revenue month in at least a year' : 'Best profit month in at least a year');
       if (bestRev) { const pk = prev11.reduce((a, m) => m.rev > a.rev ? m : a, prev11[0]); sentences.push('Revenue of ' + usd(cur.rev) + ' beats every month since ' + monthLabel(keys[idx - 11]) + ' (the previous high was ' + usd(pk.rev) + ' in ' + pk.label + ').'); }
       if (bestNet) { const pk = prev11.reduce((a, m) => m.net > a.net ? m : a, prev11[0]); sentences.push('Net income of ' + usd(cur.net) + ' is the highest in that time (previous high ' + usd(pk.net) + ' in ' + pk.label + ').'); }
       sev = 'win';
-    } else if (profRun >= 6) { head = (whole(profRun) ? 'At least ' : '') + plural(profRun, 'month') + ' in a row in the black'; sentences.push(whole(profRun) ? 'Every one of the ' + profRun + ' months we can see, back to ' + monthLabel(keys[idx - profRun + 1]) + ', has shown a profit.' : 'Every month since ' + monthLabel(keys[idx - profRun + 1]) + ' has shown a profit.'); sev = 'win'; }
+    } else if (profRun >= 6) { head = (whole(profRun) ? 'At least ' : '') + plural(profRun, 'month') + ' in a row in the black'; sentences.push(whole(profRun) ? 'Every one of the ' + profRun + ' months in the books, back to ' + monthLabel(keys[idx - profRun + 1]) + ', has shown a profit.' : 'Every month since ' + monthLabel(keys[idx - profRun + 1]) + ' has shown a profit.'); sev = 'win'; }
     if (!head) return;
     add({ key: 'streak', cat: 'profit', sev, head, detail: sentences.join(' '),
-      tip: sev === 'watch' ? 'Our tip: more than one losing month in a row is a trend, not a blip - decide this month what you will change (price, cost or volume) and check it again next month.' : (bestRev || bestNet ? 'Our tip: this is the month to bank the lesson - what was different, and can you repeat it?' : ''),
+      tip: sev === 'watch' ? 'Suggestion: consecutive losing months indicate a pattern. Identify whether price, cost or volume is the cause.' : (bestRev || bestNet ? 'Suggestion: identify what was different this month and whether it can be repeated.' : ''),
       impact: Math.abs(cur.net), facts: { lossRun, profRun, bestRev, bestNet } });
   });
 
@@ -234,8 +234,8 @@ function build(ctx, H) {
     else if (mo != null && mo < goals.monthsCash) sev = 'watch';
     else if (mo != null && K.cashPrior != null && K.cash >= K.cashPrior * 1.10 && K.cash - K.cashPrior >= 1000) sev = 'win';
     let tip = '';
-    if (sev === 'action' || sev === 'watch') tip = 'Our tip: lay every payment due in the next four weeks against every dollar you expect to collect. If there is a gap, call your largest past-due customers now and ask for deposits on new work - cash you ask for early is cash you do not have to borrow.';
-    else if (sev === 'win') tip = 'Our tip: decide now what extra cash is for - debt paydown, equipment, a reserve - so it does not quietly get spent.';
+    if (sev === 'action' || sev === 'watch') tip = 'Suggestion: compare the payments due in the next four weeks with the collections expected in the same period. If there is a shortfall, start with the largest past-due receivables.';
+    else if (sev === 'win') tip = 'Suggestion: assign the additional cash a purpose (debt paydown, equipment purchases, reserve).';
     add({ key: 'cash', cat: 'cash', sev, head, detail, tip, impact: Math.abs(K.cashPrior != null ? K.cash - K.cashPrior : K.cash), facts: { cash: K.cash, pm: K.cashPrior, mo } });
   });
 
@@ -273,8 +273,8 @@ function build(ctx, H) {
     const detail = 'Net income was ' + usd(ni) + ' but cash from operations was ' + usd(ops) + ', a gap of ' + usdUnsigned(rnd(ops) - rnd(ni)) + '.' + (drivers.length ? ' The biggest items: ' + list(drivers.map(phrase)) + '.' : '') + (debtDriven ? ' QuickBooks counts paying down a line of credit or card as an operating use of cash.' : '');
     const arGrew = drivers.some(a => /accounts receivable|^a\/r\b/i.test(a.label) && a.amount < 0);
     add({ key: 'profit_vs_cash', cat: 'cash', sev: (ni > 0 && ops < 0 && !debtDriven) ? 'watch' : 'info', head, detail,
-      tip: debtDriven ? 'Our tip: paying down debt is a good use of profit - just keep enough cash behind it to cover the next month or two of overhead.'
-        : (arGrew ? 'Our tip: profit is not cash until it is collected. Bill on milestones, ask for deposits and follow up on a schedule so finished work turns into cash sooner.' : 'Our tip: compare profit to cash every month. When they drift apart the reason is always receivables, payables, inventory or debt payments - and it is far easier to act on while it is small.'),
+      tip: debtDriven ? 'Suggestion: paying down debt reduces interest cost. Compare the remaining cash with the ' + goals.monthsCash + '-month goal.'
+        : (arGrew ? 'Suggestion: profit is not cash until it is collected. Billing on milestones, taking deposits and following up on a schedule shorten the time from finished work to cash.' : 'Suggestion: compare net income with cash from operations each month. Differences come from changes in receivables, payables, inventory and debt payments, and from non-cash items such as depreciation.'),
       impact: Math.abs(gap), facts: { ni, ops, drivers: drivers.map(a => [a.label, a.amount]) } });
   });
 
@@ -301,9 +301,9 @@ function build(ctx, H) {
     if ((cc >= goals.ccHighBalance && ccRising) || (upPm && K.cashPrior != null && K.cash < K.cashPrior)) sev = 'watch';
     else if (downPm && (pyDebt == null || total <= pyDebt)) sev = 'win';
     let tip = '';
-    if (cc >= goals.ccHighBalance) tip = 'Our tip: pay the highest-rate balance first. Interest on a carried card balance buys nothing - it is overhead you can eliminate, and clearing it is usually the best return available.';
-    else if (sev === 'watch' && loc > 0.5) tip = 'Our tip: a line of credit is a bridge, not a budget. If you keep drawing on it, fix the pattern behind it - collections, pricing or overhead - before it fills.';
-    else if (sev === 'watch') tip = 'Our tip: debt that is growing while cash falls deserves a plan - decide which balance comes down first, and from what cash.';
+    if (cc >= goals.ccHighBalance) tip = 'Suggestion: pay down the highest-rate balance first. Interest on a carried card balance is a recurring cost.';
+    else if (sev === 'watch' && loc > 0.5 && bp && loc - Math.max(0, bp.loc) >= 500) tip = 'Suggestion: the line of credit balance increased. Identify what the draw funded (collections timing, pricing or overhead) and when it will be repaid.';
+    else if (sev === 'watch') tip = 'Suggestion: debt increased while cash decreased. Set the order in which balances are paid down and identify the cash that will fund it.';
     add({ key: 'debt', cat: 'obligations', sev, head, detail, tip, impact: sev === 'watch' ? Math.max(ccPrev != null ? Math.max(0, cc - ccPrev) : 0, priorTotal != null ? Math.max(0, total - priorTotal) : 0) : Math.abs(priorTotal != null ? total - priorTotal : 0), facts: { cc, loc, ltd, pm: priorTotal } });
   });
 
@@ -317,7 +317,7 @@ function build(ctx, H) {
     let sev = 'info';
     if (K.currentRatio < goals.currentRatioMin) sev = 'action'; else if (K.currentRatio < goals.currentRatio) sev = 'watch';
     else if (K.currentRatioPrior != null && K.currentRatio > K.currentRatioPrior) sev = 'win';
-    const tip = (sev === 'action' || sev === 'watch') ? 'Our tip: a ratio under 1 means short-term bills are bigger than short-term assets. The fixes are collecting faster, paying down short-term debt with longer-term financing, or building cash.' : '';
+    const tip = (sev === 'action' || sev === 'watch') ? (K.currentRatio < 1 ? 'Suggestion: a current ratio under 1 means short-term liabilities exceed short-term assets. The options are faster collections, refinancing short-term debt into longer terms, or increasing cash.' : 'Suggestion: the current ratio is below the ' + goals.currentRatio + ' goal. The options are faster collections, refinancing short-term debt into longer terms, or increasing cash.') : '';
     add({ key: 'liquidity', cat: 'obligations', sev, head, detail, tip, impact: Math.abs(K.workingCapital - (K.workingCapitalPrior != null ? K.workingCapitalPrior : K.workingCapital)), facts: { cr: K.currentRatio, pm: K.currentRatioPrior } });
   });
 
@@ -328,7 +328,7 @@ function build(ctx, H) {
     const head = 'Receivables ' + usd(r.total) + (r.over60 > 0.5 ? ': ' + usd(r.over60) + ' is over 60 days past due' : (r.past > 0.5 ? ': ' + usd(r.past) + ' is past due' : ': everything is current'));
     let detail = bucketText(r);
     const named = r.topOver60.length ?r.topOver60.slice(0, 3).map(x => short(x.name) + ' ' + usd(x.over60)) : r.topPast.slice(0, 3).map(x => short(x.name) + ' ' + usd(x.past));
-    if (named.length) detail += (r.topOver60.length ? ' Oldest money: ' : ' Largest past-due balances: ') + list(named) + '.';
+    if (named.length) detail += (r.topOver60.length ? ' Oldest balances: ' : ' Largest past-due balances: ') + list(named) + '.';
     const top = r.top[0];
     if (top && top.share != null && top.share >= 0.4 && top.total >= 5000) detail += ' ' + short(top.name) + ' is ' + pct0(top.share) + ' of everything owed to you.';
     const dsoRefs = [(A.dso && A.dso.prior != null && pm) ? dnum(A.dso.prior) + ' in ' + pmName : '', (A.dso && A.dso.py != null && py) ? dnum(A.dso.py) + ' in ' + py.label : ''].filter(Boolean);
@@ -341,7 +341,7 @@ function build(ctx, H) {
     let tip = '';
     if (sev === 'action' || sev === 'watch') {
       const t0 = r.topOver60[0];
-      tip = (t0 ? 'Our tip: call ' + short(t0.name) + ' this week - ' + usd(t0.over60) + ' of what they owe is over 60 days, and the older an invoice gets the harder it is to collect. Confirm the invoice is right, get a payment date and put it in writing. ' : 'Our tip: work the oldest invoices first - confirm each is right, get a payment date and put it in writing. ')
+      tip = (t0 ? 'Suggestion: contact ' + short(t0.name) + ' about the ' + usd(t0.over60) + ' that is over 60 days past due. Confirm the invoice is correct and obtain a committed payment date in writing. ' : 'Suggestion: work the oldest invoices first. Confirm each is correct and obtain a committed payment date in writing. ')
         + 'On new work, consider deposits or progress billing.';
     }
     add({ key: 'ar', cat: 'collections', sev, head, detail, tip, impact: r.over60 || r.past, facts: { total: r.total, over60: r.over60, past: r.past, dso: A.dso && A.dso.cur, top: r.topOver60.slice(0, 3).map(x => [x.name, x.over60]) } });
@@ -362,8 +362,8 @@ function build(ctx, H) {
     else if (r.over60 > 0.5 || (r.past / r.total >= 0.4 && r.past >= 2500) || jump) sev = 'watch';
     else if (apPm != null && apPm >= 5000 && r.total <= apPm * 0.8 && r.past < 0.5) sev = 'win';
     const tip = (sev === 'action' || sev === 'watch')
-      ? (r.past > 0.5 ? 'Our tip: talk to the vendors you are behind with before they call you. Most will accept a dated payment plan, and keeping your material and subcontractor suppliers current protects your terms with them.'
-        : 'Our tip: payables jumped - confirm the new bills are right and when each is due, so none slips past due.') : '';
+      ? (r.past > 0.5 ? 'Suggestion: contact the vendors with overdue balances to confirm the amounts and agree on payment dates. Keeping supplier accounts current maintains credit terms.'
+        : 'Suggestion: payables increased. Confirm the new bills are correct and note the due date of each.') : '';
     add({ key: 'ap', cat: 'collections', sev, head, detail, tip, impact: r.over60 || r.past, facts: { total: r.total, over60: r.over60, past: r.past, pm: apPm, top: r.topPast.slice(0, 3).map(x => [x.name, x.past]) } });
   });
 
@@ -373,7 +373,7 @@ function build(ctx, H) {
     const head = 'Retainage held by customers ' + usd(K.retainage);
     let detail = (K.retainagePrior != null && pm) ? 'That is ' + chgText(K.retainage, K.retainagePrior, pmName) + '.' : '';
     if (share != null) detail += (detail ? ' ' : '') + 'It is ' + pct0(share) + ' of all money owed to you (A/R plus retainage).';
-    add({ key: 'retainage', cat: 'collections', sev: (share != null && share >= 0.25 && K.retainage >= 10000) ? 'watch' : 'info', head, detail, tip: 'Our tip: put retainage release on each job\'s closeout checklist - it is earned money still sitting with the customer.', impact: K.retainage, facts: { ret: K.retainage, pm: K.retainagePrior } });
+    add({ key: 'retainage', cat: 'collections', sev: (share != null && share >= 0.25 && K.retainage >= 10000) ? 'watch' : 'info', head, detail, tip: 'Suggestion: include retainage release on each job closeout checklist. Retainage is earned revenue that has not been collected.', impact: K.retainage, facts: { ret: K.retainage, pm: K.retainagePrior } });
   });
 
   rule('equity', () => {
@@ -394,18 +394,80 @@ function build(ctx, H) {
     else if (eqPy != null && K.equity < eqPy && eqPy - K.equity >= Math.max(5000, 0.10 * Math.abs(eqPy))) sev = 'watch';
     else if (bigLeak) sev = 'info';                                   // money leaving through equity is not a "win", whatever the balance did
     else if (eqPy != null && K.equity > eqPy && K.equity - eqPy >= Math.max(5000, 0.05 * Math.abs(eqPy))) sev = 'win';
-    const tip = K.equity < 0 ? 'Our tip: negative equity means the business owes more than it owns on paper. Profit, owner contributions and paying down debt are the three levers - we can walk through which fits.'
-      : ((sev === 'watch' || bigLeak) ? 'Our tip: equity is the cushion under the business. Plan draws and distributions against profit and cash each month, rather than taking whatever is left.' : '');
+    const tip = K.equity < 0 ? 'Suggestion: negative equity means liabilities exceed assets on the books. Equity increases through retained profit and owner contributions.'
+      : ((sev === 'watch' || bigLeak) ? 'Suggestion: plan owner draws and distributions against profit and cash each month.' : '');
     add({ key: 'equity', cat: 'obligations', sev, head, detail, tip, impact: Math.abs(eqPy != null ? K.equity - eqPy : K.equity), facts: { eq: K.equity, pm: K.equityPrior, py: eqPy } });
   });
 
   rule('ahead', () => {
     const a = A.ahead; if (!a || Math.abs(a.change) < 0.15) return;
     const hi = a.change > 0;
-    add({ key: 'ahead', cat: 'outlook', sev: 'info', head: 'Heads-up for ' + a.nextName + ': last year revenue ' + (hi ? 'rose ' : 'fell ') + Math.round(Math.abs(a.change) * 100) + '%',
+    add({ key: 'ahead', cat: 'outlook', sev: 'info', head: 'Seasonal pattern for ' + a.nextName + ': last year revenue ' + (hi ? 'rose ' : 'fell ') + Math.round(Math.abs(a.change) * 100) + '%',
       detail: 'In ' + a.thenLabel + ' revenue was ' + usd(a.thenRev) + ', ' + (hi ? 'up from ' : 'down from ') + usd(a.thisRev) + ' in ' + a.thisLabel + '. That is last year\'s pattern, not a forecast.',
-      tip: hi ? 'Our tip: a busier month usually means paying for materials and payroll before customers pay - line up the cash ahead of it.' : 'Our tip: plan cash for a slower month now - ease off discretionary spending and get the pipeline filled early.',
+      tip: hi ? 'Suggestion: higher volume generally requires paying for materials and payroll before customers pay. Confirm cash can cover it.' : 'Suggestion: revenue fell in ' + a.nextName + ' last year. Review cash, scheduled work and discretionary spending for it.',
       impact: Math.abs(a.thenRev - a.thisRev), facts: { ch: Math.round(a.change * 100) } });
+  });
+
+  /* ------------------------------------------------------------ cash targets: a slower season ahead, cash above the target, year-end tax planning */
+  /* The firm's targets are settable in Admin -> Report goals. Each of these states what the books show, the arithmetic, and one plain action. Every dollar figure is a
+     whole-dollar value built from the figures printed beside it, so the sentences foot as printed. */
+  const burn = K.monthlyBurn, burnR = rnd(burn || 0), avgRev12 = ttm ? ttm.rev / 12 : cur.rev;
+  /* Months of overhead is a runway only when overhead is a real share of what the business spends, and only when the 3-month average could be pulled. */
+  const haveRunway = isFinite(K.cash) && burn > 0 && K.monthsOfCash != null && K.burnFrom3 !== false && burn >= Math.max(100, 0.01 * avgRev12);
+  /* A slower season: the three months after this point averaged at least the set fall below the LOWEST of the three before (so one large job in the earlier months is not a season;
+     this also puts the average at least that far under the three-month average), and at least two of the three were each under that lowest month (so one dead month is not a season). */
+  const sn = A.season, slowAhead = !!(sn && sn.broad && goals.slowSeasonDrop > 0 && sn.afterAvg <= (1 - goals.slowSeasonDrop) * sn.beforeMin);
+  const targetR = rnd(goals.monthsCash * burnR), cashR = rnd(K.cash || 0), mAhead = (n) => n + (n === 1 ? ' month' : ' months');
+  const cashSentence = K.cash < 0 ? 'Cash is overdrawn by ' + usdUnsigned(K.cash) + '. Overhead averages ' + usd(burnR) + ' a month.'
+    : 'Cash is ' + usd(K.cash) + ', or ' + K.monthsOfCash + ' ' + (K.monthsOfCash === 1 ? 'month' : 'months') + ' of overhead at ' + usd(burnR) + ' a month.';
+
+  rule('season', () => {
+    if (!slowAhead || !haveRunway) return;
+    const mo = K.monthsOfCash, target = goals.monthsCash, below = cashR < targetR;
+    const down = Math.round((1 - rnd(sn.afterAvg) / rnd(sn.beforeAvg)) * 100), gap = targetR - cashR, win = sn.nextFrom + ' to ' + sn.nextTo;
+    const detail = 'Last year revenue averaged ' + usd(sn.afterAvg) + ' a month from ' + sn.lastYearFrom + ' to ' + sn.lastYearTo + ', ' + down + '% below the ' + usd(sn.beforeAvg) + ' a month from ' + sn.beforeFrom + ' to ' + sn.beforeTo + '. '
+      + (sn.afterNet >= 0 ? 'Net income for those three months last year totaled ' + usd(sn.afterNet) + '.' : 'Those three months last year produced a net loss of ' + usdUnsigned(sn.afterNet) + '.')
+      + ' That is last year\'s pattern, not a forecast. ' + cashSentence + ' The ' + target + '-month target is ' + usd(targetR) + (below ? ', which is ' + usd(gap) + ' more than the current cash' : '') + '.';
+    add({ key: 'season', cat: 'outlook', sev: below ? (mo < goals.monthsCashMin ? 'action' : 'watch') : 'win',
+      head: (below ? 'Cash is below the ' : 'Cash meets the ') + target + '-month target; revenue in ' + win + ' was ' + down + '% lower last year',
+      detail, tip: below ? 'Suggestion: plan cash for ' + win + ': collect receivables as they come due and schedule discretionary purchases after the slower period.' : '',
+      impact: below ? gap : 0, facts: { down, mo, t: target } });
+  });
+
+  rule('invest', () => {
+    if (!(goals.investMinAmount > 0) || !haveRunway || K.cash <= 0) return;
+    if (!(ttm ? ttm.net > 0 : (ytd ? ytd.net > 0 : cur.net > 0)) || (ytd && ytd.net < 0)) return;      // a profitable year, not just a profitable trailing 12 months
+    const target = goals.monthsCash;
+    const reserve = slowAhead ? Math.max(0, -sn.afterNet) : 0;                  // last year's net loss in the slower months is cash this business used
+    const er = cashR - targetR, lr = rnd(reserve), after = er - lr;
+    const wcR = rnd(K.currentAssets) - rnd(K.currentLiabilities);              // cash cannot be free beyond what current assets leave after current liabilities (deposits, taxes and bills owed)
+    const fr = Math.min(after, wcR);
+    if (fr < goals.investMinAmount) return;
+    const cc = Math.max(0, K.creditCards || 0), loc = Math.max(0, K.lineOfCredit || 0);
+    const ccCounts = cc >= goals.ccHighBalance, locCounts = loc > 0.5;           // a small card balance is monthly float, as in the debt rule
+    const debtR = rnd((ccCounts ? cc : 0) + (locCounts ? loc : 0)), payR = Math.min(fr, debtR), restR = fr - payR;
+    const owed = ccCounts && locCounts ? 'credit card and line of credit' : (ccCounts ? 'credit card' : 'line of credit');
+    let detail = cashSentence + ' ' + target + ' months of overhead is ' + usd(targetR) + ', which leaves ' + usd(er) + ' above the target.';
+    if (lr > 0) detail += ' Net income for ' + sn.nextFrom + ' to ' + sn.nextTo + ' of last year was a loss of ' + usd(lr) + ', which is set aside, leaving ' + usd(after) + '.';
+    if (fr < after) detail += ' Current assets exceed current liabilities by ' + usd(wcR) + ', which limits the amount to ' + usd(fr) + '.';
+    if (debtR > 0) detail += ' The business carries ' + usd(debtR) + ' on ' + (ccCounts && locCounts ? 'credit cards and the line of credit' : (ccCounts ? 'credit cards' : 'the line of credit')) + '.';
+    const keep = 'keep ' + usd(cashR - fr) + ' in operating accounts', hold = 'an interest-bearing account, such as a business money market account';
+    const tip = debtR > 0
+      ? 'Suggestion: ' + keep + ' and use ' + usd(payR) + ' to pay down ' + owed + ' balances, which normally carry higher interest rates than a deposit account earns' + (restR > 0 ? '. The remaining ' + usd(restR) + ' can be held in ' + hold + '.' : '.')
+      : 'Suggestion: ' + keep + ' and consider holding the ' + usd(fr) + ' above it in ' + hold + '.';
+    add({ key: 'invest', cat: 'outlook', sev: 'info', head: 'About ' + usd(fr) + ' of cash is available above the ' + target + '-month target', detail, tip, impact: fr, facts: { mo: K.monthsOfCash, t: target, f: fr } });
+  });
+
+  rule('tax', () => {
+    const m = +keys[idx].slice(5, 7);
+    if (!(goals.taxFromMonth >= 1) || m < goals.taxFromMonth || m > 11 || !ytd || !(ytd.net >= goals.taxMinProfit)) return;
+    const left = 12 - m, mn = monthName(keys[idx]);
+    let detail = 'Net income from January through ' + mn + ' is ' + usd(ytd.net) + (ytd.nm != null ? ' (' + pct0(ytd.nm) + ' of revenue)' : '');
+    if (pytd) detail += ', ' + chgText(ytd.net, pytd.net, 'the same point last year');
+    detail += '. ' + mAhead(left) + ' of the year ' + (left === 1 ? 'follows ' : 'follow ') + mn + '. Taxable income for the year depends on the entity type, the owners\' other income and tax elections. Some tax planning decisions, such as the timing of equipment purchases, depend on year-end dates.';
+    add({ key: 'tax', cat: 'outlook', sev: m >= 10 ? 'watch' : 'info', head: 'Year-to-date profit through ' + mn + ' is ' + usd(ytd.net), detail,
+      tip: 'Suggestion: send these year-to-date figures to the CPA so taxable income and estimated tax payments for the year can be projected before year-end.',
+      impact: ytd.net, facts: { ytd: ytd.net, m } });
   });
 
   /* ------------------------------------------------------------ for the coach only */
@@ -414,31 +476,33 @@ function build(ctx, H) {
   /* ------------------------------------------------------------ rank, choose what prints, summarise */
   /* a short imperative for the "next 30 days" checklist, built from the same facts the insight states */
   const ACT = {
-    net_income: (o) => o.sev === 'win' ? 'Write down what drove this month so it is repeatable' : 'Find the one or two lines behind the profit swing: one-time, or the new normal?',
-    revenue: () => 'Find where revenue fell, then fill the pipeline: call past customers and get quotes out',
-    gross_margin: () => 'Compare quoted vs actual cost on your biggest jobs and reprice open quotes',
-    overhead: () => 'Go through recurring overhead line by line',
-    movers_cost: () => 'For each rising cost, decide: one-time, or the new normal?',
+    net_income: (o) => o.sev === 'win' ? 'Identify what drove this month' : 'Review the lines behind the profit change: one-time or ongoing',
+    revenue: () => 'Review the customers and income lines behind the revenue decline',
+    gross_margin: () => 'Compare quoted cost with actual cost on the largest jobs and update open quotes',
+    overhead: () => 'Review recurring overhead lines against last month and last year',
+    movers_cost: () => 'For each rising cost, determine whether it is one-time or ongoing',
     unusual: (o) => { const f = (Array.isArray(o.facts) ? o.facts : []).find(x => !x[3]); return f ? 'Confirm ' + short(f[0]) + ' ' + usd(f[1]) + ' is coded correctly and whether it will recur' : ''; },
-    breakeven: () => 'Close the gap to break-even: raise margin, volume or both',
-    streak: () => 'Decide what to change (price, cost or volume) and recheck next month',
-    cash: () => 'Match the next four weeks of payments against expected collections',
-    profit_vs_cash: () => 'Bill on milestones and ask for deposits so profit turns into cash sooner',
-    debt: () => 'Pay down the highest-rate balance first',
-    liquidity: () => 'Rebuild working capital: collect faster and pay down short-term debt',
-    ar: (o) => { const t = ((o.facts && o.facts.top) || [])[0]; return t ? 'Call ' + short(t[0]) + ' about ' + usd(t[1]) + ' over 60 days' : 'Work the oldest invoices this week'; },
-    ap: (o) => { const t = ((o.facts && o.facts.top) || [])[0]; return t ? 'Talk to ' + short(t[0]) + ' about the overdue bill before they call you' : 'Confirm the new bills and set their payment dates'; },
-    retainage: () => 'Put retainage release on each job\'s closeout list',
+    breakeven: () => 'Compare monthly revenue with break-even and review margin and volume',
+    streak: () => 'Identify whether price, cost or volume is behind the losses',
+    cash: () => 'Compare the next four weeks of payments with expected collections',
+    season: (o) => 'Build cash toward the ' + ((o.facts && o.facts.t) || goals.monthsCash) + '-month target before the months that were slower last year',
+    tax: () => 'Send the year-to-date financials to the CPA for a tax projection',
+    profit_vs_cash: () => 'Review the receivables, payables and debt payments behind the gap between profit and cash',
+    debt: () => 'Review the debt balances and set the order in which they are paid down',
+    liquidity: () => 'Review collections and short-term debt to improve the current ratio',
+    ar: (o) => { const t = ((o.facts && o.facts.top) || [])[0]; return t ? 'Contact ' + short(t[0]) + ' about ' + usd(t[1]) + ' over 60 days' : 'Work the oldest invoices'; },
+    ap: (o) => { const t = ((o.facts && o.facts.top) || [])[0]; return t ? 'Contact ' + short(t[0]) + ' about the overdue balance' : 'Confirm the new bills and their due dates'; },
+    retainage: () => 'Add retainage release to each job closeout checklist',
     equity: () => 'Plan draws and distributions against profit and cash each month'
   };
   out.forEach(o => { o.act = (ACT[o.key] && o.aud === 'client') ? ACT[o.key](o) : ''; });
   /* Within a severity, urgent items rank by the dollars involved. Good news and background rank by how much a client cares: profit and revenue
      before a debt paydown that happens to be a bigger number. */
-  const PRIORITY = { net_income: 1, revenue: 2, debt: 3, streak: 4, gross_margin: 5, overhead: 6, cash: 7, liquidity: 8, equity: 9, breakeven: 10, retainage: 11, movers_rev: 12, movers_cost: 13, ahead: 14 };
+  const PRIORITY = { net_income: 1, revenue: 2, season: 2.5, debt: 3, tax: 3.5, streak: 4, gross_margin: 5, overhead: 6, cash: 7, liquidity: 8, equity: 9, breakeven: 10, retainage: 11, invest: 11.5, movers_rev: 12, movers_cost: 13, ahead: 14 };
   const pri = (o) => PRIORITY[o.key] || 50;
   /* Dollar impacts from different rules are not comparable (a break-even gap against a cash shortfall), so things that need attention rank by what a
      client must look at first - cash and solvency, then profit, then collections - and only then by their own dollars. */
-  const ATTN = { cash: 1, profit_vs_cash: 2, net_income: 3, ar: 4, ap: 5, debt: 6, liquidity: 7, gross_margin: 8, revenue: 9, unusual: 10, movers_cost: 11, overhead: 12, breakeven: 13, equity: 14, streak: 15, retainage: 16 };
+  const ATTN = { cash: 1, profit_vs_cash: 2, net_income: 3, ar: 4, ap: 5, debt: 6, liquidity: 7, gross_margin: 8, revenue: 9, unusual: 10, movers_cost: 11, overhead: 12, breakeven: 13, equity: 14, streak: 15, retainage: 16, season: 1.5, tax: 17 };
   const apri = (o) => ATTN[o.key] || 50;
   out.sort((a, b) => (SEV_WEIGHT[b.sev] - SEV_WEIGHT[a.sev]) || ((a.sev === 'win' || a.sev === 'info') ? (pri(a) - pri(b) || (b.impact - a.impact)) : (apri(a) - apri(b) || (b.impact - a.impact))));
   const caps = { win: 5, info: 2 }, used = { win: 0, info: 0 };
@@ -447,11 +511,11 @@ function build(ctx, H) {
     o.rank = i + 1;
     if (o.aud === 'coach') { o.include = false; return; }
     if (o.sev === 'action' || o.sev === 'watch') { attn++; o.include = attn <= 7; }
-    else if (o.key === 'cash' || o.key === 'profit_vs_cash') o.include = true;   // the number every client looks for first, and what explains it when profit and cash part ways: never dropped by a cap
+    else if (o.key === 'cash' || o.key === 'profit_vs_cash' || o.key === 'season' || o.key === 'tax' || o.key === 'invest') o.include = true;   // the number every client looks for first, and what explains it when profit and cash part ways: never dropped by a cap
     else { used[o.sev]++; o.include = used[o.sev] <= caps[o.sev]; }
   });
   A.insights = out;
-  A.actions = out.filter(o => o.include && o.aud === 'client' && (o.sev === 'action' || o.sev === 'watch') && o.act).slice(0, 5).map(o => ({ key: o.key, head: o.head, act: o.act, tip: o.tip.replace(/^Our tip:\s*/, '') }));
+  A.actions = out.filter(o => o.include && o.aud === 'client' && (o.sev === 'action' || o.sev === 'watch') && o.act).slice(0, 5).map(o => ({ key: o.key, head: o.head, act: o.act, tip: o.tip.replace(/^Suggestion:\s*/, '') }));
 
   /* scorecard */
   const sc = [];
