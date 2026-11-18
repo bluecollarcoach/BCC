@@ -1,0 +1,26 @@
+name: TEMP report probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      realm:
+        description: 'realmId (blank = list companies)'
+        required: false
+        default: ''
+      period:
+        description: 'YYYY-MM'
+        required: false
+        default: ''
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe
+        env:
+          REALM: ${{ inputs.realm }}
+          PERIOD: ${{ inputs.period }}
+          SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -sS --max-time 170 -H "x-bcc-cron-secret: $SECRET" "https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/tmp/report-probe?realm=$REALM&period=$PERIOD" -o /tmp/out.json
+          cat /tmp/out.json

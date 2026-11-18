@@ -2960,6 +2960,122 @@ app.http('nav-popular', {
   })
 });
 
+/* ==== TEMPORARY report probe — REMOVED in the same session ==== */
+app.http('tmp-report-probe', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'tmp/report-probe',
+  handler: async (request, context) => {
+    const secret = process.env.CRON_SECRET || '';
+    const given = request.headers.get('x-bcc-cron-secret') || '';
+    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    try {
+      const c = container();
+      const u = new URL(request.url);
+      const realm = u.searchParams.get('realm') || '';
+      const per = u.searchParams.get('period') || '';
+      const { resources: comps } = await c.items.query({ query: 'SELECT c.realmId, c.companyName, c.enabled FROM c WHERE c.tenantId=@t AND c.docType="qbo-company"', parameters: [{ name: '@t', value: BCC_TENANT_ID }] }).fetchAll();
+      if (!realm) return { jsonBody: { ok: true, companies: comps.map(x => ({ realmId: x.realmId, name: x.companyName, enabled: x.enabled })) } };
+      const comp = await c.item('bcc-qbo-company-' + realm, BCC_TENANT_ID).read().then(r => r.resource);
+      const fields = await getIntegrationFields('qbo');
+      const { accessToken, base } = await qboAccessForCompany(comp, fields);
+      const apiGet = async (path) => {
+        const url = base + '/v3/company/' + encodeURIComponent(realm) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70';
+        const r = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
+        if (!r.ok) throw new Error('QBO ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 200));
+        return r.json();
+      };
+      const m = /^(\d{4})-(\d{2})$/.exec(per);
+      if (!m) return { status: 400, jsonBody: { ok: false, error: 'period=YYYY-MM required' } };
+      const y = +m[1], mo = +m[2] - 1;
+      const d = (yy, mm, dd) => new Date(Date.UTC(yy, mm, dd)).toISOString().slice(0, 10);
+      const mStart = d(y, mo, 1), mEnd = d(y, mo + 1, 0), pmStart = d(y, mo - 1, 1), pmEnd = d(y, mo, 0), s24 = d(y, mo - 23, 1), yStart = d(y, 0, 1);
+      const out = { realm, period: per, window: [s24, mEnd] };
+      const timed = async (k, fn) => { const t0 = Date.now(); try { out[k] = await fn(); } catch (e) { out[k] = { error: String((e && e.message) || e).slice(0, 220) }; } if (out[k] && typeof out[k] === 'object') out[k].ms = Date.now() - t0; };
+      // STRUCTURE only: column titles/meta, group codes in walk order. No account names, no amounts.
+      const shape = (rep) => {
+        const cols = (((rep || {}).Columns || {}).Column || []).map(cc => ({ t: cc.ColTitle, ty: cc.ColType, meta: (cc.MetaData || []).map(x => x.Name + '=' + x.Value).join(';') }));
+        const groups = [];
+        (function walk(rs, lvl) {
+          for (const r of (rs || [])) {
+            if (r.group) groups.push({ g: r.group, lvl, hdr: !!r.Header, sum: !!r.Summary, lbl: (lvl === 0 && r.Summary && r.Summary.ColData) ? r.Summary.ColData[0].value : undefined, n: ((r.Summary && r.Summary.ColData) || r.ColData || (r.Header && r.Header.ColData) || []).length });
+            if (r.Rows && r.Rows.Row) walk(r.Rows.Row, lvl + 1);
+          }
+        })((((rep || {}).Rows || {}).Row) || [], 0);
+        const h = (rep || {}).Header || {};
+        return { header: { name: h.ReportName, basis: h.ReportBasis, start: h.StartPeriod, end: h.EndPeriod, opts: (h.Option || []).map(o => o.Name + '=' + o.Value) }, ncols: cols.length, cols: cols.slice(0, 3).concat(cols.slice(-2)), groups: groups.slice(0, 60) };
+      };
+      const num = (s) => { const n = parseFloat(String(s == null ? '' : s).replace(/,/g, '')); return isNaN(n) ? 0 : n; };
+      const sumRow = (flat, group) => { const rows = flat.rows.filter(x => x.group === group && x.type === 'summary'); return rows.length ? rows[rows.length - 1] : null; };
+      const leafSum = (flat, group, idx) => flat.rows.filter(x => x.group === group && x.type === 'data').reduce((s, x) => s + num(x.cells[idx]), 0);
+
+      let seriesFlat = null, seriesRaw = null;
+      await timed('plSeries', async () => {
+        seriesRaw = await apiGet('/reports/ProfitAndLoss?start_date=' + s24 + '&end_date=' + mEnd + '&summarize_column_by=Month&accounting_method=Accrual');
+        seriesFlat = flattenQboReport(seriesRaw);
+        const sh = shape(seriesRaw);
+        const nMonths = seriesFlat.columns.length - 2;   // minus label col and Total col
+        const checks = {};
+        ['Income', 'COGS', 'GrossProfit', 'Expenses', 'NetOperatingIncome', 'OtherIncome', 'OtherExpenses', 'NetOtherIncome', 'NetIncome'].forEach(g => {
+          const r = sumRow(seriesFlat, g); if (!r) { checks[g] = 'no-summary-row'; return; }
+          const vals = r.cells.map(num);
+          const monthsSum = vals.slice(0, nMonths).reduce((s, v) => s + v, 0);
+          checks[g] = { cells: vals.length, totalColDiff: Math.round((monthsSum - vals[nMonths]) * 100) / 100 };
+          if (['Income', 'COGS', 'Expenses', 'OtherIncome', 'OtherExpenses'].indexOf(g) >= 0) {
+            let worst = 0; for (let i = 0; i <= nMonths; i++) worst = Math.max(worst, Math.abs(leafSum(seriesFlat, g, i) - vals[i]));
+            checks[g].leafSumWorstDiff = Math.round(worst * 100) / 100;
+          }
+        });
+        return { shape: sh, nMonths, checks };
+      });
+      await timed('plCurVsSeries', async () => {
+        const single = flattenQboReport(await apiGet('/reports/ProfitAndLoss?start_date=' + mStart + '&end_date=' + mEnd + '&accounting_method=Accrual'));
+        const prior = flattenQboReport(await apiGet('/reports/ProfitAndLoss?start_date=' + pmStart + '&end_date=' + pmEnd + '&accounting_method=Accrual'));
+        const ytd = flattenQboReport(await apiGet('/reports/ProfitAndLoss?start_date=' + yStart + '&end_date=' + mEnd + '&accounting_method=Accrual'));
+        const res = {};
+        ['Income', 'COGS', 'Expenses', 'NetIncome'].forEach(g => {
+          const s = sumRow(seriesFlat, g), a = sumRow(single, g), b = sumRow(prior, g), yy = sumRow(ytd, g);
+          if (!s) { res[g] = 'no-series-row'; return; }
+          const sv = s.cells.map(num), nM = seriesFlat.columns.length - 2;
+          const ytdSeries = sv.slice(nM - 1 - mo, nM).reduce((q, v) => q + v, 0);
+          res[g] = { curDiff: a ? Math.round((sv[nM - 1] - num(a.cells[a.cells.length - 1])) * 100) / 100 : 'n/a', priorDiff: b ? Math.round((sv[nM - 2] - num(b.cells[b.cells.length - 1])) * 100) / 100 : 'n/a', ytdDiff: yy ? Math.round((ytdSeries - num(yy.cells[yy.cells.length - 1])) * 100) / 100 : 'n/a' };
+        });
+        return res;
+      });
+      await timed('bsMonthly', async () => {
+        const raw = await apiGet('/reports/BalanceSheet?start_date=' + s24 + '&end_date=' + mEnd + '&summarize_column_by=Month&accounting_method=Accrual');
+        const f = flattenQboReport(raw);
+        const single = flattenQboReport(await apiGet(bsReportQuery(mEnd, 'Accrual')));
+        const cashRx = /total bank accounts?/i;
+        const rowS = f.rows.find(x => cashRx.test(x.label)), rowO = single.rows.find(x => cashRx.test(x.label));
+        const eqS = sumRow(f, 'TotalEquity') || sumRow(f, 'Equity'), eqO = sumRow(single, 'TotalEquity') || sumRow(single, 'Equity');
+        const dd = (a, b, k) => (a && b) ? Math.round((num(a.cells[a.cells.length - k]) - num(b.cells[b.cells.length - 1])) * 100) / 100 : 'n/a';
+        return { shape: shape(raw), ncolsFlat: f.columns.length, cashDiffLastCol: dd(rowS, rowO, 1), cashDiffSecondLast: dd(rowS, rowO, 2), cashCells: rowS ? rowS.cells.length : null, equityDiffLastCol: dd(eqS, eqO, 1), equityDiffSecondLast: dd(eqS, eqO, 2) };
+      });
+      await timed('cashFlow', async () => {
+        const raw = await apiGet('/reports/CashFlow?start_date=' + mStart + '&end_date=' + mEnd + '&accounting_method=Accrual');
+        const f = flattenQboReport(raw);
+        const g = (code) => { const r = sumRow(f, code); return r ? num(r.cells[r.cells.length - 1]) : null; };
+        const rowsBy = {}; f.rows.forEach(x => { if (x.group) rowsBy[x.group] = (rowsBy[x.group] || 0) + 1; });
+        return { shape: shape(raw), rowsByGroup: rowsBy, haveOps: g('OperatingActivities') != null, haveInv: g('InvestingActivities') != null, haveFin: g('FinancingActivities') != null, haveNet: g('CashIncrease') != null, haveEnd: g('EndingCash') != null || g('CashAtEndOfPeriod') != null, labelsLvl0: f.rows.filter(x => x.level === 0 && x.type !== 'data').map(x => x.label + '|' + x.group + '|' + x.type).slice(0, 14) };
+      });
+      for (const [k, rpt] of [['arSummary', 'AgedReceivables'], ['apSummary', 'AgedPayables']]) {
+        await timed(k, async () => {
+          const raw = await apiGet('/reports/' + rpt + '?report_date=' + mEnd);
+          const f = flattenQboReport(raw);
+          const gt = f.rows.filter(x => x.group === 'GrandTotal' || (x.type === 'summary' && x.level === 0)).slice(-1)[0];
+          let bucketDiff = null;
+          if (gt) { const v = gt.cells.map(num); bucketDiff = Math.round((v.slice(0, v.length - 1).reduce((q, z) => q + z, 0) - v[v.length - 1]) * 100) / 100; }
+          return { shape: shape(raw), dataRows: f.rows.filter(x => x.type === 'data').length, grandTotalFound: !!gt, bucketSumVsTotalDiff: bucketDiff };
+        });
+      }
+      return { jsonBody: { ok: true, out } };
+    } catch (e) {
+      return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } };
+    }
+  }
+});
+
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
