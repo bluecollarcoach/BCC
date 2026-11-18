@@ -1,0 +1,29 @@
+name: TEMP report raw
+
+on:
+  workflow_dispatch:
+    inputs:
+      realm:
+        description: 'realmId'
+        required: true
+      period:
+        description: 'YYYY-MM'
+        required: true
+      method:
+        description: 'Accrual or Cash'
+        required: false
+        default: 'Accrual'
+
+jobs:
+  raw:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Raw
+        env:
+          REALM: ${{ inputs.realm }}
+          PERIOD: ${{ inputs.period }}
+          METHOD: ${{ inputs.method }}
+          SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -sS --max-time 170 -H "x-bcc-cron-secret: $SECRET" "https://ambitious-forest-05235d41e.7.azurestaticapps.net/api/tmp/report-raw?realm=$REALM&period=$PERIOD&method=$METHOD" -o /tmp/out.json
+          cat /tmp/out.json
