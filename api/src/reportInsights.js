@@ -131,18 +131,35 @@ function build(ctx, H) {
     add({ key: 'overhead', cat: 'profit', sev, head, detail, tip, impact: pm ? Math.abs(cur.opex - pm.opex) : 0, facts: { opex: cur.opex, pm: pm && pm.opex, ytdPct: ytd && ytd.opexPct != null ? Math.round(ytd.opexPct * 100) : null, pytdPct: pytd && pytd.opexPct != null ? Math.round(pytd.opexPct * 100) : null } });
   });
 
+  /* ------------------------------------------------------------ the whole picture
+     A cost that jumped means something different in a business with plenty of cash and a profitable year than in one without: the first may have planned it (repairs or purchases
+     timed before year-end are common), the second needs to explain how it is being paid for. So cost increases are read against cash (the firm's months-of-cash goal), profit this
+     year and the current ratio. 'strong' = all three are good; 'weak' = cash under the goal or overdrawn, no profit this year, or a current ratio under its floor; otherwise 'neutral'. */
+  const picAvgRev = ttm ? ttm.rev / 12 : cur.rev;
+  const picBurnOk = K.monthlyBurn > 0 && K.monthsOfCash != null && K.burnFrom3 !== false && K.monthlyBurn >= Math.max(100, 0.01 * picAvgRev);
+  const picProfit = ytd ? ytd.net : cur.net, picRatio = K.currentRatio;
+  const picState = !isFinite(K.cash) ? 'neutral'
+    : ((K.cash < 0 || (picBurnOk && K.monthsOfCash < goals.monthsCash / 2) || (!(picProfit > 0) && !(picBurnOk && K.monthsOfCash >= goals.monthsCash)) || (picRatio != null && picRatio < goals.currentRatioMin)) ? 'weak'
+      : ((picBurnOk && K.monthsOfCash >= goals.monthsCash && picProfit > 0 && (picRatio == null || picRatio >= goals.currentRatio)) ? 'strong' : 'neutral'));
+  const picText = !isFinite(K.cash) ? '' : joinAnd([].concat(
+    [K.cash < 0 ? 'cash is overdrawn by ' + usdUnsigned(K.cash) : 'cash is ' + usd(K.cash) + (picBurnOk ? ' (' + K.monthsOfCash + (K.monthsOfCash === 1 ? ' month' : ' months') + ' of overhead against the ' + goals.monthsCash + '-month goal)' : '')],
+    [(ytd ? 'year-to-date net income is ' : 'net income this month is ') + usd(picProfit)],
+    picRatio != null ? ['the current ratio is ' + picRatio.toFixed(2)] : [])).replace(/^./, (c) => c.toUpperCase()) + '.';
+
   /* ------------------------------------------------------------ what moved */
   rule('movers', () => {
     const mv = A.movers || {};
-    const costUp = (arr) => (arr || []).filter(m => m.side === 'cost' && m.delta > 0).slice(0, 3);
+    const shownAsUnusual = {}; (A.unusual || []).forEach(x => { shownAsUnusual[x.name] = true; });          // already stated, with its typical amount, in the item above
+    const costUp = (arr) => (arr || []).filter(m => m.side === 'cost' && m.delta > 0 && !shownAsUnusual[m.name]).slice(0, 3);
     const lines = [], facts = {};
     const cuP = costUp(mv.prior), cuY = costUp(mv.py);
     if (cuP.length) { lines.push('Versus ' + pmName + ': ' + list(cuP.map(moverText)) + '.'); facts.p = cuP.map(m => [m.name, m.delta]); }
     if (cuY.length) { lines.push('Versus ' + py.label + ': ' + list(cuY.map(moverText)) + '.'); facts.y = cuY.map(m => [m.name, m.delta]); }
     if (!lines.length) return;
     const top = cuP.length ? sumDelta(cuP.filter(m => !m.seasonal)) : sumDelta(cuY);
-    const sev = top >= Math.max(2000, 0.03 * cur.rev) ? 'watch' : 'info';
+    const big = top >= Math.max(2000, 0.03 * cur.rev), sev = (big && picState !== 'strong') ? 'watch' : 'info';
     const lead = cuP.length ? cuP[0] : cuY[0];
+    if (big) lines.push(picText);
     add({ key: 'movers_cost', cat: 'profit', sev, head: 'Costs that rose the most: ' + short(lead.name) + ' ' + signedAmt(rdelta(lead)), detail: lines.join(' '), tip: sev === 'watch' ? 'Suggestion: for each increase, determine whether it is one-time or ongoing. A one-time item can be set aside when comparing months; an ongoing one belongs in pricing.' : '', impact: top, facts });
   });
   rule('movers_rev', () => {
@@ -171,9 +188,17 @@ function build(ctx, H) {
     const u = A.unusual || []; if (!u.length) return;
     const one = (x) => short(x.name) + ' ' + usd(x.cur) + (x.isNew ? ' (no comparable amount in the previous ' + x.monthsSeen + ' months)' : ', against a typical ' + usd(x.typical) + ' a month') + (x.seasonal ? '; ' + py.label + ' was ' + usd(x.sameMonthLastYear) + ', so it may be annual or seasonal' : '');
     const real = u.filter(x => !x.seasonal);
-    const head = (real.length ? 'Unusual cost to confirm: ' : 'Large cost that looks seasonal: ') + short((real[0] || u[0]).name) + ' ' + usd((real[0] || u[0]).cur);
-    add({ key: 'unusual', cat: 'profit', sev: real.length ? 'watch' : 'info', head, detail: u.map(one).join('. ') + '.',
-      tip: 'Suggestion: confirm each item is coded to the correct account and whether it will recur. A miscoded or duplicated entry changes the figures in this report.',
+    const excess = real.reduce((sum, x) => sum + (x.isNew ? x.cur : x.cur - x.typical), 0);
+    /* calm only when the picture is strong, every item is an overhead account (the year-end example does not fit a job cost), and the extra cost is at most a quarter of this year's profit */
+    const calm = real.length > 0 && picState === 'strong' && real.every(x => x.group === 'Expenses') && excess <= 0.25 * picProfit;
+    const weakHere = picState === 'weak' || (isFinite(K.cash) && rnd(K.cash) < rnd(excess));       // a cost larger than the cash on hand is a question whatever else is true
+    const many = u.length > 1, yearEnd = +keys[idx].slice(5, 7) >= 9;
+    const head = (real.length ? (calm ? 'Cost to note: ' : 'Unusual cost to confirm: ') : 'Large cost that looks seasonal: ') + short((real[0] || u[0]).name) + ' ' + usd((real[0] || u[0]).cur);
+    const tip = calm
+      ? 'Suggestion: if ' + (many ? 'these were' : 'this was') + ' planned' + (yearEnd ? ' (for example repairs or purchases timed with the CPA before year-end)' : '') + ', no action is needed. If not, confirm ' + (many ? 'each is' : 'it is') + ' coded to the correct account and whether it will recur.'
+      : 'Suggestion: confirm each item is coded to the correct account, whether it will recur' + (weakHere ? ', and how it is being paid for' : '') + '.';
+    add({ key: 'unusual', cat: 'profit', sev: (real.length && !calm) ? 'watch' : 'info', head, detail: u.map(one).join('. ') + '. ' + picText,
+      tip,
       impact: Math.max.apply(null, u.map(x => x.cur - x.typical)), facts: u.map(x => [x.name, x.cur, x.typical, !!x.seasonal]) });
   });
 
@@ -234,7 +259,9 @@ function build(ctx, H) {
     else if (mo != null && mo < goals.monthsCash) sev = 'watch';
     else if (mo != null && K.cashPrior != null && K.cash >= K.cashPrior * 1.10 && K.cash - K.cashPrior >= 1000) sev = 'win';
     let tip = '';
-    if (sev === 'action' || sev === 'watch') tip = 'Suggestion: compare the payments due in the next four weeks with the collections expected in the same period. If there is a shortfall, start with the largest past-due receivables.';
+    const thin = sev === 'action' || K.cash < 0 || !picBurnOk || (mo != null && mo < goals.monthsCash / 2);                 // under half the goal: a near-term question. Between half and the goal: how far from the goal.
+    if ((sev === 'action' || sev === 'watch') && thin) tip = 'Suggestion: compare the payments due in the next four weeks with the collections expected in the same period. If there is a shortfall, start with the largest past-due receivables.';
+    else if (sev === 'watch' && picBurnOk) tip = 'Suggestion: the ' + goals.monthsCash + '-month goal is ' + usd(rnd(goals.monthsCash * rnd(K.monthlyBurn))) + ' of cash and cash is ' + usd(rnd(goals.monthsCash * rnd(K.monthlyBurn)) - rnd(K.cash)) + ' below it. Retained profit, on-time collections and the timing of discretionary purchases move it toward the goal.';
     else if (sev === 'win') tip = 'Suggestion: assign the additional cash a purpose (debt paydown, equipment purchases, reserve).';
     add({ key: 'cash', cat: 'cash', sev, head, detail, tip, impact: Math.abs(K.cashPrior != null ? K.cash - K.cashPrior : K.cash), facts: { cash: K.cash, pm: K.cashPrior, mo } });
   });
@@ -361,8 +388,11 @@ function build(ctx, H) {
     if (r.over90 >= Math.max(2500, 0.10 * r.total)) sev = 'action';
     else if (r.over60 > 0.5 || (r.past / r.total >= 0.4 && r.past >= 2500) || jump) sev = 'watch';
     else if (apPm != null && apPm >= 5000 && r.total <= apPm * 0.8 && r.past < 0.5) sev = 'win';
+    const rCash = rnd(K.cash || 0), rPast = rnd(r.past);
+    const covered = isFinite(K.cash) && r.past > 0.5 && rCash >= rPast && (picRatio == null || picRatio >= 1);        // not when current liabilities exceed current assets
+    if (r.past > 0.5 && isFinite(K.cash)) detail += ' ' + (K.cash < 0 ? 'The bank accounts are overdrawn by ' + usdUnsigned(K.cash) + ', and ' + usd(r.past) + ' is past due.' : 'Cash on hand is ' + usd(K.cash) + ', ' + (rCash > rPast ? 'more than' : (rCash === rPast ? 'equal to' : 'less than')) + ' the ' + usd(r.past) + ' past due.');
     const tip = (sev === 'action' || sev === 'watch')
-      ? (r.past > 0.5 ? 'Suggestion: contact the vendors with overdue balances to confirm the amounts and agree on payment dates. Keeping supplier accounts current maintains credit terms.'
+      ? (r.past > 0.5 ? (covered ? 'Suggestion: cash on hand covers the past-due balances. Confirm whether each one is disputed, waiting for approval or scheduled for payment, and pay or schedule the rest.' : 'Suggestion: contact the vendors with overdue balances to confirm the amounts and agree on payment dates. Keeping supplier accounts current maintains credit terms.')
         : 'Suggestion: payables increased. Confirm the new bills are correct and note the due date of each.') : '';
     add({ key: 'ap', cat: 'collections', sev, head, detail, tip, impact: r.over60 || r.past, facts: { total: r.total, over60: r.over60, past: r.past, pm: apPm, top: r.topPast.slice(0, 3).map(x => [x.name, x.past]) } });
   });
@@ -484,7 +514,7 @@ function build(ctx, H) {
     unusual: (o) => { const f = (Array.isArray(o.facts) ? o.facts : []).find(x => !x[3]); return f ? 'Confirm ' + short(f[0]) + ' ' + usd(f[1]) + ' is coded correctly and whether it will recur' : ''; },
     breakeven: () => 'Compare monthly revenue with break-even and review margin and volume',
     streak: () => 'Identify whether price, cost or volume is behind the losses',
-    cash: () => 'Compare the next four weeks of payments with expected collections',
+    cash: (o) => ((o.sev !== 'action' && picBurnOk && o.facts && o.facts.cash >= 0 && o.facts.mo != null && o.facts.mo >= goals.monthsCash / 2) ? 'Build cash toward the ' + goals.monthsCash + '-month goal' : 'Compare the next four weeks of payments with expected collections'),
     season: (o) => 'Build cash toward the ' + ((o.facts && o.facts.t) || goals.monthsCash) + '-month target before the months that were slower last year',
     tax: () => 'Send the year-to-date financials to the CPA for a tax projection',
     profit_vs_cash: () => 'Review the receivables, payables and debt payments behind the gap between profit and cash',
@@ -498,7 +528,7 @@ function build(ctx, H) {
   out.forEach(o => { o.act = (ACT[o.key] && o.aud === 'client') ? ACT[o.key](o) : ''; });
   /* Within a severity, urgent items rank by the dollars involved. Good news and background rank by how much a client cares: profit and revenue
      before a debt paydown that happens to be a bigger number. */
-  const PRIORITY = { net_income: 1, revenue: 2, season: 2.5, debt: 3, tax: 3.5, streak: 4, gross_margin: 5, overhead: 6, cash: 7, liquidity: 8, equity: 9, breakeven: 10, retainage: 11, invest: 11.5, movers_rev: 12, movers_cost: 13, ahead: 14 };
+  const PRIORITY = { net_income: 1, revenue: 2, season: 2.5, debt: 3, tax: 3.5, streak: 4, gross_margin: 5, overhead: 6, cash: 7, liquidity: 8, equity: 9, breakeven: 10, retainage: 11, invest: 11.5, unusual: 8.5, movers_rev: 12, movers_cost: 13, ahead: 14 };
   const pri = (o) => PRIORITY[o.key] || 50;
   /* Dollar impacts from different rules are not comparable (a break-even gap against a cash shortfall), so things that need attention rank by what a
      client must look at first - cash and solvency, then profit, then collections - and only then by their own dollars. */
@@ -510,8 +540,10 @@ function build(ctx, H) {
   out.forEach((o, i) => {
     o.rank = i + 1;
     if (o.aud === 'coach') { o.include = false; return; }
-    if (o.sev === 'action' || o.sev === 'watch') { attn++; o.include = attn <= 7; }
-    else if (o.key === 'cash' || o.key === 'profit_vs_cash' || o.key === 'season' || o.key === 'tax' || o.key === 'invest') o.include = true;   // the number every client looks for first, and what explains it when profit and cash part ways: never dropped by a cap
+    /* never dropped by a cap: the number every client looks for first (cash), what explains it when profit and cash part ways, and the time-sensitive planning items the firm asked for */
+    const pinned = o.key === 'cash' || o.key === 'profit_vs_cash' || o.key === 'season' || o.key === 'tax' || o.key === 'invest' || o.key === 'unusual';
+    if (pinned) o.include = true;
+    else if (o.sev === 'action' || o.sev === 'watch') { attn++; o.include = attn <= 7; }
     else { used[o.sev]++; o.include = used[o.sev] <= caps[o.sev]; }
   });
   A.insights = out;
@@ -569,7 +601,7 @@ function build(ctx, H) {
     if (K.cashPrior != null && pm) { const raw = K.cash - K.cashPrior, d = rnd(K.cash) - rnd(K.cashPrior); s += Math.abs(raw) < 0.5 ? ', unchanged from ' + pmName : ((d === 0 || Math.abs(raw) < Math.abs(K.cashPrior) * 0.005) ? ', about the same as ' + pmName : (d > 0 ? ', up ' : ', down ') + usdUnsigned(d) + ' from ' + pmName); }
     hl.push(s + '.');
   }
-  const top = out.find(o => o.aud === 'client' && (o.sev === 'action' || o.sev === 'watch'));
+  const top = out.find(o => o.aud === 'client' && (o.sev === 'action' || o.sev === 'watch') && o.key !== 'tax' && o.key !== 'invest');
   const checkedAll = bsOk && cashOk && !!A.ar && !!A.ap && leafOk;
   hl.push(top ? 'Top priority: ' + top.head + '.' : (checkedAll ? 'No red flags this month.' : 'No red flags in the figures we could check this month.'));
   A.headline = hl;

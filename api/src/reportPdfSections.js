@@ -103,11 +103,15 @@ function build(a, H, extra) {
     x.tip ? { text: S(x.tip), fontSize: 8.3, italics: true, color: '#7a6322', margin: [0, 2, 0, 0], lineHeight: 1.12 } : null
   ].filter(Boolean) }] });
   const shown = (a.insights || []).filter(x => x.aud !== 'coach' && x.include !== false);
-  const attention = shown.filter(x => x.sev === 'action' || x.sev === 'watch'), wins = shown.filter(x => x.sev === 'win'), infos = shown.filter(x => x.sev === 'info');
+  /* year-end tax planning and cash above the goal are planning, not problems: they have their own heading and never sit under "what needs attention" */
+  const PLAN = { tax: true, invest: true };
+  const planning = shown.filter(x => PLAN[x.key]), rest = shown.filter(x => !PLAN[x.key]);
+  const attention = rest.filter(x => x.sev === 'action' || x.sev === 'watch'), wins = rest.filter(x => x.sev === 'win'), infos = rest.filter(x => x.sev === 'info');
   const readPage = [].concat(head('Our read on the month', true));
   if (attention.length) { readPage.push(label('WHAT NEEDS ATTENTION', 4)); attention.forEach(x => readPage.push(insightBlock(x))); }
-  if (!attention.length && !wins.length && !infos.length) readPage.push({ text: 'No insights were selected for this report.', italics: true, color: MUTE, fontSize: 9 });
+  if (!attention.length && !wins.length && !infos.length && !planning.length) readPage.push({ text: 'No insights were selected for this report.', italics: true, color: MUTE, fontSize: 9 });
   if (wins.length) { readPage.push(label(attention.length ? 'WHAT IS WORKING' : 'WHAT IS WORKING', attention.length ? 11 : 4)); wins.forEach(x => readPage.push(insightBlock(x))); }
+  if (planning.length) { readPage.push(label('PLANNING')); planning.forEach(x => readPage.push(insightBlock(x))); }
   if (infos.length) { readPage.push(label('ALSO WORTH KNOWING')); infos.forEach(x => readPage.push(insightBlock(x))); }
   const acts = (a.actions || []).filter(x => x && x.act);
   if (acts.length) {

@@ -228,7 +228,7 @@ function parseAging(flat) {
    that counts as a slower season (0 = off); taxFromMonth is the first report month that carries year-end tax planning (0 = off) and taxMinProfit the year-to-date
    profit it needs. api/src/index.js REPORT_GOAL_DEFAULTS must hold the same values (a test compares them). */
 const GOAL_DEFAULTS = { monthsCash: 6, monthsCashMin: 1, currentRatio: 1.5, currentRatioMin: 1, grossMargin: 0.30, grossMarginMin: 0.15, netMargin: 0.05, netMarginMin: 0, ccHighBalance: 10000, investMinAmount: 10000, slowSeasonDrop: 0.25, taxFromMonth: 8, taxMinProfit: 25000 };
-const ANALYSIS_VERSION = 2;
+const ANALYSIS_VERSION = 3;
 
 function buildReportAnalysis(input) {
   input = input || {};
@@ -437,7 +437,7 @@ function buildReportAnalysis(input) {
       else { if (hist.length - firstNz < 6) return; base = mean(hist.slice(firstNz)); }
       if (!isNew && (c < 2 * base || c - base < minAbs)) return;
       const pyV = pyOk ? l.vals[pyIdx] : null;
-      A.unusual.push({ name: nameOf(l), cur: c, typical: r2(base), sameMonthLastYear: pyV, seasonal: pyV != null && pyV >= 0.6 * c, isNew, monthsSeen: hist.length });
+      A.unusual.push({ name: nameOf(l), group: l.group, cur: c, typical: r2(base), sameMonthLastYear: pyV, seasonal: pyV != null && pyV >= 0.6 * c, isNew, monthsSeen: hist.length });
     });
     A.unusual.sort((x, y) => (y.cur - y.typical) - (x.cur - x.typical)); A.unusual = A.unusual.slice(0, 4);
   }

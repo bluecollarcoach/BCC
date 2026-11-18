@@ -3521,6 +3521,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   /* ===== Comparisons, scorecard and insights (the analysis the server builds from the books; see reportAnalysis.js) ===== */
   var MR_SEV = { action: '#c0392b', watch: '#b7791f', win: '#1f8a4c', info: '#8a8577' };
   var MR_SEV_LABEL = { action: 'Needs action', watch: 'Keep an eye on', win: 'Working well', info: 'Good to know' };
+  var MR_PLAN = { tax: true, invest: true };   // planning items: their own heading in the PDF, never the top priority
   var MR_ST = { good: '#1f8a4c', watch: '#b7791f', bad: '#c0392b', na: '#9aa0a6' };
   var MR_ST_WORD = { good: 'On track', watch: 'Watch', bad: 'Action', na: 'n/a' };
   /* What the coach has changed from the engine's own output - only that is stored (the figures always come from the books). */
@@ -3600,11 +3601,11 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     copy.insights = ins; copy.actions = actions; copy.books = [];
     /* The cover's third sentence names the engine's top priority. If she unticked or reworded that insight, the cover must not still say it. */
     var all = (_mr.insights || []).filter(function (o) { return o.aud !== 'coach'; });
-    var engTop = all.filter(function (o) { return !o.custom && (o.sev === 'action' || o.sev === 'watch'); })[0];
+    var engTop = all.filter(function (o) { return !o.custom && !MR_PLAN[o.key] && (o.sev === 'action' || o.sev === 'watch'); })[0];
     var hl = (an.headline || []).slice(), ti = -1;
     hl.forEach(function (h, i) { if (/^Top priority: /.test(h)) ti = i; });
     if (ti >= 0 && engTop && (!engTop.include || engTop.head !== engTop.defHead)) {
-      var nxt = all.filter(function (o) { return o.include && (o.sev === 'action' || o.sev === 'watch') && String(o.head || '').trim(); })[0];
+      var nxt = all.filter(function (o) { return o.include && !MR_PLAN[o.key] && (o.sev === 'action' || o.sev === 'watch') && String(o.head || '').trim(); })[0];
       if (nxt) hl[ti] = 'Top priority: ' + String(nxt.head).replace(/[.\s]+$/, '') + '.'; else hl.splice(ti, 1);
     }
     copy.headline = hl;
@@ -3677,7 +3678,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
       var o = pair[0], i = pair[1], changed = !o.custom && (o.head !== o.defHead || o.detail !== o.defDetail || o.tip !== o.defTip || !!o.stale);
       return '<div class="mr-ins" data-i="' + i + '" style="border:1px solid var(--chrome-mute,#e6e5e1);border-left:5px solid ' + (MR_SEV[o.sev] || MR_SEV.info) + ';border-radius:8px;padding:8px 10px;margin-bottom:8px;' + (o.include ? '' : 'opacity:.55;') + '">'
         + '<div style="display:flex;gap:8px;align-items:center;margin-bottom:5px;">'
-        + '<label style="display:flex;gap:6px;align-items:center;font-size:12px;font-weight:700;color:' + (MR_SEV[o.sev] || MR_SEV.info) + ';cursor:pointer;"><input type="checkbox" data-ins-inc="' + i + '"' + (o.include ? ' checked' : '') + ' /> ' + (o.custom ? 'My own note' : esc(MR_SEV_LABEL[o.sev] || '')) + ' — include in the report</label>'
+        + '<label style="display:flex;gap:6px;align-items:center;font-size:12px;font-weight:700;color:' + (MR_SEV[o.sev] || MR_SEV.info) + ';cursor:pointer;"><input type="checkbox" data-ins-inc="' + i + '"' + (o.include ? ' checked' : '') + ' /> ' + (o.custom ? 'My own note' : (MR_PLAN[o.key] ? 'Planning' : esc(MR_SEV_LABEL[o.sev] || ''))) + ' — include in the report</label>'
         + '<span style="flex:1;"></span>'
         + (changed ? '<button type="button" data-ins-reset="' + i + '" class="btn btn-ghost" style="font-size:11px;min-height:24px;padding:0 8px;" title="' + (o.stale ? 'Discard the wording you saved earlier for this insight' : 'Put back the wording generated from the books') + '">↺ Reset</button>' : '')
         + (o.custom ? '<button type="button" data-ins-del="' + i + '" class="btn btn-ghost" style="font-size:11px;min-height:24px;padding:0 8px;">Remove</button>' : '') + '</div>'
