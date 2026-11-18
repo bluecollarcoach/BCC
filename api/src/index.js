@@ -2960,49 +2960,6 @@ app.http('nav-popular', {
   })
 });
 
-/* ==== TEMPORARY report raw route — REMOVED in the same session ==== */
-app.http('tmp-report-raw', {
-  methods: ['GET'],
-  authLevel: 'anonymous',
-  route: 'tmp/report-raw',
-  handler: async (request, context) => {
-    const secret = process.env.CRON_SECRET || '';
-    const given = request.headers.get('x-bcc-cron-secret') || '';
-    if (!secret || given !== secret) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
-    try {
-      const c = container();
-      const u = new URL(request.url);
-      const realm = u.searchParams.get('realm') || '';
-      const period = u.searchParams.get('period') || '';
-      const method = u.searchParams.get('method') === 'Cash' ? 'Cash' : 'Accrual';
-      const m = /^(\d{4})-(\d{2})$/.exec(period);
-      if (!realm || !m) return { status: 400, jsonBody: { ok: false, error: 'realm and period=YYYY-MM required' } };
-      const comp = await c.item('bcc-qbo-company-' + realm, BCC_TENANT_ID).read().then(r => r.resource);
-      const fields = await getIntegrationFields('qbo');
-      const { accessToken, base } = await qboAccessForCompany(comp, fields);
-      const apiGet = async (path) => {
-        const url = base + '/v3/company/' + encodeURIComponent(realm) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70';
-        const r = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
-        if (!r.ok) throw new Error('QBO ' + r.status + ': ' + (await r.text().catch(() => '')).slice(0, 200));
-        return r.json();
-      };
-      const per = { y: +m[1], mo: +m[2] - 1 };
-      // the EXISTING report assembler: the KPIs and statements exactly as the production report builds them today
-      const data = await assembleMonthlyReport(apiGet, comp, per, method);
-      const d = (yy, mm, dd) => new Date(Date.UTC(yy, mm, dd)).toISOString().slice(0, 10);
-      const from = d(per.y, per.mo - 23, 1), to = d(per.y, per.mo + 1, 0);
-      const q = '?start_date=' + from + '&end_date=' + to + '&summarize_column_by=Month&accounting_method=' + method;
-      const [plRaw, bsRaw, arRaw, apRaw] = await Promise.all([
-        apiGet('/reports/ProfitAndLoss' + q), apiGet('/reports/BalanceSheet' + q),
-        apiGet('/reports/AgedReceivables?report_date=' + to).catch(() => null), apiGet('/reports/AgedPayables?report_date=' + to).catch(() => null)
-      ]);
-      return { jsonBody: { ok: true, company: data.company, period, method, periodEnd: data.periodEnd, kpis: data.kpis, cashFlow: data.statements.cashFlow, degraded: data.degraded, plRaw, bsRaw, arRaw, apRaw } };
-    } catch (e) {
-      return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e) } };
-    }
-  }
-});
-
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
