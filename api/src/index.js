@@ -2960,6 +2960,77 @@ app.http('nav-popular', {
   })
 });
 
+/* ==== TEMPORARY read-only books pull for one client — REMOVED in the same session ====
+ * CRON_SECRET-gated. Only QuickBooks GET reports and SELECT queries. This repository is
+ * PUBLIC, so the workflow log / artifact must never hold readable client data: every
+ * response is gzip'd and sealed to a one-off RSA public key whose private half lives only
+ * on the operator's machine (AES-256-GCM body key, RSA-OAEP-wrapped). */
+const TMP_PULL_PUB = `-----BEGIN PUBLIC KEY-----
+MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEA0JIrxb0dN3kU/AIPElIt
+5L0kOIbgaFbWx3d/p21yYuyDxOMWs7c2HYDKptig4m8wtsAxMKJCWMywlP5G4mQ4
+V+IXaIRLDnGrK52fhE3iANW+FnlT6uJK4Ahwzn+AX05AziOq8TEdJKRhuqhKjVv1
+ieHA/5T0jIeBonmEEFB4bkvW5HUJvSK40F6P3ohyzXBEDEZss90+lfL3P0Vr42U2
+IJhMlvJQk+LTuo87p9q/4HKaE8HuHNgbmpj/22MAIrJAQU0lYgWs+nQ0mUyE6f3G
+Km7RYHVxgnfXs3dd5HamSjtMnwtYiCby80hLxqq/EyilT4i2uwJtASsqZNUAldkz
+tJIFGa5b1dbjNnFpb3KjCrMxjVtzUgAjumrEvObLzO82hIRcIFzvpcFpuaO+kDGQ
+8qqlzt65T/frWKy8VUr9rLukZvSHzBzJ91IFabbXILMdQZ95WJghUT77LT/74ukv
+3097W3UAm+piuDsmL8DPO6zSa9tCNjdVeKlW4bjtKn9zAgMBAAE=
+-----END PUBLIC KEY-----
+`;
+function tmpSeal(obj) {
+  const zlib = require('zlib');
+  const plain = zlib.gzipSync(Buffer.from(JSON.stringify(obj), 'utf8'));
+  const key = crypto.randomBytes(32), iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const ct = Buffer.concat([cipher.update(plain), cipher.final()]);
+  const ek = crypto.publicEncrypt({ key: TMP_PULL_PUB, padding: crypto.constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' }, key);
+  return { v: 1, ek: ek.toString('base64'), iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), ct: ct.toString('base64') };
+}
+const TMP_PULL_REPORTS = new Set(['ProfitAndLossDetail', 'ProfitAndLoss', 'BalanceSheet', 'JournalReport', 'GeneralLedger', 'AgedReceivableDetail', 'AgedReceivables', 'AgedPayableDetail', 'AgedPayables', 'TrialBalance', 'TransactionList', 'CashFlow']);
+const TMP_PULL_PARAMS = new Set(['start_date', 'end_date', 'accounting_method', 'summarize_column_by', 'report_date', 'aging_method', 'columns', 'account', 'sort_by', 'sort_order']);
+app.http('tmp-pilot-books', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'tmp/pilot-books',
+  handler: async (request, context) => {
+    if (!cronSecretMatches(request.headers.get('x-bcc-cron-secret') || '', process.env.CRON_SECRET || '')) return { status: 401, jsonBody: { ok: false, error: 'bad or missing cron secret' } };
+    try {
+      const u = new URL(request.url);
+      const op = u.searchParams.get('op') || '';
+      const want = String(u.searchParams.get('name') || '').trim().toLowerCase();
+      if (!want) return { status: 400, jsonBody: { ok: false, error: 'name required' } };
+      const { resources } = await container().items.query({
+        query: 'SELECT * FROM c WHERE c.tenantId=@t AND c.docType="qbo-company"',
+        parameters: [{ name: '@t', value: BCC_TENANT_ID }]
+      }).fetchAll();
+      const hits = resources.filter(co => co && co.refreshToken && String(co.companyName || '').toLowerCase().indexOf(want) >= 0);
+      if (op === 'companies') return { jsonBody: tmpSeal({ companies: hits.map(co => ({ realmId: co.realmId, companyName: co.companyName, enabled: co.enabled !== false, environment: co.environment })) }) };
+      if (hits.length !== 1) return { status: 409, jsonBody: { ok: false, error: 'name must match exactly one connected company; matched ' + hits.length } };
+      const comp = hits[0], fields = await getIntegrationFields('qbo');
+      const { accessToken, base } = await qboAccessForCompany(comp, fields);
+      let path = '';
+      if (op === 'report') {
+        const rpt = u.searchParams.get('rpt') || '';
+        if (!TMP_PULL_REPORTS.has(rpt)) return { status: 400, jsonBody: { ok: false, error: 'report not allowed' } };
+        const keep = new URLSearchParams();
+        new URLSearchParams(u.searchParams.get('p') || '').forEach((v, k) => { if (TMP_PULL_PARAMS.has(k) && /^[A-Za-z0-9_,.\- ]{0,200}$/.test(v)) keep.append(k, v); });
+        path = '/reports/' + rpt + '?' + keep.toString();
+      } else if (op === 'query') {
+        const sql = String(u.searchParams.get('sql') || '');
+        if (!/^select\s/i.test(sql) || sql.length > 400) return { status: 400, jsonBody: { ok: false, error: 'select only' } };
+        path = '/query?query=' + encodeURIComponent(sql);
+      } else return { status: 400, jsonBody: { ok: false, error: 'op must be companies, report or query' } };
+      const url = base + '/v3/company/' + encodeURIComponent(comp.realmId) + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'minorversion=70';
+      const r = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
+      const text = await r.text();
+      let data = null; try { data = JSON.parse(text); } catch (_) { data = { raw: text.slice(0, 2000) }; }
+      return { jsonBody: tmpSeal({ status: r.status, path, data }) };
+    } catch (e) {
+      return { status: 500, jsonBody: { ok: false, error: String((e && e.message) || e).slice(0, 300) } };
+    }
+  }
+});
+
 app.http('cron-reminders', {
   methods: ['POST', 'GET'],
   authLevel: 'anonymous',
