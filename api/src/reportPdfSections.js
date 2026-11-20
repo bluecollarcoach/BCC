@@ -113,11 +113,7 @@ function build(a, H, extra) {
   if (wins.length) { readPage.push(label(attention.length ? 'WHAT IS WORKING' : 'WHAT IS WORKING', attention.length ? 11 : 4)); wins.forEach(x => readPage.push(insightBlock(x))); }
   if (planning.length) { readPage.push(label('PLANNING')); planning.forEach(x => readPage.push(insightBlock(x))); }
   if (infos.length) { readPage.push(label('ALSO WORTH KNOWING')); infos.forEach(x => readPage.push(insightBlock(x))); }
-  const acts = (a.actions || []).filter(x => x && x.act);
-  if (acts.length) {
-    readPage.push(label('NEXT 30 DAYS: WHERE WE WOULD START'));
-    readPage.push({ unbreakable: true, table: { widths: [14, '*'], body: acts.map((x, i) => [{ canvas: [{ type: 'rect', x: 1, y: 2, w: 8, h: 8, lineWidth: 0.9, lineColor: GOLD }], width: 14 }, { text: [{ text: (i + 1) + '.  ', bold: true, color: GOLD }, { text: S(x.act), bold: true }], fontSize: 9, margin: [0, 0, 0, 3] }]) }, layout: 'noBorders' });
-  }
+  /* No "next 30 days" checklist: the firm does not want it on the report (2026-11-20). The analysis still carries `actions`; nothing prints them. */
 
   /* ---------------------------------------------------------------- performance: month, year to date, trailing 12 */
   const defs = [['Revenue', 'rev', 'm', 1], ['Cost of revenue', 'cogs', 'm', -1], ['Gross profit', 'gp', 'm', 1, true], ['Gross margin', 'gm', 'p', 1], ['Overhead', 'opex', 'm', -1], ['Operating income', 'opInc', 'm', 1], ['Other income / (expense)', 'other', 'm', 1], ['Net income', 'net', 'm', 1, true], ['Net margin', 'nm', 'p', 1]];

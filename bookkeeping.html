@@ -3391,7 +3391,8 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   function mrBtns(disabled) { ['mrPrint', 'mrSaveFile', 'mrSaveObs'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = disabled; }); }
   function loadMonthlyReport(period, forceRefresh) {
-    _mr.period = period; _mr.forecast = null; _mr.fcManual = null; _mr.fcInclude = true;
+    /* The 90-day cash flow forecast is NOT part of the report unless the coach ticks "Include in report" for that report (the firm's default, 2026-11-20). */
+    _mr.period = period; _mr.forecast = null; _mr.fcManual = null; _mr.fcInclude = false;
     // Record WHY a forecast is absent. It is deliberately not fetched for a past month (it
     // is an as-of-today projection), and reporting that as "unavailable for this client —
     // needs open A/R / A/P data" told the bookkeeper their QuickBooks data was deficient
@@ -3838,7 +3839,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
     var header = '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 4px;">' + mrHdr('90-Day Cash Flow Forecast') + chk('mrFcInclude', include, 'Include in report') + '</div>';
     var bodyHtml;
     if (!include) {
-      bodyHtml = '<div style="font-size:12px;color:var(--muted);padding:6px 2px;">The 90-day cash flow forecast will be left out of this report. Re-check <strong>Include in report</strong> to add it back.</div>';
+      bodyHtml = '<div style="font-size:12px;color:var(--muted);padding:6px 2px;">The 90-day cash flow forecast is not included in this report. Tick <strong>Include in report</strong> to add it.</div>';
     } else {
       var inputStyle = 'width:100%;min-height:32px;border:1px solid var(--chrome-mute,#e6e5e1);border-radius:6px;padding:4px 6px;font:inherit;font-size:12px;text-align:right;box-sizing:border-box;';
       var editor = '';
@@ -3965,7 +3966,7 @@ window.__bccErrs=[];window.addEventListener('error',function(e){try{if(window.__
   }
   function mrTrCls(tone) { return 'tr tr-' + (tone === 'good' || tone === 'bad' ? tone : 'neutral'); }
   function mrForecastSection() {
-    var fc = _mr.forecast; if (!fc) return '';
+    var fc = _mr.forecast; if (!fc || _mr.fcInclude === false) return '';
     var m = mrMoney;
     var inf = fc.inflow || [0, 0, 0], outf = fc.outflow || [0, 0, 0], proj = fc.projected || [0, 0, 0], op = fc.opNet || 0;
     var td = function (v, cls) { return '<td class="num' + (cls ? (' ' + cls) : '') + '">' + (v == null ? '' : v) + '</td>'; };
